@@ -82,7 +82,9 @@ def run(
     return probe.end().trace, reply
 
 
-def run_jtag(elf: str, ack: int, read: bool, idle: int, word: int) -> tuple[list[str], bytes]:
+def run_jtag(
+    elf: str, ack: int, read: bool, idle: int, word: int, count: int = 1, index: int = 0
+) -> tuple[list[str], bytes]:
     """The same comparison on four wires, with a TAP that walks the state machine.
 
     A flat bit list cannot check a JTAG transfer: which bit the probe reads depends on where the
@@ -98,9 +100,9 @@ def run_jtag(elf: str, ack: int, read: bool, idle: int, word: int) -> tuple[list
     probe.command(bytes([ID_CONNECT, 2]))
     probe.command(bytes([ID_SWJ_CLOCK]) + u32(10_000_000))
     probe.command(bytes([ID_TRANSFER_CONFIG, idle]) + u16(2) + u16(0))
-    probe.command(bytes([ID_JTAG_CONFIGURE, 1, 4]))
+    probe.command(bytes([ID_JTAG_CONFIGURE, count]) + bytes([4] * count))
 
-    payload = bytes([ID_TRANSFER_BLOCK, 0]) + u16(2) + bytes([AP_DRW_READ if read else AP_DRW_WRITE])
+    payload = bytes([ID_TRANSFER_BLOCK, index]) + u16(2) + bytes([AP_DRW_READ if read else AP_DRW_WRITE])
     if not read:
         payload += u32(word) * 2
     probe.begin()
@@ -119,30 +121,35 @@ def main() -> int:
     if args.wire == "jtag":
         failures = 0
         total = 0
-        for ack in (0, 1, 2, 4, 7):
-            for read in (True, False):
-                for idle in (0, 3):
-                    for word in (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF):
-                        total += 1
-                        name = f"ack={ack} {'read' if read else 'write'} idle={idle} word=0x{word:08x}"
-                        a = run_jtag(args.reference, ack, read, idle, word)
-                        b = run_jtag(args.candidate, ack, read, idle, word)
-                        if a[0] != b[0]:
-                            first = next(
-                                (i for i, (x, y) in enumerate(zip(a[0], b[0])) if x != y),
-                                min(len(a[0]), len(b[0])),
-                            )
-                            print(f"  WIRE   {name}")
-                            print(
-                                f"         diverges at event {first} of {len(a[0])}/{len(b[0])}:"
-                                f" {a[0][first : first + 6]} against {b[0][first : first + 6]}"
-                            )
-                            failures += 1
-                        elif a[1] != b[1]:
-                            print(f"  REPLY  {name}\n         {a[1].hex()} against {b[1].hex()}")
-                            failures += 1
-                        elif args.verbose:
-                            print(f"  ok     {name}  ({len(a[0])} events, {len(a[1])} byte reply)")
+        # A chain of one never reaches the bypass branches, which is where a rewritten data phase
+        # is least likely to be noticed. (2, 0) puts a bypass after the data, (2, 1) before it.
+        chains = ((1, 0), (2, 0), (2, 1))
+        cases = itertools.product(
+            (0, 1, 2, 4, 7), (True, False), (0, 3), (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF), chains
+        )
+        for ack, read, idle, word, (count, index) in cases:
+            total += 1
+            name = (
+                f"ack={ack} {'read' if read else 'write'} idle={idle} word=0x{word:08x} chain={count}/{index}"
+            )
+            a = run_jtag(args.reference, ack, read, idle, word, count, index)
+            b = run_jtag(args.candidate, ack, read, idle, word, count, index)
+            if a[0] != b[0]:
+                first = next(
+                    (i for i, (x, y) in enumerate(zip(a[0], b[0])) if x != y),
+                    min(len(a[0]), len(b[0])),
+                )
+                print(f"  WIRE   {name}")
+                print(
+                    f"         diverges at event {first} of {len(a[0])}/{len(b[0])}:"
+                    f" {a[0][first : first + 6]} against {b[0][first : first + 6]}"
+                )
+                failures += 1
+            elif a[1] != b[1]:
+                print(f"  REPLY  {name}\n         {a[1].hex()} against {b[1].hex()}")
+                failures += 1
+            elif args.verbose:
+                print(f"  ok     {name}  ({len(a[0])} events, {len(a[1])}B reply)")
         print(f"\n{total - failures}/{total} JTAG cases identical on the wire and in the reply")
         return 1 if failures else 0
 

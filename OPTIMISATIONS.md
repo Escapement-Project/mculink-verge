@@ -36,16 +36,16 @@ block, before and after tonight:
 
 | | asked | before | after | |
 | --- | --- | --- | --- | --- |
-| SWD read | 10 MHz | 538 | 575 | +7% |
-| SWD write | 10 MHz | 547 | 621 | +14% |
-| SWD read | 50 MHz | 1161 | 1358 | +17% |
-| SWD write | 50 MHz | 1387 | 1679 | +21% |
+| SWD read | 10 MHz | 538 | 615 | +14% |
+| SWD write | 10 MHz | 547 | 646 | +18% |
+| SWD read | 50 MHz | 1161 | 1634 | +41% |
+| SWD write | 50 MHz | 1387 | 1868 | +35% |
 | JTAG read | 50 MHz | 1355 | 1681 | +24% |
-| JTAG write | 50 MHz | 1630 | 2079 | +28% |
+| JTAG write | 50 MHz | 1630 | 2078 | +27% |
 | cJTAG read | 10 MHz | 166 | 213 | +28% |
 | cJTAG write | 10 MHz | 177 | 217 | +23% |
 
-The bar is cleared on wire time at every setting, by 2.9x at the top. **Wire time is not the same
+The bar is cleared on wire time at every setting, by 3.4x at the top. **Wire time is not the same
 as throughput**: the stock capture put the USB gap at about 10% of a transfer at 14 MHz, and a
 target that will not attach above 14 MHz makes the top of this table unreachable. The bench decides.
 
@@ -70,6 +70,19 @@ paid eight delays where six are wanted.
 cJTAG +23% to +32% wherever the clock is paced, +5% where it is not. The image gets smaller. Wire
 identical.
 
+### Make the SWD data phase cost two operations a bit, not four
+
+ARM's loop carries a running parity, shifts the word down and ors each bit into the top. The parity
+is only ever used one bit wide at the end, so it can come off the finished word; and with the phase
+unrolled each bit goes straight to its own position, which the barrel shifter folds into the or.
+
+A read bit goes from 7 cycles to 5 and a write bit from 5 to 4, against 3 for a packet bit, which
+is the floor. 64-word blocks gain 14% to 41%. The shortest period on the wire is unchanged, so the
+probe still never clocks faster than it was asked to.
+
+`src/swd_dp.c` owns `SWD_Transfer`; SW_DP.c still compiles unchanged and still supplies the two
+sequence commands. `tools/equiv.py` holds it to ARM's behaviour across 528 cases.
+
 ## Tried and rejected
 
 Recorded because each one is the obvious next thing to try.
@@ -88,6 +101,20 @@ A third of the time at a high clock is spent between transfers rather than clock
 that looked like call overhead. Raising GCC's inlining parameters until the transfer was inlined
 cost 33 KB of text and bought **nothing**: the gap went from 78 cycles to 77, and the write path
 got slower.
+
+### The same rewrite on four-wire JTAG
+
+What works for SWD does not work here, and only measurement says so. Unrolling JTAG's read phase
+the same way takes a read bit from 6 cycles to 5 as predicted, and **loses 5% to 10% overall**:
+the gap between one transfer and the next grows from 63 cycles to 97, more than the data phase
+saves.
+
+The difference from SWD is that ARM already unrolls SWD's packet phase by hand, so that function
+was large and its register pressure already paid for. JTAG's was not, and unrolling 31 reads keeps
+the accumulator live across all of them.
+
+Measured with the chain at one device and at two, with the bypass bit before and after the data, so
+the branches a rewritten data phase is least likely to reach were covered.
 
 ### Raising IO_PORT_WRITE_CYCLES
 
@@ -143,28 +170,25 @@ that produces it is one the bench has never reached.
 
 ## Left, ranked
 
-### 1. A seventh of a read is spent between transfers
+### 1. A seventh of a read is still spent between transfers
 
-Measured at 50 MHz asked: 78 cycles of dead wire between one transfer and the next, 13% of a read
-and 15% of a write. `--explain` names it: 32 instructions in the tail and head of `SWD_TransferFast`
-and 26 in the block loop that `DAP_ProcessCommand` inlined.
+Measured at 50 MHz asked: around 70 cycles of dead wire between one transfer and the next, 13% of a
+read. `--explain` names it: the tail and head of the transfer function, and the block loop that
+`DAP_ProcessCommand` inlined. The block loop stores the result a byte at a time and re-reads the
+retry count per word; the transfer tail checks parity, walks the turnaround, re-drives SWDIO and
+restores nine registers.
 
-The block loop stores the result a byte at a time and re-reads the retry count per word. The
-transfer tail checks parity, walks the turnaround, re-drives SWDIO and restores nine registers.
-None of it is in a macro, so none of it can be reached the way the cJTAG framing was: it needs our
-own copy of ARM's `DAP_SWD_TransferBlock` and `SWD_Transfer`.
+Letting the optimiser inline the transfer into the loop does not touch it, and the JTAG result
+above says making the function bigger makes this worse. What is left is making the loop itself
+cheaper, in our own copy of `DAP_SWD_TransferBlock`.
 
-Predicts: most of 13% to 15% at a high clock, 6% at 10 MHz. Against that, it is the first change
-that would stop ARM's sources compiling as they ship.
+Predicts: most of 13%, and the risk that it goes the way the JTAG rewrite went.
 
-### 2. The read data bit costs three cycles more than it needs
+### 2. The read bit is two cycles above the floor
 
-At the delay-free setting a packet bit is 3 cycles, a data write bit 5 and a data read bit 7. The
-read bit pays a two-cycle byte load it cannot avoid and three ALU operations it can: `parity += bit`,
-`val >>= 1`, `val |= bit << 31`.
-
-Predicts: 7 cycles to 5 is 29% of the data phase, which is 36 of a transfer's 46 clocks. Same
-objection as item 1: it means replacing ARM's loop body.
+A packet bit is 3 cycles, a data read bit is now 5. The two are a byte load from the GPIO, which
+cannot be avoided, and the or that places the bit. There is nothing obvious left; recorded so the
+floor is written down.
 
 ### 3. Nothing is left in the pacing itself
 
