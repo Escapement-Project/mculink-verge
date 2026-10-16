@@ -42,7 +42,7 @@ tolerated in the command window. A predicted read-edge count of 43 did not match
 ## Current state
 
 Builds. `cmake -B build -G Ninja -DBOARD=mcu_link -DTOOLCHAIN=gcc . && ninja -C build` produces
-`build/mculink_cjtag.{elf,hex,bin}`, 108,772 bytes of text at `-O3` with link-time optimisation and
+`build/mculink_cjtag.{elf,hex,bin}`, 109,144 bytes of text at `-O3` with link-time optimisation and
 the bit paths unrolled. `-DLTO=OFF` and `-DCMAKE_BUILD_TYPE=MinSizeRel` are there for bisecting a
 miscompilation.
 
@@ -328,6 +328,10 @@ Captures: `mculink-swd-clock-*.sal`.
 
 ### Open questions
 
+- Stack depth is not a worry, but it was worth checking after the transfers were inlined into
+  their loops. The deepest frames are 104 bytes in ARM's command processing and 80 in a block, so
+  a command plus a USB interrupt is about 300 bytes of the 2 KB region. The 144-byte frame under
+  `snprintf` belongs to the serial number and runs once, before USB is up.
 - The UUID read at 0x0009_FC70 is untested on hardware. If that region faults rather than reading,
   it faults during `GetSerialNum` and the device will not enumerate. `tools/image.py` runs
   the function against a programmed id and an unprogrammed one and gets `CJF2551AD5` and
