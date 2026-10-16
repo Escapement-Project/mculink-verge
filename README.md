@@ -98,3 +98,6 @@ would notice.
 - `DESIGN.md` -- why this exists, the pin map, and the open risks.
 - `OPTIMISATIONS.md` -- what was done for throughput, what was tried and rejected with its numbers,
   and what is left.
+- `PACING.md` -- how the wire clock is paced, traced through the source, and the three things wrong
+  with it: four-wire JTAG runs fast, the two-pin path has no margin, and the achievable rate goes
+  up in steps with a gap between 13 and 29 MHz.

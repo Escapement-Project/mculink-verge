@@ -92,7 +92,8 @@ requests land on a step below them. KiB/s of wire time, 64-word block, from
 | 40 MHz | 1776 | 2152 | 1799 | 2462 | 647 | 616 |
 | 50 MHz | 1776 | 2152 | 1799 | 2462 | 647 | 616 |
 
-Above 8 MHz there are three settings and nothing in between. 10, 12 and 14 are the same setting;
+Above 8 MHz there are three settings and nothing in between, which `PACING.md` explains and
+proposes a fix for. 10, 12 and 14 are the same setting;
 16 through 30 are the same setting; 40 and 50 are the delay-free path. **Ask for 16 rather than 20
 or 30, and 40 rather than 50**: the wire is identical and the request says what the probe will do.
 
@@ -317,6 +318,9 @@ The real asymmetry is that the read bit costs three cycles more than the packet 
 for that is to make the read bit cheaper, not to let the clock run away.
 
 ## A correctness finding that outranks all of this
+
+**`PACING.md` traces all of this through the source** and is the document to hand someone who is
+going to work on it. What follows is the measurement and the decision.
 
 **Four-wire JTAG clocks the target faster than the host asked for.** The emulator now reports the
 shortest period in a transfer, which is the only one that can break anything, and compares it with
