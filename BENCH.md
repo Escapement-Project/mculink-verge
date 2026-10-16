@@ -1434,9 +1434,19 @@ sets the data bit in one store to that register, which no earlier measurement co
 analyser at the target, over 2.4 million clocks at P = 20, the low phases of clocks that fall that
 way and of clocks that fall on CLR differ by 0.17 ns.
 
-**Reads stop at 37.5 MHz in software.** A read clock is four instructions and the core pairs none
-of them: the corpus timed a 16-bit load or store against a 16-bit add, in both orders, at a cycle
-each. Only a peripheral that clocks or shifts the wire could go further.
+**Reads stop at 37.5 MHz while the core makes the clock.** A read clock is four instructions and
+the core pairs none of them: the corpus timed a 16-bit load or store against a 16-bit add, in both
+orders, at a cycle each.
+
+**A timer can make the clock instead, and then reads run at 50 MHz.** SWCLK's pin is also
+CTimer 0's match output, and in PWM mode that timer counts the core's own clock. It holds its
+phase to the cycle at every period tried, from 2 to 10 cycles. With the timer making the
+target's clocks, the core only loads and keeps each bit. A lab prototype read DPIDR correctly
+2,000 times out of 2,000 with those clocks at 50 MHz, and the analyser shows them at exactly that
+rate. Stopping the timer is the hard part. A store to any of its registers holds the core up four
+cycles, which at 50 MHz always swallows one bit's sampling window, so the prototype stops the
+timer with a DMA write instead, triggered by a second timer. None of this is in the generator
+yet; `timer-swclk-2026-10-16.txt` has the measurements.
 
 ## What the bench has sized, and what is left
 

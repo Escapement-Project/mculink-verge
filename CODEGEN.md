@@ -69,6 +69,30 @@ the evidence.
   images run on the engine against `tools/baseline-codegen` (S positions differ from ARM's).
   Hardware (L1306): see Bench state.
 
+## Timer-clocked SWCLK (lab prototype, 2026-10-16)
+
+- PIO0_0 FUNC 3 = CTIMER0_MAT0. CTIMERCLKSEL0 = 0 (main clock = core clock), AHBCLKCTRL1 bits
+  26/27 (CTimer 0/1), PR 0, PWMC bit 0, MR3 = period-1 with MR3R, MR0 = low cycles (output low for
+  TC < MR0). Locked to the core: P = 2..10 exact, first rising edge read 6 + low cycles after the
+  start store, deterministic.
+- Any store to a CTimer register (APB) stalls the core ~4 cycles (CYCCNT: +4 for one, +10 for two;
+  a CTimer load ~+9). A TCR = 0 store freezes the clock at the level a read 9 cycles later would
+  see; what follows the store runs 3 cycles late. At P = 3 that stall always swallows one sample
+  window, so the stop is a DMA write: CTimer 1 one-shot (MR0 = delay, MR0S) started a cycle after
+  CTimer 0, its match 0 -> DMA0 ch 0 (INPUTMUX DMA0_ITRIG_INMUX0 = 6, input mux clock
+  AHBCLKCTRL0 bit 11), one word 0 -> CTIMER0 TCR; clear CTimer 1 IR after setting MR0 (TC = MR0 =
+  0 after reset raises the request). Deterministic only if the core keeps off the SRAM bank the DMA
+  reads: keep samples in registers.
+- Prototype read (timerdma.py): packet on GPIO, pin switch, both starts, 38 edges from the timer at
+  P = 3, samples at 9 + 3k in that frame (window ~[7.5, 9.5] + 3k), delay 92/93 freezes high after
+  edge 37, pin back to GPIO: 2000/2000 DPIDR reads, LA 38 edges at exactly 50.0 MHz.
+- Fillers must not read a load's destination (mov.w r12, r12 after ldrb r12 stalls a cycle): with
+  a free-running clock every stall drifts the later samples.
+- Generator integration not done. Per transfer it costs the pin switch twice, two starts and a DMA
+  re-arm (APB stores, ~5 cycles each), so a read transfer gains ~10% unless the timer clocks the
+  whole transfer and only stops at the acknowledge decision. probe-rs throughput is USB-bound at
+  ~half the 37.5 MHz wire rate already.
+
 ## The timing model (exact from SRAMX; see TIMING.md for prose)
 
 All costs in core cycles at 150 MHz (6.67 ns). Issue cycle = cycle an instruction enters execute.
@@ -281,7 +305,8 @@ at P = 8, 12, 16).
 
 - A calibration at connect (A sweep) vs a fixed A with margin. Margin at P=4 is only 1 either
   side even when centred. `swd_gen_latency` exists; nothing sets it from the host yet.
-- Reads above 37.5 MHz: not in software. A read clock is 2 edge stores + 1 load + 1 use, and the
+- Reads above 37.5 MHz: done in a lab prototype with a timer-made clock (below); not in the
+  generator. Without a peripheral: not in software. A read clock is 2 edge stores + 1 load + 1 use, and the
   core pairs nothing but a 16-bit NOP or b<cc>: the corpus timed `ldr sp/adds`, `adds/ldr sp`,
   `str sp/adds`, `adds/adds` pairs at 1 cycle each. Duty cycle
   does not change the count. Only a peripheral clocking/shifting the wire would (SWDIO P0_2 is
