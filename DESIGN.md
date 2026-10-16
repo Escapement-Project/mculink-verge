@@ -250,6 +250,23 @@ tests, so a zero microsecond delay counts down from 2^32: about ninety seconds w
 answering nothing. It is a legal request, and probe-rs not sending one is the only reason it has
 never been seen. `src/dap_dispatch.c` answers it directly.
 
+Another three wrote past the reply buffer. The host picks the reply length, and nothing in ARM's
+command layer compares it against the buffer:
+
+- `DAP_TransferBlock` takes a sixteen-bit word count, and a read request stays five bytes however
+  large it is. 65535 words is a 256 KB reply into a 512-byte buffer, which on this part runs off
+  the end of SRAM through the stack.
+- `DAP_Transfer` takes 255 transfers that can answer with eight bytes each: 2043 bytes measured.
+- `DAP_ExecuteCommands` runs up to 255 sub-commands and never learns how many bytes arrived, so it
+  keeps handing sub-commands whatever follows the request buffer.
+
+ARM's reference, DAPLink and the Raspberry Pi debugprobe carry the same code, so this is not
+specific to the MCU-Link. A conforming host sizes its requests to the packet size, which is why
+nobody hits it. Block reads are clamped to what the buffer holds, reported as the short count the
+protocol already has; the buffer holds the longest reply one command can produce; and the
+sub-command loop stops at a packet, which is all that is ever sent. `tools/image.py` holds it
+there with seven oversized requests and a canary past the buffer the image actually contains.
+
 
 ### Stock's own vendor commands
 

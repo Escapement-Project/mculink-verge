@@ -37,13 +37,16 @@ uv run tools/image.py               # the USB descriptors and the serial number
   model and asking the clock driver what came out;
 - the cycle counter behind `TIMESTAMP_GET`, which stays dormant until two bits are set;
 - every command in the parity table, which has to answer rather than reject;
+- that no request can make a reply land past the response buffer, with the canary placed by the
+  buffer size in the image rather than by a number repeated in the tool;
 - what `DAP_Info` reports, since probe-rs sizes its buffers from it;
 - the baud rates SWO and the console can actually reach, against a bound tighter than the
   driver's, because a rate it merely accepts can still be too far out for a link;
 - and the serial number, against a programmed unique id and an unprogrammed one.
 
 Each of those is a bench failure that looks like something else: a device that does not appear, a
-console that stays silent, a probe that stops answering for ninety seconds.
+console that stays silent, a probe that stops answering for ninety seconds, a probe that resets
+under a host asking for more than it can hold.
 
 The wire gate requires six things of a build:
 
