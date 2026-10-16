@@ -1005,36 +1005,98 @@ def cmd_sample(args) -> int:
     return 0
 
 
-def capture_pin_writes(path: str, tmsc: int, tckc: int, start: float, until: float) -> list[tuple[int, int]]:
-    """A capture's TCKC/TMSC changes between two times, as `(pin bit, level)` writes in order.
+def capture_pin_writes(path: str, tmsc: int, tckc: int, windows: list[tuple[float, float]]) -> list[tuple[int, int]]:
+    """A capture's TCKC/TMSC changes inside `windows`, as `(pin bit, level)` writes in order.
 
     Where both change in one sample the analyser cannot say which went first, so the order is the
     one that keeps the wire legal: a falling clock before the data moves, the data before a
     rising clock. Escapes are unaffected, since there the clock does not change.
+
+    Each window starts from the levels the capture holds there. Getting to them from where the
+    last window ended must not clock the target or move TMSC with TCKC high, so a gap that would
+    is refused rather than bridged.
     """
     import csv
 
-    writes, prev = [], None
     with open(path) as f:
         rows = csv.reader(f)
         next(rows)
-        for row in rows:
-            t = float(row[0])
-            levels = (int(row[1 + tmsc]), int(row[1 + tckc]))
-            if prev is None:
-                prev = levels
-                writes += [(0, levels[1]), (1, levels[0])]
+        samples = [(float(r[0]), (int(r[1 + tmsc]), int(r[1 + tckc]))) for r in rows]
+    writes, now = [], None
+    for start, until in windows:
+        held = samples[0][1]
+        for t, levels in samples:
+            if t > start:
+                break
+            held = levels
+        if now is None:
+            # From DAP_Connect both are high, so lowering the clock before the data keeps the
+            # move out of a high clock.
+            writes += [(0, held[1]), (1, held[0])]
+        elif held != now:
+            if now[1] != held[1] or held[1] == 1:
+                raise ValueError(f"window at {start}: {now} -> {held} would clock or escape")
+            writes.append((1, held[0]))
+        prev = held
+        for t, levels in samples:
+            if t <= start:
                 continue
             if t > until:
                 break
-            if t < start or levels == prev:
-                prev = levels
+            if levels == prev:
                 continue
             data = [(1, levels[0])] if levels[0] != prev[0] else []
             clock = [(0, levels[1])] if levels[1] != prev[1] else []
             writes += clock + data if levels[1] == 0 else data + clock
             prev = levels
+        now = prev
     return writes
+
+
+class PinProgram:
+    """TCKC/TMSC as single-pin writes, tracking the levels so TMSC never moves with TCKC high
+    except in an escape, where moving it with the clock held high is the point."""
+
+    def __init__(self):
+        self.writes, self.tck, self.tmsc = [(0, 1), (1, 1)], 1, 1
+
+    def clock(self, tms: str) -> "PinProgram":
+        for bit in tms:
+            self.writes.append((0, 0))
+            if int(bit) != self.tmsc:
+                self.tmsc = int(bit)
+                self.writes.append((1, self.tmsc))
+            self.writes.append((0, 1))
+        self.tck = 1
+        return self
+
+    def escape(self, edges: int) -> "PinProgram":
+        if not self.tck:
+            raise ValueError("an escape starts with TCKC high")
+        for _ in range(edges):
+            self.tmsc ^= 1
+            self.writes.append((1, self.tmsc))
+        return self
+
+
+def zbs() -> str:
+    """A zero-bit scan as TMS from Run-Test/Idle: through Capture-DR to Update-DR, never shifting."""
+    return "10110"
+
+
+def dr_scan(clocks: int) -> str:
+    """A DR scan spending `clocks` clocks in Shift-DR, as TMS from Run-Test/Idle back to it.
+
+    A cJTAG command part is this count, so one clock too few is a different command: STFMT's
+    opcode written one short is STC2, and STC2 9 switches a CC13xx to four-pin.
+    """
+    return "100" + "0" * (clocks - 1) + "110"
+
+
+# The command group the J-Link sends once per pass: two zero-bit scans raise the control level, a
+# one-clock scan locks it, then STC1 1 (SEDGE=1, sample on the rising edge) and STFMT 9 (OScan1).
+# The format changes at the Update-DR of the last scan.
+CJTAG_SELECT_OSCAN1 = zbs() + zbs() + dr_scan(1) + dr_scan(1) + dr_scan(1) + dr_scan(3) + dr_scan(9)
 
 
 def replay_pins(probe: Probe, writes: list[tuple[int, int]]) -> None:
@@ -1065,8 +1127,24 @@ def cmd_cjtag(args) -> int:
     print(f"  DAP_SWJ_Clock {args.hz} Hz -> {'OK' if status == 0 else f'status {status}'}")
     reply = probe.command(bytes([DAP_JTAG_CONFIGURE, 1, args.ir_length]))
     print(f"  DAP_JTAG_Configure one TAP, IR {args.ir_length} -> status {reply[1]}")
-    if args.replay:
-        writes = capture_pin_writes(args.replay, args.tmsc, args.tckc, args.start, args.until)
+    if args.nreset_first:
+        probe.command(bytes([DAP_SWJ_PINS, 0x00, 0x80]) + bytes(4))
+        time.sleep(0.02)
+        probe.command(bytes([DAP_SWJ_PINS, 0x80, 0x80]) + bytes(4))
+        time.sleep(args.settle / 1000)
+        print(f"  pulsed nRESET before the activation, then waited {args.settle} ms")
+    if args.synth:
+        program = PinProgram().escape(args.escape_a).clock("1" * args.tap_reset + "00")
+        program.escape(args.escape_b).clock("0" * args.idle + CJTAG_SELECT_OSCAN1 + "0" * args.pad)
+        replay_pins(probe, program.writes)
+        print(f"  synthetic activation: {len(program.writes)} pin writes")
+        reply = probe.command(bytes([DAP_VENDOR_CJTAG_CONTROL, 2]))
+        print(f"  vendor 0x83 02 (frame as OScan1, no activation) -> status {reply[1]}")
+    elif args.replay:
+        windows = [tuple(float(x) for x in w.split(":")) for w in args.window] or [(args.start, args.until)]
+        writes = capture_pin_writes(args.replay, args.tmsc, args.tckc, windows)
+        # Clock low before the data moves, data before the clock rises: a clock with TMS low.
+        writes += [(0, 0), (1, 0), (0, 1)] * args.pad
         replay_pins(probe, writes)
         print(f"  replayed {len(writes)} pin writes from {args.replay}")
         reply = probe.command(bytes([DAP_VENDOR_CJTAG_CONTROL, 2]))
@@ -1074,8 +1152,29 @@ def cmd_cjtag(args) -> int:
     elif not args.no_activate:
         reply = probe.command(bytes([DAP_VENDOR_CJTAG_CONTROL, 1]))
         print(f"  vendor 0x83 01 (activate OScan1) -> status {reply[1]}")
-    ones = (1 << 64) - 1
+    ones = (1 << 64) - 1 if args.tdi else 0
+    if args.pre_tms:
+        # One sequence per run of equal TMS, carrying that run's TDI bits; with framing on, every
+        # clock is a frame. --pre-tdi gives TDI per clock, otherwise --tdi holds for all of them.
+        tdi_bits = args.pre_tdi or str(args.tdi) * len(args.pre_tms)
+        if len(tdi_bits) != len(args.pre_tms):
+            sys.exit("--pre-tdi needs one bit per --pre-tms bit")
+        runs, at = [], 0
+        while at < len(args.pre_tms):
+            n = min(len(args.pre_tms[at:]) - len(args.pre_tms[at:].lstrip(args.pre_tms[at])), 63)
+            tdi = int(tdi_bits[at : at + n][::-1], 2)
+            runs.append((n, int(args.pre_tms[at]), False, tdi))
+            at += n
+        probe.jtag_sequence(runs)
+        print(f"  framed TMS {args.pre_tms} TDI {tdi_bits}")
     for attempt in range(args.repeat):
+        if args.nreset and attempt:
+            # nRESET is bit 7; nothing else on the wire moves.
+            probe.command(bytes([DAP_SWJ_PINS, 0x00, 0x80]) + bytes(4))
+            time.sleep(0.02)
+            probe.command(bytes([DAP_SWJ_PINS, 0x80, 0x80]) + bytes(4))
+            time.sleep(0.05)
+            print("  pulsed nRESET")
         # A count of zero would encode 64 clocks, so no reset means no sequence at all.
         reset = [(args.reset_clocks, 1, False, ones)] if args.reset_clocks else []
         tdo = probe.jtag_sequence(
@@ -1203,11 +1302,24 @@ def main() -> int:
     cjtag.add_argument("--expect", type=lambda s: int(s, 0), default=0x3BB4102F)
     cjtag.add_argument("--no-activate", action="store_true", help="skip vendor 0x83")
     cjtag.add_argument("--keep", action="store_true", help="leave OScan1 framing on afterwards")
+    cjtag.add_argument("--nreset", action="store_true", help="pulse nRESET before every read after the first")
     cjtag.add_argument("--replay", help="drive the activation from this capture's CSV instead")
     cjtag.add_argument("--tmsc", type=int, default=0, help="the capture's TMSC channel")
     cjtag.add_argument("--tckc", type=int, default=1, help="the capture's TCKC channel")
     cjtag.add_argument("--start", type=float, default=0.0, help="replay from this capture time")
     cjtag.add_argument("--until", type=float, default=1e9, help="replay up to this capture time")
+    cjtag.add_argument("--window", action="append", default=[], help="start:until, repeatable; replaces --start/--until")
+    cjtag.add_argument("--nreset-first", action="store_true", help="pulse nRESET before the activation")
+    cjtag.add_argument("--settle", type=float, default=50, help="ms to wait after --nreset-first")
+    cjtag.add_argument("--pre-tms", default="", help="TMS bits to send framed before the reads")
+    cjtag.add_argument("--tdi", type=int, default=1, choices=(0, 1), help="TDI level for every frame")
+    cjtag.add_argument("--pre-tdi", default="", help="TDI bit per --pre-tms bit")
+    cjtag.add_argument("--synth", action="store_true", help="drive the activation decoded from the J-Link's")
+    cjtag.add_argument("--escape-a", type=int, default=10, help="synth: edges in the first escape")
+    cjtag.add_argument("--tap-reset", type=int, default=200, help="synth: TMS-high clocks after it")
+    cjtag.add_argument("--escape-b", type=int, default=7, help="synth: edges in the second escape")
+    cjtag.add_argument("--idle", type=int, default=36, help="synth: TMS-low clocks before the commands")
+    cjtag.add_argument("--pad", type=int, default=0, help="TMS-low clocks after the activation, before framing")
     cjtag.set_defaults(run=cmd_cjtag)
 
     args = parser.parse_args()
