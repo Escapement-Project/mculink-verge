@@ -101,12 +101,10 @@ This information includes:
 /// This configuration settings is used to optimize the communication performance with the
 /// debugger and depends on the USB peripheral. For devices with limited RAM or USB buffer the
 /// setting can be reduced (valid range is 1 .. 255).
-/// Specifies number of packets buffered. Two: one in the endpoint buffer and one in the class
-/// buffer, which is as many as this stack can hold without losing a packet boundary. ARM's
-/// reference says eight and this said eight after it, which invited a host to pipeline deeper
-/// than the firmware can answer; measured, it times out from three in flight upward. Two is worth
-/// having rather than one -- a host that keeps a second command in flight gets about 15% end to
-/// end, because the wire stops waiting for the next request to arrive.
+/// Specifies number of packets buffered, and it has to be the truth: a host sizes its pipeline
+/// from this, one short of it, keeping a buffer free for DAP_TransferAbort to land in. ARM's
+/// reference says eight and this said eight after it, while the firmware held one. CMakeLists.txt
+/// sets it from REQUEST_SLOTS so the two cannot disagree.
 #ifdef DAP_PACKET_COUNT_OVERRIDE
 #define DAP_PACKET_COUNT        DAP_PACKET_COUNT_OVERRIDE
 #else

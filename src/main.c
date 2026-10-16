@@ -27,7 +27,12 @@
  *
  * With one, the wire sits idle from the moment a reply goes out until the host has noticed it and
  * sent the next request. Measured on a 64-word block read, a second command in flight is worth
- * 11%. A third measured no better, so two slots is where this stops.
+ * 11%, and a third no more than that.
+ *
+ * **Three slots, for two in flight.** A host keeps its pipeline one packet short of what the
+ * probe reports, because the spare buffer is where DAP_TransferAbort has to land to overtake the
+ * queue. probe-rs computes its depth as the reported count minus one, so a probe advertising two
+ * gets no overlap at all.
  *
  * The receive endpoint is armed only while a slot is free, which is what refuses a command there
  * is nowhere to put: the host sees NAK and retries, rather than the firmware dropping a packet.

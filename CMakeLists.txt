@@ -155,13 +155,14 @@ endif()
 
 # How many host commands the firmware will hold. DAP_PACKET_COUNT in src/DAP_config.h has to
 # match, because it is what the host is told.
-# Two is what saturates: measured 669 KiB/s at depths 2, 4 and 8 with the slots to match, so
-# anything past two keeps the link busier without the wire going faster. The knob exists because
-# the limit is worth re-measuring against a target that answers far above 10 MHz, where the wire
-# would stop being 92% of a block read.
-set(REQUEST_SLOTS 2 CACHE STRING "How many host commands the firmware will hold")
+# Three, because a host keeps its pipeline one packet short of what the probe says it holds.
+# That spare buffer is for DAP_TransferAbort to arrive in, so a probe advertising two gets a
+# pipeline of one and no overlap at all. Two commands in flight is what saturates the wire --
+# measured 669 KiB/s at depths 2, 4 and 8 with the slots to match -- so three slots is what lets
+# a conforming host reach it. Through probe-rs it is worth 4.5% on reads and 4.8% on writes.
+set(REQUEST_SLOTS 3 CACHE STRING "How many host commands the firmware will hold")
 if(NOT REQUEST_SLOTS)
-  set(REQUEST_SLOTS 2 CACHE STRING "How many host commands the firmware will hold" FORCE)
+  set(REQUEST_SLOTS 3 CACHE STRING "How many host commands the firmware will hold" FORCE)
 endif()
 target_compile_definitions(${PROJECT_NAME} PRIVATE REQUEST_SLOTS=${REQUEST_SLOTS}U
                                                    DAP_PACKET_COUNT_OVERRIDE=${REQUEST_SLOTS}U)
