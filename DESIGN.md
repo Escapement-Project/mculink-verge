@@ -51,13 +51,28 @@ Implemented: the vendor-class (CMSIS-DAP v2) USB interface, the MCU-Link pin lay
 number, ARM's DAP, SW_DP and JTAG_DP compiled unchanged, and the cJTAG activation sequence and
 frame primitive behind two vendor commands.
 
-**The frame primitive has no caller yet.** `cJTAG_Frame` is written and compiles, but nothing in
-the JTAG path calls it, so the linker drops it. Activation can be triggered and the mode flag set;
-the TAP is still driven as four-wire afterwards. Routing the JTAG entry points through it is the
-next piece of work and the one that makes the firmware do its job.
+All five JTAG entry points are routed. **None of it has run on hardware.**
 
-Not yet: that routing, SWO (8 of the 25 stock commands), the `DAP_UART_*` commands, and the HID and
-CDC interfaces.
+Not yet: SWO (8 of the 25 stock commands), the `DAP_UART_*` commands, and the HID and CDC
+interfaces.
+
+### How OScan1 is wired in
+
+ARM's `JTAG_DP.c` is compiled **twice**, and the wire framing is the only thing that differs:
+
+- normally, with its five entry points renamed `jtag4_*`;
+- again through `src/cjtag_jtag_dp.c`, renamed `cjtag_*`, with the pin layer shadowed so each
+  four-wire clock becomes one OScan1 frame.
+
+`src/cjtag_dp.c` owns the real names and picks a path per call. Neither path carries a per-bit
+branch, and neither duplicates the other's TAP walking, `ir_before`/`ir_length` accounting or
+transfer retry logic. The second copy costs about 2.9 KB.
+
+**The contract this rests on** is that `JTAG_DP.c` expresses every clock through four macros which
+expand, in order, to `PIN_TDI_OUT` (sometimes), `PIN_TCK_CLR`, `PIN_DELAY`, `PIN_TDO_IN`
+(sometimes), `PIN_TCK_SET`, `PIN_DELAY`. Shadowing those names stages TMS and TDI, opens a frame on
+`PIN_TCK_CLR`, and emits it at whichever of `PIN_TDO_IN` or `PIN_TCK_SET` comes first. The
+submodule is pinned to a release, so the order cannot change without someone bumping the tag.
 
 ### Vendor commands
 
@@ -186,6 +201,9 @@ Captures: `mculink-swd-clock-*.sal`.
   catches an unprogrammed region but cannot catch a bus fault.
 - In `cJTAG_Frame`, TDO is sampled while TCKC is low, just before the rising edge, following the
   shape of ARM's `SW_READ_BIT`. Whether the target drives it early enough is an analyser question.
+- The OScan1 path pays `PIN_DELAY` twice per frame that it does not need: once from the frame's own
+  pacing and once from `JTAG_DP.c`'s macros, whose delays become dead time around a no-op clock.
+  Harmless, and roughly doubles the time a two-pin frame takes.
 
 ## References
 

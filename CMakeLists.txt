@@ -21,6 +21,7 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_vendor.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_dp.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp.c
   ${DAP_SRC}/SW_DP.c
   ${DAP_SRC}/JTAG_DP.c
   )
@@ -43,6 +44,7 @@ set_source_files_properties(${DAP_SRC}/JTAG_DP.c PROPERTIES COMPILE_DEFINITIONS
 target_include_directories(${PROJECT_NAME} PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${CMAKE_CURRENT_SOURCE_DIR}/external/CMSIS-DAP/Firmware/Include
+  ${DAP_SRC}
   )
 
 family_configure_device_example(${PROJECT_NAME} noos)
