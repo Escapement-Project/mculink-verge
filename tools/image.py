@@ -62,7 +62,8 @@ class Checker:
 
 
 def check_device(c: Checker, d: bytes) -> None:
-    c.check(len(d) == 18, f"device descriptor is {len(d)} bytes, wanted 18")
+    if not c.check(len(d) == 18, f"device descriptor is {len(d)} bytes, wanted 18"):
+        return
     c.check(d[0] == 18, f"device descriptor bLength is {d[0]}, wanted 18")
     c.check(d[1] == 0x01, f"device descriptor bDescriptorType is {d[1]:#x}, wanted 0x01")
     (bcd_usb,) = struct.unpack_from("<H", d, 2)
@@ -76,6 +77,8 @@ def check_device(c: Checker, d: bytes) -> None:
 
 
 def check_configuration(c: Checker, d: bytes) -> dict[int, str]:
+    if not c.check(len(d) >= 9, f"configuration descriptor is {len(d)} bytes"):
+        return {}
     c.check(d[0] == 9 and d[1] == 0x02, "configuration descriptor does not start with a 9-byte type 2")
     (total,) = struct.unpack_from("<H", d, 2)
     c.check(total == len(d), f"wTotalLength says {total}, the descriptor is {len(d)} bytes")
@@ -120,6 +123,8 @@ def check_configuration(c: Checker, d: bytes) -> dict[int, str]:
 
 
 def check_bos(c: Checker, d: bytes, ms_os_len: int) -> None:
+    if not c.check(len(d) >= 5, f"BOS descriptor is {len(d)} bytes"):
+        return
     c.check(d[0] == 5 and d[1] == 0x0F, "BOS descriptor does not start with a 5-byte type 15")
     (total,) = struct.unpack_from("<H", d, 2)
     c.check(total == len(d), f"BOS wTotalLength says {total}, the descriptor is {len(d)} bytes")
@@ -440,9 +445,11 @@ def main() -> int:
 def _read_at(elf: str, addr: int, size: int) -> bytes:
     """The bytes a symbol occupies, read out of the image.
 
-    Two things to get right. `objdump -s` dumps every section that covers the range, and the debug
-    sections overlap, so take only the one the descriptors live in. And each line ends with an
-    ASCII rendering that can itself look like hex, so cap the groups taken per line at four.
+    Three things to get right. `objdump -s` dumps every section that covers the range and the
+    debug sections overlap, so take only the one the descriptors live in. Each line ends with an
+    ASCII rendering that can itself look like hex, so cap the groups per line at four. And a line
+    starts at a sixteen-byte boundary whatever address was asked for, so place the bytes by the
+    address they are printed with rather than by where they land in the output.
     """
     out = subprocess.run(
         [
@@ -450,23 +457,29 @@ def _read_at(elf: str, addr: int, size: int) -> bytes:
             "-s",
             "-j",
             ".text",
-            f"--start-address={addr}",
-            f"--stop-address={addr + size}",
+            # Widened to whole dump lines: objdump truncates the last one at the stop address,
+            # and the bytes are placed by address afterwards anyway.
+            f"--start-address={addr & ~0xF}",
+            f"--stop-address={(addr + size + 0xF) & ~0xF}",
             elf,
         ],
         capture_output=True,
         text=True,
         check=True,
     ).stdout
-    data = bytearray()
+    at: dict[int, int] = {}
     for line in out.splitlines():
-        m = re.match(r"^\s*[0-9a-f]+ ((?:[0-9a-f]{2,8} ?){1,4})", line)
+        m = re.match(r"^\s*([0-9a-f]+) ((?:[0-9a-f]{2,8} ?){1,4})", line)
         if not m:
             continue
-        for group in m.group(1).split():
-            if len(group) % 2 == 0:
-                data += bytes.fromhex(group)
-    return bytes(data[:size])
+        where = int(m.group(1), 16)
+        for group in m.group(2).split():
+            if len(group) % 2:
+                continue
+            for byte in bytes.fromhex(group):
+                at[where] = byte
+                where += 1
+    return bytes(at[a] for a in range(addr, addr + size) if a in at)
 
 
 if __name__ == "__main__":
