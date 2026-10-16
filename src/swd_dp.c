@@ -27,6 +27,7 @@
 
 #include "DAP.h"
 #include "swd_dp.h"
+#include "swd_transfer.h"
 
 // The same shape as SW_DP.c's, so the two can be read side by side.
 #define PIN_SWCLK_SET PIN_SWCLK_TCK_SET
@@ -229,6 +230,31 @@ SWD_TransferFunction(Fast)
     } else {
         return SWD_TransferSlow(request, data);
     }
+}
+
+/** DAP_Transfer, expanded once per clock path.
+ *
+ * ARM's DAP_SWD_Transfer calls SWD_Transfer once per transfer, and SWD_Transfer picks between the
+ * two copies on every call. Expanding the command next to each copy lets the transfer inline into
+ * it, so a transfer's register prologue is paid once per command rather than once per transfer.
+ * The block command is arranged the same way below.
+ *
+ * This is not the throughput path -- a host reads memory in blocks -- but it is most of what an
+ * attach is made of, and of anything touching one register at a time.
+ */
+#define SWD_XFER_FAST(request, data) SWD_TransferFast(SWD_WithParity(request), data)
+#define SWD_XFER_SLOW(request, data) SWD_TransferSlow(SWD_WithParity(request), data)
+
+// clang-format off: each of these expands to a function definition.
+SWD_TRANSFER_FUNCTION(SWD_TransferCommandFast, SWD_XFER_FAST)
+SWD_TRANSFER_FUNCTION(SWD_TransferCommandSlow, SWD_XFER_SLOW)
+// clang-format on
+
+uint32_t SWD_TransferCommand(const uint8_t* request, uint8_t* response) {
+    if (DAP_Data.fast_clock) {
+        return SWD_TransferCommandFast(request, response);
+    }
+    return SWD_TransferCommandSlow(request, response);
 }
 
 /** ARM's DAP_SWD_TransferBlock, with the transfer inlined into the loop.

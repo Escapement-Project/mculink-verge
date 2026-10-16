@@ -57,6 +57,12 @@ uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* response) {
         response[1] = DAP_OK;
         return (3U << 16) | 2U;
     }
+    // The single-register command, for the SWD port only. The JTAG and two-pin copies are ARM's
+    // because their transfer is reached through a shadowed pin layer, and the win is smaller.
+    if ((*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_SWD)) {
+        *response = *request;
+        return (1U << 16) + 1U + SWD_TransferCommand(request + 1, response + 1);
+    }
     if (*request == ID_DAP_TransferBlock) {
         // The word count is sixteen bits and a read block's request is five bytes whatever it
         // says, so a host can ask for 65535 words into a response buffer that holds 127 and the

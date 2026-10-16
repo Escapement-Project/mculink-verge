@@ -11,4 +11,7 @@
 /** Returns what ARM's DAP_TransferBlock returns: response bytes low, request bytes high. */
 uint32_t SWD_TransferBlock(const uint8_t* request, uint8_t* response);
 
+/** The same for DAP_Transfer, expanded once per clock path so the transfer inlines into it. */
+uint32_t SWD_TransferCommand(const uint8_t* request, uint8_t* response);
+
 #endif

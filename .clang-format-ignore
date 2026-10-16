@@ -1,6 +1,11 @@
 # src/DAP_config.h is ARM's file from the CMSIS-DAP MCU-LINK example, carried with a handful of
 # edits so it still diffs against theirs. Reformatting it would bury those edits.
 src/DAP_config.h
+
+# Generated from ARM's DAP.c by tools/extract_swd_transfer.py, and laid out so the macro
+# continuations line up. Reformatting it would fight the generator.
+src/swd_transfer.h
+
 external/*
 references/*
 build/*
