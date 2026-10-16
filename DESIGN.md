@@ -49,7 +49,7 @@ miscompilation.
 **Nothing has been flashed or run on hardware yet.** The bench is unavailable; everything below
 about the stock firmware comes from captures taken before it went away.
 
-What does exist is emulation. The built image runs on an emulated Cortex-M33, driven through the
+What does exist is emulation, and `ninja -C build check` is the whole of it. The built image runs on an emulated Cortex-M33, driven through the
 real DAP command layer against a modelled target, and all three wires read and write correctly:
 four-wire JTAG and SWD against a target that acknowledges and shifts, and **the two-pin path
 through a modelled 1149.7 target that decodes OScan1 framing off the wire**. Data words come back
@@ -313,8 +313,11 @@ Captures: `mculink-swd-clock-*.sal`.
 ### Open questions
 
 - The UUID read at 0x0009_FC70 is untested on hardware. If that region faults rather than reading,
-  it faults during `GetSerialNum` and the device will not enumerate. The uniform-value guard
-  catches an unprogrammed region but cannot catch a bus fault.
+  it faults during `GetSerialNum` and the device will not enumerate. `tools/descriptors.py` runs
+  the function against a programmed id and an unprogrammed one and gets `CJF2551AD5` and
+  `CJNOUUID`, so the arithmetic and the uniform-value guard are right. **A bus fault is the part
+  that cannot be checked from here**, and it is still the single line most likely to stop the
+  device appearing.
 - `IO_PORT_WRITE_CYCLES` is 2 and the emulator says the code costs about 5, which makes every
   requested clock come out at half to two-thirds. The fix is one constant, but setting it on the
   model alone risks clocking faster than the host asked for. One analyser capture settles it;

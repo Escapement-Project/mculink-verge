@@ -26,9 +26,18 @@ uv run tools/cycles.py --check            # the same thing by hand
 uv run tools/cycles.py --clock 10 50      # throughput, wire period, where the time goes
 uv run tools/cycles.py --explain          # name the code in the longest gap between edges
 uv run tools/equiv.py <ref.elf> <new.elf> # hold a rewrite to a reference build, case by case
+uv run tools/descriptors.py               # the USB descriptors and the serial number
 ```
 
-The gate requires six things of a build: every transfer answers with the right data, the wire
+`ninja check` runs the descriptor check too. It reads the descriptors out of the image and holds
+them to each other: a configuration descriptor states a total that has to match the bytes after
+it, an interface states how many endpoints follow, the BOS states the size of a descriptor stored
+elsewhere, and nothing in the build checks any of them. A malformed one is the failure with the
+least to go on, because the device simply does not appear. It also runs `GetSerialNum` against a
+programmed unique id and against an unprogrammed one, which is the other thing that can stop the
+device enumerating.
+
+The wire gate requires six things of a build: every transfer answers with the right data, the wire
 event stream matches `tools/baseline/` at both clock paths, the two-pin path emits no transition
 while the clock is high, and no wire clocks faster than the host asked for beyond what
 `tools/baseline/known-overshoot.txt` already records, and the cJTAG activation sequence puts the

@@ -135,7 +135,9 @@ if(UV_EXECUTABLE)
             --config ${CMAKE_CURRENT_SOURCE_DIR}/src/DAP_config.h
     DEPENDS ${PROJECT_NAME}
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    COMMENT "Checking the wire against tools/baseline"
+    COMMAND ${UV_EXECUTABLE} run ${CMAKE_CURRENT_SOURCE_DIR}/tools/descriptors.py
+            $<TARGET_FILE:${PROJECT_NAME}>
+    COMMENT "Checking the wire against tools/baseline, and the descriptors against themselves"
     USES_TERMINAL
     )
 endif()
