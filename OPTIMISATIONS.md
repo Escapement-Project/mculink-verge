@@ -113,12 +113,17 @@ word, inverting it for the nTDI packet, and one more store. The mask and the inv
 frame format. The extra store goes to `staged_tdi`, the file static
 `PIN_TDI_OUT` is shadowed to, which the frame reads back.
 
-**Whether that store can go is unproven.** The static is file-local and its address never escapes,
-so nothing forces it to memory: it is the register allocator spilling under the same pressure that
-spills the block loop's own state, and a local would spill to the stack just as readily. It is
-1,344 of the 52,109 instructions a block runs, so about 2.6% is the most it could be worth, and
-only if the spill can be avoided at all. Measure before believing it. It is also the setting with
-no pacing margin to begin with, so measure the period distribution before changing anything there.
+**Why that store is there is unsettled, and the evidence cuts both ways.** The static is file-local
+and its address never escapes, so nothing obliges it to live in memory. But the disassembly loads
+its address in `cjtag_ReadIDCode`, `cjtag_WriteAbort` and `cjtagf_Sequence` as well as in the
+transfer, and those are small functions under no register pressure at all. So it is not simply the
+allocator spilling in the big loop, and a local may not help.
+
+It is 1,344 of the 52,109 instructions a two-pin write block runs, so 2.6% is the ceiling on
+removing it, not a prediction. The check that would settle it: build one variant that threads the
+TDI bit through `cjtag_emit`'s argument list instead of the static, and look at whether the store
+survives in `cjtagf_Sequence`. It is also the setting with no pacing margin to begin with, so
+measure the period distribution before changing anything there.
 
 ## Done
 
