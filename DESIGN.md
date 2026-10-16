@@ -42,7 +42,7 @@ tolerated in the command window. A predicted read-edge count of 43 did not match
 ## Current state
 
 Builds. `cmake -B build -G Ninja -DBOARD=mcu_link -DTOOLCHAIN=gcc . && ninja -C build` produces
-`build/mculink_cjtag.{elf,hex,bin}`, 53,724 bytes of text at `-O3` with link-time optimisation and
+`build/mculink_cjtag.{elf,hex,bin}`, 66,672 bytes of text at `-O3` with link-time optimisation and
 the bit paths unrolled. `-DLTO=OFF` and `-DCMAKE_BUILD_TYPE=MinSizeRel` are there for bisecting a
 miscompilation.
 
@@ -91,11 +91,13 @@ descriptor, so this is cosmetic.
 
 ### How OScan1 is wired in
 
-ARM's `JTAG_DP.c` is compiled **twice**, and the wire framing is the only thing that differs:
+ARM's `JTAG_DP.c` is compiled **three times**, and the wire framing is the only thing that differs:
 
 - normally, with its five entry points renamed `jtag4_*`;
 - again through `src/cjtag_jtag_dp.c`, renamed `cjtag_*`, with the pin layer shadowed so each
-  four-wire clock becomes one OScan1 frame.
+  four-wire clock becomes one OScan1 frame;
+- and once more through `src/cjtag_jtag_dp_fast.c`, renamed `cjtagf_*`, which drives the frame
+  without its pacing loop for requests above the switch point.
 
 `src/cjtag_dp.c` owns the real names and picks a path per call. Neither path carries a per-bit
 branch, and neither duplicates the other's TAP walking, `ir_before`/`ir_length` accounting or
@@ -253,16 +255,15 @@ not modelled and the stock capture put it at about 10% of a transfer, so read th
 
 | | 10 MHz asked | 50 MHz asked |
 | --- | --- | --- |
-| SWD read | 575 | 1358 |
-| SWD write | 621 | 1679 |
-| JTAG read | 673 | 1681 |
-| JTAG write | 717 | 2079 |
-| two-pin read | 213 | 295 |
-| two-pin write | 217 | 303 |
+| SWD read | 614 | 1624 |
+| SWD write | 645 | 1862 |
+| JTAG read | 665 | 1639 |
+| JTAG write | 713 | 2047 |
+| two-pin read | 208 | 631 |
+| two-pin write | 215 | 603 |
 
-The bar is stock's 476 KiB/s read and 502 write. **The two-pin path costs 3.0 times four-wire per
-JTAG clock**, which is what the format requires and nothing more, after the duplicate pacing was
-removed.
+The bar is stock's 476 KiB/s read and 502 write. **The two-pin path costs about 3 times four-wire per JTAG
+clock**, which is what the format requires and little more.
 
 One finding here is a defect rather than a measurement: **four-wire JTAG clocks the target faster
 than the host asked for**, 3% over at 10 MHz and 44% over at 50. SWD and the two-pin path are
