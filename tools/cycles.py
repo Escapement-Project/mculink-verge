@@ -466,7 +466,7 @@ def u32(v: int) -> bytes:
 
 
 # DAP command ids used below.
-ID_CONNECT, ID_TRANSFER_CONFIG, ID_TRANSFER_BLOCK = 0x02, 0x04, 0x06
+ID_CONNECT, ID_TRANSFER_CONFIG, ID_TRANSFER, ID_TRANSFER_BLOCK = 0x02, 0x04, 0x05, 0x06
 ID_SWJ_CLOCK, ID_SWJ_SEQUENCE, ID_SWD_CONFIGURE = 0x11, 0x12, 0x13
 ID_JTAG_SEQUENCE, ID_JTAG_CONFIGURE, ID_SWD_SEQUENCE = 0x14, 0x15, 0x1D
 ID_CJTAG_CONTROL = 0x83
@@ -741,6 +741,47 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
             failures.append(f"{wire}-{name}.trace: no baseline recorded")
         elif open(path).read() != body:
             failures.append(f"{wire}-{name}.trace: wire events differ from the baseline")
+
+    # DAP_Transfer, which is how a host reaches a single register and most of what an attach is
+    # made of. src/dap_dispatch.c routes every command, and until this nothing but the block was
+    # checked, so a mistake in the forwarding would have been invisible.
+    for wire, port in (("swd", 1), ("jtag", 2), ("cjtag", 2)):
+        for label, payload in (
+            ("transfer-read", bytes([ID_TRANSFER, 0, 4]) + bytes([0x0F]) * 4),
+            ("transfer-write", bytes([ID_TRANSFER, 0, 2]) + (bytes([0x0D]) + u32(0xA5A5_5A5A)) * 2),
+            (
+                "transfer-match",
+                bytes([ID_TRANSFER, 0, 2])
+                + bytes([0x20])
+                + u32(0xFFFFFFFF)
+                + bytes([0x0F | 0x10])
+                + u32(0x00000000),
+            ),
+        ):
+            probe = build(elf, wire, True, model)
+            probe.command(bytes([ID_CONNECT, port]))
+            probe.command(bytes([ID_SWJ_CLOCK]) + u32(10_000_000))
+            probe.command(bytes([ID_TRANSFER_CONFIG, 0]) + u16(2) + u16(0))
+            if wire == "swd":
+                probe.command(bytes([ID_SWD_CONFIGURE, 0]))
+            else:
+                probe.command(bytes([ID_JTAG_CONFIGURE, 1, 4]))
+            if wire == "cjtag":
+                probe.command(bytes([ID_CJTAG_CONTROL, 1]))
+                probe.cjtag_tap = JtagTap(JTAG_DR_OK, 35)
+            probe.begin()
+            reply = probe.command(payload)
+            counts = probe.end()
+            if reply[0] != ID_TRANSFER:
+                failures.append(f"{wire} {label}: reply echoes 0x{reply[0]:02x}, wanted 0x05")
+            path = os.path.join(BASELINE_DIR, f"{wire}-{label}.trace")
+            body = "\n".join(counts.trace) + "\n"
+            if bless:
+                open(path, "w").write(body)
+            elif not os.path.exists(path):
+                failures.append(f"{wire}-{label}.trace: no baseline recorded")
+            elif open(path).read() != body:
+                failures.append(f"{wire}-{label}.trace: wire events differ from the baseline")
 
     known_path = os.path.join(BASELINE_DIR, "known-overshoot.txt")
     known = set()
