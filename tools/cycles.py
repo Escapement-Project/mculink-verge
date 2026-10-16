@@ -129,6 +129,9 @@ class Counts:
     # wire it is an escape edge, which is the whole reason this firmware exists.
     moves_while_high: int = 0
     trace: list[str] = field(default_factory=list)
+    # The running cycle count at each rising clock edge. Differences are wire periods, which is
+    # what an analyser measures and what Set_Clock_Delay is trying to control.
+    edge_cycles: list[int] = field(default_factory=list)
 
 
 class Target:
@@ -170,8 +173,10 @@ CJTAG_WRITE = CJTAG_LEAD + JTAG_WRITE
 
 
 class Machine:
-    def __init__(self, elf: str, target: Target, restart_at: set[int]):
+    def __init__(self, elf: str, target: Target, restart_at: set[int], model: "Model | None" = None):
         self.sym = symbols(elf)
+        self.model = model or Model()
+        self.cycle = 0
         self.target = target
         self.counting = False
         self.restart_at = restart_at
@@ -273,6 +278,7 @@ class Machine:
                 self.counts.moves_while_high += 1
         if after_clock and not before_clock:
             self.counts.tck_rise += 1
+            self.counts.edge_cycles.append(self.cycle)
             self.counts.trace.append(f"^{after_wire}{after_tdi}")
         elif before_clock and not after_clock:
             self.counts.tck_fall += 1
@@ -311,17 +317,22 @@ class Machine:
             # without parsing the clock arithmetic out of the source.
             if 0 < self._prev_end - address <= 8:
                 self.counts.delay_iterations += 1
+            self.cycle += self.model.taken_branch - self.model.other
         self._prev_end = address + size
 
         kind, _ = self._classify(address, size)
         c = self.counts
         c.instructions += 1
+        m = self.model
         if kind == "load":
             c.load += 1
+            self.cycle += m.load
         elif kind == "store":
             c.store += 1
+            self.cycle += m.store
         else:
             c.other += 1
+            self.cycle += m.other
 
     # -- running -------------------------------------------------------------
     def call(self, name: str, *args: int, timeout_insns: int = 50_000_000) -> int:
@@ -346,6 +357,7 @@ class Machine:
 
     def begin(self):
         self.counts = Counts()
+        self.cycle = 0
         self.counting = True
 
     def end(self) -> Counts:
@@ -363,7 +375,8 @@ def u32(v: int) -> bytes:
 
 # DAP command ids used below.
 ID_CONNECT, ID_TRANSFER_CONFIG, ID_TRANSFER_BLOCK = 0x02, 0x04, 0x06
-ID_SWJ_CLOCK, ID_SWD_CONFIGURE, ID_JTAG_CONFIGURE = 0x11, 0x13, 0x15
+ID_SWJ_CLOCK, ID_SWJ_SEQUENCE, ID_SWD_CONFIGURE = 0x11, 0x12, 0x13
+ID_JTAG_CONFIGURE = 0x15
 ID_CJTAG_CONTROL = 0x83
 
 AP_DRW_READ, AP_DRW_WRITE = 0x0F, 0x0D
@@ -379,7 +392,7 @@ TRANSFER_MARKERS = {
 }
 
 
-def build(elf: str, wire: str, read: bool) -> Machine:
+def build(elf: str, wire: str, read: bool, model: Model) -> Machine:
     pattern = {
         ("swd", True): SWD_READ,
         ("swd", False): SWD_WRITE,
@@ -388,7 +401,7 @@ def build(elf: str, wire: str, read: bool) -> Machine:
         ("cjtag", True): CJTAG_READ,
         ("cjtag", False): CJTAG_WRITE,
     }[(wire, read)]
-    probe = Machine(elf, Target(pattern), restart_at=set())
+    probe = Machine(elf, Target(pattern), restart_at=set(), model=model)
     found = {name for name in TRANSFER_MARKERS[wire] if name in probe.sym}
     if not found:
         raise SystemExit(
@@ -399,8 +412,8 @@ def build(elf: str, wire: str, read: bool) -> Machine:
     return probe
 
 
-def measure(elf: str, wire: str, clock_hz: int, words: int, read: bool) -> tuple[Counts, bytes]:
-    probe = build(elf, wire, read)
+def measure(elf: str, wire: str, clock_hz: int, words: int, read: bool, model: Model) -> tuple[Counts, bytes]:
+    probe = build(elf, wire, read, model)
     # DAP_Setup only sets defaults that the commands below overwrite, and link-time optimisation
     # usually folds it into main, so run it when it still exists and skip it when it does not.
     if "DAP_Setup" in probe.sym:
@@ -425,6 +438,21 @@ def measure(elf: str, wire: str, clock_hz: int, words: int, read: bool) -> tuple
     return probe.end(), response
 
 
+def measure_bit_loop(elf: str, clock_hz: int, model: Model, bits: int = 248) -> Counts:
+    """Cost of a bare clocked bit, with no transfer around it.
+
+    DAP_SWJ_Sequence is SW_CLOCK_CYCLE with one data write per bit and nothing else: no packet
+    request, no acknowledge, no turnaround, no per-word bookkeeping. It is the only scenario here
+    whose cycles-per-bit is the quantity ARM's clock arithmetic is actually about.
+    """
+    probe = Machine(elf, Target([]), restart_at=set(), model=model)
+    probe.command(bytes([ID_CONNECT, 1]))
+    probe.command(bytes([ID_SWJ_CLOCK]) + u32(clock_hz))
+    probe.begin()
+    probe.command(bytes([ID_SWJ_SEQUENCE, bits % 256]) + bytes([0xA5]) * ((bits + 7) // 8))
+    return probe.end()
+
+
 def report(name: str, c: Counts, model: Model, clock_hz: int, cpu_hz: int, words: int):
     clocks = c.tck_rise or 1
     cycles = model.total(c)
@@ -440,6 +468,19 @@ def report(name: str, c: Counts, model: Model, clock_hz: int, cpu_hz: int, words
         f" {c.taken_branch} taken branches, {c.other} other"
     )
     print(f"    wire moved {c.moves_while_high} times while the clock was high")
+    periods = [b - a for a, b in zip(c.edge_cycles, c.edge_cycles[1:])]
+    if periods:
+        tally: dict[int, int] = {}
+        for p in periods:
+            tally[p] = tally.get(p, 0) + 1
+        common = sorted(tally.items(), key=lambda kv: -kv[1])[:3]
+        shape = "  ".join(f"{p} cyc x{n}" for p, n in common)
+        steady = common[0][0]
+        print(f"    wire period: {shape}   (shortest {min(periods)}, longest {max(periods)})")
+        print(
+            f"    the period it holds for most of a transfer is {steady} cycles,"
+            f" {cpu_hz / steady / 1e6:.2f} MHz"
+        )
     print(
         f"    modelled {cycles} cycles, {bit_cycles:.2f} per clock"
         f"  ->  {achieved / 1e6:.2f} MHz on the wire for {clock_hz / 1e6:.0f} MHz asked"
@@ -473,14 +514,14 @@ def calibrate(elf: str, wire: str, words: int, cpu_hz: int, model: Model, config
     cpu_clock, io_cycles, slow_cycles = dap_constants(config)
     fast_above = (cpu_clock / 2) / io_cycles
     points = []
-    print(f"{elf}, {wire}, calibration sweep")
+    print(f"{elf}, calibration against a bare clocked bit (DAP_SWJ_Sequence)")
     print(
         f"built with CPU_CLOCK {cpu_clock / 1e6:g} MHz, IO_PORT_WRITE_CYCLES {io_cycles},"
         f" DELAY_SLOW_CYCLES {slow_cycles}; the delay-free path starts at {fast_above / 1e6:.1f} MHz\n"
     )
     print(f"  {'asked':>8}  {'path':>5}  {'delay/bit':>10}  {'cycles/bit':>11}  {'MHz':>7}")
     for mhz in (0.5, 1, 2, 3, 5, 8, 10, 20, 50):
-        counts, _ = measure(elf, wire, int(mhz * 1e6), words, True)
+        counts = measure_bit_loop(elf, int(mhz * 1e6), model=model)
         clocks = counts.tck_rise or 1
         cycles = model.total(counts) / clocks
         # The loop runs its last pass with the branch falling through, so one iteration per delay
@@ -504,7 +545,8 @@ def calibrate(elf: str, wire: str, words: int, cpu_hz: int, model: Model, config
     print(f"\n  cycles per bit = {intercept:.2f} + {slope:.2f} * delay iterations per bit")
     print(f"  measured DELAY_SLOW_CYCLES {slope:.1f} against the {slow_cycles} built in")
     print(f"  measured IO_PORT_WRITE_CYCLES {intercept / 2:.1f} against the {io_cycles} built in")
-    print("  the intercept also carries the per-word bookkeeping, so read it as an upper bound")
+    print("  a transfer costs more per bit than this: it also pays for the acknowledge, the")
+    print("  turnaround and the bookkeeping, none of which the clock arithmetic is about")
     return 0
 
 
@@ -561,7 +603,7 @@ def main() -> int:
         clock_hz = int(mhz * 1e6)
         print(f"\n{mhz:g} MHz requested")
         for label, read in (("read", True), ("write", False)):
-            counts, _ = measure(args.elf, args.wire, clock_hz, args.words, read)
+            counts, _ = measure(args.elf, args.wire, clock_hz, args.words, read, model)
             report(label, counts, model, clock_hz, cpu_hz, args.words)
             if args.trace:
                 os.makedirs(args.trace, exist_ok=True)

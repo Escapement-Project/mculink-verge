@@ -74,6 +74,19 @@ set_source_files_properties(${DAP_SRC}/JTAG_DP.c PROPERTIES COMPILE_DEFINITIONS
   "JTAG_Sequence=jtag4_Sequence;JTAG_IR=jtag4_IR;JTAG_ReadIDCode=jtag4_ReadIDCode;JTAG_WriteAbort=jtag4_WriteAbort;JTAG_Transfer=jtag4_Transfer"
   )
 
+# Unroll the bit paths. ARM unrolls the packet phases of a transfer by hand but leaves the 32-bit
+# data phases as loops, so the data bits carry a loop branch and an induction variable that the
+# packet bits do not: measured on the emulator, 22 cycles a bit against 16 at the same setting.
+# Only these three files, because unrolling anything else is flash spent for nothing.
+set_source_files_properties(
+  ${DAP_SRC}/SW_DP.c ${DAP_SRC}/JTAG_DP.c
+  PROPERTIES COMPILE_OPTIONS "${UPSTREAM_RELAX};-funroll-loops"
+  )
+set_source_files_properties(
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp.c
+  PROPERTIES COMPILE_OPTIONS "-funroll-loops"
+  )
+
 target_include_directories(${PROJECT_NAME} PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${CMAKE_CURRENT_SOURCE_DIR}/external/CMSIS-DAP/Firmware/Include
