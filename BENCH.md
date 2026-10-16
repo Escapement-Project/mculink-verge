@@ -23,10 +23,17 @@ at 612, against stock's 473 and 501: 1.26x and 1.22x. The wire is 92% of a block
 block command itself is as efficient as a raw CMSIS-DAP script's, so what is left belongs to the
 host rather than the probe.
 
-**Nothing on the JTAG or two-pin paths has been measured on hardware**, because neither target
-here can do JTAG: the MSPM0L1306 is a Cortex-M0+ and SWD only. The SRAM move and the clock-delay
-hint are in and pass the emulator, and that is all anyone knows about them. The next section is
-the bench that fixes that.
+**Two-pin works on hardware, 2026-10-17.** On a CC1312R1 LaunchPad our probe reads the ICEPick
+IDCODE and, through the ICEPick's routing, the Cortex-M4's CPUID over TCKC and TMSC alone, with
+TDI and TDO flat. Block reads of the boot ROM are correct from 1 to 25 MHz requested and fail at
+37.5. The host drives the J-Link's activation with standard commands and vendor `0x83 0x02`
+turns on our framing; the firmware's own activation (`0x83 0x01`, OpenOCD's) is for adapters
+that power up offline and does not work on this part. The wire rules and the generator plan
+are in `CJTAGGEN.md`. Four-wire JTAG is still
+unmeasured on hardware.
+
+**nRESET reaches targets since c62226b.** Before it, the reset buffer's direction pin sat in I2C
+open-drain mode, so no reset from this firmware ever reached a target.
 
 The onboard LED is done and checked by eye: see "The LED: a timer's job" below. The probe also
 reads the target's supply and J6 pin 9's detect line now: `tools/dap.py target`, measured in all
@@ -37,6 +44,8 @@ three states under "The probe can measure the target" below.
 our probe, D3 our J8 marker, D4-D6 stock's. The JTAG plan below moves it.
 
 ## Next session: cJTAG on the CC13xx, then four-wire through it
+
+**Done 2026-10-17 for two-pin; see the top of this file.**
 
 **Decided 2026-10-16: two-pin first, on the CC13xx boards.** The pair is already instrumented, and
 the J-Link is a known-good probe on the same wires, so every capture of ours has a working one to
