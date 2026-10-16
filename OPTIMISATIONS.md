@@ -496,12 +496,19 @@ instead.
 Predicts most of the difference between a 73-cycle gap and a 46-cycle one, which is around 15% of
 a two-pin block.
 
-One attempt is already recorded as useless: `-finline-limit=2000` on the two cJTAG translation
-units produces a **byte-identical image**, because link-time optimisation makes the inlining
-decision at link time and never sees a per-file compile flag. The route that can work is an
-attribute rather than a flag -- `__attribute__((flatten))` on the two-pin block functions, which
-means parameterising `JTAG_BLOCK_FUNCTION` so only those two get it. Watch the flash: there are two
-copies, paced and not, and the transfer is the large one.
+Two attempts, and the flash is why neither landed.
+
+`-finline-limit=2000` on the two cJTAG translation units produces a **byte-identical image**:
+link-time optimisation decides inlining at link time and never sees a per-file compile flag.
+
+`__attribute__((flatten))` on the block function does work, and was measured on the paced copy
+alone: **+1.9% and +2.3% at 10 MHz, +0.2% and +3.9% at 50, for 64,564 more bytes.** That is 59%
+more image for at most 4% of the slowest wire, and `flatten` is why -- it inlines transitively,
+not just the transfer. The surgical version would be `always_inline` on the transfer only, and
+that transfer is ARM's `JTAG_DP.c`, compiled unchanged three times.
+
+So the 27 cycles are real and reachable, and nothing cheap reaches them. Same shape as the
+`DAP_Transfer` rewrite above: correct, measured, and rejected on flash.
 
 ### 6. The buffer direction pin toggles every cJTAG frame
 
