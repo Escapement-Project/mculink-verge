@@ -16,6 +16,7 @@ that this firmware has never actually touched.
 """
 
 import argparse
+import re
 import struct
 import subprocess
 import sys
@@ -155,6 +156,69 @@ def check_serial(c: Checker, elf: str, uuid: bytes, expect_prefix: str, uniform:
     c.note(f"{'uniform' if uniform else 'programmed'} unique id -> {text!r}")
 
 
+# Every standard command the firmware answers, with operands chosen to be harmless: no pin waits, no
+# resets that go anywhere. What is being checked is that the firmware answers at all.
+#
+# DAP_Delay is asked for zero on purpose. ARM's delay takes its argument as a count and decrements
+# before testing, so zero counts down from 2^32: about ninety seconds at 144 MHz with the probe
+# answering nothing. src/dap_dispatch.c answers it directly, and this is what checks that.
+DAP_COMMANDS = {
+    0x00: b"\xf0",  # Info, vendor name
+    0x01: b"\x00",  # HostStatus
+    0x02: b"\x01",  # Connect, SWD
+    0x03: b"",  # Disconnect
+    0x04: b"\x00\x02\x00\x00\x00",  # TransferConfig
+    0x05: b"\x00\x00",  # Transfer, no transfers
+    0x06: b"\x00\x00\x00\x00",  # TransferBlock, no words
+    0x08: b"\x00\x00\x00\x00",  # WriteABORT
+    0x09: b"\x00\x00",  # Delay, none
+    0x0A: b"",  # ResetTarget
+    0x10: b"\x00\x00\x00\x00\x00\x00",  # SWJ_Pins, no wait
+    0x11: b"\x40\x42\x0f\x00",  # SWJ_Clock, 1 MHz
+    0x12: b"\x08\xa5",  # SWJ_Sequence
+    0x13: b"\x00",  # SWD_Configure
+    0x14: b"\x01\x08\xa5",  # JTAG_Sequence
+    0x15: b"\x01\x04",  # JTAG_Configure
+    0x16: b"\x00",  # JTAG_IDCODE
+    0x17: b"\x01",  # SWO_Transport
+    0x18: b"\x01",  # SWO_Mode
+    0x19: b"\x00\xc2\x01\x00",  # SWO_Baudrate
+    0x1A: b"\x00",  # SWO_Control
+    0x1B: b"",  # SWO_Status
+    0x1C: b"\x00\x01",  # SWO_Data
+    0x1D: b"\x01\x08\xa5",  # SWD_Sequence
+    0x1E: b"\x00\x01",  # SWO_ExtendedStatus
+    0x7F: b"\x01\x00\xf0",  # ExecuteCommands, one Info
+    0x82: b"",  # our CJTAG_INFO
+    0x83: b"\x00",  # our CJTAG_CONTROL, off
+}
+ID_DAP_INVALID = 0xFF
+
+
+def check_commands(c: Checker, elf: str) -> None:
+    """Every command in the parity table has to answer. The claim is that none is a downgrade."""
+    probe = Machine(elf, Target([0] * 64), restart_at=set(), model=Model())
+    answered = 0
+    for cmd, operands in DAP_COMMANDS.items():
+        reply = probe.command(bytes([cmd]) + operands)
+        if not reply:
+            c.problems.append(f"command {cmd:#04x} returned nothing")
+        elif reply[0] == ID_DAP_INVALID:
+            c.problems.append(f"command {cmd:#04x} answered ID_DAP_Invalid")
+        elif reply[0] != cmd:
+            c.problems.append(f"command {cmd:#04x} echoed {reply[0]:#04x}")
+        else:
+            answered += 1
+    # Anything we do not implement has to say so rather than echo itself back.
+    for cmd in (0x07, 0x84, 0x9F):
+        reply = probe.command(bytes([cmd, 0, 0, 0]))
+        if cmd == 0x07:
+            continue  # TransferAbort is handled out of band and answers nothing
+        if not reply or reply[0] != ID_DAP_INVALID:
+            c.problems.append(f"command {cmd:#04x} should answer ID_DAP_Invalid")
+    c.note(f"{answered} of {len(DAP_COMMANDS)} commands answered, unimplemented ids rejected")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("elf", nargs="?", default="build/mculink_cjtag.elf")
@@ -175,6 +239,7 @@ def main() -> int:
         check_bos(c, _read_at(args.elf, *sym["desc_bos"]), ms_os[1])
     else:
         c.note("the MS OS 2.0 descriptor was folded away; its length not cross-checked")
+    check_commands(c, args.elf)
     check_serial(c, args.elf, bytes(range(1, 17)), args.prefix)
     check_serial(c, args.elf, b"\xff" * 16, args.prefix, uniform=True)
 
@@ -189,20 +254,34 @@ def main() -> int:
 
 
 def _read_at(elf: str, addr: int, size: int) -> bytes:
-    """The bytes a symbol occupies, read out of the image."""
+    """The bytes a symbol occupies, read out of the image.
+
+    Two things to get right. `objdump -s` dumps every section that covers the range, and the debug
+    sections overlap, so take only the one the descriptors live in. And each line ends with an
+    ASCII rendering that can itself look like hex, so cap the groups taken per line at four.
+    """
     out = subprocess.run(
-        ["arm-none-eabi-objdump", "-s", f"--start-address={addr}", f"--stop-address={addr + size}", elf],
+        [
+            "arm-none-eabi-objdump",
+            "-s",
+            "-j",
+            ".text",
+            f"--start-address={addr}",
+            f"--stop-address={addr + size}",
+            elf,
+        ],
         capture_output=True,
         text=True,
         check=True,
     ).stdout
     data = bytearray()
     for line in out.splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and all(ch in "0123456789abcdef" for ch in parts[0]):
-            for group in parts[1:5]:
-                if all(ch in "0123456789abcdef" for ch in group):
-                    data += bytes.fromhex(group)
+        m = re.match(r"^\s*[0-9a-f]+ ((?:[0-9a-f]{2,8} ?){1,4})", line)
+        if not m:
+            continue
+        for group in m.group(1).split():
+            if len(group) % 2 == 0:
+                data += bytes.fromhex(group)
     return bytes(data[:size])
 
 

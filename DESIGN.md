@@ -241,7 +241,14 @@ These are ARM's standard commands, which its reference answers:
 0x1E SWO_ExtendedStatus
 ```
 
-plus `0x7F ExecuteCommands`. **Our build has to answer all of these or it is a downgrade.**
+plus `0x7F ExecuteCommands`. **Our build has to answer all of these or it is a downgrade**, and
+`tools/descriptors.py` now checks it: all 28 commands answer with their own id, and an id we do
+not implement answers `ID_DAP_Invalid` rather than echoing itself.
+
+One of them used to hang. `DAP_Delay` takes a count and ARM's pacing loop decrements before it
+tests, so a zero microsecond delay counts down from 2^32: about ninety seconds with the probe
+answering nothing. It is a legal request, and probe-rs not sending one is the only reason it has
+never been seen. `src/dap_dispatch.c` answers it directly.
 
 
 ### Stock's own vendor commands

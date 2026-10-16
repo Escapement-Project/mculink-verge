@@ -445,6 +445,11 @@ class Machine:
         # inline away.
         entry = "DAP_ExecuteCommand" if "DAP_ExecuteCommand" in self.sym else "DAP_ProcessCommand"
         produced = self.call(entry, SCRATCH, SCRATCH + 0x400) & 0xFFFF
+        if produced > 0x400:
+            # A reply that long means the call did not finish: the usual cause is a pacing loop
+            # counting down from zero, which takes about a minute of emulated time and leaves a
+            # register holding whatever it held.
+            raise SystemExit(f"{entry} returned a {produced}-byte reply, which means it never returned")
         return bytes(self.uc.mem_read(SCRATCH + 0x400, max(produced, 1)))
 
     def begin(self):

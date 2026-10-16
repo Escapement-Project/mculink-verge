@@ -31,6 +31,15 @@
 extern uint32_t arm_DAP_ProcessCommand(const uint8_t* request, uint8_t* response);
 
 uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* response) {
+    if ((*request == ID_DAP_Delay) && (request[1] == 0U) && (request[2] == 0U)) {
+        // ARM's pacing loop decrements before it tests, so a count of zero runs 2^32 times:
+        // about ninety seconds with the probe answering nothing and the host waiting. A zero
+        // microsecond delay is a legal request, and probe-rs being careful not to send one is
+        // the only reason this has never been seen.
+        response[0] = *request;
+        response[1] = DAP_OK;
+        return (3U << 16) | 2U;
+    }
     if (*request == ID_DAP_TransferBlock) {
         if (DAP_Data.debug_port == DAP_PORT_SWD) {
             *response = *request;
