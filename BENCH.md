@@ -49,6 +49,21 @@ load. That is why a target hung off it stayed unpowered. So power the U585 from 
 wire pin 1 to its VDD. With pin 1 unwired the shifters have no reference, and the probe drives
 nothing at all.
 
+**The probe can measure the target, and tell an empty connector from a dead target.** The buffered
+level goes through a 2K/2K divider (R22/R23) to `DBGIF_VREF`, an analog input on PIO0_31, so the
+MCU reads half the target voltage. The buffer exists so the divider's ~0.8 mA comes from the probe
+and not the target. J6 pin 9 is `IF_DETECT`, through 2K to `DBGIF_DETECT` on PIO0_22, which needs
+the MCU's pull-up. A target connector that grounds pin 9 pulls it low. Together:
+
+| state | `DBGIF_VREF` | `DBGIF_DETECT` |
+| --- | --- | --- |
+| nothing connected | ~3.3 V, through R16 | high |
+| target connected and powered | the target's VDD | low |
+| target connected and unpowered | ~0 V: R16 cannot lift a dead rail | low |
+
+A 3.3 V target and an empty connector read the same voltage, so presence comes from pin 9 alone.
+**Ground pin 9 in the harness**, or the detect pin says nothing. Our firmware reads neither pin.
+
 **Make the swap one connector.** One harness stays on the target and only its J6 end moves
 between probes, so both are measured through the same wires.
 
