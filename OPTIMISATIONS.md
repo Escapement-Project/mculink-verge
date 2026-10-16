@@ -102,14 +102,15 @@ its bit cost is lopsided -- 1,344 bits at 9 cycles where the read has 2,866 at 7
 The driven bit is nine instructions against the sampled bit's six. The clock stores and the
 buffer-direction store are common to both. What the write adds is masking the data bit out of the
 word, inverting it for the nTDI packet, and one more store. The mask and the inversion are the
-frame format. The extra store is not: `PIN_TDI_OUT` is shadowed to `staged_tdi = bit`, a file
-static that the frame reads back as an argument, so every driven bit goes out to memory and comes
-back. A static is what the shadow needs, because a macro cannot introduce a local.
+frame format. The extra store goes to `staged_tdi`, the file static
+`PIN_TDI_OUT` is shadowed to, which the frame reads back.
 
-Predicts about 2.6% on two-pin writes, from 1,344 of the 52,109 instructions a block runs. Giving
-the enclosing functions a local of that name would do it, at the cost of every one of them having
-to declare it. It is also the setting with no pacing margin to begin with, so measure the period
-distribution before changing anything there.
+**Whether that store can go is unproven.** The static is file-local and its address never escapes,
+so nothing forces it to memory: it is the register allocator spilling under the same pressure that
+spills the block loop's own state, and a local would spill to the stack just as readily. It is
+1,344 of the 52,109 instructions a block runs, so about 2.6% is the most it could be worth, and
+only if the spill can be avoided at all. Measure before believing it. It is also the setting with
+no pacing margin to begin with, so measure the period distribution before changing anything there.
 
 ## Done
 
