@@ -229,7 +229,7 @@ keeps driving the wire otherwise, and releasing the wire is the whole of OScan1.
 | `uv run tools/cycles.py` | cycles per bit by emulation. `--table` prints the rate for every clock a host can ask for; `--calibrate` solves the cost model from a measured period |
 | `uv run tools/window.py` | disassembles the gap that repeats once a word |
 | `uv run tools/image.py` | what the image says about itself: descriptors, clocks, commands, reply bounds, serial |
-| `uv run tools/equiv.py <ref> <new>` | 1,212 differential cases against a reference build |
+| `uv run tools/equiv.py <ref> <new>` | 1,212 differential cases against a reference build, or one toolchain against the other |
 | `uv run tools/dap.py j8` | drives the four-pin header beside the MCU. `--walk` names the pads |
 | `uv run tools/dap.py limit` | every achievable wire rate, checking the data at each |
 | `uv run tools/dap.py reboot --bootloader` | into ISP mode with no jumper and no hands |
@@ -714,6 +714,37 @@ bookkeeping, so the exchange rate is bad.
 
 End to end the two changes took a 64-word block read from 585 to 602 KiB/s, and the wire from
 343.6 to 330.4 us.
+
+### gcc against clang, same source, same hardware
+
+`-DTOOLCHAIN=clang` builds and passes the whole gate, and `tools/equiv.py` says the two images are
+identical on the wire across all 852 cases. So the difference is codegen alone.
+
+| | gcc | clang |
+| --- | --- | --- |
+| data bit | 15.119 cycles | 15.899 |
+| clock 7, turnaround | 20.03 | 19.02 |
+| clock 11, turnaround | 20.07 | 22.07 |
+| clock 44, parity | 42.10 | **18.95** |
+| clock 45, bookkeeping | 52.48 | 64.41 |
+| the four together, over a 15-cycle baseline | 74.7 | **64.5** |
+| wire a block | 330.01 us | 335.10 us |
+| end to end | 602 KiB/s | 580 KiB/s |
+| image | 238 KB | 166 KB |
+
+**gcc wins the data phase and clang wins the bookkeeping.** gcc's bit is 0.78 cycles cheaper,
+which over 32 bits is 25 cycles and decides the result. Clang's four overhead clocks are 10 cycles
+cheaper, and **clock 44 is 23 cycles cheaper**, which is the largest single difference anywhere
+and the clearest lead left: gcc spends 42 cycles on the parity bit where clang spends 19.
+
+One hint already closed a larger gap. `PIN_DELAY` expanded to a read of `DAP_Data.clock_delay`, so
+the paced copies loaded it twice a bit. GCC hoists that into a register by itself and clang did
+not, costing clang two cycles on every bit. Naming it in a local took clang's modelled SWD read
+from 653 to 783 KiB/s and left gcc's output unchanged.
+
+**The emulator ranked these the wrong way round.** It put clang ahead at 783 against gcc's 767,
+and hardware puts gcc ahead. Same blind spot as the rejected peel: it counts instructions, and
+whatever makes clang's data bit 0.78 cycles dearer is not in the count.
 
 ## What the bench has sized, and what is left
 
