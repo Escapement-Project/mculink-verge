@@ -325,6 +325,9 @@ Captures: `mculink-swd-clock-*.sal`.
 
 ## Next steps
 
+**`BENCH.md` is the ordered plan and the reference to have open during the session.** What follows
+is the summary.
+
 1. Flash and enumerate. Nothing has run on hardware. Until it does, every line of this is theory
    or emulation, and the UUID read above is the line most likely to stop the device appearing at
    all.

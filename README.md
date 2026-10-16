@@ -98,6 +98,8 @@ would notice.
 - `DESIGN.md` -- why this exists, the pin map, and the open risks.
 - `OPTIMISATIONS.md` -- what was done for throughput, what was tried and rejected with its numbers,
   and what is left.
+- `BENCH.md` -- the reference to keep open at the bench, and the ordered plan for the first
+  session: what to test, in what order, and what each result unlocks.
 - `PACING.md` -- how the wire clock is paced, traced through the source, and the three things wrong
   with it: four-wire JTAG runs fast, the two-pin path has no margin, and the achievable rate goes
   up in steps with a gap between 13 and 29 MHz.
