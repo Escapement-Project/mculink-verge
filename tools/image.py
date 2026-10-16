@@ -200,6 +200,48 @@ DAP_COMMANDS = {
 ID_DAP_INVALID = 0xFF
 
 
+def nxp_baudrate(src: int, want: int) -> tuple[int, int, bool]:
+    """NXP's USART_SetBaudRate search, transcribed: oversampling 15 down to 4, 3% allowed error.
+
+    It refuses a rate it cannot reach, and SWO.c clamps every request down to the configured
+    maximum before asking, so a maximum the part cannot produce fails every request at or above
+    it -- including rates the part can hit exactly.
+    """
+    best_diff, best_osr, best_brg = 1 << 32, 0xF, (1 << 32) - 1
+    allowed = (want // 100) * 3
+    for osr in range(0xF, 3, -1):
+        if osr <= 8 and best_diff <= allowed:
+            break
+        brg = (((src * 10) // ((osr + 1) * want)) - 5) // 10
+        if brg > 0xFFFF:
+            continue
+        actual = src // ((osr + 1) * (brg + 1))
+        diff = abs(actual - want)
+        if diff < best_diff:
+            best_diff, best_osr, best_brg = diff, osr, brg
+    actual = src // ((best_osr + 1) * (best_brg + 1))
+    return actual, best_osr, best_diff <= allowed
+
+
+def check_swo_baudrate(c: Checker, config: str, clock: int) -> None:
+    m = re.search(r"^#define\s+SWO_UART_MAX_BAUDRATE\s+(\d+)U?", open(config).read(), re.M)
+    if not m:
+        c.note("SWO_UART_MAX_BAUDRATE not found; the SWO rate not checked")
+        return
+    want = int(m.group(1))
+    actual, osr, ok = nxp_baudrate(clock, want)
+    c.check(
+        ok,
+        f"SWO's maximum of {want} Hz is {abs(actual - want) / want * 100:.2f}% from anything a"
+        f" {clock // 1_000_000} MHz Flexcomm can produce, so every request at or above it fails",
+    )
+    c.check(osr >= 8, f"SWO's maximum needs an oversampling ratio of {osr + 1}, below NXP's own floor")
+    c.note(
+        f"SWO maximum {want / 1e6:g} MHz -> {actual / 1e6:g} MHz,"
+        f" {'within' if ok else 'outside'} the driver's 3%, oversampling {osr + 1}"
+    )
+
+
 def check_commands(c: Checker, elf: str) -> None:
     """Every command in COMMANDS has to answer. The claim is that none is a downgrade.
 
@@ -316,6 +358,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("elf", nargs="?", default="build/mculink_cjtag.elf")
     ap.add_argument("--prefix", default="CJ", help="what the serial should start with")
+    ap.add_argument("--config", default="src/DAP_config.h")
     ap.add_argument("--packet-size", type=int, default=512)
     ap.add_argument("--packet-count", type=int, default=8)
     args = ap.parse_args()
@@ -336,6 +379,7 @@ def main() -> int:
         c.note("the MS OS 2.0 descriptor was folded away; its length not cross-checked")
     check_commands(c, args.elf)
     check_clocks(c, args.elf)
+    check_swo_baudrate(c, args.config, 96_000_000)
     check_info(c, args.elf, args.packet_size, args.packet_count)
     check_serial(c, args.elf, bytes(range(1, 17)), args.prefix)
     check_serial(c, args.elf, b"\xff" * 16, args.prefix, uniform=True)

@@ -108,7 +108,12 @@ This information includes:
 #define SWO_UART_DRIVER         3               ///< USART Driver instance number (Driver_USART#).
 
 /// Maximum SWO UART Baudrate.
-#define SWO_UART_MAX_BAUDRATE   9000000U        ///< SWO UART Maximum Baudrate in Hz.
+/// 8 MHz, not ARM's 9. SWO.c clamps any request down to this and then asks NXP's driver for it,
+/// and the driver refuses a rate it cannot reach within 3%. From a 96 MHz Flexcomm the closest to
+/// 9 MHz is 8.727 MHz, which is 3.03% out, so every request at or above 9 MHz failed and took
+/// rates the part can hit exactly down with it. 8 MHz is exact, at an oversampling ratio of 12
+/// that keeps the sampling point where NXP wants it.
+#define SWO_UART_MAX_BAUDRATE   8000000U        ///< SWO UART Maximum Baudrate in Hz.
 
 /// Indicate that Manchester Serial Wire Output (SWO) trace is available.
 /// This information is returned by the command \ref DAP_Info as part of <b>Capabilities</b>.

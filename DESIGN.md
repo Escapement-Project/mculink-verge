@@ -317,8 +317,13 @@ Captures: `mculink-swd-clock-*.sal`.
    whether stock maps CDC line state to anything.
    **SWO is a bench item too**: its four commands answer in emulation only because the Flexcomm
    has no clock and NXP's driver returns early, and with a clock the driver waits on a status bit
-   no register model sets. Nothing here says SWO works, and the 9 MHz in `SWO_UART_MAX_BAUDRATE`
-   has never been checked against what a 96 MHz Flexcomm can divide to.
+   no register model sets. Nothing here says SWO works.
+
+   One thing about it is settled. `SWO_UART_MAX_BAUDRATE` was ARM's 9 MHz, SWO.c clamps every
+   request down to it, and NXP's driver refuses a rate it cannot reach within 3%: from a 96 MHz
+   Flexcomm the closest to 9 MHz is 8.727 MHz, 3.03% out. So **every SWO request at or above
+   9 MHz would have failed**, taking 12 MHz with it, which the part hits exactly. It is 8 MHz
+   now, which is exact at an oversampling ratio of 12.
 4. Then, and only then, throughput, starting with the clock calibration.
 
 ### Open questions
