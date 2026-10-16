@@ -701,6 +701,33 @@ the middle at that setting, and keep about two cycles either side even at the de
 five-cycle period. How much room there is past the edge depends on the target's round trip, which
 was 15 ns here and which a closer or faster target shortens.
 
+**Sampling after the edge fixes the 16.67 MHz setting (`6072ae9`, option `SWD_SAMPLE_AFTER_EDGE`,
+off by default).** The delayed path samples one instruction after its rising-edge store, with
+each transfer masked. The delay-free path is unchanged, because with no delay its low phase
+would shrink to a cycle. A build with the option names itself `+after-edge`.
+
+| | default | after-edge |
+| --- | --- | --- |
+| block-size test at 16.67 MHz, 200 runs a size | the last read fails every time | all whole |
+| `DAP_Transfer` at 16.67 MHz | 19,200 clean | 19,200 clean |
+| `dap.py limit` | clean to 10.00 | clean to 16.67; 128,000 reads at each of 16.67 and 10 |
+| block read, 126 words, depth 2, 16.67 MHz | fails | 973 KiB/s |
+| block read, same, 10 MHz, two rounds of three, alternated | 701.6-701.8 | 697.9-698.0 |
+
+The 0.53% at 10 MHz is about four cycles a transfer, which is what saving, setting and
+restoring PRIMASK costs. In `cycles.py --check` every SWD trace keeps its event count, and the
+only change is that each sample now follows a rising edge rather than a falling one. Turning
+the option on by default means re-blessing those five traces.
+
+**What holds it back from the default.** A transfer stays masked for its whole length: 3 us at
+16.67 MHz, 46 us at 1 MHz, longer below. SWO receives by interrupt into a 16-entry FIFO
+(`RTE_USART3_DMA_EN 0`), which fills in about 20 us at its 8 MHz maximum. So SWO streamed fast
+alongside slow SWD would drop bytes, where today it does not. VCOM is polled from the main loop
+and is not affected. The right shape is after the edge with a mask at the fast settings and
+before the edge, unmasked, at the slow ones. That is a second copy of the delayed path, and as
+unrolled C it does not fit in SRAM. Generating the bit paths makes it free, and
+modelling the pin round trip in `cycles.py` comes first.
+
 Four-wire JTAG reads TDO, which changes on the falling edge, before the rising one: half a period
 rather than a whole one.
 
