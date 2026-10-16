@@ -1082,6 +1082,11 @@ blinking and lit and says which is due.
 
 ## What the bench has sized, and what is left
 
+- **MCU-Link Pro support.** Stock runs one image on every LPC55S69 MCU-Link, the Pro
+  included, and picks features at runtime.
+  The goal is one faster image for both boards, with the Pro's extras (second VCOM, SPI/I2C/GPIO
+  bridge, power measurement, target supply) reachable from probe-rs rather than only from
+  MCUXpresso IDE.
 - **Running the bit paths from SRAM.** Done; it was the biggest item there was and it doubled the
   block read. It needed no linker script of our own: `.ramfunc` is already in the board support's
   script and already copied by its startup code, which the earlier note here got wrong.
