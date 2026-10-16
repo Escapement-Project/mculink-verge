@@ -664,7 +664,15 @@ def cmd_block(args) -> int:
     idcode = swd_reset(probe)
     print(f"  DPIDR 0x{idcode:08x}")
     request = 0x0E if args.register == "rdbuff" else 0x02
-    payload = bytes([DAP_TRANSFER_BLOCK, 0]) + args.words.to_bytes(2, "little") + bytes([request])
+    if args.command == "transfer":
+        # The same reads as DAP_Transfer, one request byte each, which is what a host sends for
+        # a run too short for a block of its own.
+        if args.words > 127 or args.queue:
+            print("  DAP_Transfer: at most 127 words, and no --queue")
+            return 2
+        payload = bytes([DAP_TRANSFER, 0, args.words]) + bytes([request]) * args.words
+    else:
+        payload = bytes([DAP_TRANSFER_BLOCK, 0]) + args.words.to_bytes(2, "little") + bytes([request])
     if args.queue:
         queued_blocks(probe, payload, args.blocks, args.queue, args.words)
         return 0
@@ -682,13 +690,17 @@ def cmd_block(args) -> int:
             sent += 1
         reply = bytes(probe.in_ep.read(probe.in_ep.wMaxPacketSize, 2000))
         done += 1
-        count = int.from_bytes(reply[1:3], "little")
-        if count != args.words or reply[3] != 1:
-            print(f"  stopped: block returned {count} words, ack {reply[3]}")
+        if args.command == "transfer":
+            count, ack = reply[1], reply[2]
+        else:
+            count, ack = int.from_bytes(reply[1:3], "little"), reply[3]
+        if count != args.words or ack != 1:
+            print(f"  stopped: {args.command} returned {count} words, ack {ack}")
             break
         words += count
     elapsed = time.perf_counter() - started
-    print(f"  {args.blocks} blocks x {args.words} words = {words} transfers in {elapsed * 1e3:.1f} ms")
+    print(f"  {args.blocks} commands x {args.words} words = {words} transfers in {elapsed * 1e3:.1f} ms,"
+          f" {elapsed / args.blocks * 1e6:.1f} us each")
     print(f"  {words * 4 / elapsed / 1024:.1f} KiB/s end to end, including USB")
     probe.release()
     return 0
@@ -1041,6 +1053,8 @@ def main() -> int:
     block.add_argument("--words", type=int, default=64, help="transfers per block command")
     block.add_argument("--blocks", type=int, default=200)
     block.add_argument("--register", choices=("rdbuff", "dpidr"), default="rdbuff")
+    block.add_argument("--command", choices=("block", "transfer"), default="block",
+                       help="DAP_TransferBlock, or the same reads as one DAP_Transfer")
     block.add_argument("--pipeline", type=int, default=1,
                        help="commands to keep in flight; 1 waits for each reply before sending")
     block.add_argument("--queue", type=int, default=0,
