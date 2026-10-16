@@ -459,12 +459,7 @@ class Machine:
         self.uc.hook_add(UC_HOOK_CODE, self._code)
         # The firmware writes code into SRAMX at run time, and rewrites it when the clock changes.
         self.uc.hook_add(UC_HOOK_MEM_WRITE, self._code_written, None, SRAMX[0], SRAMX[0] + SRAMX[1] - 1)
-        if self.engine is not None:
-            # Only over plain memory. A memory hook that also covers the MMIO-mapped GPIO block
-            # changes what unicorn does there, and the JTAG path then takes a different branch;
-            # GPIO and the PPB report their own accesses to the engine anyway.
-            for base, size in (FLASH, SRAMX, SRAM, USB_RAM):
-                self.uc.hook_add(UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE, self._mem, None, base, base + size - 1)
+        self._mem_hooks = []
 
     def _code_written(self, uc, access, address, size, value, user):
         for at in range(address - 2, address + size):
@@ -766,7 +761,9 @@ class Machine:
             # A reply that long means the call did not finish: the usual cause is a pacing loop
             # counting down from zero, which takes about a minute of emulated time and leaves a
             # register holding whatever it held.
-            raise SystemExit(f"{entry} returned a {produced}-byte reply, which means it never returned")
+            raise SystemExit(
+                f"{entry} returned a {produced}-byte reply to {request[:8].hex()}, which means it never returned"
+            )
         return bytes(self.uc.mem_read(SCRATCH + 0x400, max(produced, 1)))
 
     def begin(self):
@@ -775,9 +772,22 @@ class Machine:
         self.counting = True
         if self.engine is not None:
             self.engine.reset()
+            # Only over plain memory. A memory hook that also covers the MMIO-mapped GPIO block
+            # changes what unicorn does there, and the JTAG path then takes a different branch;
+            # GPIO and the PPB report their own accesses to the engine anyway.
+            #
+            # And only while counting: unicorn 2.1.4 with a write hook over SRAM skips an
+            # instruction in a clang build's generator, which then never returns.
+            for base, size in (FLASH, SRAMX, SRAM, USB_RAM):
+                self._mem_hooks.append(
+                    self.uc.hook_add(UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE, self._mem, None, base, base + size - 1)
+                )
 
     def end(self) -> Counts:
         self.counting = False
+        for hook in self._mem_hooks:
+            self.uc.hook_del(hook)
+        self._mem_hooks = []
         if self.engine is not None:
             self.counts.span = self.cycle
         if isinstance(self.target, TimedSwdTarget):
