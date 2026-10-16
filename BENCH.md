@@ -419,55 +419,74 @@ predicted. `rblhost` read all 229,464 bytes back and they are identical to the b
 SWD works against the MSPM0L1306: RAM and flash read correctly, and the words match what a stock
 probe read from the same addresses. **It connects at 20 MHz, where stock does not.**
 
-### The transfer path is 1.5x slower than stock
+### The transfer path is half the speed of stock, and the flash is why
 
-Measured on the same target, at the same requested clock, through the same physical probe, with
-only the firmware differing. A 46-clock SWD read transfer, averaged over thousands:
+Measured with the same command on both probes, each against its own live target:
+`tools/dap.py block` reads a DP register with `DAP_TransferBlock` 3,840 times. Data-bit period,
+averaged over every transfer:
 
-| | data bit | spread |
-| --- | --- | --- |
-| stock | 146.7 ns = 22.00 cycles at 150 MHz | 146-147 ns, uniform |
-| ours | 229.9 ns = 33.10 cycles at 144 MHz | 139-377 ns, a fixed four-bit cycle |
-
-Stock holds one period for the whole data phase. Ours repeats **22, 20, 34, 54 cycles** and does
-it to within a few ns over 3,444 transfers. Our cheapest bits match stock; two of every four stall.
-
-### The emulator is about twice as optimistic as silicon
-
-`uv run tools/cycles.py --wire swd --clock N --words 64` against the wire:
-
-| asked | emulator | silicon | emulator wire | silicon wire |
+| asked | stock, 150 MHz core | ours, 144 MHz core | stock KiB/s | ours KiB/s |
 | --- | --- | --- | --- | --- |
-| 1 MHz | 150.95 cycles/clock | 161.66 | 0.95 MHz | 0.891 MHz |
-| 5 MHz | 36.95 | 47.60 | 3.90 MHz | 3.025 MHz |
-| 10 MHz | 18.95 | 37.64 | 7.60 MHz | 3.826 MHz |
-| 20 MHz | 12.95 | 24.54 | 11.12 MHz | 5.868 MHz |
+| 1 MHz | 160.0 cycles, every bit | 147, 147, 159, 171 | 77.2 | 71.7 |
+| 5 MHz | 40.0, every bit | 33, 33, 45, 57 | 290.8 | 221.3 |
+| 10 MHz | 22.0, every bit | 22, 20, 34, 54 | 494.3 | 269.4 |
+| 20 MHz | 16.0, every bit | 22, 16, 23, 23 | 640.0 | 382.5 |
 
-About eleven cycles per wire clock that the emulator does not model. It is nearly right at 1 MHz,
-where the delay loop dominates and hides the cost, and twice wrong at 10 and 20 MHz where it does
-not. **Every figure in `OPTIMISATIONS.md` is an emulator figure and inherits this.**
+Stock holds one period for the whole data phase, to the cycle, at every setting -- exactly
+`2 * (6 + PIN_DELAY_SLOW(delay))`, so its fixed cost is 6.0 cycles per half-bit and ARM's model
+describes it perfectly. **Ours repeats a four-bit cycle** and does it to within a few nanoseconds
+over thousands of transfers.
 
-### It is the flash, and that was the one item nobody could size
+Our best bit equals stock's. Two of every four stall.
 
-The emulator's own breakdown puts 65% of the transfer at a single 17-cycle period: the instruction
-stream is uniform and has no four-bit structure in it anywhere. The four-bit stall exists only on
-silicon, so it is not in the code -- it is the memory system fetching it.
+### It is the flash, and the stall is an exact number of wait states
 
-That is the item this document already listed as the one thing the emulator cannot model:
-10.7 KB of straight-line unrolled code sitting in flash behind a 144 MHz wait-state setting. It is
-now sized, and it is the largest single effect measured: **the unrolling that cost 120 KB of flash
-is losing to stock.** Stock's bit path keeps one period throughout;
-ours does not.
+Take each four-bit group's cheapest bit as the baseline and the extra cost is
 
-Two supporting observations. The penalty is a constant 12 and 24 cycles on two of every four bits
-at delay 25, 5 and 2, and nearly vanishes at delay 1 -- a fixed stall, not anything scaled by the
-delay. And our own `DAP_SWJ_Sequence`, which is ARM's compact loop rather than our unrolled code,
-runs its bits at 23.1 cycles where our unrolled transfer needs 33.1. **A tight loop beating the
-unrolled version by 30% is the signature.**
+| asked | extra cycles across the group |
+| --- | --- |
+| 1 MHz | 0.1, 0.0, **12.1**, **24.1** |
+| 5 MHz | 0.0, 0.1, **12.0**, **24.0** |
 
-Next step is to run the bit paths from SRAM, which needs a linker script of our own, and to
-re-measure with less unrolling. Until one of those happens, do not trust a ranking in
-`OPTIMISATIONS.md` that depends on cycles per bit.
+`CLOCK_SetFLASHAccessCyclesForFreq` puts 130-150 MHz in one bracket at **11 wait states**, so one
+flash access that the prefetcher did not cover costs 12 core cycles. The two slow bits in every
+group pay exactly one and exactly two of them.
+
+The emulator sees none of this: it puts 65% of the transfer at a single 17-cycle period and has no
+four-bit structure anywhere, so the instruction stream is uniform and the stalls are the memory
+system fetching it. Three things agree:
+
+- **Our own compact loop does not stall.** `DAP_SWJ_Sequence` is ARM's small loop rather than our
+  unrolled code, and in the same image on the same part at the same delay setting it clocks its
+  bits at 23.25 cycles, uniform to 0.02 ns, where our unrolled transfer needs 32.52 with the
+  pattern. Same flash, same wait states, different code size.
+- **Stock's loop does not stall either**, which is why its bits are exactly integer.
+- The penalty is a fixed 12 and 24 cycles whatever the delay, so it is not scaled by anything in
+  the pacing.
+
+**The unrolling is the cause.** It bought 10.7 KB of straight-line code per bit path and 120 KB of
+flash overall, and on this part the prefetcher cannot stay ahead of it. This is the item the rest
+of this document listed as the one thing the emulator could never size; it is now the largest
+effect measured, and it points the other way from every ranking in `OPTIMISATIONS.md`.
+
+The two things to try are running the bit paths from SRAM, which needs a linker script of our own,
+and simply unrolling less. Both are cheap. Neither can be ranked from emulation.
+
+### A free 4% that is being left on the table
+
+Our core runs at 144 MHz because TinyUSB's board file sets PLL0 to 150 MHz and then attaches
+**PLL1** at 144 to `MAIN_CLK`. The reason is two lines further down: `USB0CLKDIV` is 3 and
+`MAIN_CLK` feeds `USB0_CLK`, so 144/3 is exactly the 48 MHz the full-speed USB controller needs.
+150/3 would be 50.
+
+**We never use that controller.** `src/tusb_config.h` sets `BOARD_TUD_RHPORT` to 1, the high-speed
+port, whose PHY PLL is fed from the 16 MHz crystal rather than from `MAIN_CLK`, and the host
+controller is not enabled at all. So the constraint that picks 144 does not apply to this firmware,
+and 130-150 MHz is one wait-state bracket, so 150 MHz costs no extra flash cycles.
+
+Attaching PLL0 instead is worth 4.2% on every wire path. `POWER_SetVoltageForFreq` and
+`CLOCK_SetFLASHAccessCyclesForFreq` both need the new figure, and `CPU_CLOCK` in
+`src/DAP_config.h` with them. Untested -- it needs a build and a reflash.
 
 ### How to measure a bit path without a target getting in the way
 
