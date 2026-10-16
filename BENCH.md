@@ -733,9 +733,13 @@ identical on the wire across all 852 cases. So the difference is codegen alone.
 | image | 238 KB | 166 KB |
 
 **gcc wins the data phase and clang wins the bookkeeping.** gcc's bit is 0.78 cycles cheaper,
-which over 32 bits is 25 cycles and decides the result. Clang's four overhead clocks are 10 cycles
-cheaper, and **clock 44 is 23 cycles cheaper**, which is the largest single difference anywhere
-and the clearest lead left: gcc spends 42 cycles on the parity bit where clang spends 19.
+which over 32 bits is 25 cycles and decides the result.
+
+Clang's clock 44 looks like a 23-cycle lead and is not: it pays 12 of that back at clock 45, so
+the two together are 94.6 cycles for gcc against 83.4 for clang. The pair is one unit of work --
+the parity, the acknowledge check, the word store and the loop -- and the compilers divide it
+differently across the last two clocks. **10 cycles a word is the real difference**, and it is
+worth having, but reading clock 44 on its own overstates it by more than double.
 
 One hint already closed a larger gap. `PIN_DELAY` expanded to a read of `DAP_Data.clock_delay`, so
 the paced copies loaded it twice a bit. GCC hoists that into a register by itself and clang did
