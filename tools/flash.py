@@ -27,6 +27,7 @@ import glob
 import pathlib
 import subprocess
 import sys
+import time
 
 RBLHOST = pathlib.Path("/opt/linkserver/MCU-LINK/bin/rblhost")
 OBJCOPY = "arm-none-eabi-objcopy"
@@ -79,6 +80,52 @@ def check() -> int:
     return 0
 
 
+def wait_for(ids: tuple[str, str], seconds: float = 15.0) -> list[pathlib.Path]:
+    """Poll until something shows up as these ids, because enumeration is not instant."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        found = present(ids)
+        if found:
+            return found
+        time.sleep(0.25)
+    return []
+
+
+def cycle(elf: pathlib.Path, serial: str | None) -> int:
+    """Reboot a unit running ours into the bootloader, flash, reset, and say what came back.
+
+    No jumper and no hands: vendor 0x85 asks for the ROM bootloader, and the ROM clears the boot
+    mode on entry so `rblhost reset` returns the unit to its firmware rather than to the
+    bootloader again. The jumper stays the only route for a unit running stock, and for recovering
+    an image that will not enumerate.
+    """
+    sys.path.insert(0, str(pathlib.Path(__file__).parent))
+    import dap  # noqa: PLC0415
+
+    probes = [p for p in dap.find() if serial is None or p.serial == serial]
+    if len(probes) != 1:
+        names = ", ".join(p.serial for p in dap.find())
+        sys.exit(f"need exactly one probe to reflash; attached: {names or 'none'}. Use --serial")
+    probe = probes[0]
+    print(f"{probe.serial}: asking for the ROM bootloader")
+    reply = probe.command(bytes([0x85, 1]))
+    probe.release()
+    if len(reply) < 2 or reply[0] != 0x85 or reply[1] != 0:
+        sys.exit(f"the probe refused to reboot: {reply.hex()}. Use the ISP jumper")
+
+    if not wait_for(ISP):
+        sys.exit("the unit never came back as 1fc9:0021. Use the ISP jumper")
+    if flash(elf) != 0:
+        return 1
+
+    print("resetting out of the bootloader")
+    rblhost("reset")
+    if not wait_for(PROBE):
+        sys.exit("the unit never came back as a probe. Fit the ISP jumper and flash by hand")
+    time.sleep(1.0)
+    return check()
+
+
 def rblhost(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(RBLHOST), "--usb", "0x1fc9,0x0021", *args],
@@ -92,6 +139,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--elf", type=pathlib.Path, default=pathlib.Path("build/mculink_cjtag.elf"))
     parser.add_argument("--check", action="store_true", help="report, flash nothing")
+    parser.add_argument("--cycle", action="store_true",
+                        help="reboot a unit already running ours, flash it, reset it: no jumper")
+    parser.add_argument("--serial", help="pick one unit when several are attached")
     args = parser.parse_args()
 
     if args.check:
@@ -102,6 +152,13 @@ def main() -> int:
     if not args.elf.exists():
         sys.exit(f"{args.elf} not found; build first")
 
+    if args.cycle:
+        return cycle(args.elf, args.serial)
+
+    return flash(args.elf)
+
+
+def flash(elf: pathlib.Path) -> int:
     waiting = present(ISP)
     if present(MINI_ISP):
         sys.exit("an MCU-Link mini is in ISP mode; this image is for the full MCU-Link")
@@ -115,20 +172,24 @@ def main() -> int:
         sys.exit(f"{len(waiting)} units in ISP mode ({names}); rblhost cannot tell them apart")
     port = waiting[0].name
 
-    srec = args.elf.with_suffix(".s19")
-    subprocess.run([OBJCOPY, "-O", "srec", str(args.elf), str(srec)], check=True)
+    srec = elf.with_suffix(".s19")
+    subprocess.run([OBJCOPY, "-O", "srec", str(elf), str(srec)], check=True)
     print(f"{port}: flashing {srec} ({srec.stat().st_size} bytes of S-record)")
 
-    answered = rblhost("get-property", "1")
-    if "Success." not in answered.stdout:
+    # The bootloader enumerates before it will answer, so this is a poll and not a single ask.
+    for _ in range(20):
+        answered = rblhost("get-property", "1")
+        if "Success." in answered.stdout:
+            break
+        time.sleep(0.5)
+    else:
         sys.exit(f"{port}: the ISP bootloader did not answer: {answered.stdout.strip()[-200:]}")
 
     done = rblhost("flash-image", str(srec), "erase", "0")
     if done.returncode != 0 or "completed successfully" not in done.stdout:
         sys.exit(f"{port}: rblhost exit {done.returncode}: {(done.stdout + done.stderr).strip()[-400:]}")
 
-    print(f"{port}: written. Unplug it, remove the ISP jumper, plug it back in.")
-    print("Then: uv run tools/flash.py --check")
+    print(f"{port}: written")
     return 0
 
 

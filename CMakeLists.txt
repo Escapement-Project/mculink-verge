@@ -136,6 +136,7 @@ if(MARKER)
   target_compile_definitions(${PROJECT_NAME} PRIVATE MARKER_PINS=1)
 endif()
 
+
 if(CORE_150MHZ)
   target_compile_definitions(${PROJECT_NAME} PRIVATE CORE_150MHZ=1)
   set(CORE_CLOCK_MHZ 150)

@@ -672,6 +672,38 @@ The fastest position is what a marginal target breaks on, so 10.72 MHz is the nu
 for the overshoot, not the 9.975 MHz average of the data phase. This supersedes the earlier 10.28 to
 10.30 MHz figure, which was the same effect measured without folding by position.
 
+### Rejected: peeling the last read out of the block loop
+
+The per-word bookkeeping is a real target and this was a real attempt at it. GCC re-derives five
+shifted request bits and spills them to the stack on every word, because the RDBUFF substitution
+test inside the loop is the only thing that can change `request_value` and leaving it there makes
+the whole packet request loop-variant. Peeling the last read out removes that. It passed the gate
+and all 1,212 differential cases.
+
+It also made the firmware slower, and the way it did is the useful part.
+
+| build | data bit | the four overhead clocks | wire a block |
+| --- | --- | --- | --- |
+| as shipped | 15.107 | 112.0 cycles | 343.55 us |
+| peeled | 16.139 | 87.2 | 348.84 us |
+| peeled, functions 16-byte aligned | 16.138 | 87.3 | 348.84 us |
+| reverted, functions 16-byte aligned | 15.106 | 112.1 | 343.61 us |
+
+The peel did exactly what it was for: 24.8 cycles off the bookkeeping, nearly all of it at clocks
+11, 44 and 45. **It cost one cycle on every one of the 32 data bits**, which is 32, so the
+transfer came out 12.2 cycles worse.
+
+**The data phase's instruction stream did not change.** Disassembling one data bit in each build
+gives the same eight instructions in the same order; only the registers differ. The emulator sees
+no change at all, and forcing the functions to a 16-byte boundary moved the result by 0.00 cycles,
+which rules alignment out. Whatever the extra cycle is, it is below the instruction stream and
+below anything a listing shows.
+
+**So the data phase is allocation-critical and the bookkeeping is not worth much against it.**
+There are 112 cycles a word in the four overhead clocks and 480 in the data phase, and a change
+that disturbs register allocation can spend 32 to save 25. Anything attempted here has to be
+flashed and folded by position; the gate and the emulator both pass a change that loses 1.5%.
+
 ## What the bench has sized, and what is left
 
 - **Running the bit paths from SRAM.** Done; it was the biggest item there was and it doubled the
@@ -682,7 +714,8 @@ for the overshoot, not the 9.975 MHz average of the data phase. This supersedes 
   than a third. It deviates from stock, so check pyOCD and OpenOCD before changing what `DAP_Info`
   reports.
 - **Clocks 44 and 45 of every transfer**, 51.9 and 66.1 cycles against a 15-cycle data bit. 89
-  extra cycles once per word, 12.9% of a transfer, and the largest measured target left.
+  extra cycles once per word and 12.9% of a transfer, but one attempt at them already came out
+  worse by disturbing the data phase. See the rejected change above before trying again.
 - **The two-pin and four-wire JTAG block paths are still in flash** and will have the same stall
   the SWD paths had. `cjtag_BlockImpl` and `cjtagf_BlockImpl` are 67 KB together, against 79 KB
   already in SRAM and 112 KB still free.
