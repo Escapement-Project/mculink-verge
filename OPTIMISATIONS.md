@@ -274,9 +274,16 @@ cycles, and the paths a block never reaches: a match value that hits, one that m
 its retries, and a timestamped transfer. All 300 are identical on the wire and in the reply, as
 are the gate's nine traces and the 828 block cases.
 
-What it costs is **56 KB**, taking the image from 108,772 bytes to 164,468. Half as much flash
-again, for 9% at a clock the bench has never reached and 3% at the ones it has. That is the only
-reason it is not here.
+What it costs is flash, and that is the only reason it is not here. Two versions were built:
+
+| inlined | text | 10 MHz read / write | 50 MHz read / write |
+| --- | --- | --- | --- |
+| none, as it ships | 108,772 | 561 / 599 | 1365 / 1611 |
+| the five per-word calls | 146,528 | +1% / +2% | +5% / +8% |
+| all ten calls | 164,468 | +3% / +3% | +9% / +9% |
+
+Half as much flash again for 9% at a clock the bench has never reached, or a third as much again
+for 5%. Neither is worth taking for the 1% to 3% available at the clocks it has.
 
 The recipe, because it is mechanical and worth redoing rather than rewriting. Extract
 `DAP_SWD_Transfer` from DAP.c, rename it, and change the one call it makes to the speed-specific
