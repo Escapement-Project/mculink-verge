@@ -21,6 +21,13 @@ bool cJTAG_Active(void);
  */
 void cJTAG_Activate(void);
 
+/** Mark the TAP as two-pin without driving any activation, for a host that has driven its own.
+ *
+ * Lowers the clock and takes the wire at the level it already holds, which is the state every
+ * frame starts from. Nothing else moves, so the target sees no edge it was not sent.
+ */
+void cJTAG_Enter(void);
+
 /** Return to four-wire JTAG without touching the wire.
  *
  * The target stays in OScan1; this only stops the probe framing for it. Getting the target back is

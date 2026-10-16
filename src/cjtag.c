@@ -34,6 +34,12 @@ void cJTAG_Activate(void) {
     active = true;
 }
 
+void cJTAG_Enter(void) {
+    PIN_SWCLK_TCK_CLR();
+    PIN_SWDIO_OUT_ENABLE();
+    active = true;
+}
+
 void cJTAG_Deactivate(void) { active = false; }
 
 /** Drive one TMSC packet: set the level while the clock is low, then clock it in.

@@ -308,8 +308,9 @@ answers only `0x80` and `0x81`, so anything above is free.
 | command | meaning |
 | --- | --- |
 | `0x82` | identify. Magic, format version, capability flags, build string. Stock answers a bare `82` with no payload, which is the discriminator. |
-| `0x83 0x01` | turn OScan1 framing on |
-| `0x83 0x00` | turn it off |
+| `0x83 0x01` | drive OpenOCD's activation, then frame as OScan1 |
+| `0x83 0x02` | frame as OScan1 after an activation the host drove; the CC13xx needs this one |
+| `0x83 0x00` | stop framing |
 
 `0x82` is read-only, so a host may send it blindly to any probe.
 
@@ -343,7 +344,8 @@ The vendor `0x82` reply, after the echoed id:
 ```
 [0..4]  "CJTAG"                magic
 [5]     format version         2
-[6]     capability flags       bit 0 OScan1 supported, bit 1 OScan1 active now
+[6]     capability flags       bit 0 OScan1 supported, bit 1 OScan1 active now,
+                               bit 2 target sense, bit 3 generated SWD, bit 4 0x83 mode 2
 [7]     build string length n
 [8..]   build string, n bytes, not terminated
 ```

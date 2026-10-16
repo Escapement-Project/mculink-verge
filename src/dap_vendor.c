@@ -69,6 +69,8 @@
 #define CJTAG_CAP_TARGET_SENSE (1U << 2)
 /// The SWD paths are generated at run time, and ID_VENDOR_SWD_GEN is implemented.
 #define CJTAG_CAP_SWD_CODEGEN (1U << 3)
+/// ID_VENDOR_CJTAG_CONTROL takes mode 2: framing on, with the activation left to the host.
+#define CJTAG_CAP_OSCAN1_ENTER (1U << 4)
 #ifdef SWD_CODEGEN
 #define CJTAG_CAPS_BUILT CJTAG_CAP_SWD_CODEGEN
 #else
@@ -124,7 +126,8 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         memcpy(out, CJTAG_INFO_MAGIC, sizeof(CJTAG_INFO_MAGIC) - 1U);
         out += sizeof(CJTAG_INFO_MAGIC) - 1U;
         *out++ = (uint8_t)CJTAG_INFO_VERSION;
-        *out++ = (uint8_t)(CJTAG_CAP_OSCAN1 | CJTAG_CAP_TARGET_SENSE | CJTAG_CAPS_BUILT |
+        *out++ = (uint8_t)(CJTAG_CAP_OSCAN1 | CJTAG_CAP_OSCAN1_ENTER | CJTAG_CAP_TARGET_SENSE |
+                           CJTAG_CAPS_BUILT |
                            (cJTAG_Active() ? CJTAG_CAP_OSCAN1_ACTIVE : 0U));
         // The same string DAP_Info's product firmware version reports, so a host that knows
         // nothing about this command can still tell two builds apart.
@@ -135,12 +138,24 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
     }
 
     case ID_VENDOR_CJTAG_CONTROL:
-        if (request[1] != 0U) {
-            cJTAG_Activate();
-        } else {
-            cJTAG_Deactivate();
-        }
+        // 0 returns to four-wire framing, 1 drives OpenOCD's activation and frames, 2 frames
+        // after an activation the host drove itself. A target whose adapter powers up online, as
+        // the CC13xx does, wants 2: OpenOCD's activation is for one that powers up offline.
         response[1] = DAP_OK;
+        switch (request[1]) {
+        case 0U:
+            cJTAG_Deactivate();
+            break;
+        case 1U:
+            cJTAG_Activate();
+            break;
+        case 2U:
+            cJTAG_Enter();
+            break;
+        default:
+            response[1] = DAP_ERROR;
+            break;
+        }
         return (2U << 16) | 2U; // the id and the mode byte in, the id and a status out
 
 #ifdef MARKER_PINS
