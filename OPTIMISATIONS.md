@@ -477,7 +477,33 @@ The firmware is already as fast as the request allows on its fastest bit.
 The gap between that and what a transfer actually averages is entirely items 1 and 2 -- the slow
 classes costing more than the fast one. There is no third thing.
 
-### 5. The buffer direction pin toggles every cJTAG frame
+### 5. The two-pin transfer is not inlined into its block loop
+
+**The best unclaimed item here, and it was invisible until `tools/window.py` existed.** The two-pin
+per-word gap is 73 cycles against SWD's 46, and the middle of it is this:
+
+```
+uxtb   r0, r0
+add    sp, #0x1c
+pop.w  {r4, r5, r6, r7, r8, sb, sl, fp, pc}
+```
+
+A nine-register epilogue and a return, once a word. `src/jtag_block.h` exists to pay that once a
+block, and it does for SWD and four-wire JTAG -- neither of their gaps contains a `pop`. The
+two-pin transfer is bigger, so the compiler declined to inline it and the block loop calls it
+instead.
+
+Predicts most of the difference between a 73-cycle gap and a 46-cycle one, which is around 15% of
+a two-pin block.
+
+One attempt is already recorded as useless: `-finline-limit=2000` on the two cJTAG translation
+units produces a **byte-identical image**, because link-time optimisation makes the inlining
+decision at link time and never sees a per-file compile flag. The route that can work is an
+attribute rather than a flag -- `__attribute__((flatten))` on the two-pin block functions, which
+means parameterising `JTAG_BLOCK_FUNCTION` so only those two get it. Watch the flash: there are two
+copies, paced and not, and the transfer is the large one.
+
+### 6. The buffer direction pin toggles every cJTAG frame
 
 `cJTAG_Frame` releases TMSC for the TDO packet and takes it back afterwards: four of the thirteen
 GPIO writes a frame makes. Both are needed for correctness, but a sequence that captures no TDO
@@ -489,7 +515,7 @@ Predicts: four writes a frame down to two on TDO-less sequences, most of a TAP w
 **Unproven and the riskiest item here.** If the target drives TDO regardless, not releasing means
 contention. Measure before keeping.
 
-### 6. DAP packet size above 512
+### 7. DAP packet size above 512
 
 512 is the USB 2.0 ceiling for a high-speed **bulk endpoint**, and it is not tunable. It is not the
 ceiling for a DAP packet: `DAP_Info` reports packet size as a 16-bit value, a bulk transfer spans as
@@ -506,7 +532,7 @@ Worth more once the wire is faster, since the same gap is a larger share of a sh
 Two caveats. It deviates from stock, which reports 512, so a host that hardcodes rather than reading
 `DAP_Info` would break: check pyOCD and OpenOCD first. And it costs RAM.
 
-### 7. Run the bit paths from SRAM
+### 8. Run the bit paths from SRAM
 
 Unrolling put another 10.7 KB into the straight-line bit paths, and they run from flash behind a
 144 MHz wait-state setting. The emulator has no flash model, so this is the one item here it cannot
