@@ -54,7 +54,7 @@
     PIN_SWCLK_SET();      \
     PIN_DELAY()
 
-#define PIN_DELAY() PIN_DELAY_SLOW(DAP_Data.clock_delay)
+#define PIN_DELAY() PIN_DELAY_SLOW(clock_delay)
 
 /** Shift one data bit to its own position in the word, so the or folds the shift in. */
 #define SW_READ_DATA_BIT(n) \
@@ -133,6 +133,11 @@ __STATIC_FORCEINLINE uint32_t SWD_Turnaround(void) {
         uint32_t bit;                                                                              \
         uint32_t val;                                                                              \
         uint32_t n;                                                                                \
+        /* Read once. The paced copy's PIN_DELAY expands to this, and reading DAP_Data each time  \
+         * is two loads a bit: GCC hoists it into a register by itself, clang does not and the    \
+         * bit costs two cycles more. Naming it is what makes the two toolchains agree. */        \
+        const uint32_t clock_delay = DAP_Data.clock_delay;                                        \
+        (void)clock_delay;                                                                        \
                                                                                                    \
         /* Packet request. The parity is in bit 6, put there by the caller. */                     \
         SW_WRITE_BIT(1U);           /* Start */                                                    \
@@ -237,7 +242,7 @@ __STATIC_FORCEINLINE uint32_t SWD_Turnaround(void) {
 SWD_TransferFunction(Fast)
 
 #undef PIN_DELAY
-#define PIN_DELAY() PIN_DELAY_SLOW(DAP_Data.clock_delay)
+#define PIN_DELAY() PIN_DELAY_SLOW(clock_delay)
     SWD_TransferFunction(Slow)
 
         uint8_t SWD_Transfer(uint32_t request, uint32_t* data) {

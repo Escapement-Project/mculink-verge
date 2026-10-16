@@ -62,7 +62,7 @@
     PIN_TCK_SET();                \
     PIN_DELAY()
 
-#define PIN_DELAY() PIN_DELAY_SLOW(DAP_Data.clock_delay)
+#define PIN_DELAY() PIN_DELAY_SLOW(clock_delay)
 
 #define JTAG_TransferFunction(speed) /**/                                                  \
     __STATIC_FORCEINLINE uint8_t jtag4_Transfer##speed(uint32_t request, uint32_t* data) { \
@@ -70,6 +70,9 @@
         uint32_t bit;                                                                      \
         uint32_t val;                                                                      \
         uint32_t n;                                                                        \
+        /* Read once; src/swd_dp.c has why naming it is worth two cycles a bit under clang. */ \
+        const uint32_t clock_delay = DAP_Data.clock_delay;                                 \
+        (void)clock_delay;                                                                 \
                                                                                            \
         PIN_TMS_SET();                                                                     \
         JTAG_CYCLE_TCK(); /* Select-DR-Scan */                                             \
@@ -168,7 +171,7 @@ JTAG_TransferFunction(Fast)
 JTAG_BLOCK_FUNCTION(JTAG_TransferBlockFast, jtag4_TransferFast, jtag4_IR)
 
 #undef PIN_DELAY
-#define PIN_DELAY() PIN_DELAY_SLOW(DAP_Data.clock_delay)
+#define PIN_DELAY() PIN_DELAY_SLOW(clock_delay)
 JTAG_TransferFunction(Slow)
 JTAG_BLOCK_FUNCTION(JTAG_TransferBlockSlow, jtag4_TransferSlow, jtag4_IR)
     // clang-format on
