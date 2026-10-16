@@ -689,6 +689,31 @@ CHECK_CLOCKS = (1, 5, 10, 20, 50)
 BASELINE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "baseline")
 
 
+TABLE_CLOCKS = (1, 2, 3, 5, 8, 10, 12, 14, 16, 20, 25, 30, 40, 50)
+
+
+def table(elf: str, model: Model, cpu_hz: int, words: int) -> int:
+    """What the wire does for each rate a host can ask for.
+
+    The clock delay is a whole number of loop iterations, so the rate goes up in steps and most
+    requests land on a step below them. Printing the whole range is the only way to see which
+    request is worth making: the steps matter far more than any remaining optimisation, and a
+    change that flattens one would otherwise show up as a small loss at a single clock.
+    """
+    wires = [("SWD", "swd"), ("JTAG", "jtag"), ("two-pin", "cjtag")]
+    print(f"| asked | {' | '.join(f'{n} {d}' for n, _ in wires for d in ('read', 'write'))} |")
+    print("| --- " * (1 + 2 * len(wires)) + "|")
+    for mhz in TABLE_CLOCKS:
+        cells = []
+        for _, wire in wires:
+            for read in (True, False):
+                counts, _, _ = measure(elf, wire, mhz * 1_000_000, words, read, model)
+                seconds = model.total(counts) / cpu_hz
+                cells.append(f"{words * 4 / seconds / 1024:.0f}")
+        print(f"| {mhz} MHz | {' | '.join(cells)} |")
+    return 0
+
+
 def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
     """The gate: an optimisation may change the timing and must not change anything else.
 
@@ -938,6 +963,11 @@ def main() -> int:
         help="write the wire event stream per scenario, to diff across a change",
     )
     ap.add_argument(
+        "--table",
+        action="store_true",
+        help="KiB/s for every rate a host can ask for, as markdown",
+    )
+    ap.add_argument(
         "--calibrate",
         action="store_true",
         help="fit cycles per bit against delay iterations to recover ARM's two clock constants",
@@ -954,6 +984,10 @@ def main() -> int:
     if args.check:
         print(f"{args.elf}")
         return check(args.elf, model, cpu_hz, args.bless)
+    if args.table:
+        return table(args.elf, model, cpu_hz, args.words)
+    if args.table:
+        return table(args.elf, model, cpu_hz, args.words)
     if args.calibrate:
         return calibrate(args.elf, args.wire, args.words, cpu_hz, model, args.config)
     print(f"{args.elf}, {args.wire}, {args.words}-word block, core {args.cpu:g} MHz")

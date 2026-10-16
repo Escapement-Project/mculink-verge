@@ -27,6 +27,7 @@ uv run tools/cycles.py --clock 10 50      # throughput, wire period, where the t
 uv run tools/cycles.py --explain          # name the code in the longest gap between edges
 uv run tools/equiv.py <ref.elf> <new.elf> # hold a rewrite to a reference build, case by case
 uv run tools/image.py               # the USB descriptors and the serial number
+uv run tools/cycles.py --table     # KiB/s for every rate a host can ask for
 ```
 
 `ninja check` runs `tools/image.py` as well, which asks what the built image says about itself:

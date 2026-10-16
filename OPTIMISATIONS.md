@@ -64,7 +64,8 @@ target that will not attach above 14 MHz makes the top of this table unreachable
 ## What a host actually gets for the rate it asks
 
 The clock delay is a whole number of loop iterations, so the wire rate goes up in steps and most
-requests land on a step below them. KiB/s of wire time, 64-word block:
+requests land on a step below them. KiB/s of wire time, 64-word block, from
+`uv run tools/cycles.py --table --words 64`:
 
 | asked | SWD read | SWD write | JTAG read | JTAG write | two-pin read | two-pin write |
 | --- | --- | --- | --- | --- | --- | --- |
