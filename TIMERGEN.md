@@ -120,3 +120,22 @@ bit.
   0/1 + DMA model that turns timer state into SWCLK edges at the measured latencies, feeding
   `TimedSwdTarget`, so equiv (`--ignore-samples`), the gate and `gencheck.py` cover timer mode.
   Without it the timer mode is verified on hardware only.
+
+## Option, not planned: P = 2 (75 MHz)
+
+Decided 2026-10-16: 50 MHz is the target; this is recorded, not scheduled.
+- Instruction count allows it: a write bit is `and` (extract, alternating temps so it sits 3
+  cycles ahead of its store) + store; a read bit is `ldrb` + `orr`, interleaved so each use is 2
+  after its load. Both exactly 2 cycles, zero slack; one stall cycle moves data by half a bit.
+- Write parity (5 `eor` folds) has no free slot in a P = 2 data phase: compute it in the frozen
+  decision window or in C. Packet and acknowledge could stay at P = 3 and the timer be
+  reprogrammed to P = 2 while frozen at the decision stop (no wire cost).
+- CTimer 0 PWM at P = 2 low 1 is exact (pwmclk.py, core reading its own pin).
+- Unknowns: both phases are 6.7 ns; LPC55 edges 2-4 ns at SLEW = 1 (data sheet table 27); SWCLK
+  and SWDIO pass 74LVC1T45/2T45 translators; the store-to-pin vs match-to-pin offset is
+  unmeasured. MSPM0 data sheets (L1306 included) rate fSWD at 10 MHz, already exceeded 5x; the
+  U575 data sheet gives none.
+- The Logic 8 at 100 MS/s already misses ~1/4 of pulses at P = 3; at P = 2 only target replies
+  would verify it.
+- Gain: ~46 bits a transfer, 138 -> 92 cycles before the fixed stop/restart cost; invisible to
+  probe-rs while it is USB-bound.
