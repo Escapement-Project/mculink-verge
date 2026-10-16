@@ -27,6 +27,21 @@ family_initialize_project(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR})
 
 add_executable(${PROJECT_NAME})
 
+# The build's identity, regenerated every build so it cannot go stale between a commit and a
+# flash. Two units running different builds of ours are otherwise indistinguishable over USB.
+set(FW_VERSION_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/fw_version.h)
+add_custom_target(fw_version ALL
+  BYPRODUCTS ${FW_VERSION_HEADER}
+  COMMAND ${CMAKE_COMMAND}
+    -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+    -DOUTPUT=${FW_VERSION_HEADER}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/fw_version.cmake
+  COMMENT "Resolving the firmware version"
+  VERBATIM
+  )
+add_dependencies(${PROJECT_NAME} fw_version)
+target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+
 set(DAP_SRC ${CMAKE_CURRENT_SOURCE_DIR}/external/CMSIS-DAP/Firmware/Source)
 
 target_sources(${PROJECT_NAME} PRIVATE

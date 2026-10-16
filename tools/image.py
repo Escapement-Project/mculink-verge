@@ -381,6 +381,55 @@ def check_response_bounds(c: Checker, elf: str, packet_size: int) -> None:
         )
 
 
+def check_identity(c: Checker, elf: str) -> None:
+    """A host has to be able to recognise this firmware and tell two builds of it apart.
+
+    Three things carry it, and they have to agree. The vendor command answers a magic, a
+    capability bitmap and the build string, for a host that knows us. DAP_Info's product firmware
+    version answers the same build string, for one that does not -- pyOCD and OpenOCD can read it
+    without knowing anything about this image. And the protocol version stays ARM's, because it
+    describes CMSIS-DAP rather than us.
+    """
+    probe = Machine(elf, Target([0] * 64), restart_at=set(), model=Model())
+
+    reply = probe.command(bytes([0x82]))
+    if len(reply) < 9 or reply[0] != 0x82:
+        c.problems.append(f"vendor 0x82 answered {reply.hex()}, which is not an identity")
+        return
+    magic, version, flags, length = reply[1:6], reply[6], reply[7], reply[8]
+    build = reply[9 : 9 + length].decode("ascii", "replace")
+    if magic != b"CJTAG":
+        c.problems.append(f"vendor 0x82 magic is {magic!r}, wanted b'CJTAG'")
+    if version != 2:
+        c.problems.append(f"vendor 0x82 format version is {version}, wanted 2")
+    if not flags & 0x01:
+        c.problems.append(f"vendor 0x82 flags {flags:#04x} do not claim OScan1, which is the point")
+    if flags & 0x02:
+        c.problems.append("vendor 0x82 says OScan1 is active before anything turned it on")
+    if not build:
+        c.problems.append("vendor 0x82 carries no build string, so two builds look identical")
+
+    # DAP_Info 0x09, the product firmware version. ARM leaves it a stub returning nothing.
+    info = probe.command(bytes([0x00, 0x09]))
+    reported = info[2 : 2 + info[1]].rstrip(b"\x00").decode("ascii", "replace") if len(info) > 1 else ""
+    if not reported:
+        c.problems.append("DAP_Info 0x09 is empty, so a host that does not know us cannot tell builds apart")
+    elif reported != build:
+        c.problems.append(f"DAP_Info 0x09 says {reported!r} and vendor 0x82 says {build!r}")
+
+    # The protocol version is ARM's and must not be repurposed as ours.
+    proto = probe.command(bytes([0x00, 0x04]))
+    proto_str = proto[2 : 2 + proto[1]].rstrip(b"\x00").decode("ascii", "replace") if len(proto) > 1 else ""
+    if proto_str == build:
+        c.problems.append("DAP_Info 0x04 carries the build string; it is the CMSIS-DAP version")
+
+    unknown = probe.command(bytes([0x84, 0]))
+    if not unknown or unknown[0] != ID_DAP_INVALID:
+        c.problems.append("vendor 0x84 should answer ID_DAP_Invalid until something implements it")
+
+    c.note(f"identity: vendor 0x82 magic CJTAG v{version} flags {flags:#04x}, build {build!r}")
+
+
 # What DAP_Info tells a host about the probe. probe-rs sizes its buffers from the packet size and
 # decides what it may ask for from the capabilities, so a wrong answer here breaks every transfer
 # rather than one.
@@ -496,6 +545,7 @@ def main() -> int:
         c.note("the MS OS 2.0 descriptor was folded away; its length not cross-checked")
     check_commands(c, args.elf)
     check_response_bounds(c, args.elf, args.packet_size)
+    check_identity(c, args.elf)
     check_clocks(c, args.elf)
     check_timestamp(c, args.elf)
     check_swo_baudrate(c, args.config, 96_000_000)
