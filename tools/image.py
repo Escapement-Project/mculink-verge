@@ -203,6 +203,12 @@ DAP_COMMANDS = {
     0x7F: b"\x01\x00\xf0",  # ExecuteCommands, one Info
     0x82: b"",  # our CJTAG_INFO
     0x83: b"\x00",  # our CJTAG_CONTROL, off
+    0x84: b"\x00\x00",  # our J8, taking no pins, which hands all four back to the marker
+    # Our REBOOT, asking for the firmware rather than the bootloader. Safe to run here because the
+    # command only arms the request and reboot_poll carries it out from the main loop, which
+    # nothing in this harness runs. A build that moved the reset into the command would hang here,
+    # which is the right thing for this check to do.
+    0x85: b"\x00",
 }
 ID_DAP_INVALID = 0xFF
 
@@ -299,7 +305,7 @@ def check_commands(c: Checker, elf: str) -> None:
         else:
             answered += 1
     # Anything we do not implement has to say so rather than echo itself back.
-    for cmd in (0x07, 0x84, 0x9F):
+    for cmd in (0x07, 0x86, 0x9F):
         reply = probe.command(bytes([cmd, 0, 0, 0]))
         if cmd == 0x07:
             continue  # TransferAbort is handled out of band and answers nothing
@@ -444,9 +450,22 @@ def check_identity(c: Checker, elf: str) -> None:
         c.problems.append("vendor string is empty")
     c.note(f"strings: vendor {vendor!r}, product {product!r}")
 
-    unknown = probe.command(bytes([0x84, 0]))
+    unknown = probe.command(bytes([0x86, 0]))
     if not unknown or unknown[0] != ID_DAP_INVALID:
-        c.problems.append("vendor 0x84 should answer ID_DAP_Invalid until something implements it")
+        c.problems.append("vendor 0x86 should answer ID_DAP_Invalid until something implements it")
+
+    # A mode the firmware does not define has to be refused, not guessed at: getting it wrong
+    # costs the probe until someone replugs it.
+    refused = probe.command(bytes([0x85, 0x7F]))
+    if len(refused) < 2 or refused[0] != 0x85 or refused[1] == 0x00:
+        c.problems.append(f"vendor 0x85 accepted an undefined reboot mode: {refused.hex()}")
+
+    # J8 hands the marker's pins to the host. Taking all four and giving them back has to work,
+    # because that is the sequence that identifies which pad an analyser is clipped to.
+    for mask, levels in ((0x0F, 0x0F), (0x0F, 0x00), (0x00, 0x00)):
+        reply = probe.command(bytes([0x84, mask, levels]))
+        if len(reply) < 3 or reply[0] != 0x84 or reply[1] != 0x00:
+            c.problems.append(f"vendor 0x84 {mask:#04x}/{levels:#04x} answered {reply.hex()}")
 
     c.note(f"identity: vendor 0x82 magic CJTAG v{version} flags {flags:#04x}, build {build!r}")
 

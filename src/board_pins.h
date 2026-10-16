@@ -45,6 +45,16 @@
 #define LED1_PORT 0U
 #define LED1_PIN 5U
 
+/** J8, the four-pin 50-mil header beside the MCU: PIO1_0 to PIO1_3, J8 pin 1 to pin 4.
+ *
+ * The only pins on this board that nothing else uses. No buffer, no series resistor and no ground
+ * pin on the header, so an analyser takes its ground from the debug connector. src/marker.h says
+ * what they are for.
+ */
+#define J8_GPIO GPIO
+#define J8_PORT 1U
+#define J8_PIN_MASK 0x0FU
+
 /** Start the clocks the peripherals here depend on.
  *
  * Kept out of line, like the other two things that run once at boot and bring a peripheral up.

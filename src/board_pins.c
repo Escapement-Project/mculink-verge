@@ -100,4 +100,14 @@ void board_debug_pins_init(void) {
 
     GPIO->SET[LED1_PORT] = (1UL << LED1_PIN); // active low, so set is off
     GPIO->DIRSET[LED1_PORT] = (1UL << LED1_PIN);
+
+#ifdef MARKER_PINS
+    // J8 is on port 1, which nothing else here uses, so it needs its own clock.
+    CLOCK_EnableClock(kCLOCK_Gpio1);
+    for (uint32_t pin = 0U; pin < 4U; pin++) {
+        IOCON_PinMuxSet(IOCON, J8_PORT, pin, DEBUG_PIN_MODE);
+    }
+    GPIO->CLR[J8_PORT] = J8_PIN_MASK;
+    GPIO->DIRSET[J8_PORT] = J8_PIN_MASK;
+#endif
 }

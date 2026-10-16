@@ -2,9 +2,8 @@
  *
  * CMSIS-DAP leaves 0x80..0x9F to the probe, so anything from 0x82 up is free.
  *
- * Stock answers vendor 0x80 and 0x81.
- * Neither is implemented here, so any LinkServer feature resting on
- * them will not work against this image.
+ * Stock answers vendor 0x80 and 0x81. Neither is
+ * implemented here, so any LinkServer feature resting on them will not work against this image.
  */
 #include <string.h>
 
@@ -14,11 +13,17 @@
 
 #include "DAP.h"
 #include "cjtag.h"
+#include "marker.h"
+#include "reboot.h"
 
 /// Identifies this firmware and says what it can do. Read-only, so a host may send it blindly.
 #define ID_VENDOR_CJTAG_INFO ID_DAP_Vendor2
 /// Turns OScan1 framing on and off.
 #define ID_VENDOR_CJTAG_CONTROL ID_DAP_Vendor3
+/// Hands J8's four pins to the host, so a pad can be identified and a trigger can be placed.
+#define ID_VENDOR_J8 ID_DAP_Vendor4
+/// Resets the probe, optionally into the ROM bootloader, so a reflash costs no hands.
+#define ID_VENDOR_REBOOT ID_DAP_Vendor5
 
 /** Answered by ID_VENDOR_CJTAG_INFO, so a host can recognise this firmware rather than assume it.
  *
@@ -74,6 +79,34 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         }
         response[1] = DAP_OK;
         return (2U << 16) | 2U; // the id and the mode byte in, the id and a status out
+
+#ifdef MARKER_PINS
+    case ID_VENDOR_J8: {
+        // request[1] names the pins the host takes, request[2] the levels to drive them to. The
+        // marker keeps whatever the host did not take, so handing it one pin leaves the other
+        // three marking commands as usual. A mask of zero gives all four back.
+        const uint32_t taken = (uint32_t)request[1] & J8_PIN_MASK;
+        const uint32_t levels = (uint32_t)request[2] & taken;
+        marker_mask = J8_PIN_MASK & ~taken;
+        J8_GPIO->SET[J8_PORT] = levels;
+        J8_GPIO->CLR[J8_PORT] = taken & ~levels;
+        response[1] = DAP_OK;
+        // What the pins actually read, so a host sees the levels rather than trusting the write.
+        response[2] = (uint8_t)(J8_GPIO->PIN[J8_PORT] & J8_PIN_MASK);
+        return (3U << 16) | 3U;
+    }
+#endif
+
+    case ID_VENDOR_REBOOT:
+        // Only the two defined modes act. Anything else is refused rather than guessed at,
+        // because the failure costs the probe until someone replugs it.
+        if (request[1] == REBOOT_FIRMWARE || request[1] == REBOOT_BOOTLOADER) {
+            reboot_request(request[1]);
+            response[1] = DAP_OK;
+        } else {
+            response[1] = DAP_ERROR;
+        }
+        return (2U << 16) | 2U;
 
     default:
         // DAP_ProcessCommand hands this return value straight back to the host, so an id we

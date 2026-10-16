@@ -39,6 +39,8 @@ DAP_TRANSFER_BLOCK = 0x06
 DAP_SWJ_PINS = 0x10
 DAP_SWJ_CLOCK = 0x11
 DAP_SWJ_SEQUENCE = 0x12
+DAP_VENDOR_J8 = 0x84
+DAP_VENDOR_REBOOT = 0x85
 
 INFO_FIELDS = {
     0x01: ("vendor", "str"),
@@ -372,6 +374,70 @@ def swd_reset(probe: "Probe") -> int:
     return int.from_bytes(reply[3:7], "little")
 
 
+def cmd_j8(args) -> int:
+    """Drive J8's pins, which is how a pad gets identified and how a trigger gets placed.
+
+    The firmware marks command processing on all four pins at once, so an analyser clipped to any
+    of them sees the marker and the header needs no orientation. That leaves the question of which
+    pad is which, and `--walk` answers it: each pin is taken from the marker in turn and held high
+    on its own, so whichever pad the analyser or the meter is on names itself.
+
+    A pin the host takes stops marking commands until it is given back, which `--release` does.
+    """
+    probe = one(args)
+    print(f"{probe.serial}  {probe.product}")
+
+    def drive(mask: int, levels: int) -> int:
+        reply = probe.command(bytes([DAP_VENDOR_J8, mask, levels]))
+        if len(reply) < 3 or reply[0] != DAP_VENDOR_J8 or reply[1] != 0:
+            raise RuntimeError(f"J8 {mask:#04x}/{levels:#04x} answered {reply.hex()}")
+        return reply[2]
+
+    if args.walk:
+        for pin in range(4):
+            bit = 1 << pin
+            read = drive(bit, bit)
+            print(f"  J8 pin {pin + 1} (PIO1_{pin}) high, the other three still marking"
+                  f"  -- pins read {read:#06b}")
+            time.sleep(args.seconds)
+            drive(bit, 0)
+        drive(0, 0)
+        print("  all four handed back to the marker")
+        probe.release()
+        return 0
+
+    mask = 0 if args.release else args.mask
+    read = drive(mask, args.levels & mask)
+    owned = "none" if mask == 0 else ", ".join(f"{p + 1}" for p in range(4) if mask & (1 << p))
+    print(f"  host owns pin {owned}; pins read {read:#06b}")
+    probe.release()
+    return 0
+
+
+def cmd_reboot(args) -> int:
+    """Reset the probe, optionally into the ROM bootloader, so a reflash costs no hands.
+
+    The probe answers, waits for the reply to leave the endpoint, drops off the bus and resets.
+    So the command succeeding looks like the device disappearing, and there is nothing further to
+    read: anything else would time out against a probe that is already gone.
+
+    The ISP jumper remains the recovery path, and is the only one for an image that will not
+    enumerate -- which is the case this cannot help with.
+    """
+    probe = one(args)
+    mode = 1 if args.bootloader else 0
+    print(f"{probe.serial}  {probe.product}")
+    reply = probe.command(bytes([DAP_VENDOR_REBOOT, mode]))
+    if len(reply) < 2 or reply[0] != DAP_VENDOR_REBOOT or reply[1] != 0:
+        print(f"  refused: {reply.hex()}")
+        probe.release()
+        return 1
+    where = "the ROM bootloader (1fc9:0021)" if mode else "its firmware"
+    print(f"  accepted; the probe is dropping off the bus and coming back in {where}")
+    probe.release()
+    return 0
+
+
 def cmd_block(args) -> int:
     """Read one DP register over and over with DAP_TransferBlock, as a clean bit-path instrument.
 
@@ -442,6 +508,18 @@ def main() -> int:
     pins.add_argument("--drive", action="store_true", default=None, help="toggle one pin and read back")
     pins.add_argument("--bit", type=int, default=0, help="which pin to drive, default SWCLK")
     pins.set_defaults(run=cmd_pins)
+
+    j8 = sub.add_parser("j8", help="drive the four-pin header beside the MCU")
+    j8.add_argument("--walk", action="store_true", help="hold each pin high in turn, to name the pads")
+    j8.add_argument("--seconds", type=float, default=3.0, help="how long to hold each one")
+    j8.add_argument("--mask", type=lambda s: int(s, 0), default=0x0F, help="pins the host takes")
+    j8.add_argument("--levels", type=lambda s: int(s, 0), default=0x00, help="levels for those pins")
+    j8.add_argument("--release", action="store_true", help="give all four back to the marker")
+    j8.set_defaults(run=cmd_j8)
+
+    reboot = sub.add_parser("reboot", help="reset the probe, optionally into the ROM bootloader")
+    reboot.add_argument("--bootloader", action="store_true", help="come back in ISP mode, not the firmware")
+    reboot.set_defaults(run=cmd_reboot)
 
     block = sub.add_parser("block", help="repeat a DP read with DAP_TransferBlock")
     block.add_argument("--hz", type=int, default=10000000)

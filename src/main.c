@@ -9,6 +9,8 @@
 #include "tusb.h"
 
 #include "board_pins.h"
+#include "marker.h"
+#include "reboot.h"
 #include "core_clock.h"
 #include "vcom.h"
 
@@ -27,6 +29,11 @@ static uint8_t response[DAP_RESPONSE_SIZE];
 // over-long response cannot run past it; only a report's worth is ever sent.
 static uint8_t hid_response[DAP_RESPONSE_SIZE];
 
+#ifdef MARKER_PINS
+/** Which J8 pins the marker still owns. ID_VENDOR_J8 takes pins away from it and gives them back. */
+volatile uint32_t marker_mask = J8_PIN_MASK;
+#endif
+
 static void dap_task(void) {
     if (!tud_vendor_available()) {
         return;
@@ -39,7 +46,9 @@ static void dap_task(void) {
 
     // The high half of the return value counts request bytes consumed; only the response length
     // matters here, because one packet carries one command.
+    MARKER_BUSY();
     uint32_t produced = DAP_ExecuteCommand(request, response) & 0xFFFFU;
+    MARKER_IDLE();
     // One command answers in one packet. A longer reply would split across two, which a v2 host
     // does not expect, so send what fits and drop the rest with the malformed request that caused
     // it.
@@ -93,6 +102,7 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
 
 int main(void) {
     board_init();
+    reboot_clear_boot_mode();
     board_core_clock_init();
     board_clocks_init();
     board_timestamp_init();
@@ -110,5 +120,6 @@ int main(void) {
         tud_task();
         dap_task();
         vcom_task();
+        reboot_poll();
     }
 }

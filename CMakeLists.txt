@@ -34,6 +34,10 @@ option(RAMFUNC "Run the bit paths from SRAM" ON)
 # Run the core at 150 MHz on PLL0 rather than the 144 MHz on PLL1 the board support leaves.
 # See src/core_clock.h for why the 144 does not bind this firmware.
 option(CORE_150MHZ "Run the core at 150 MHz" ON)
+
+# Drive J8's four pins high while a host command runs, so an analyser sees the gap between
+# commands as well as the clock. src/marker.h says why that is worth a pin.
+option(MARKER "Mark command processing on the J8 header" ON)
 if(RAMFUNC AND CMAKE_BUILD_TYPE STREQUAL "Debug")
   message(FATAL_ERROR
     "RAMFUNC does not fit a Debug build: the unrolled bit paths are about 300 KB at -O0 and SRAM "
@@ -66,6 +70,7 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/usb_descriptors.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/ser_num.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/board_pins.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/reboot.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/swo_board.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/vcom.c
   ${DAP_SRC}/DAP.c
@@ -125,6 +130,10 @@ set_source_files_properties(
 
 if(RAMFUNC)
   target_compile_definitions(${PROJECT_NAME} PRIVATE RAMFUNC_BIT_PATHS=1)
+endif()
+
+if(MARKER)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE MARKER_PINS=1)
 endif()
 
 if(CORE_150MHZ)
