@@ -61,6 +61,40 @@ The bar is cleared on wire time at every setting, by 4.3x at the top. **Wire tim
 as throughput**: the stock capture put the USB gap at about 10% of a transfer at 14 MHz, and a
 target that will not attach above 14 MHz makes the top of this table unreachable. The bench decides.
 
+## What a host actually gets for the rate it asks
+
+The clock delay is a whole number of loop iterations, so the wire rate goes up in steps and most
+requests land on a step below them. KiB/s of wire time, 64-word block:
+
+| asked | SWD read | SWD write | JTAG read | JTAG write | two-pin read | two-pin write |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 MHz | 80 | 80 | 90 | 92 | 30 | 30 |
+| 2 MHz | 153 | 155 | 172 | 176 | 56 | 57 |
+| 3 MHz | 219 | 224 | 245 | 254 | 80 | 80 |
+| 5 MHz | 326 | 338 | 361 | 381 | 116 | 117 |
+| 8 MHz | 483 | 509 | 527 | 570 | 166 | 169 |
+| 10 MHz | 635 | 682 | 685 | 759 | 213 | 218 |
+| 12 MHz | 635 | 682 | 685 | 759 | 213 | 218 |
+| 14 MHz | 635 | 682 | 685 | 759 | 213 | 218 |
+| 16 MHz | 930 | 1033 | 977 | 1135 | 295 | 304 |
+| 20 MHz | 930 | 1033 | 977 | 1135 | 295 | 304 |
+| 25 MHz | 930 | 1033 | 977 | 1135 | 295 | 304 |
+| 30 MHz | 930 | 1033 | 977 | 1135 | 295 | 304 |
+| 40 MHz | 1776 | 2152 | 1799 | 2462 | 647 | 616 |
+| 50 MHz | 1776 | 2152 | 1799 | 2462 | 647 | 616 |
+
+Above 8 MHz there are three settings and nothing in between. 10, 12 and 14 are the same setting;
+16 through 30 are the same setting; 40 and 50 are the delay-free path. **Ask for 16 rather than 20
+or 30, and 40 rather than 50**: the wire is identical and the request says what the probe will do.
+
+The steps are where the bench should look. A target that stops at 14 MHz gets 635 KiB/s and one
+good for 16 gets 930, a 46% difference for 2 MHz of margin, and 30 to 40 is another 91%. Which
+step a target tolerates decides more than anything left in this file.
+
+One oddity to settle at the bench: on the two-pin path the delay-free setting makes writes slower
+than reads, 616 against 647, where every other setting and every other wire has writes ahead. It
+is the setting with no pacing margin to begin with.
+
 ## Done
 
 ### Unroll the bit paths
