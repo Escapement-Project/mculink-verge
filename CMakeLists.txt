@@ -17,21 +17,36 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/usb_descriptors.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/ser_num.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/board_pins.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/swo_board.c
   ${DAP_SRC}/DAP.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_vendor.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_dp.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp.c
   ${DAP_SRC}/SW_DP.c
+  ${DAP_SRC}/SWO.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/external/lpc55s69-sdk/fsl_usart_cmsis.c
   ${DAP_SRC}/JTAG_DP.c
   )
 
-# ARM's sources are compiled as they ship. TinyUSB's example flags include -Werror, and DAP.c
-# leaves a variable unused when SWO is configured out, which is upstream's code and not a defect
-# worth carrying a patch for.
+# Upstream sources compile as they ship. TinyUSB's example flags are far stricter than either ARM
+# or NXP builds their code with, and carrying patches to make third-party files warning-clean would
+# mean re-applying them at every version bump. Our own sources keep the full set.
+set(UPSTREAM_RELAX
+  -Wno-unused-variable
+  -Wno-unused-but-set-variable
+  -Wno-unused-parameter
+  -Wno-missing-field-initializers
+  -Wno-redundant-decls
+  -Wno-sign-compare
+  -Wno-cast-qual
+  -Wno-cast-align
+  )
+
 set_source_files_properties(
-  ${DAP_SRC}/DAP.c ${DAP_SRC}/SW_DP.c ${DAP_SRC}/JTAG_DP.c
-  PROPERTIES COMPILE_OPTIONS "-Wno-unused-variable;-Wno-unused-but-set-variable"
+  ${DAP_SRC}/DAP.c ${DAP_SRC}/SW_DP.c ${DAP_SRC}/JTAG_DP.c ${DAP_SRC}/SWO.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/external/lpc55s69-sdk/fsl_usart_cmsis.c
+  PROPERTIES COMPILE_OPTIONS "${UPSTREAM_RELAX}"
   )
 
 # ARM's JTAG entry points are renamed here so src/cjtag_dp.c can own the real names and dispatch
@@ -45,6 +60,11 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${CMAKE_CURRENT_SOURCE_DIR}/external/CMSIS-DAP/Firmware/Include
   ${DAP_SRC}
+  ${CMAKE_CURRENT_SOURCE_DIR}/external/lpc55s69-sdk
+  ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/lib/CMSIS_6/CMSIS/Driver/Include
+  # fsl_usart_cmsis.c reaches fsl_usart_dma.h through the usart header whether or not DMA is
+  # enabled, and that wants fsl_dma.h. Headers only: no DMA source is compiled.
+  ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcuxsdk-core/drivers/lpc_dma
   )
 
 family_configure_device_example(${PROJECT_NAME} noos)
