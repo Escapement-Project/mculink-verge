@@ -61,6 +61,19 @@ void tud_vendor_rx_cb(uint8_t index, const uint8_t* buffer, uint32_t length) {
     if ((length == 0U) || (length > DAP_PACKET_SIZE)) {
         return; // dap_task arms the endpoint again
     }
+    // **The abort is handled here and never queued.** It exists to stop a transfer that is
+    // running now, so putting it in a slot behind that transfer makes it useless: the flag would
+    // be set once the thing it was meant to abort had already finished. ARM's own MCU-Link
+    // example does the same in its endpoint callback. It answers nothing, which is why a host
+    // that reads for a reply after sending it waits for ever.
+    //
+    // This is also the contract a host relies on when it keeps its pipeline one packet short of
+    // what the probe says it holds: the spare buffer is for an abort to arrive in, and it only
+    // helps if the abort overtakes the queue rather than joining it.
+    if (buffer[0] == ID_DAP_TransferAbort) {
+        DAP_TransferAbort = 1U;
+        return;
+    }
     memcpy(request[request_tail], buffer, length);
     request_len[request_tail] = (uint16_t)length;
     request_tail = (uint8_t)((request_tail + 1U) % REQUEST_SLOTS);
