@@ -2,6 +2,14 @@
 
 What has been done, what was tried and rejected, and what is left.
 
+> **Every figure below predates the bench, and two things since have moved them.** The bit paths
+> now run from SRAM, which roughly halved the cost of a data bit; and the cost model was wrong by a
+> constant 2.5 cycles per wire clock until a fall-through branch was made free. So the absolute
+> numbers here are wrong and the *rankings* are only as good as a model that was 13% out. The
+> comparisons between two variants measured the same way are still worth something, because the
+> error was constant. `BENCH.md` has what the wire actually says. Re-deriving this file against the
+> calibrated model has not been done.
+
 ## How these are measured
 
 `tools/cycles.py` runs the built image on an emulated Cortex-M33, drives it through the real DAP
@@ -537,8 +545,12 @@ of our own rather than the board support's.
 
 ## Before anything else, at the bench
 
-Every figure the probe has ever been measured by is from the paced path, because 14 MHz was the
-highest clock the target would attach at and the switch was above it. Get a target that will attach
-above the switch point and run the sweep the stock baseline was taken with. If the delay-free path
-does not deliver what the emulator says, nothing else on this list is worth doing until that is
-understood.
+**Still true, and still the thing blocking this list.** Every figure here is from the paced path:
+the bench MSPM0L1306 stops answering around 9 to 10 MHz on the wire, and the delay-free path only
+starts at 37.5 MHz. So nothing on this list that concerns the fast path has ever been measured
+against silicon. A clock sweep would at least say exactly where this target stops; a target that
+attaches above the switch point is what the fast path needs.
+
+What the bench did settle is that the paced path's per-bit cost is now 2.5 cycles a half-bit
+against stock's 6.0, and that USB owns a third of a block read, so the remaining per-bit wins are
+worth less than they look.
