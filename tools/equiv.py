@@ -12,6 +12,10 @@ live.
 This drives both builds over the same matrix -- every acknowledge a target can give, every
 turnaround length, with and without the data phase, with and without idle cycles -- and requires
 that they produce the same wire events and the same answer. Byte for byte, case for case.
+
+`--ignore-samples` leaves the loads of SWDIO out of the comparison. Generated code samples a bit
+up to two clocks after the edge that launched it, so its loads fall among different edges than
+ARM's; the edges, the levels and the answer still have to match.
 """
 
 import argparse
@@ -38,6 +42,14 @@ from cycles import (  # noqa: E402
 )
 
 AP_DRW_READ, AP_DRW_WRITE = 0x0F, 0x0D
+
+# Set by --ignore-samples and --clock.
+IGNORE_SAMPLES = False
+CLOCK_HZ = 10_000_000
+
+
+def wire(trace: list[str]) -> list[str]:
+    return [event for event in trace if event != "S"] if IGNORE_SAMPLES else trace
 
 # The acknowledge, in the order SW_READ_BIT reads it: bit 0 first.
 ACKS = {
@@ -80,7 +92,7 @@ def run(
     probe = Machine(elf, SwdTarget(ack, word, bad_parity), restart_at=set(), model=Model())
     probe.resync_on_release = True
     probe.command(bytes([ID_CONNECT, 1]))
-    probe.command(bytes([ID_SWJ_CLOCK]) + u32(10_000_000))
+    probe.command(bytes([ID_SWJ_CLOCK]) + u32(CLOCK_HZ))
     probe.command(bytes([ID_TRANSFER_CONFIG, idle]) + u16(2) + u16(0))
     probe.command(bytes([ID_SWD_CONFIGURE, (turnaround - 1) | (0x04 if data_phase else 0)]))
 
@@ -89,7 +101,7 @@ def run(
         payload += u32(word) * words
     probe.begin()
     reply = probe.command(payload)
-    return probe.end().trace, reply
+    return wire(probe.end().trace), reply
 
 
 def run_jtag(
@@ -117,7 +129,7 @@ def run_jtag(
         payload += u32(word) * words
     probe.begin()
     reply = probe.command(payload)
-    return probe.end().trace, reply
+    return wire(probe.end().trace), reply
 
 
 def run_cjtag(
@@ -147,7 +159,7 @@ def run_cjtag(
         payload += u32(word) * words
     probe.begin()
     reply = probe.command(payload)
-    return probe.end().trace, reply
+    return wire(probe.end().trace), reply
 
 
 def run_transfer(
@@ -162,7 +174,7 @@ def run_transfer(
     probe = Machine(elf, SwdTarget(ack, word, False), restart_at=set(), model=Model())
     probe.resync_on_release = True
     probe.command(bytes([ID_CONNECT, 1]))
-    probe.command(bytes([ID_SWJ_CLOCK]) + u32(10_000_000))
+    probe.command(bytes([ID_SWJ_CLOCK]) + u32(CLOCK_HZ))
     # A match retry budget of two, so a mismatching read exercises the retry path and then gives up.
     probe.command(bytes([ID_TRANSFER_CONFIG, idle]) + u16(2) + u16(2))
     probe.command(bytes([ID_SWD_CONFIGURE, turnaround - 1]))
@@ -205,7 +217,7 @@ def run_transfer(
 
     probe.begin()
     reply = probe.command(payload)
-    return probe.end().trace, reply
+    return wire(probe.end().trace), reply
 
 
 # Every case above sends a two-word block. The loops that changed most recently derive the reply's
@@ -249,7 +261,12 @@ def main() -> int:
     ap.add_argument("--wire", choices=["swd", "jtag", "cjtag"], default="swd")
     ap.add_argument("--command", choices=["block", "transfer"], default="block")
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--ignore-samples", action="store_true", help="compare without the SWDIO loads")
+    ap.add_argument("--clock", type=float, default=10.0, help="SWD clock in MHz for the SWD cases")
     args = ap.parse_args()
+    global IGNORE_SAMPLES, CLOCK_HZ
+    IGNORE_SAMPLES = args.ignore_samples
+    CLOCK_HZ = int(args.clock * 1e6)
 
     if args.command == "transfer":
         failures = 0
