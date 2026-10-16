@@ -85,7 +85,11 @@ static inline uint32_t cjtag_capture(void) {
 #include "JTAG_DP.c"
 
 // The same block loop the four-wire path uses, expanded next to this copy's transfer so the
-// registers and the GPIO addresses are paid for once a block rather than once a word.
+// registers and the GPIO addresses are paid for once a block rather than once a word. `flatten`
+// is what makes that actually happen here: this copy's transfer is large enough that the compiler
+// declines to inline it, and the block loop ends up calling it once a word. It costs flash, and
+// the flash was judged worth it. OPTIMISATIONS.md has the numbers.
+#define JTAG_BLOCK_ATTRS __attribute__((flatten))
 #include "jtag_block.h"
 
 // clang-format off: each of these expands to a function definition.

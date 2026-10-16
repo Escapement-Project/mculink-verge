@@ -18,9 +18,21 @@
 #ifndef JTAG_BLOCK_H
 #define JTAG_BLOCK_H
 
+/** Attributes on the generated block function.
+ *
+ * The two-pin copies set this to `flatten`. Their transfer is larger than the SWD and four-wire
+ * ones, so the compiler leaves it out of line and the block loop calls it: a nine-register
+ * prologue and epilogue once a word, which is the exact cost this header exists to pay once a
+ * block. A per-file `-finline-limit` cannot reach it, because link-time optimisation decides
+ * inlining at link time and never sees a compile flag.
+ */
+#ifndef JTAG_BLOCK_ATTRS
+#define JTAG_BLOCK_ATTRS
+#endif
+
 /** ARM's DAP_JTAG_TransferBlock, with the transfer inlined into the loop. */
 #define JTAG_BLOCK_FUNCTION(block_name, xfer, set_ir)                                             \
-    static uint32_t block_name(const uint8_t* request, uint8_t* response) {                       \
+    JTAG_BLOCK_ATTRS static uint32_t block_name(const uint8_t* request, uint8_t* response) {      \
         uint32_t request_count;                                                                   \
         uint32_t request_value;                                                                   \
         uint32_t response_count = 0U;                                                             \
