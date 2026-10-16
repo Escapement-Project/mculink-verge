@@ -387,6 +387,63 @@ def check_response_bounds(c: Checker, elf: str, packet_size: int) -> None:
         )
 
 
+# A request can drive a write or a read past a buffer as well as a reply past one, and these are
+# the commands where ARM's handler takes a count from the request and never compares it with
+# anything. `DAP_ExecuteCommand` is handed a pointer and no length, so no handler can know how
+# much of the packet actually arrived.
+REQUEST_CASES = [
+    # 255 devices into eight-element ir_length, ir_before and ir_after arrays.
+    ("JTAG_Configure, 255 devices", bytes([0x15, 255]) + bytes([4]) * 255),
+    # 255 sequences of 64 clocks: nine request bytes each, out of a 512-byte packet.
+    ("SWD_Sequence, 255 x 64 clocks", bytes([0x1D, 255]) + bytes([0x00] + [0xAA] * 8) * 255),
+    ("JTAG_Sequence, 255 x 64 clocks", bytes([0x14, 255]) + bytes([0x00] + [0xAA] * 8) * 255),
+]
+
+
+def check_request_bounds(c: Checker, elf: str) -> None:
+    """Nothing a host can send may write past DAP_Data or read past the request buffer.
+
+    A different class from the reply check above: these counts drive a write into a fixed array,
+    or a walk forward through the request. A JTAG chain of 255 devices is a write past three
+    eight-element arrays, and a 255-sequence list walks about 2 KB forward through a 512-byte
+    request buffer and clocks whatever is there onto the wire.
+
+    **The refusal is what this check rests on, not the memory snapshot.** Unbuilt, the array write
+    is undefined once the index reaches 8 and GCC uses that to bound the loop, so the snapshot
+    stays clean even on an image with no guard at all. It is kept because another compiler, or
+    another optimisation level, need not make the same choice.
+    """
+    sym = symbols_with_size(elf)
+    if "DAP_Data" not in sym:
+        c.note("DAP_Data was folded away; its bounds not checked")
+        return
+    base, size = sym["DAP_Data"]
+    watch = 0x800
+
+    for label, payload in REQUEST_CASES:
+        probe = build(elf, "swd", True, Model())
+        if "DAP_Setup" in probe.sym:
+            probe.call("DAP_Setup")
+        probe.command(bytes([0x02, 1]))  # Connect, SWD
+        probe.uc.mem_write(SCRATCH, payload[:0x400] + bytes(max(0, 0x400 - len(payload))))
+        before = bytes(probe.uc.mem_read(base + size, watch))
+        resp = SCRATCH + 0x400
+        try:
+            probe.call("DAP_ExecuteCommand", SCRATCH, resp)
+        except SystemExit as exc:
+            c.problems.append(f"{label} faulted: {exc}")
+            continue
+        after = bytes(probe.uc.mem_read(base + size, watch))
+        if before != after:
+            spoiled = sum(1 for x, y in zip(before, after) if x != y)
+            c.problems.append(f"{label} changed {spoiled} bytes past the {size}-byte DAP_Data")
+        reply = bytes(probe.uc.mem_read(resp, 2))
+        if reply[0] != payload[0] or reply[1] != 0xFF:
+            c.problems.append(f"{label} answered {reply.hex()}, wanted the command id then DAP_ERROR")
+    if not c.problems:
+        c.note(f"{len(REQUEST_CASES)} oversized requests are refused and leave DAP_Data's neighbours alone")
+
+
 def check_identity(c: Checker, elf: str) -> None:
     """A host has to be able to recognise this firmware and tell two builds of it apart.
 
@@ -585,6 +642,7 @@ def main() -> int:
         c.note("the MS OS 2.0 descriptor was folded away; its length not cross-checked")
     check_commands(c, args.elf)
     check_response_bounds(c, args.elf, args.packet_size)
+    check_request_bounds(c, args.elf)
     check_identity(c, args.elf)
     check_clocks(c, args.elf)
     check_timestamp(c, args.elf)

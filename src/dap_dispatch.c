@@ -21,6 +21,8 @@
  * identical wire events and identical replies, so the shorter route has to behave like the long
  * one.
  */
+#include <stdbool.h>
+
 #include "DAP_config.h"
 
 #include "DAP.h"
@@ -33,6 +35,43 @@ extern uint32_t arm_DAP_ProcessCommand(const uint8_t* request, uint8_t* response
 
 /** Words a block reply fits: the command id, the two count bytes and the status, then the data. */
 #define DAP_BLOCK_WORD_LIMIT ((DAP_PACKET_SIZE - 4U) / 4U)
+
+/** Does a sequence list stay inside the packet the host actually sent?
+ *
+ * `DAP_SWD_Sequence` and `DAP_JTAG_Sequence` take a sequence count of up to 255 and walk the
+ * request forward by one info byte plus up to eight data bytes each, so 255 sequences read about
+ * 2 KB from a 512-byte buffer. Nothing in ARM's command layer knows how long the request was:
+ * `DAP_ExecuteCommand` is handed a pointer and nothing else, so every handler trusts its own
+ * count. The bytes past the end are whatever follows the buffer, and a sequence clocks them onto
+ * the wire.
+ *
+ * Walking the list the same way the handler will is the only way to answer this, because a
+ * sequence's length is in its own info byte. `swd` picks the one difference between the two: an
+ * SWD input sequence carries no data in the request, where JTAG always supplies TDI.
+ */
+static bool sequence_fits(const uint8_t* request, bool swd) {
+    uint32_t remaining = request[1];
+    uint32_t used = 2U; // the command id and the sequence count
+
+    while (remaining--) {
+        if (used >= DAP_PACKET_SIZE) {
+            return false;
+        }
+        const uint32_t info = request[used];
+        uint32_t clocks = info & 0x3FU; // SWD_SEQUENCE_CLK and JTAG_SEQUENCE_TCK are both this
+        if (clocks == 0U) {
+            clocks = 64U;
+        }
+        used += 1U;
+        if (!(swd && ((info & SWD_SEQUENCE_DIN) != 0U))) {
+            used += (clocks + 7U) / 8U;
+        }
+        if (used > DAP_PACKET_SIZE) {
+            return false;
+        }
+    }
+    return true;
+}
 
 static uint32_t transfer_block(const uint8_t* request, uint8_t* response) {
     if (DAP_Data.debug_port == DAP_PORT_SWD) {
@@ -62,6 +101,36 @@ uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* response) {
     if ((*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_SWD)) {
         *response = *request;
         return (1U << 16) + 1U + SWD_TransferCommand(request + 1, response + 1);
+    }
+    if ((*request == ID_DAP_SWD_Sequence) || (*request == ID_DAP_JTAG_Sequence)) {
+        if (!sequence_fits(request, *request == ID_DAP_SWD_Sequence)) {
+            // There is no way to say how much the host meant to send, so the rest of the packet
+            // goes with it: a batch behind a malformed command cannot be trusted to be aligned.
+            response[0] = *request;
+            response[1] = DAP_ERROR;
+            return (DAP_PACKET_SIZE << 16) | 2U;
+        }
+    }
+    if (*request == ID_DAP_JTAG_Configure) {
+        // ARM's DAP_JTAG_Configure takes the device count straight from the request and never
+        // compares it with DAP_JTAG_DEV_CNT, then writes ir_length[n], ir_before[n] and
+        // ir_after[n] for every n below it. A count of 255 against eight-element arrays is a
+        // write past all three.
+        //
+        // **This build does not actually make that write**: the access is undefined once n
+        // reaches 8, and GCC uses that to bound the loop, so a 255-device request currently stops
+        // inside DAP_Data. That is the compiler's choice and not a property of the code, so it is
+        // not something to rely on. Refusing makes it defined.
+        //
+        // Refusing is also what the protocol already does for a chain this firmware cannot
+        // describe, and the request byte count has to match ARM's either way so a
+        // DAP_ExecuteCommands batch stays aligned behind it.
+        const uint32_t devices = request[1];
+        if (devices > DAP_JTAG_DEV_CNT) {
+            response[0] = *request;
+            response[1] = DAP_ERROR;
+            return ((devices + 2U) << 16) | 2U;
+        }
     }
     if (*request == ID_DAP_TransferBlock) {
         // The word count is sixteen bits and a read block's request is five bytes whatever it
