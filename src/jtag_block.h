@@ -27,7 +27,7 @@
         uint32_t response_value = 0U;                                                             \
         uint8_t* response_head = response;                                                        \
         uint32_t retry;                                                                           \
-        uint32_t data;                                                                            \
+        uint32_t data = 0U;                                                                       \
         uint32_t ir;                                                                              \
                                                                                                   \
         response += 3;                                                                            \
