@@ -16,7 +16,9 @@ list of what to test and what each result unlocks.
 - **`DAP_TransferAbort` answers nothing.** Reading for a reply after sending it stalls the probe's
   bulk endpoint, and every later command times out. `usb.core.Device.reset()` clears it without
   unplugging and does not disturb a halted target.
-- **Analyser captures are manual.** Start and stop them yourself.
+- **The analyser can be driven from a script.** Captures start, stop and export
+  without a pair of hands. Export the raw digital CSV and
+  read it with `tools/clockscope.py`.
 - **Run `ninja -C build check` before flashing.** It refuses a build that clocks any wire faster
   than the host asked for, beyond the two cases already recorded in
   `tools/baseline/known-overshoot.txt`. Two of the four build configurations fail it, so the one
@@ -71,7 +73,7 @@ answers only `0x80` and `0x81`, so anything above is free.
 
 | command | meaning |
 | --- | --- |
-| `0x82` | identify. Magic, format version, capability flags, build string. Stock answers `ID_DAP_Invalid`, which is the discriminator. |
+| `0x82` | identify. Magic, format version, capability flags, build string. Stock answers a bare `82` with no payload, which is the discriminator. |
 | `0x83 0x01` | turn OScan1 framing on |
 | `0x83 0x00` | turn it off |
 
@@ -114,6 +116,24 @@ The vendor `0x82` reply, after the echoed id:
 
 Check the magic to know it is us, the flags to know what may be used, the string to know which
 image. A flag is how a later feature arrives without every host learning a new version.
+
+## The two units on the bench
+
+Each has its own MSPM0L1306, and each is wired to its own analyser channel group. The mapping was
+established by driving a clock burst on one unit at a time and seeing which channels moved.
+
+| serial (stock) | analyser | nRESET | SWDIO | SWCLK |
+| --- | --- | --- | --- | --- |
+| `07HW51KCTNRZQ` | D0-D2 | D0 | D1 | D2 |
+| `QK7RM2VTX8D41` | D4-D6 | D4 | D5 | D6 |
+
+A stock unit calls itself `MCU-LINK (r0FB) CMSIS-DAP V3.172` and reports firmware `3.172`,
+protocol `2.1.1`, 512-byte packets, eight of them, and a 150 MHz test domain timer. The serial is
+NXP's 13-character string; ours replaces it with `CJ` plus 8 hex, so **the serial itself says which
+firmware a unit is running** and `tools/dap.py list` is enough to tell them apart.
+
+Stock's own vendor commands: `0x80` answers `00 01 0f` after the echoed id
+and `0x81` answers `00 01`. Neither is documented and neither is needed by any host here.
 
 ## Pin map
 
@@ -213,63 +233,74 @@ Unlocks every measurement below.
 
 ## 4. The clock calibration capture
 
-**The highest-value measurement in this list.** The emulator's cost model has four constants —
-one cycle for a store, one for a GPIO store, two for a load, two for a taken branch — and they are
-command-line arguments that nobody has checked against silicon.
+**Measured 2026-10-16 against stock. `DELAY_SLOW_CYCLES` is confirmed; the store cost is not.**
 
-Measure, rather than calibrate in one step. Drive `DAP_SWJ_Sequence` (command `0x12`), which is a
-bare clocked bit with no transfer around it: no packet, no acknowledge, no turnaround, no
-bookkeeping. It is the only thing on the wire whose cycles-per-bit is the quantity ARM's clock
-arithmetic is actually about. Put the analyser on TCK and record the period at three requested
-clocks:
-
-| request | what it isolates |
-| --- | --- |
-| 50 MHz | the delay-free path. Period here is the fixed per-bit cost, which gives the store cost |
-| 10 MHz | one delay iteration per half-bit |
-| 5 MHz | two. The difference from 10 MHz is twice `DELAY_SLOW_CYCLES`, which gives the branch cost |
-
-Then put the measured costs back into the model and re-run the predictions:
+Drive `DAP_SWJ_Sequence` (command `0x12`) at several requested rates and measure the period on
+TCK:
 
 ```
-uv run tools/cycles.py --gpio-store-cycles N --branch-cycles M --wire swd --clock 10 50
-uv run tools/cycles.py --calibrate --gpio-store-cycles N --branch-cycles M
+uv run tools/dap.py --serial <serial> sweep --rates 50000000,10000000,5000000
+uv run tools/clockscope.py <dir>/digital.csv --channel <swclk> --cpu-hz 150000000
 ```
 
-`--calibrate` fits a line through emulated points and recovers what the image implies for
-`IO_PORT_WRITE_CYCLES` and `DELAY_SLOW_CYCLES`. It does not read the analyser. Its value is as the
-comparison once the constants are right: if it still disagrees with what `src/DAP_config.h`
-declares, ARM's arithmetic is wrong for this part and every requested clock is off by the same
-proportion.
+`sweep` leaves a silent gap between rates so the groups can be told apart without a trigger, and
+`clockscope.py` takes the period across a whole 256-clock burst rather than between two edges.
+That matters: one edge pair at 100 MS/s quantises to 10 ns, a third of a period at the top of the
+range, and 255 periods of the same burst brings it to 0.04 ns.
 
-What it settles, all at once:
+What stock gave, both units agreeing to 0.01 ns over 20 bursts each:
 
-- **Whether the JTAG overshoot and the two-pin margin are real.** Both come from arithmetic over a
-  cost model nobody has checked. If a GPIO store costs two cycles on this part rather than one,
-  neither exists and nothing changes.
-- **Whether every number in `OPTIMISATIONS.md` is trustworthy.** The whole file is emulation. One
-  disagreement here and the rankings need re-deriving.
-- **The NOP-specialisation work**, which is the largest throughput item left — see below.
+| asked | period | wire | `clock_delay` |
+| --- | --- | --- | --- |
+| 50 MHz | 127.48 ns | 7.844 MHz | 1 |
+| 10 MHz | 167.49 ns | 5.971 MHz | 2 |
+| 5 MHz | 287.49 ns | 3.478 MHz | 5 |
 
-The one data point that exists agrees with the model: a 1 MHz request measured 0.94 MHz on stock,
-and the emulator says 0.94. That is the slowest setting, where the delay loop dominates and the
-store cost barely shows, so it does not constrain the thing in question.
+### What it settles
+
+**`DELAY_SLOW_CYCLES` is exactly 3.** The marginal cost of one delay iteration is 3.001 and 3.000
+cycles across the two intervals. This is the constant the six-cycle step structure rests on, so
+the steps in `PACING.md` are real and the specialisation work below is worth doing.
+
+**The core clock of a stock unit is 150.0 MHz**, from three independent pairs: 149.96, 149.99 and
+150.00 MHz. That agrees with what stock reports for `DAP_Info` 0xF1, and with the CMSIS-DAP
+example's `BOARD_BootClockRUN`, which attaches PLL0 at 150 MHz to `MAIN_CLK`.
+
+**Ours is 144 MHz and that is correct.** We build TinyUSB's board file instead, whose
+`BOARD_BootClockPLL150M` sets PLL0 to 150 MHz but then attaches **PLL1** at 144 MHz to `MAIN_CLK`
+and sets `SystemCoreClock` to 144000000. Two board files, two clocks, and the one in
+`src/DAP_config.h` matches the one we compile. The 150 MHz measured here is not evidence against
+it.
+
+### What it does not settle, and why the plan was wrong about that
+
+**`DAP_SWJ_Sequence` does not isolate the store cost.** `SWJ_Sequence` at
+`external/CMSIS-DAP/Firmware/Source/SW_DP.c` is a software loop around each clock -- byte refill,
+bit test, shift, two counters -- and it is compiled before the `#undef PIN_DELAY` at `:264`, so it
+always takes the paced copy and never the delay-free one. The fitted non-delay cost is 6.561,
+6.562 and 6.562 cycles per half-bit across the three points, flat to three decimals and nothing
+like the 2 that `IO_PORT_WRITE_CYCLES` declares. The extra 4.5 cycles are that loop.
+
+So the differences give the delay cost and the core clock, which is most of the value. The
+intercept gives the cost of a command we do not care about. **The store cost needs the transfer
+path**, which means step 5: a `DAP_Transfer` block at a known clock, where the per-bit cost is the
+unrolled code the emulator actually models.
 
 ### What this unlocks
 
-**Compile-time delay specialisation, worth up to about 2x in the 13–29 MHz band.** The achievable
+**Compile-time delay specialisation, worth up to about 2x in the 13-29 MHz band.** The achievable
 wire period goes up in steps of six cycles, because the delay is a counted loop costing three
-cycles per iteration and there are two delays per bit. Measured periods are 5, 11, 17, 23 cycles
-and nothing between, so a target good for 20 MHz runs at 13.1.
+cycles per iteration and there are two delays per bit. That three is now measured rather than
+assumed.
 
-The fix is to compile the fast bit path five or six times with 0, 1, 2 … `nop`s baked into
+The fix is to compile the fast bit path five or six times with 0, 1, 2 ... `nop`s baked into
 `PIN_DELAY`, and have `Set_Clock_Delay` pick the copy, exactly as `fast_clock` already picks
 between two copies today. That fills in the gap, costs a `nop` rather than a branch per bit, and
 the dispatch is once per transfer and already paid. It costs a couple of KB of flash per copy,
 which is affordable.
 
-Choosing the right copy for a requested clock needs the cost model to be right, which is why this
-waits on the capture. `PACING.md` has the full trace through the source.
+Choosing the right copy for a requested clock still needs the store cost, so it waits on step 5
+rather than on this capture. `PACING.md` has the full trace through the source.
 
 ## 5. Throughput against stock
 
