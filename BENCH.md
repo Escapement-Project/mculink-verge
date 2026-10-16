@@ -173,6 +173,26 @@ firmware a unit is running** and `tools/dap.py list` is enough to tell them apar
 Stock's own vendor commands: `0x80` answers `00 01 0f` after the echoed id
 and `0x81` answers `00 01`. Neither is documented and neither is needed by any host here.
 
+## J8, the marker header
+
+The four-pin 50-mil header beside the MCU, and the only pins on the board nothing else uses. No
+buffer, no series resistor and no ground pin, so the analyser takes its ground from the debug
+connector.
+
+| J8 pin | MCU pin | signal |
+| --- | --- | --- |
+| 1 | 4 | `PIO1_0` |
+| 2 | 39 | `PIO1_1` |
+| 3 | 41 | `PIO1_2` |
+| 4 | 42 | `PIO1_3` |
+
+**Pin 1 is the leftmost pad with the board the right way up**, USB to the left and the 10-pin debug
+connector to the right. Settled by driving one pin at a time and watching the analyser, not by
+reading the silkscreen. `uv run tools/dap.py j8 --walk` repeats it in twelve seconds.
+
+The firmware drives all four together while a host command runs, which is one store and makes the
+header orientation-free. `--mask` takes pins from the marker so a single one can be held.
+
 ## Pin map
 
 | signal | pin | note |
@@ -210,6 +230,9 @@ keeps driving the wire otherwise, and releasing the wire is the whole of OScan1.
 | `uv run tools/window.py` | disassembles the gap that repeats once a word |
 | `uv run tools/image.py` | what the image says about itself: descriptors, clocks, commands, reply bounds, serial |
 | `uv run tools/equiv.py <ref> <new>` | 1,212 differential cases against a reference build |
+| `uv run tools/dap.py j8` | drives the four-pin header beside the MCU. `--walk` names the pads |
+| `uv run tools/dap.py limit` | every achievable wire rate, checking the data at each |
+| `uv run tools/dap.py reboot --bootloader` | into ISP mode with no jumper and no hands |
 
 Host side: probe-rs on branch `wip-cmsisdap-cjtag`, currently at `815fb048c`. The cJTAG host
 control is there; the two-pin data read is not finished.
@@ -597,15 +620,69 @@ and 26.70 ms is the whole thing: **the wire is 66% of it and USB and the host ar
 A wire-only gain is worth about 2.8% from here. Anything further on the bit paths buys less than
 its own size until the USB side moves, which is what the 512-byte packet question below is about.
 
+### Where a block read's time actually goes, measured on one timeline
+
+A marker pin on J8 goes high while the firmware runs a host command and low otherwise, so the gap
+between commands and the clock are in the same capture. Before this the gap was a residual: total
+time from the host, wire time from the analyser, the difference called USB. Two runs and a
+subtraction, and the subtraction absorbed everything that was not either one.
+
+60 `DAP_TransferBlock` commands of 64 transfers at 10 MHz asked, 100 MS/s on SWCLK and the marker.
+Every block clocked exactly 5,888 edges, which is 64 x 46 with no retries.
+
+| | per block | share |
+| --- | --- | --- |
+| the 32 data bits and the request | 270.4 us | 62.7% |
+| turnarounds, parity and the per-word bookkeeping | 70.6 us | 16.4% |
+| firmware with the clock idle | 3.2 us | 0.7% |
+| USB and the host | 84.7 us | 19.6% |
+
+**USB and the host are 19.6%, not the 34% this document carried.** The old figure came from
+subtracting a separately measured wire time from a separately measured total, and it was wrong by
+enough to misrank the work: the wire is 79% of a block read, so the bit paths are worth more than
+the packet size question, not less.
+
+### The per-transfer overhead is four clock positions, and two of them are most of it
+
+Folding all 2,943 intervals in a block by position in the 46-clock transfer, over 60 blocks, so
+each number is 3,840 samples:
+
+| clock | cycles | what it is |
+| --- | --- | --- |
+| 7 | 27.01 | turnaround after the request |
+| 11 | 27.01 | turnaround after the acknowledge |
+| 44 | 51.88 | parity |
+| 45 | 66.07 | the trailing turnaround and the per-word bookkeeping |
+| everything else | 14.00 to 18.00 | request, acknowledge and data bits |
+
+Against a 15-cycle baseline those four cost 112 extra cycles on a 690-cycle transfer, which is the
+16.4% above. **Clocks 44 and 45 are 89 of those 112.** That is the once-per-word bookkeeping this
+document recorded as an unattributed underestimate in the cost model; it is now located and
+measured. It is also a larger target than anything left in the data phase, where 32 bits already
+run at 15.00 cycles dead.
+
+### The overshoot is five named clock positions, not a tendency
+
+Clocks 5, 9, 10, 12 and 13 measure 14.00 cycles against the 15.00 a 10 MHz request should give:
+**10.72 MHz on the wire, 7.2% over what the host asked for.** The data bits from clock 14 on are
+15.00 to a hundredth, and clocks 1 to 4 are 16.00, so the transfer straddles the requested rate
+rather than sitting on it.
+
+The fastest position is what a marginal target breaks on, so 10.72 MHz is the number that matters
+for the overshoot, not the 9.975 MHz average of the data phase. This supersedes the earlier 10.28 to
+10.30 MHz figure, which was the same effect measured without folding by position.
+
 ## What the bench has sized, and what is left
 
 - **Running the bit paths from SRAM.** Done; it was the biggest item there was and it doubled the
   block read. It needed no linker script of our own: `.ramfunc` is already in the board support's
   script and already copied by its startup code, which the earlier note here got wrong.
-- **A DAP packet above 512 bytes.** Now worth sizing properly. A block read at 10 MHz spends 34%
-  of its time off the wire, so this is the larger of the two remaining levers and the one the
-  emulator still cannot model at all. It deviates from stock, so check pyOCD and OpenOCD before
-  changing what `DAP_Info` reports.
+- **A DAP packet above 512 bytes.** Worth less than this document used to claim. The marker puts
+  USB and the host at 19.6% of a block read, not 34%, so the ceiling on this is a fifth rather
+  than a third. It deviates from stock, so check pyOCD and OpenOCD before changing what `DAP_Info`
+  reports.
+- **Clocks 44 and 45 of every transfer**, 51.9 and 66.1 cycles against a 15-cycle data bit. 89
+  extra cycles once per word, 12.9% of a transfer, and the largest measured target left.
 - **The two-pin and four-wire JTAG block paths are still in flash** and will have the same stall
   the SWD paths had. `cjtag_BlockImpl` and `cjtagf_BlockImpl` are 67 KB together, against 79 KB
   already in SRAM and 112 KB still free.
