@@ -423,6 +423,27 @@ def check_identity(c: Checker, elf: str) -> None:
     if proto_str == build:
         c.problems.append("DAP_Info 0x04 carries the build string; it is the CMSIS-DAP version")
 
+    def info_str(sub: int) -> str:
+        reply = probe.command(bytes([0x00, sub]))
+        if len(reply) < 2:
+            return ""
+        return reply[2 : 2 + reply[1]].rstrip(b"\x00").decode("ascii", "replace")
+
+    vendor, product = info_str(0x01), info_str(0x02)
+    # The specification stipulates that the product string contain "CMSIS-DAP", and for a v1 HID
+    # probe it is the only thing OpenOCD matches on -- see cmsis_dap_usb_hid.c, which quotes the
+    # spec. probe-rs matches the interface string instead, so a rename would break other tools
+    # first and look like a host bug.
+    if "CMSIS-DAP" not in product:
+        c.problems.append(f"product string {product!r} has no 'CMSIS-DAP'; the spec requires it")
+    # NXP built the hardware, not this firmware. The USB vendor id stays theirs because hosts bind
+    # on it; the string must not.
+    if "NXP" in vendor:
+        c.problems.append(f"vendor string {vendor!r} claims NXP, who did not write this")
+    if not vendor:
+        c.problems.append("vendor string is empty")
+    c.note(f"strings: vendor {vendor!r}, product {product!r}")
+
     unknown = probe.command(bytes([0x84, 0]))
     if not unknown or unknown[0] != ID_DAP_INVALID:
         c.problems.append("vendor 0x84 should answer ID_DAP_Invalid until something implements it")

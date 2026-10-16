@@ -154,10 +154,14 @@ This information includes:
 /// are stored and may be used by the debugger or IDE to configure device parameters.
 #define TARGET_FIXED            0               ///< Target: 1 = known, 0 = unknown;
 
-#define TARGET_DEVICE_VENDOR    "NXP"           ///< String indicating the Silicon Vendor
-#define TARGET_DEVICE_NAME      "Cortex-M"      ///< String indicating the Target Device
-#define TARGET_BOARD_VENDOR     "NXP"           ///< String indicating the Board Vendor
-#define TARGET_BOARD_NAME       "NXP board"     ///< String indicating the Board Name
+// A standalone probe has no idea what is on the other end of its connector, so TARGET_FIXED is 0
+// and the four strings below are compiled out by the guard beneath them. They are left empty
+// rather than carrying ARM's example values, which said "NXP" and read as a live claim about the
+// target. Anything that sets TARGET_FIXED has to fill them in.
+#define TARGET_DEVICE_VENDOR    ""              ///< String indicating the Silicon Vendor
+#define TARGET_DEVICE_NAME      ""              ///< String indicating the Target Device
+#define TARGET_BOARD_VENDOR     ""              ///< String indicating the Board Vendor
+#define TARGET_BOARD_NAME       ""              ///< String indicating the Board Name
 
 #if TARGET_FIXED != 0
 #include <string.h>
@@ -167,10 +171,23 @@ static const char TargetBoardVendor  [] = TARGET_BOARD_VENDOR;
 static const char TargetBoardName    [] = TARGET_BOARD_NAME;
 #endif
 
-/// Answered by DAP_Info, and also the USB strings. A host asking what it is talking to gets
-/// these; ARM's example answers nothing, which is how the stock image was told apart from it.
-#define DAP_VENDOR_NAME         "NXP Semiconductors"
-#define DAP_PRODUCT_NAME        "MCU-Link CMSIS-DAP cJTAG"
+/// Answered by DAP_Info, and also the USB strings. A host asking what it is talking to gets these.
+///
+/// Ours rather than NXP's: NXP built the hardware and we did not, so claiming their name for
+/// firmware they did not write would be wrong. The USB vendor id stays 0x1FC9 because it is theirs
+/// and every host binds on it, so a mismatch between the id and this string is expected on any
+/// reflashed unit.
+///
+/// **The product string has to contain "CMSIS-DAP".** The specification stipulates it, and for a
+/// v1 HID probe it is the only thing OpenOCD matches on. probe-rs is safer and matches the
+/// interface string, but the token is not optional.
+///
+/// The names: an escapement is the clockwork that releases a gear train one tooth at a time,
+/// which is what a bit-banged delay loop does to a wire, and it carries the escape edge this
+/// firmware exists not to emit. A verge is the oldest escapement, and an edge. `MCU-Link` stays
+/// in the product string so somebody holding an unfamiliar probe can still tell what it is.
+#define DAP_VENDOR_NAME         "Escapement Project"
+#define DAP_PRODUCT_NAME        "MCU-Link Verge CMSIS-DAP"
 
 /** Get Vendor Name string.
 \param str Pointer to buffer to store the string (max 60 characters).
