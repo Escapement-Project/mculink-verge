@@ -178,6 +178,18 @@ def run_transfer(
             + bytes([AP_DRW_READ | 0x10])
             + u32(0xDEADBEEF)
         )
+    elif kind == "address-sweep":
+        # Every combination of APnDP, RnW, A2 and A3 in one command. The packet parity is taken
+        # over exactly those four bits, and two address patterns appear anywhere else in this
+        # file, so without this a wrong parity passes for fourteen of the sixteen. Only the
+        # acknowledge-OK cases get through all of them; the rest stop at the first transfer, which
+        # is what they are for.
+        body = b""
+        for rq in range(16):
+            body += bytes([rq])
+            if (rq & 0x02) == 0:  # a write carries its data
+                body += u32(word)
+        payload = bytes([ID_TRANSFER, 0, 16]) + body
     else:  # timestamped
         payload = bytes([ID_TRANSFER, 0, 2]) + bytes([AP_DRW_READ | 0x80, AP_DRW_READ])
 
@@ -198,7 +210,7 @@ def main() -> int:
     if args.command == "transfer":
         failures = 0
         total = 0
-        kinds = ("read", "write", "match-hit", "match-miss", "timestamped")
+        kinds = ("read", "write", "match-hit", "match-miss", "timestamped", "address-sweep")
         cases = itertools.product(ACKS, kinds, (1, 2), (0, 3), (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF))
         for ack, kind, turnaround, idle, word in cases:
             total += 1
