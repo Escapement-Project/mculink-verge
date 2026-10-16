@@ -28,7 +28,7 @@ import sys
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 
-from cycles import SRAM, Machine, Model, Target  # noqa: E402
+from cycles import SCRATCH, SRAM, Machine, Model, Target, build, u16, u32  # noqa: E402
 from unicorn.arm_const import UC_ARM_REG_R0  # noqa: E402
 
 UUID_ADDRESS = 0x0009FC70
@@ -311,6 +311,76 @@ def check_commands(c: Checker, elf: str) -> None:
     )
 
 
+# What a host can make the firmware write, and where it lands. The reply length is chosen by the
+# request, not by the firmware: DAP_TransferBlock takes a sixteen-bit word count, DAP_Transfer an
+# eight-bit transfer count that can answer with eight bytes each, and DAP_ExecuteCommands runs up
+# to 255 sub-commands without checking how much of the packet arrived. None of ARM's command layer
+# compares the reply against the buffer.
+OVERFLOW_CASES = [
+    ("TransferBlock, 128 words", bytes([0x06, 0]) + u16(128) + bytes([0x0F])),
+    ("TransferBlock, 4000 words", bytes([0x06, 0]) + u16(4000) + bytes([0x0F])),
+    ("TransferBlock, 65535 words", bytes([0x06, 0]) + u16(65535) + bytes([0x0F])),
+    ("Transfer, 255 reads", bytes([0x05, 0, 255]) + bytes([0x0F]) * 255),
+    ("Transfer, 255 timestamped reads", bytes([0x05, 0, 255]) + bytes([0x8F]) * 255),
+    ("ExecuteCommands, 255 x DAP_Info", bytes([0x7F, 255]) + bytes([0x00, 0xFF]) * 255),
+    (
+        "ExecuteCommands, 255 x Transfer",
+        bytes([0x7F, 255]) + (bytes([0x05, 0, 255]) + bytes([0x0F]) * 255) * 2,
+    ),
+]
+
+
+def check_response_bounds(c: Checker, elf: str, packet_size: int) -> None:
+    """Nothing a host can send may write past the response buffer.
+
+    Found by asking the question rather than by reading the code: a five-byte request that says
+    65535 words produces a 256 KB reply, which on this part runs off the end of SRAM through the
+    stack. It is ARM's reference behaviour, so every probe built from it has it.
+
+    The canary goes past the end of the buffer the image actually contains, taken from the ELF, so
+    this measures the shipped size rather than a number repeated here.
+    """
+    sym = symbols_with_size(elf)
+    if "response" not in sym:
+        c.note("the response buffer was folded away; its bounds not checked")
+        return
+    size = sym["response"][1]
+    resp = SCRATCH + 0x400
+    ceiling = SRAM[0] + SRAM[1] - 0x1000  # clear of the stack, which is at the top
+    if resp + size >= ceiling:
+        c.problems.append(f"the response buffer is {size} bytes, too large to fence in the harness")
+        return
+
+    worst = 0
+    for label, payload in OVERFLOW_CASES:
+        probe = build(elf, "swd", True, Model())
+        if "DAP_Setup" in probe.sym:
+            probe.call("DAP_Setup")
+        probe.command(bytes([0x02, 1]))  # Connect, SWD
+        probe.command(bytes([0x11]) + u32(10_000_000))  # SWJ_Clock
+        probe.command(bytes([0x04, 0]) + u16(100) + u16(0))  # TransferConfigure
+        probe.command(bytes([0x13, 0x00]))  # SWD_Configure
+        probe.uc.mem_write(SCRATCH, payload + bytes(0x400 - len(payload)))
+        probe.uc.mem_write(resp, b"\xee" * (ceiling - resp))
+        try:
+            produced = probe.call("DAP_ExecuteCommand", SCRATCH, resp) & 0xFFFF
+        except SystemExit as exc:
+            c.problems.append(f"{label} faulted: {exc}")
+            continue
+        tail = bytes(probe.uc.mem_read(resp + size, ceiling - resp - size))
+        past = len(tail.rstrip(b"\xee"))
+        if past:
+            c.problems.append(f"{label} wrote {past} bytes past the {size}-byte response buffer")
+        if produced > size:
+            c.problems.append(f"{label} returned {produced} bytes for a {size}-byte buffer")
+        worst = max(worst, produced)
+    if not c.problems:
+        c.note(
+            f"the longest reply {len(OVERFLOW_CASES)} oversized requests could produce is {worst}"
+            f" bytes, inside the {size}-byte buffer, and only {packet_size} of it is ever sent"
+        )
+
+
 # What DAP_Info tells a host about the probe. probe-rs sizes its buffers from the packet size and
 # decides what it may ask for from the capabilities, so a wrong answer here breaks every transfer
 # rather than one.
@@ -425,6 +495,7 @@ def main() -> int:
     else:
         c.note("the MS OS 2.0 descriptor was folded away; its length not cross-checked")
     check_commands(c, args.elf)
+    check_response_bounds(c, args.elf, args.packet_size)
     check_clocks(c, args.elf)
     check_timestamp(c, args.elf)
     check_swo_baudrate(c, args.config, 96_000_000)

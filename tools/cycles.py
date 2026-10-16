@@ -320,13 +320,21 @@ class Machine:
         else:
             return
 
-        if not self.counting:
-            return
-        self.counts.gpio_store += 1
-
         after_clock = (self.level >> PIN_TCK) & 1
         after_wire = self._driven()
         after_tdi = (self.level >> PIN_TDI) & 1
+
+        # The SWD target tracks the wire whether or not anything is being counted. Keying it on the
+        # measurement meant a run that never called begin() got a target that never acknowledged,
+        # and a transfer that had failed was then reported as one that had been cheap. The two TAP
+        # models stay behind the guard below: they decode OScan1 framing, which holds only once the
+        # harness has driven the activation, and the activation's own clocks are not frames.
+        if after_wire != before_wire and after_wire == "z" and self.resync_on_release:
+            self.target.restart()
+
+        if not self.counting:
+            return
+        self.counts.gpio_store += 1
 
         # Level changes are recorded before the clock edge in the same store, so that fusing a
         # data write into the falling edge produces the same stream as doing them separately.
@@ -340,16 +348,18 @@ class Machine:
                 # That is a marker on the wire, so the framing stays in step with the probe
                 # whatever the optimiser does to the code that produces it.
                 self._packet = 2
-                # On SWD the turnaround is the only place the probe lets go, and it sits
-                # immediately before the acknowledge. Re-synchronising the target there needs no
-                # symbol to survive inlining, unlike the entry of a transfer function.
-                if self.resync_on_release:
-                    self.target.restart()
             if before_clock and after_clock:
                 self.counts.moves_while_high += 1
         if after_clock and not before_clock:
             self.counts.tck_rise += 1
             self.counts.edge_cycles.append(self.cycle)
+            if self.explain:
+                span = self.cycle - self._window_start
+                if span > self.longest[0]:
+                    self.longest = (span, self._window)
+                self._window = []
+                self._window_start = self.cycle
+            self.counts.trace.append(f"^{after_wire}{after_tdi}")
             if self.tap is not None:
                 self.tap.clock((self.level >> PIN_SWDIO) & 1)
             if self.cjtag_tap is not None:
@@ -359,13 +369,6 @@ class Machine:
                 elif self._packet == 2:
                     self.cjtag_tap.clock(self._frame_tms)
                 self._packet = (self._packet + 1) % 3
-            if self.explain:
-                span = self.cycle - self._window_start
-                if span > self.longest[0]:
-                    self.longest = (span, self._window)
-                self._window = []
-                self._window_start = self.cycle
-            self.counts.trace.append(f"^{after_wire}{after_tdi}")
         elif before_clock and not after_clock:
             self.counts.tck_fall += 1
             self.counts.trace.append("v")
