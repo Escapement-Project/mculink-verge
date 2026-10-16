@@ -41,6 +41,14 @@ TCK PA14, TDI PA15, TDO PB3, nTRST PB4, and NRST. The MSPM0L1306 pair stays out 
 where the standard has a key. Leave it unconnected at the target. There is no nTRST, so the TAP is
 reset through TMS.
 
+**The target needs its own supply; the probe cannot power it.** J6 pin 1 is a sense input. A
+voltage follower (U6) buffers it, and the buffered level becomes the reference for every level
+shifter on the debug lines. The only path from the probe's 3V3 to pin 1 is R16, 33 kOhm, which
+gives the shifters a defined reference when nothing is plugged in and collapses under any real
+load. That is why a target hung off it stayed unpowered. So power the U585 from its own board and
+wire pin 1 to its VDD. With pin 1 unwired the shifters have no reference, and the probe drives
+nothing at all.
+
 **Make the swap one connector.** One harness stays on the target and only its J6 end moves
 between probes, so both are measured through the same wires.
 
@@ -239,6 +247,11 @@ established by driving a clock burst on one unit at a time and seeing which chan
 | --- | --- | --- | --- | --- | --- | --- |
 | `CJ6B19D4E7` (was `07HW51KCTNRZQ`) | ours | D0-D2 | D0 | D1 | D2 | alive |
 | `QK7RM2VTX8D41` | stock | D4-D6 | D4 | D5 | D6 | recovered, left halted |
+
+**The three 2-pin jumpers beside each other are ISP (J3), VCOM (J4) and SWD (J5).** The board's
+silkscreen labels J4 "VCCM". It is the virtual COM port: shorted, it pulls `HW_VER_6` low, and
+firmware that reads that pin turns the USB-to-UART bridge off. J5 does the same for SWD through
+`HW_VER_7`. **Our firmware reads neither pin**, so on ours both jumpers do nothing.
 
 **A unit's serial changes when it is flashed with ours**, from NXP's 13-character string to `CJ`
 plus 8 hex of a CRC over the unique id. `uv run tools/flash.py --check` says what every attached
