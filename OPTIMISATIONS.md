@@ -138,16 +138,19 @@ for that is to make the read bit cheaper, not to let the clock run away.
 shortest period in a transfer, which is the only one that can break anything, and compares it with
 the request:
 
-| asked | SWD fastest edge | JTAG fastest edge |
-| --- | --- | --- |
-| 1 MHz | 0.98 | 0.99 |
-| 10 MHz | 9.60 | **10.29** |
-| 20 MHz | 16.00 | 18.00 |
-| 30 MHz | 16.00 | **36.00** |
-| 50 MHz | 48.00 | **72.00** |
+| asked | SWD | JTAG | two-pin |
+| --- | --- | --- | --- |
+| 0.5 MHz | 0.49 | 0.50 | 0.49 |
+| 1 MHz | 0.98 | 0.99 | 0.98 |
+| 2 MHz | 1.92 | 1.95 | 1.92 |
+| 5 MHz | 4.36 | 4.50 | 4.36 |
+| 10 MHz | 9.60 | **10.29** | 9.60 |
+| 20 MHz | 16.00 | 18.00 | 16.00 |
+| 50 MHz | 48.00 | **72.00** | 16.00 |
 
-SWD and the two-pin path are within the request at every setting. JTAG is 3% over at 10 MHz and
-44% over at 50.
+SWD and the two-pin path are within the request at every setting, and their numbers are identical
+because both pace with the same `clock_delay` and both spend three stores on a bit. JTAG is 3% over
+at 10 MHz and 44% over at 50.
 
 The cause is structural rather than a slip. `Set_Clock_Delay` models a bit as
 `2 * (IO_PORT_WRITE_CYCLES + delay * DELAY_SLOW_CYCLES)` with one constant for every protocol, and
@@ -201,7 +204,29 @@ The firmware is already as fast as the request allows on its fastest bit.
 The gap between that and what a transfer actually averages is entirely items 1 and 2 -- the slow
 classes costing more than the fast one. There is no third thing.
 
-### 4. The buffer direction pin toggles every cJTAG frame
+### 4. The two-pin path never takes the delay-free route
+
+The last column above says it: asked for 50 MHz, the two-pin path delivers 16. `cJTAG_Frame` paces
+with `PIN_DELAY_SLOW` whatever the host asked for, and above the switch point `clock_delay` is 1,
+so every packet still pays a loop iteration per half period where the four-wire paths pay none.
+
+Measured by giving the frame a delay-free variant: **568 KiB/s against 275 on a read at 50 MHz
+asked, and 530 against 281 on a write.** More than double, and still inside the request at 48 MHz.
+
+It is not shippable as written, and the gate is why that is known. Putting the branch inside
+`cJTAG_Frame` costs a cycle somewhere in the paced path, which takes a 10 MHz request from 9.60 MHz
+to 10.29 and over the line -- for no gain at that setting, since the paced frame is unchanged.
+Three arrangements were tried, including keeping the delay-free variant out of line, and all three
+move that cycle.
+
+The fix is to hoist the choice above the frame, the way ARM splits each of its own transfers into a
+Fast and a Slow copy: compile the two-pin path twice more and dispatch once per transfer rather
+than once per clock. That is two more copies of JTAG_DP.c, about 6 KB, and the arrangement already
+exists -- it is what `src/cjtag_jtag_dp.c` does.
+
+Predicts: the measured 2x at the delay-free setting, nothing below the switch point.
+
+### 5. The buffer direction pin toggles every cJTAG frame
 
 `cJTAG_Frame` releases TMSC for the TDO packet and takes it back afterwards: four of the thirteen
 GPIO writes a frame makes. Both are needed for correctness, but a sequence that captures no TDO
@@ -213,7 +238,7 @@ Predicts: four writes a frame down to two on TDO-less sequences, most of a TAP w
 **Unproven and the riskiest item here.** If the target drives TDO regardless, not releasing means
 contention. Measure before keeping.
 
-### 5. DAP packet size above 512
+### 6. DAP packet size above 512
 
 512 is the USB 2.0 ceiling for a high-speed **bulk endpoint**, and it is not tunable. It is not the
 ceiling for a DAP packet: `DAP_Info` reports packet size as a 16-bit value, a bulk transfer spans as
@@ -227,7 +252,7 @@ share of a shorter transfer.
 Two caveats. It deviates from stock, which reports 512, so a host that hardcodes rather than reading
 `DAP_Info` would break: check pyOCD and OpenOCD first. And it costs RAM.
 
-### 6. Run the bit paths from SRAM
+### 7. Run the bit paths from SRAM
 
 Unrolling put another 10.7 KB into the straight-line bit paths, and they run from flash behind a
 144 MHz wait-state setting. The emulator has no flash model, so this is the one item here it cannot
