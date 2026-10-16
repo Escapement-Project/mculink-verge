@@ -51,8 +51,10 @@ class Params:
     redirect_paired: int = 1
     # A load's result is usable by an instruction issuing this many cycles after it.
     load_use: int = 2
-    # An access through the PPB waits for an S-AHB access this many cycles after it issued.
-    ppb_after_sahb: int = 3
+    # An access through the PPB waits for an S-AHB access this many cycles after it issued, and
+    # an S-AHB access for a PPB one the same: the core keeps the two buses in order.
+    ppb_after_sahb: int = 2
+    sahb_after_ppb: int = 2
     # Extra cycles a fetch from flash costs; flash has its own accelerator, modelled crudely.
     flash_fetch: int = 0
 
@@ -92,6 +94,7 @@ class Engine:
         self.paired = False  # the previous instruction issued as the second of a pair
         self.ready: dict[str, int] = {}
         self.last_sahb = -100
+        self.last_ppb = -100
         self.current: Insn | None = None
         self.current_issue = 0
         self.accesses = 0
@@ -199,11 +202,14 @@ class Engine:
         at = self.current_issue + self.accesses
         if bus == PPB:
             at = max(at, self.last_sahb + p.ppb_after_sahb)
-            if at > self.current_issue + self.accesses:
-                # The wait stalls the instruction itself and everything behind it.
-                self.last_issue = at
-                self.current_issue = at
-        else:
+            self.last_ppb = at
+        elif bus == S_AHB:
+            at = max(at, self.last_ppb + p.sahb_after_ppb)
+        if at > self.current_issue + self.accesses:
+            # The wait stalls the instruction itself and everything behind it.
+            self.last_issue = at - self.accesses
+            self.current_issue = at - self.accesses
+        if bus != PPB:
             claims = self.claims[bus]
             while at in claims:
                 at += 1
