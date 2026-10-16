@@ -16,14 +16,15 @@
 #include "DAP_config.h"
 
 #include "DAP.h"
+#include "dap_dispatch.h"
 
 static uint8_t request[DAP_PACKET_SIZE];
-static uint8_t response[DAP_PACKET_SIZE];
+static uint8_t response[DAP_RESPONSE_SIZE];
 
 // CMSIS-DAP v1 shares the command layer with v2 but not its packet size: a HID report is bounded
 // by the interrupt endpoint while the bulk interface carries 512. The buffer is full size so an
 // over-long response cannot run past it; only a report's worth is ever sent.
-static uint8_t hid_response[DAP_PACKET_SIZE];
+static uint8_t hid_response[DAP_RESPONSE_SIZE];
 
 static void dap_task(void) {
     if (!tud_vendor_available()) {
@@ -38,6 +39,12 @@ static void dap_task(void) {
     // The high half of the return value counts request bytes consumed; only the response length
     // matters here, because one packet carries one command.
     uint32_t produced = DAP_ExecuteCommand(request, response) & 0xFFFFU;
+    // One command answers in one packet. A longer reply would split across two, which a v2 host
+    // does not expect, so send what fits and drop the rest with the malformed request that caused
+    // it.
+    if (produced > DAP_PACKET_SIZE) {
+        produced = DAP_PACKET_SIZE;
+    }
     if (produced != 0) {
         tud_vendor_write(response, produced);
         tud_vendor_flush();
