@@ -63,7 +63,7 @@ block, before and after tonight:
 | two-pin read | 50 MHz | 283 | 648 | +129% |
 | two-pin write | 50 MHz | 290 | 640 | +121% |
 
-Text grows from 46,980 bytes to 229,024, which is 36% of the part's flash. Two thirds of that
+Text grows from 46,980 bytes to 229,168, which is 36% of the part's flash. Two thirds of that
 growth is deliberate: the flash was traded for speed on the two commands below, and the ceiling is
 nowhere near.
 

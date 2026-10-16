@@ -37,7 +37,7 @@ ninja -C build                  # build/mculink_cjtag.{elf,hex,bin}
 ninja -C build check            # the gate: wire, descriptors, reply bounds
 ```
 
-The shipping configuration is the default, `-O3` with link-time optimisation, 229,024 bytes of
+The shipping configuration is the default, `-O3` with link-time optimisation, 229,168 bytes of
 text, 36% of the part's flash. Two thirds of that is flash deliberately traded for speed on the
 two transfer commands. `-DLTO=OFF` and `-DCMAKE_BUILD_TYPE=Debug` exist for bisecting a miscompilation, and both
 change which side of the two-pin pacing line the build lands on.
