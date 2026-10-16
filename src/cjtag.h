@@ -14,6 +14,9 @@ bool cJTAG_Active(void);
 
 /** Drive the online and OScan1 activation sequence, and mark the TAP as two-pin.
  *
+ * Drives the wire; does not configure the pins. DAP_Connect has to have run, or the pins are
+ * still inputs and the sequence goes nowhere without saying so.
+ *
  * Safe to call when already active: the sequence begins from a TAP reset.
  */
 void cJTAG_Activate(void);
@@ -29,6 +32,8 @@ void cJTAG_Deactivate(void);
 /** One OScan1 frame: the three TMSC packets that carry one JTAG clock.
  *
  * nTDI then TMS driven by us, then TDO with the wire released. Returns the TDO bit.
+ *
+ * Entered and left with TCKC low and the wire driven, which is what cJTAG_Activate leaves behind.
  */
 uint32_t cJTAG_Frame(uint32_t tms, uint32_t tdi);
 

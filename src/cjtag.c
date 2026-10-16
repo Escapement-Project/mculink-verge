@@ -29,6 +29,7 @@ void cJTAG_Activate(void) {
         CJTAG_DELAY();
     }
 
+    // Leave the clock low and the wire ours, which is the state every frame below starts from.
     PIN_SWCLK_TCK_CLR();
     active = true;
 }
@@ -37,15 +38,14 @@ void cJTAG_Deactivate(void) { active = false; }
 
 /** Drive one TMSC packet: set the level while the clock is low, then clock it in.
  *
- * The ordering is the entire fix. A level change while TCKC is high is an escape edge to a 1149.7
- * target, so data must only move in the low half of the cycle.
+ * Entered and left with the clock low, so the level only ever moves in the low half of a cycle.
  */
 __STATIC_FORCEINLINE void cjtag_packet_out(uint32_t level) {
-    PIN_SWCLK_TCK_CLR();
     PIN_SWDIO_OUT(level);
     CJTAG_DELAY();
     PIN_SWCLK_TCK_SET();
     CJTAG_DELAY();
+    PIN_SWCLK_TCK_CLR();
 }
 
 uint32_t cJTAG_Frame(uint32_t tms, uint32_t tdi) {
@@ -57,12 +57,18 @@ uint32_t cJTAG_Frame(uint32_t tms, uint32_t tdi) {
 
     // Packet 3 is the target's. Release the wire -- both the pin and the buffer that drives it, or
     // the buffer keeps driving whatever the pin does -- and sample what comes back.
-    PIN_SWCLK_TCK_CLR();
+    //
+    // Taking the wire back afterwards is a TMSC move like any other: it jumps from whatever the
+    // target drove to whatever our output latch holds. So it happens after the falling edge, not
+    // before it. Doing it while TCKC was still high put one escape edge in every frame, which is
+    // the exact fault this path exists to avoid. OpenOCD's OScan1 driver sequences it the same
+    // way, with TCK resting low between frames.
     PIN_SWDIO_OUT_DISABLE();
     CJTAG_DELAY();
     uint32_t tdo = PIN_SWDIO_IN();
     PIN_SWCLK_TCK_SET();
     CJTAG_DELAY();
+    PIN_SWCLK_TCK_CLR();
     PIN_SWDIO_OUT_ENABLE();
 
     return tdo;
