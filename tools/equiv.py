@@ -67,7 +67,15 @@ class SwdTarget(Target):
 
 
 def run(
-    elf: str, ack: str, read: bool, turnaround: int, data_phase: bool, idle: int, word: int, bad_parity: bool
+    elf: str,
+    ack: str,
+    read: bool,
+    turnaround: int,
+    data_phase: bool,
+    idle: int,
+    word: int,
+    bad_parity: bool,
+    words: int = 2,
 ) -> tuple[list[str], bytes]:
     probe = Machine(elf, SwdTarget(ack, word, bad_parity), restart_at=set(), model=Model())
     probe.resync_on_release = True
@@ -76,16 +84,16 @@ def run(
     probe.command(bytes([ID_TRANSFER_CONFIG, idle]) + u16(2) + u16(0))
     probe.command(bytes([ID_SWD_CONFIGURE, (turnaround - 1) | (0x04 if data_phase else 0)]))
 
-    payload = bytes([ID_TRANSFER_BLOCK, 0]) + u16(2) + bytes([AP_DRW_READ if read else AP_DRW_WRITE])
+    payload = bytes([ID_TRANSFER_BLOCK, 0]) + u16(words) + bytes([AP_DRW_READ if read else AP_DRW_WRITE])
     if not read:
-        payload += u32(word) * 2
+        payload += u32(word) * words
     probe.begin()
     reply = probe.command(payload)
     return probe.end().trace, reply
 
 
 def run_jtag(
-    elf: str, ack: int, read: bool, idle: int, word: int, count: int = 1, index: int = 0
+    elf: str, ack: int, read: bool, idle: int, word: int, count: int = 1, index: int = 0, words: int = 2
 ) -> tuple[list[str], bytes]:
     """The same comparison on four wires, with a TAP that walks the state machine.
 
@@ -104,15 +112,17 @@ def run_jtag(
     probe.command(bytes([ID_TRANSFER_CONFIG, idle]) + u16(2) + u16(0))
     probe.command(bytes([ID_JTAG_CONFIGURE, count]) + bytes([4] * count))
 
-    payload = bytes([ID_TRANSFER_BLOCK, index]) + u16(2) + bytes([AP_DRW_READ if read else AP_DRW_WRITE])
+    payload = bytes([ID_TRANSFER_BLOCK, index]) + u16(words) + bytes([AP_DRW_READ if read else AP_DRW_WRITE])
     if not read:
-        payload += u32(word) * 2
+        payload += u32(word) * words
     probe.begin()
     reply = probe.command(payload)
     return probe.end().trace, reply
 
 
-def run_cjtag(elf: str, ack: int, read: bool, idle: int, word: int, fast: bool) -> tuple[list[str], bytes]:
+def run_cjtag(
+    elf: str, ack: int, read: bool, idle: int, word: int, fast: bool, words: int = 2
+) -> tuple[list[str], bytes]:
     """The same comparison again, through OScan1 framing.
 
     Three TMSC packets carry one JTAG clock, so the TAP underneath is the same one the four-wire
@@ -132,9 +142,9 @@ def run_cjtag(elf: str, ack: int, read: bool, idle: int, word: int, fast: bool) 
     # firmware's first transfer expects to find it.
     probe.cjtag_tap = JtagTap(dr, 35)
 
-    payload = bytes([ID_TRANSFER_BLOCK, 0]) + u16(2) + bytes([AP_DRW_READ if read else AP_DRW_WRITE])
+    payload = bytes([ID_TRANSFER_BLOCK, 0]) + u16(words) + bytes([AP_DRW_READ if read else AP_DRW_WRITE])
     if not read:
-        payload += u32(word) * 2
+        payload += u32(word) * words
     probe.begin()
     reply = probe.command(payload)
     return probe.end().trace, reply
@@ -196,6 +206,40 @@ def run_transfer(
     probe.begin()
     reply = probe.command(payload)
     return probe.end().trace, reply
+
+
+# Every case above sends a two-word block. The loops that changed most recently derive the reply's
+# word count from the response pointer, so one word and a full packet are where an off-by-one
+# would show, and neither appeared anywhere in this file.
+BLOCK_SIZES = (1, 3, 63, 127)
+
+
+def sweep_sizes(reference: str, candidate: str, driver, verbose: bool) -> tuple[int, int]:
+    total = 0
+    failures = 0
+    for read in (True, False):
+        for words in BLOCK_SIZES:
+            total += 1
+            name = f"{'read' if read else 'write'} {words}-word block"
+            a = driver(reference, read, words)
+            b = driver(candidate, read, words)
+            if a[0] != b[0]:
+                first = next(
+                    (i for i, (x, y) in enumerate(zip(a[0], b[0])) if x != y),
+                    min(len(a[0]), len(b[0])),
+                )
+                print(f"  WIRE   {name}")
+                print(
+                    f"         diverges at event {first} of {len(a[0])}/{len(b[0])}:"
+                    f" {a[0][first : first + 6]} against {b[0][first : first + 6]}"
+                )
+                failures += 1
+            elif a[1] != b[1]:
+                print(f"  REPLY  {name}\n         {a[1].hex()} against {b[1].hex()}")
+                failures += 1
+            elif verbose:
+                print(f"  ok     {name}  ({len(a[0])} events, {len(a[1])}B reply)")
+    return total, failures
 
 
 def main() -> int:
@@ -266,6 +310,14 @@ def main() -> int:
                 failures += 1
             elif args.verbose:
                 print(f"  ok     {name}  ({len(a[0])} events, {len(a[1])}B reply)")
+        extra, bad = sweep_sizes(
+            args.reference,
+            args.candidate,
+            lambda elf, read, words: run_cjtag(elf, 2, read, 0, 0xA5A5_5A5A, False, words),
+            args.verbose,
+        )
+        total += extra
+        failures += bad
         print(f"\n{total - failures}/{total} two-pin cases identical on the wire and in the reply")
         return 1 if failures else 0
 
@@ -301,6 +353,14 @@ def main() -> int:
                 failures += 1
             elif args.verbose:
                 print(f"  ok     {name}  ({len(a[0])} events, {len(a[1])}B reply)")
+        extra, bad = sweep_sizes(
+            args.reference,
+            args.candidate,
+            lambda elf, read, words: run_jtag(elf, 2, read, 0, 0xA5A5_5A5A, 1, 0, words),
+            args.verbose,
+        )
+        total += extra
+        failures += bad
         print(f"\n{total - failures}/{total} JTAG cases identical on the wire and in the reply")
         return 1 if failures else 0
 
@@ -336,6 +396,14 @@ def main() -> int:
             elif args.verbose:
                 print(f"  ok     {name}  ({len(a[0])} events, {len(a[1])} byte reply)")
 
+    extra, bad = sweep_sizes(
+        args.reference,
+        args.candidate,
+        lambda elf, read, words: run(elf, "ok", read, 1, False, 0, 0xA5A5_5A5A, False, words),
+        args.verbose,
+    )
+    total += extra
+    failures += bad
     print(f"\n{total - failures}/{total} cases identical on the wire and in the reply")
     return 1 if failures else 0
 

@@ -79,11 +79,18 @@ Two of the four report the two-pin path clocking 3% fast at 10 MHz. That is know
 see OPTIMISATIONS.md.
 
 `tools/equiv.py` is the heavier check, for replacing code rather than tuning it. It drives two
-builds over 528 SWD block cases, 180 four-wire JTAG cases, 120 two-pin cases and, with
-`--command transfer`, 300 single-register cases -- every acknowledge a target can give, every
-turnaround length and chain layout, with and without the data phase and idle cycles, and the match
-values, match masks and timestamps only `DAP_Transfer` reaches. It requires identical wire events
-and identical replies from both.
+builds over 536 SWD block cases, 188 four-wire JTAG cases, 128 two-pin cases and, with
+`--command transfer`, 360 single-register cases -- every acknowledge a target can give, every
+turnaround length and chain layout, with and without the data phase and idle cycles, all sixteen
+address patterns, block sizes from one word to a full packet, and the match values, match masks and
+timestamps only `DAP_Transfer` reaches. It requires identical wire events and identical replies
+from both.
+
+The last two of those were added after the code they would have had to check was already written:
+the suite used two request values, and the packet parity is taken over exactly the bits those two
+fix; and every block case sent two words, while the loops derive the reply's word count from the
+response pointer. Both gaps were found by asking what a change could break that nothing here
+would notice.
 
 ## Where to read next
 
