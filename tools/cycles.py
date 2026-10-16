@@ -180,6 +180,11 @@ class Machine:
         self.target = target
         self.counting = False
         self.restart_at = restart_at
+        self.resync_on_release = False
+        self.explain = False
+        self._window: list[int] = []
+        self._window_start = 0
+        self.longest: tuple[int, list[int]] = (0, [])
         self.counts = Counts()
         self.md = Cs(CS_ARCH_ARM, CS_MODE_THUMB)
         self.md.detail = False
@@ -274,11 +279,22 @@ class Machine:
             self.counts.trace.append(f"W{after_wire}")
             if after_wire == "z":
                 self.counts.swdio_release += 1
+                # On SWD the turnaround is the only place the probe lets go, and it sits
+                # immediately before the acknowledge. Re-synchronising the target there needs no
+                # symbol to survive inlining, unlike the entry of a transfer function.
+                if self.resync_on_release:
+                    self.target.restart()
             if before_clock and after_clock:
                 self.counts.moves_while_high += 1
         if after_clock and not before_clock:
             self.counts.tck_rise += 1
             self.counts.edge_cycles.append(self.cycle)
+            if self.explain:
+                span = self.cycle - self._window_start
+                if span > self.longest[0]:
+                    self.longest = (span, self._window)
+                self._window = []
+                self._window_start = self.cycle
             self.counts.trace.append(f"^{after_wire}{after_tdi}")
         elif before_clock and not after_clock:
             self.counts.tck_fall += 1
@@ -320,6 +336,8 @@ class Machine:
             self.cycle += self.model.taken_branch - self.model.other
         self._prev_end = address + size
 
+        if self.explain:
+            self._window.append(address)
         kind, _ = self._classify(address, size)
         c = self.counts
         c.instructions += 1
@@ -402,6 +420,9 @@ def build(elf: str, wire: str, read: bool, model: Model) -> Machine:
         ("cjtag", False): CJTAG_WRITE,
     }[(wire, read)]
     probe = Machine(elf, Target(pattern), restart_at=set(), model=model)
+    if wire == "swd":
+        probe.resync_on_release = True
+        return probe
     found = {name for name in TRANSFER_MARKERS[wire] if name in probe.sym}
     if not found:
         raise SystemExit(
@@ -412,7 +433,9 @@ def build(elf: str, wire: str, read: bool, model: Model) -> Machine:
     return probe
 
 
-def measure(elf: str, wire: str, clock_hz: int, words: int, read: bool, model: Model) -> tuple[Counts, bytes]:
+def measure(
+    elf: str, wire: str, clock_hz: int, words: int, read: bool, model: Model, explain: bool = False
+) -> tuple[Counts, bytes, "Machine"]:
     probe = build(elf, wire, read, model)
     # DAP_Setup only sets defaults that the commands below overwrite, and link-time optimisation
     # usually folds it into main, so run it when it still exists and skip it when it does not.
@@ -433,9 +456,11 @@ def measure(elf: str, wire: str, clock_hz: int, words: int, read: bool, model: M
     if not read:
         payload += u32(0xA5A5_5A5A) * words
 
+    probe.explain = explain
     probe.begin()
+    probe._window_start = 0
     response = probe.command(payload)
-    return probe.end(), response
+    return probe.end(), response, probe
 
 
 def measure_bit_loop(elf: str, clock_hz: int, model: Model, bits: int = 248) -> Counts:
@@ -451,6 +476,26 @@ def measure_bit_loop(elf: str, clock_hz: int, model: Model, bits: int = 248) -> 
     probe.begin()
     probe.command(bytes([ID_SWJ_SEQUENCE, bits % 256]) + bytes([0xA5]) * ((bits + 7) // 8))
     return probe.end()
+
+
+def explain_gap(probe: "Machine") -> None:
+    """Name the code that runs in the longest stretch between two clock edges."""
+    span, window = probe.longest
+    if not window:
+        return
+    ordered = sorted((a, n) for n, a in probe.sym.items())
+    addrs = [a for a, _ in ordered]
+    import bisect
+
+    tally: dict[str, int] = {}
+    for pc in window:
+        i = bisect.bisect_right(addrs, pc) - 1
+        name = ordered[i][1] if i >= 0 else "?"
+        tally[name] = tally.get(name, 0) + 1
+    ranked = sorted(tally.items(), key=lambda kv: -kv[1])[:6]
+    print(f"    the longest gap is {span} cycles, {len(window)} instructions, in:")
+    for name, n in ranked:
+        print(f"      {n:5d}  {name}")
 
 
 def report(name: str, c: Counts, model: Model, clock_hz: int, cpu_hz: int, words: int):
@@ -473,19 +518,25 @@ def report(name: str, c: Counts, model: Model, clock_hz: int, cpu_hz: int, words
         tally: dict[int, int] = {}
         for p in periods:
             tally[p] = tally.get(p, 0) + 1
-        common = sorted(tally.items(), key=lambda kv: -kv[1])[:3]
-        shape = "  ".join(f"{p} cyc x{n}" for p, n in common)
-        steady = common[0][0]
-        print(f"    wire period: {shape}   (shortest {min(periods)}, longest {max(periods)})")
+        steady = max(tally.items(), key=lambda kv: kv[1])[0]
         print(
-            f"    the period it holds for most of a transfer is {steady} cycles,"
-            f" {cpu_hz / steady / 1e6:.2f} MHz"
+            f"    wire period: shortest {min(periods)}, longest {max(periods)},"
+            f" held for most of a transfer {steady} cycles = {cpu_hz / steady / 1e6:.2f} MHz"
         )
+        # Ranked by the cycles each class costs in total, which is where the time actually goes.
+        total = sum(periods)
+        ranked = sorted(tally.items(), key=lambda kv: -kv[0] * kv[1])[:5]
+        shape = "   ".join(f"{p}cyc x{n} = {100 * p * n / total:.0f}%" for p, n in ranked)
+        print(f"    where the time goes: {shape}")
     print(
         f"    modelled {cycles} cycles, {bit_cycles:.2f} per clock"
         f"  ->  {achieved / 1e6:.2f} MHz on the wire for {clock_hz / 1e6:.0f} MHz asked"
         f"   ({100 * achieved / clock_hz:.0f}%)"
     )
+    # Wire time only. The host round trip between packets is not modelled and the bench measured
+    # it at about 10% of a transfer at 14 MHz, so treat this as a ceiling.
+    seconds = cycles / cpu_hz
+    print(f"    {words * 4 / seconds / 1024:.0f} KiB/s of wire time for {words} words")
 
 
 def dap_constants(path: str) -> tuple[int, int, int]:
@@ -574,6 +625,11 @@ def main() -> int:
         help="the DAP_config.h the image was built from, for its clock constants",
     )
     ap.add_argument(
+        "--explain",
+        action="store_true",
+        help="name the code running in the longest stretch between two clock edges",
+    )
+    ap.add_argument(
         "--trace",
         metavar="DIR",
         help="write the wire event stream per scenario, to diff across a change",
@@ -603,8 +659,12 @@ def main() -> int:
         clock_hz = int(mhz * 1e6)
         print(f"\n{mhz:g} MHz requested")
         for label, read in (("read", True), ("write", False)):
-            counts, _ = measure(args.elf, args.wire, clock_hz, args.words, read, model)
+            counts, _, probe = measure(
+                args.elf, args.wire, clock_hz, args.words, read, model, explain=args.explain
+            )
             report(label, counts, model, clock_hz, cpu_hz, args.words)
+            if args.explain:
+                explain_gap(probe)
             if args.trace:
                 os.makedirs(args.trace, exist_ok=True)
                 path = os.path.join(args.trace, f"{args.wire}-{label}-{mhz:g}MHz.trace")
