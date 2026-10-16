@@ -16,11 +16,12 @@ delay settings solves for the store and branch costs.
 """
 
 import argparse
+import os
 import re
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from capstone import CS_ARCH_ARM, CS_MODE_THUMB, Cs
 from unicorn import (
@@ -36,15 +37,27 @@ from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_AR
 # LPC55S69, non-secure aliases, which is what the image was built against.
 GPIO_BASE = 0x4008C000
 GPIO_SIZE = 0x4000
-# Byte-addressable pin registers live at the base; the rest start 0x2000 in.
+# Byte-addressable pin registers live at the base; the rest start 0x2000 in. Port 0 is the only
+# port this firmware touches, so every offset below is that port's word.
+REG_B0 = 0x0000
+REG_DIR = 0x2000
+REG_MASK = 0x2080
 REG_PIN = 0x2100
+REG_MPIN = 0x2180
 REG_SET = 0x2200
 REG_CLR = 0x2280
+REG_NOT = 0x2300
 REG_DIRSET = 0x2380
 REG_DIRCLR = 0x2400
 
-SWCLK_BIT = 1 << 0
-SWDIO_BIT = 1 << 2
+PIN_TCK = 0
+PIN_TDI = 1
+PIN_SWDIO = 2
+PIN_TDO = 3
+PIN_TXEN = 28
+
+SWCLK_BIT = 1 << PIN_TCK
+SWDIO_BIT = 1 << PIN_SWDIO
 
 FLASH = (0x00000000, 0x00100000)
 SRAM = (0x20000000, 0x00050000)
@@ -112,6 +125,10 @@ class Counts:
     tck_rise: int = 0
     tck_fall: int = 0
     swdio_release: int = 0
+    # A wire transition while the clock is high. Harmless on SWD and four-wire JTAG; on a 1149.7
+    # wire it is an escape edge, which is the whole reason this firmware exists.
+    moves_while_high: int = 0
+    trace: list[str] = field(default_factory=list)
 
 
 class Target:
@@ -164,6 +181,10 @@ class Machine:
         self._decoded: dict[int, tuple[str, int]] = {}
         self._prev_end: int | None = None
 
+        self.level = 0
+        self.dir = 0
+        self.mask = 0
+
         self.uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
         for base, size in (FLASH, SRAM, USB_RAM, PERIPH_LOW, PERIPH_HIGH, PPB):
             self.uc.mem_map(base, size)
@@ -184,22 +205,78 @@ class Machine:
     # -- GPIO ----------------------------------------------------------------
     def _gpio_read(self, uc, offset, size, user):
         # B[0][n] is one byte per pin at the start of the block: SWDIO is pin 2, TDO pin 3.
-        if offset in (0x02, 0x03):
+        if offset in (REG_B0 + PIN_SWDIO, REG_B0 + PIN_TDO):
+            if self.counting:
+                self.counts.trace.append("S" if offset == REG_B0 + PIN_SWDIO else "T")
             return self.target.bit()
         if offset == REG_PIN:
-            return 0
+            return self.level & self.dir
+        if offset == REG_DIR:
+            return self.dir
         return 0
 
+    def _driven(self) -> str:
+        """What the target sees on the shared wire: our level, or z when we have let go.
+
+        The buffer direction pin gates the line as much as the pin direction does, so a release
+        needs both and so does taking it back.
+        """
+        if not (self.dir >> PIN_SWDIO) & 1 or not (self.level >> PIN_TXEN) & 1:
+            return "z"
+        return "1" if (self.level >> PIN_SWDIO) & 1 else "0"
+
     def _gpio_write(self, uc, offset, size, value, user):
+        before_clock = (self.level >> PIN_TCK) & 1
+        before_wire = self._driven()
+        before_tdi = (self.level >> PIN_TDI) & 1
+
+        if offset == REG_SET:
+            self.level |= value
+        elif offset == REG_CLR:
+            self.level &= ~value & 0xFFFFFFFF
+        elif offset == REG_NOT:
+            self.level ^= value
+        elif offset == REG_MPIN:
+            keep = self.mask
+            self.level = (self.level & keep) | (value & ~keep & 0xFFFFFFFF)
+        elif offset == REG_MASK:
+            self.mask = value
+        elif offset == REG_DIR:
+            self.dir = value
+        elif offset == REG_DIRSET:
+            self.dir |= value
+        elif offset == REG_DIRCLR:
+            self.dir &= ~value & 0xFFFFFFFF
+        elif REG_B0 <= offset < REG_B0 + 32:
+            pin = offset - REG_B0
+            self.level = (self.level & ~(1 << pin)) | ((1 if value & 1 else 0) << pin)
+        else:
+            return
+
         if not self.counting:
             return
-        if offset == REG_SET and value & SWCLK_BIT:
-            self.counts.tck_rise += 1
-        elif offset == REG_CLR and value & SWCLK_BIT:
-            self.counts.tck_fall += 1
-        elif offset == REG_DIRCLR and value & SWDIO_BIT:
-            self.counts.swdio_release += 1
         self.counts.gpio_store += 1
+
+        after_clock = (self.level >> PIN_TCK) & 1
+        after_wire = self._driven()
+        after_tdi = (self.level >> PIN_TDI) & 1
+
+        # Level changes are recorded before the clock edge in the same store, so that fusing a
+        # data write into the falling edge produces the same stream as doing them separately.
+        if after_tdi != before_tdi:
+            self.counts.trace.append(f"I{after_tdi}")
+        if after_wire != before_wire:
+            self.counts.trace.append(f"W{after_wire}")
+            if after_wire == "z":
+                self.counts.swdio_release += 1
+            if before_clock and after_clock:
+                self.counts.moves_while_high += 1
+        if after_clock and not before_clock:
+            self.counts.tck_rise += 1
+            self.counts.trace.append(f"^{after_wire}{after_tdi}")
+        elif before_clock and not after_clock:
+            self.counts.tck_fall += 1
+            self.counts.trace.append("v")
 
     # -- instruction accounting ---------------------------------------------
     def _classify(self, address: int, size: int) -> tuple[str, int]:
@@ -362,6 +439,7 @@ def report(name: str, c: Counts, model: Model, clock_hz: int, cpu_hz: int, words
         f"    of those: {c.load} loads, {c.store} stores ({c.gpio_store} to GPIO),"
         f" {c.taken_branch} taken branches, {c.other} other"
     )
+    print(f"    wire moved {c.moves_while_high} times while the clock was high")
     print(
         f"    modelled {cycles} cycles, {bit_cycles:.2f} per clock"
         f"  ->  {achieved / 1e6:.2f} MHz on the wire for {clock_hz / 1e6:.0f} MHz asked"
@@ -454,6 +532,11 @@ def main() -> int:
         help="the DAP_config.h the image was built from, for its clock constants",
     )
     ap.add_argument(
+        "--trace",
+        metavar="DIR",
+        help="write the wire event stream per scenario, to diff across a change",
+    )
+    ap.add_argument(
         "--calibrate",
         action="store_true",
         help="fit cycles per bit against delay iterations to recover ARM's two clock constants",
@@ -480,6 +563,12 @@ def main() -> int:
         for label, read in (("read", True), ("write", False)):
             counts, _ = measure(args.elf, args.wire, clock_hz, args.words, read)
             report(label, counts, model, clock_hz, cpu_hz, args.words)
+            if args.trace:
+                os.makedirs(args.trace, exist_ok=True)
+                path = os.path.join(args.trace, f"{args.wire}-{label}-{mhz:g}MHz.trace")
+                with open(path, "w") as fh:
+                    fh.write("\n".join(counts.trace) + "\n")
+                print(f"    wire events written to {path}")
     return 0
 
 
