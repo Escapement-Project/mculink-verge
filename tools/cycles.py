@@ -607,6 +607,83 @@ def calibrate(elf: str, wire: str, words: int, cpu_hz: int, model: Model, config
     return 0
 
 
+CHECK_WIRES = ("swd", "jtag", "cjtag")
+CHECK_CLOCKS = (1, 5, 10, 20, 50)
+BASELINE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "baseline")
+
+
+def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
+    """The gate: an optimisation may change the timing and must not change anything else.
+
+    Three things are checked. The wire event stream has to match what is recorded, which is what
+    makes a change to the bit paths reviewable without reading the generated code. The two-pin path
+    has to emit no transition while the clock is high, because that is an escape edge and the
+    reason this firmware exists. And no wire may clock faster than the host asked for, except where
+    that is already recorded as known -- a new one is a regression.
+    """
+    failures = []
+    known_path = os.path.join(BASELINE_DIR, "known-overshoot.txt")
+    known = set()
+    if os.path.exists(known_path):
+        known = {line.strip() for line in open(known_path) if line.strip() and not line.startswith("#")}
+    seen_overshoot = set()
+
+    for wire in CHECK_WIRES:
+        for label, read in (("read", True), ("write", False)):
+            counts, _, _ = measure(elf, wire, 10_000_000, 16, read, model)
+
+            name = f"{wire}-{label}.trace"
+            path = os.path.join(BASELINE_DIR, name)
+            body = "\n".join(counts.trace) + "\n"
+            if bless:
+                os.makedirs(BASELINE_DIR, exist_ok=True)
+                open(path, "w").write(body)
+            elif not os.path.exists(path):
+                failures.append(f"{name}: no baseline recorded")
+            elif open(path).read() != body:
+                failures.append(f"{name}: wire events differ from the baseline")
+
+            if wire == "cjtag" and counts.moves_while_high:
+                failures.append(
+                    f"{wire} {label}: {counts.moves_while_high} transitions while the clock was"
+                    " high, which are escape edges to a 1149.7 target"
+                )
+
+    for wire in CHECK_WIRES:
+        for mhz in CHECK_CLOCKS:
+            counts, _, _ = measure(elf, wire, int(mhz * 1e6), 16, True, model)
+            periods = [b - a for a, b in zip(counts.edge_cycles, counts.edge_cycles[1:])]
+            if not periods:
+                continue
+            fastest = cpu_hz / min(periods)
+            if fastest > mhz * 1e6:
+                tag = f"{wire}@{mhz}MHz"
+                seen_overshoot.add(tag)
+                if tag not in known:
+                    failures.append(
+                        f"{tag}: fastest edge {fastest / 1e6:.2f} MHz is over the clock asked for"
+                    )
+
+    if bless:
+        os.makedirs(BASELINE_DIR, exist_ok=True)
+        with open(known_path, "w") as fh:
+            fh.write("# Wires that clock faster than the host asked for. See OPTIMISATIONS.md:\n")
+            fh.write("# it is a decision rather than a slip, and both ways out cost throughput.\n")
+            for tag in sorted(seen_overshoot):
+                fh.write(tag + "\n")
+        print(f"baseline rewritten in {BASELINE_DIR}")
+        return 0
+
+    for tag in sorted(known - seen_overshoot):
+        print(f"  note: {tag} no longer overshoots; drop it from known-overshoot.txt")
+    if failures:
+        for f in failures:
+            print(f"  FAIL  {f}")
+        return 1
+    print(f"  all clear: wire events match, no escape edges, {len(known)} known overshoots unchanged")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("elf", nargs="?", default="build/mculink_cjtag.elf")
@@ -629,6 +706,16 @@ def main() -> int:
         "--config",
         default="src/DAP_config.h",
         help="the DAP_config.h the image was built from, for its clock constants",
+    )
+    ap.add_argument(
+        "--check",
+        action="store_true",
+        help="gate: wire events match the baseline, no escape edges, no new overclocking",
+    )
+    ap.add_argument(
+        "--bless",
+        action="store_true",
+        help="with --check, rewrite the baseline from this build",
     )
     ap.add_argument(
         "--explain",
@@ -654,6 +741,9 @@ def main() -> int:
         gpio_store=args.gpio_store_cycles,
     )
     cpu_hz = int(args.cpu * 1e6)
+    if args.check:
+        print(f"{args.elf}")
+        return check(args.elf, model, cpu_hz, args.bless)
     if args.calibrate:
         return calibrate(args.elf, args.wire, args.words, cpu_hz, model, args.config)
     print(f"{args.elf}, {args.wire}, {args.words}-word block, core {args.cpu:g} MHz")
