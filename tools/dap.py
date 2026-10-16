@@ -1099,6 +1099,63 @@ def dr_scan(clocks: int) -> str:
 CJTAG_SELECT_OSCAN1 = zbs() + zbs() + dr_scan(1) + dr_scan(1) + dr_scan(1) + dr_scan(3) + dr_scan(9)
 
 
+class TapWalk:
+    """TMS, TDI and capture flags for a run of IR and DR scans, from Run-Test/Idle.
+
+    `via_idle=False` goes from one Update state straight into the next scan, which is how a TAP
+    the ICEPick has just switched in is kept off the chain until the scan that follows.
+    """
+
+    def __init__(self):
+        self.tms, self.tdi, self.cap, self.at_update = "", "", "", False
+
+    def _clock(self, tms: str, tdi: str = "", cap: str = ""):
+        self.tms += tms
+        self.tdi += tdi or "1" * len(tms)
+        self.cap += cap or "0" * len(tms)
+
+    def scan(self, ir: bool, value: int, bits: int, via_idle: bool = True) -> "TapWalk":
+        if self.at_update and via_idle:
+            self._clock("0")
+        # Run-Test/Idle and both Update states go to Select-DR on TMS high; then Select-IR for an
+        # IR scan, Capture, and the edge into Shift.
+        self._clock("1" + ("1" if ir else "") + "00")
+        data = format(value & ((1 << bits) - 1), f"0{bits}b")[::-1]
+        self._clock("0" * (bits - 1) + "1", data, "1" * bits)
+        self._clock("1")  # Update
+        self.at_update = True
+        return self
+
+    def idle(self, clocks: int) -> "TapWalk":
+        self._clock("0" * clocks)
+        self.at_update = False
+        return self
+
+
+def run_walk(probe: Probe, walk: TapWalk) -> list[int]:
+    """Clock a TapWalk, returning each scan's captured TDO as an integer, in order."""
+    sequences, at = [], 0
+    while at < len(walk.tms):
+        n, key = 1, (walk.tms[at], walk.cap[at])
+        while at + n < len(walk.tms) and n < 64 and (walk.tms[at + n], walk.cap[at + n]) == key:
+            n += 1
+        tdi = int(walk.tdi[at : at + n][::-1], 2)
+        sequences.append((n, int(key[0]), key[1] == "1", tdi))
+        at += n
+    captured = []
+    for start in range(0, len(sequences), 32):
+        chunk = sequences[start : start + 32]
+        for (n, _, cap, _), bits in zip([q for q in chunk if q[2]], probe.jtag_sequence(chunk)):
+            captured.append(format(bits, f"0{n}b")[::-1])
+    # Join the per-sequence captures back into one string per scan.
+    scans, flat, pos = [], "".join(captured), 0
+    for run in walk.cap.split("0"):
+        if run:
+            scans.append(int(flat[pos : pos + len(run)][::-1], 2))
+            pos += len(run)
+    return scans
+
+
 def replay_pins(probe: Probe, writes: list[tuple[int, int]]) -> None:
     """Drive `writes` with DAP_SWJ_Pins, many to a packet so an escape lands in microseconds."""
     per_packet = (probe.out_ep.wMaxPacketSize - 2) // 7
@@ -1110,6 +1167,64 @@ def replay_pins(probe: Probe, writes: list[tuple[int, int]]) -> None:
         reply = probe.command(bytes(request))
         if reply[1] != len(chunk):
             raise RuntimeError(f"DAP_ExecuteCommands ran {reply[1]} of {len(chunk)}")
+
+
+def icepick_read_cpuid(probe: Probe, args) -> None:
+    """Route a CC13xx ICEPick to its Cortex-M DAP and read CPUID through DAP_Transfer.
+
+    The ICEPick steps are probe-rs's icepick.rs, which ports OpenOCD's icepick.cfg.
+    """
+    ir_connect, ir_router, ir_bypass = 0x07, 0x02, 0x3F
+    sysctrl = (1 << 31) | (1 << 24) | 0x80
+    sd_tap0 = (1 << 31) | (0x20 << 24) | (1 << 20) | (1 << 8) | (1 << 6) | (1 << 3)
+    walk = TapWalk().scan(True, ir_connect, 6).scan(False, 0x89, 8).idle(1)
+    walk.scan(True, ir_router, 6).scan(False, sysctrl, 32).scan(True, ir_router, 6).scan(False, 0, 32).idle(1)
+    print(f"  ICEPick SYSCTRL reads back 0x{run_walk(probe, walk)[-1]:08x}")
+    idcode = run_walk(probe, TapWalk().scan(True, 0x04, 6).scan(False, 0, 32).idle(1))[-1]
+    print(f"  ICEPick IDCODE through IR 0x04 afterwards: 0x{idcode:08x}")
+    walk = TapWalk().scan(True, ir_router, 6).scan(False, sd_tap0, 32, via_idle=False)
+    walk.scan(True, ir_bypass, 6, via_idle=False).idle(args.join_idle)
+    run_walk(probe, walk)
+    print("  SD_TAP0 selected, ICEPick in BYPASS")
+    # The secondary TAP answers only once its power domain is up, which takes a while after the
+    # selection; until then the chain reads all ones.
+    pattern = 0x0123456789ABCDEF_FEDCBA98
+    selected = time.perf_counter()
+    for attempt in range(200):
+        chain = run_walk(probe, TapWalk().scan(False, pattern, 96).idle(1))[0]
+        if chain != (1 << 96) - 1:
+            break
+        time.sleep(0.005)
+    waited = (time.perf_counter() - selected) * 1e3
+    print(f"  96-bit DR scan of 0x{pattern:024x}: 0x{chain:024x} after {waited:.0f} ms, {attempt + 1} scans")
+    for delay in range(0, 40):
+        if (chain >> delay) & ((1 << (96 - delay)) - 1) == pattern & ((1 << (96 - delay)) - 1) and delay:
+            print(f"  the pattern comes back {delay} bits late: 0x{chain & ((1 << delay) - 1):x} ahead of it")
+            break
+    # DP CTRL/STAT write, read; SELECT AP 0 bank 0xF; AP IDR read; CSW, TAR, DRW.
+    for order in ((4, 6), (6, 4)):
+        reply = probe.command(bytes([DAP_JTAG_CONFIGURE, 2, *order]))
+        index = 0 if order[0] == 4 else 1
+        request = bytes([DAP_TRANSFER, index, 2, 0x04]) + (0x5000_0000).to_bytes(4, "little") + bytes([0x06])
+        reply = probe.command(request)
+        if reply[1] == 2 and reply[2] == 1:
+            print(f"  chain IR lengths {order}: CTRL/STAT 0x{int.from_bytes(reply[3:7], 'little'):08x}")
+            break
+        print(f"  chain IR lengths {order}: DAP_Transfer count {reply[1]} ack {reply[2]}")
+    else:
+        return
+    steps = [
+        (0x08, 0x0000_00F0), (0x0F, None),  # SELECT bank 0xF, AP IDR
+        (0x08, 0x0000_0000), (0x01, 0x2300_0052), (0x05, 0xE000_ED00), (0x0F, None),  # CPUID
+    ]
+    request = bytearray([DAP_TRANSFER, index, len(steps)])
+    for req, value in steps:
+        request.append(req)
+        if value is not None:
+            request += value.to_bytes(4, "little")
+    reply = probe.command(bytes(request))
+    words = [int.from_bytes(reply[3 + 4 * i : 7 + 4 * i], "little") for i in range(2)]
+    print(f"  DAP_Transfer count {reply[1]} ack {reply[2]}: AP IDR 0x{words[0]:08x}, CPUID 0x{words[1]:08x}")
 
 
 def cmd_cjtag(args) -> int:
@@ -1194,6 +1309,8 @@ def cmd_cjtag(args) -> int:
         if idcode == 1 << 31:
             verdict += "; TDO equals the TMS sent, so nothing drove the wire"
         print(f"  read {attempt}: IDCODE 0x{idcode:08x} ({verdict})")
+    if args.mem:
+        icepick_read_cpuid(probe, args)
     if not args.keep:
         probe.command(bytes([DAP_VENDOR_CJTAG_CONTROL, 0]))
     probe.release()
@@ -1311,6 +1428,8 @@ def main() -> int:
     cjtag.add_argument("--window", action="append", default=[], help="start:until, repeatable; replaces --start/--until")
     cjtag.add_argument("--nreset-first", action="store_true", help="pulse nRESET before the activation")
     cjtag.add_argument("--settle", type=float, default=50, help="ms to wait after --nreset-first")
+    cjtag.add_argument("--mem", action="store_true", help="route the ICEPick to the Cortex-M DAP and read CPUID")
+    cjtag.add_argument("--join-idle", type=int, default=10, help="--mem: Run-Test/Idle clocks after the TAP selection")
     cjtag.add_argument("--pre-tms", default="", help="TMS bits to send framed before the reads")
     cjtag.add_argument("--tdi", type=int, default=1, choices=(0, 1), help="TDI level for every frame")
     cjtag.add_argument("--pre-tdi", default="", help="TDI bit per --pre-tms bit")
