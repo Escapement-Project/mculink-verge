@@ -26,11 +26,12 @@ host rather than the probe.
 **Two-pin works on hardware, 2026-10-17.** On a CC1312R1 LaunchPad our probe reads the ICEPick
 IDCODE and, through the ICEPick's routing, the Cortex-M4's CPUID over TCKC and TMSC alone, with
 TDI and TDO flat. Block reads of the boot ROM are correct from 1 to 25 MHz requested and fail at
-37.5. The host drives the J-Link's activation with standard commands and vendor `0x83 0x02`
-turns on our framing; the firmware's own activation (`0x83 0x01`, OpenOCD's) is for adapters
-that power up offline and does not work on this part. The wire rules and the generator plan
-are in `CJTAGGEN.md`. Four-wire JTAG is still
-unmeasured on hardware.
+37.5. The host drives TI's own activation (the XDS110 routine, with the 200 us power-up wait
+TI requires) using standard commands, and vendor `0x83 0x02` turns on our framing; the
+firmware's own activation (`0x83 0x01`, OpenOCD's) is for adapters that power up offline and
+does not work on this part. The wire rules, the activation and the generator plan are in
+`CJTAGGEN.md`. Four-wire JTAG is still unmeasured on
+hardware.
 
 **nRESET reaches targets since c62226b.** Before it, the reset buffer's direction pin sat in I2C
 open-drain mode, so no reset from this firmware ever reached a target.
