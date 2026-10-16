@@ -18,7 +18,7 @@
 
 uint32_t USART3_GetFreq(void) { return CLOCK_GetFlexCommClkFreq(3U); }
 
-void board_swo_pin_init(void) {
+__attribute__((noinline)) void board_swo_pin_init(void) {
     // The divided high-speed FRO rather than the 12 MHz one: SWO runs at megabaud rates and a
     // 12 MHz reference cannot divide to them with usable error.
     CLOCK_AttachClk(kFRO_HF_DIV_to_FLEXCOMM3);

@@ -24,7 +24,7 @@ _Static_assert(DBGIF_TCK_SWCLK_PORT == DBGIF_PORT && DBGIF_TDI_PORT == DBGIF_POR
  *
  * Anything else here that attaches to FRO_HF_DIV depends on this call.
  */
-void board_clocks_init(void) {
+__attribute__((noinline)) void board_clocks_init(void) {
     CLOCK_SetupFROClocking(96000000U);
     CLOCK_SetClkDiv(kCLOCK_DivFrohfClk, 1U, true);
 }

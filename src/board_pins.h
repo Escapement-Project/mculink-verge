@@ -47,6 +47,10 @@
 
 /** Start the clocks the peripherals here depend on.
  *
+ * Kept out of line, like the other two things that run once at boot and bring a peripheral up.
+ * The call costs nothing at that rate, and being a symbol is what lets tools/image.py run
+ * it and ask the clock driver what came out.
+ *
  * Call before anything attaches a Flexcomm. See the note in board_pins.c for why this is not
  * something the board support already did.
  */

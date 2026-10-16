@@ -26,7 +26,7 @@ uv run tools/cycles.py --check            # the same thing by hand
 uv run tools/cycles.py --clock 10 50      # throughput, wire period, where the time goes
 uv run tools/cycles.py --explain          # name the code in the longest gap between edges
 uv run tools/equiv.py <ref.elf> <new.elf> # hold a rewrite to a reference build, case by case
-uv run tools/descriptors.py               # the USB descriptors and the serial number
+uv run tools/image.py               # the USB descriptors and the serial number
 ```
 
 `ninja check` runs the descriptor check too. It reads the descriptors out of the image and holds

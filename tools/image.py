@@ -2,17 +2,22 @@
 # requires-python = ">=3.11"
 # dependencies = ["unicorn", "capstone"]
 # ///
-"""Check the USB descriptors and the serial number in a built image.
+"""Check what a built image says about itself, without hardware.
 
-A malformed descriptor is the failure with the least to go on: the device does not appear, nothing
-reports why, and the first guess at the bench is the cable. The lengths involved are nested and
-hand-maintained -- a configuration descriptor states a total that has to match the bytes after it,
-an interface states how many endpoints follow, the BOS states the size of a descriptor stored
-somewhere else -- and nothing in the build checks any of them.
+Four things that only show up at the bench, each of which looks like something else when it does.
 
-So read them out of the ELF and check them against each other. The serial number is read the same
-way: it is the other thing that can stop the device appearing, because it comes from a flash region
-that this firmware has never actually touched.
+A malformed descriptor: the device does not appear, nothing reports why, and the first guess is
+the cable. The lengths are nested and hand-maintained -- a configuration states a total that has to
+match the bytes after it, an interface states how many endpoints follow, the BOS states the size of
+a descriptor stored elsewhere -- and nothing in the build checks them against each other.
+
+A clock that is not running: a Flexcomm with no clock reports no error, it simply never reaches a
+baud rate, and the console and SWO both look like wiring faults.
+
+A command that does not answer, or that never returns. COMMANDS below is a claim until something
+sends all of them.
+
+And the serial number, which comes from a flash region this firmware has never touched.
 """
 
 import argparse
@@ -265,6 +270,38 @@ def check_info(c: Checker, elf: str, packet_size: int, packet_count: int) -> Non
 DAP_ID_PRODUCT, DAP_ID_SER_NUM = 2, 3
 
 
+def check_clocks(c: Checker, elf: str) -> None:
+    """Run the boot-time clock setup and ask the clock driver what came out.
+
+    This is the fix that would be invisible on the bench: the 96 MHz output of FRO192M is off out
+    of reset and the board support never enables it, and FROHFDIV is halted as well, so a Flexcomm
+    attached to FRO_HF_DIV gets nothing and a UART with no clock reports no error -- it just never
+    reaches a baud rate. Running it against the register model says what the driver would read.
+    """
+    probe = Machine(elf, Target([]), restart_at=set(), model=Model())
+    for name in ("board_clocks_init", "board_swo_pin_init", "vcom_init", "USART3_GetFreq"):
+        if name not in probe.sym:
+            c.note(f"{name} was inlined away; the clock setup not checked")
+            return
+
+    probe.call("board_clocks_init")
+    probe.call("board_swo_pin_init")
+    swo = probe.call("USART3_GetFreq")
+    c.check(swo != 0, "SWO's Flexcomm has no clock, so it would never reach a baud rate")
+    c.check(
+        swo == 96_000_000,
+        f"SWO's Flexcomm reads {swo} Hz, wanted the 96 MHz FRO_HF through a divider of one",
+    )
+
+    probe.call("vcom_init")
+    console = probe.call("CLOCK_GetFlexCommClkFreq", 0) if "CLOCK_GetFlexCommClkFreq" in probe.sym else 0
+    c.check(console != 0, "the console Flexcomm has no clock")
+    # Only SWO's figure is exact. The console's Flexcomm runs through a fractional divider the
+    # board support programmes before any of this, and the register model starts it at zero, so
+    # on hardware the console reads lower than it does here. Non-zero is the claim worth making.
+    c.note(f"after boot: SWO Flexcomm {swo / 1e6:g} MHz, console Flexcomm non-zero")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("elf", nargs="?", default="build/mculink_cjtag.elf")
@@ -287,6 +324,7 @@ def main() -> int:
         check_bos(c, _read_at(args.elf, *sym["desc_bos"]), ms_os[1])
     else:
         c.note("the MS OS 2.0 descriptor was folded away; its length not cross-checked")
+    check_clocks(c, args.elf)
     check_commands(c, args.elf)
     check_info(c, args.elf, args.packet_size, args.packet_count)
     check_serial(c, args.elf, bytes(range(1, 17)), args.prefix)

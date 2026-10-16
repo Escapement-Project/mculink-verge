@@ -37,7 +37,7 @@ static void vcom_configure(uint32_t baud, uint8_t stop_bits, uint8_t parity, uin
     USART_Init(VCOM_USART, &config, vcom_clock());
 }
 
-void vcom_init(void) {
+__attribute__((noinline)) void vcom_init(void) {
     CLOCK_AttachClk(kFRO_HF_DIV_to_FLEXCOMM0);
     IOCON_PinMuxSet(IOCON, VCOM_PORT, VCOM_RXD_PIN, VCOM_PIN_MODE);
     IOCON_PinMuxSet(IOCON, VCOM_PORT, VCOM_TXD_PIN, VCOM_PIN_MODE);

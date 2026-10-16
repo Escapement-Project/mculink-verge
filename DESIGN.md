@@ -242,7 +242,7 @@ These are ARM's standard commands, which its reference answers:
 ```
 
 plus `0x7F ExecuteCommands`. **Our build has to answer all of these or it is a downgrade**, and
-`tools/descriptors.py` now checks it: all 28 commands answer with their own id, and an id we do
+`tools/image.py` now checks it: all 28 commands answer with their own id, and an id we do
 not implement answers `ID_DAP_Invalid` rather than echoing itself.
 
 One of them used to hang. `DAP_Delay` takes a count and ARM's pacing loop decrements before it
@@ -320,7 +320,7 @@ Captures: `mculink-swd-clock-*.sal`.
 ### Open questions
 
 - The UUID read at 0x0009_FC70 is untested on hardware. If that region faults rather than reading,
-  it faults during `GetSerialNum` and the device will not enumerate. `tools/descriptors.py` runs
+  it faults during `GetSerialNum` and the device will not enumerate. `tools/image.py` runs
   the function against a programmed id and an unprogrammed one and gets `CJF2551AD5` and
   `CJNOUUID`, so the arithmetic and the uniform-value guard are right. **A bus fault is the part
   that cannot be checked from here**, and it is still the single line most likely to stop the
