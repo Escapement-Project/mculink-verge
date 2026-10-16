@@ -37,16 +37,20 @@ uint8_t const *tud_descriptor_device_cb(void) {
   return (uint8_t const *)&desc_device;
 }
 
-enum { ITF_NUM_VENDOR = 0, ITF_NUM_TOTAL };
+enum { ITF_NUM_VENDOR = 0, ITF_NUM_CDC, ITF_NUM_CDC_DATA, ITF_NUM_TOTAL };
 
 #define EPNUM_VENDOR_OUT  0x01
 #define EPNUM_VENDOR_IN   0x81
+#define EPNUM_CDC_NOTIF   0x82
+#define EPNUM_CDC_OUT     0x03
+#define EPNUM_CDC_IN      0x83
 
-#define CONFIG_TOTAL_LEN  (TUD_CONFIG_DESC_LEN + TUD_VENDOR_DESC_LEN)
+#define CONFIG_TOTAL_LEN  (TUD_CONFIG_DESC_LEN + TUD_VENDOR_DESC_LEN + TUD_CDC_DESC_LEN)
 
 static uint8_t const desc_configuration[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, 0x00, 100),
     TUD_VENDOR_DESCRIPTOR(ITF_NUM_VENDOR, 4, EPNUM_VENDOR_OUT, EPNUM_VENDOR_IN, 512),
+    TUD_CDC_DESCRIPTOR(ITF_NUM_CDC, 5, EPNUM_CDC_NOTIF, 8, EPNUM_CDC_OUT, EPNUM_CDC_IN, 512),
 };
 
 uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
@@ -62,6 +66,7 @@ static char const *string_desc[] = {
     [2] = "MCU-Link CMSIS-DAP cJTAG",
     [3] = NULL,                           // serial, filled in from the part's unique id
     [4] = "CMSIS-DAP v2",                 // the prefix host tools match on
+    [5] = "MCU-Link VCOM",
 };
 
 static uint16_t string_buffer[32];

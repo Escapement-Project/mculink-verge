@@ -21,7 +21,13 @@
 
 #define CFG_TUD_ENDPOINT0_SIZE 64
 
-#define CFG_TUD_CDC           0
+#define CFG_TUD_CDC           1
+
+// The target console. 512 each way matches the bulk packet size, so a full USB packet never has to
+// be split across a FIFO wrap.
+#define CFG_TUD_CDC_RX_BUFSIZE 512
+#define CFG_TUD_CDC_TX_BUFSIZE 512
+#define CFG_TUD_CDC_EP_BUFSIZE 512
 #define CFG_TUD_MSC           0
 #define CFG_TUD_HID           0
 #define CFG_TUD_MIDI          0

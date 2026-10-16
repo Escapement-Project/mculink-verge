@@ -8,6 +8,8 @@
 #include "bsp/board_api.h"
 #include "tusb.h"
 
+#include "vcom.h"
+
 #include "DAP_config.h"
 #include "DAP.h"
 
@@ -36,6 +38,7 @@ static void dap_task(void) {
 int main(void) {
   board_init();
   DAP_Setup();
+  vcom_init();
 
   board_init_after_tusb();
   tusb_rhport_init_t const init = {
@@ -47,5 +50,6 @@ int main(void) {
   for (;;) {
     tud_task();
     dap_task();
+    vcom_task();
   }
 }

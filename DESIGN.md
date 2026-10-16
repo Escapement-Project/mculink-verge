@@ -53,8 +53,25 @@ frame primitive behind two vendor commands.
 
 All five JTAG entry points are routed. **None of it has run on hardware.**
 
-Not yet: SWO (8 of the 25 stock commands), the `DAP_UART_*` commands, and the HID and CDC
-interfaces.
+### Parity against the stock image
+
+| | stock | ours |
+| --- | --- | --- |
+| the 25 DAP commands, SWO included | yes | yes |
+| `DAP_UART_*` (0x1F..0x23) | **no** | no |
+| vendor 0x80, 0x81 | yes, purpose unknown | no |
+| vendor cJTAG commands | no | 0x82, 0x83 |
+| CMSIS-DAP v2, bulk, 512-byte packets | yes | yes |
+| CMSIS-DAP v1, HID | yes | **not yet** |
+| CDC virtual COM port | yes | yes |
+
+HID is the one functional gap left, and it is not a simple addition: `DAP_PACKET_SIZE` is 512 to
+match the bulk interface, while a HID report is 64 bytes, so the two interfaces cannot share one
+packet size.
+
+Interface numbering differs from stock, which has HID between the vendor and CDC interfaces. Ours
+is vendor, CDC, CDC data, and adding HID will append rather than insert. Hosts enumerate by
+descriptor, so this is cosmetic.
 
 ### How OScan1 is wired in
 
@@ -120,6 +137,15 @@ the device simply fails to bind. A `TU_VERIFY_STATIC` checks the total at compil
 | nRESET | P0_19 |
 | TMS_SWDIO_TXEN | P0_28 |
 | LED1 | P0_5 |
+| target console RXD | P0_24, Flexcomm 0 |
+| target console TXD | P0_25, Flexcomm 0 |
+
+SWO arrives on P0_3 as `FC3_RXD`, `IOCON_FUNC1`. That pin is JTAG's TDO as well, so only one of
+the two configurations is live at a time and the mux follows the USART driver's lifecycle.
+
+TinyUSB's board support claims Flexcomm 0 for its own debug logging on different pins, so
+`vcom_init` runs after `board_init` and takes the peripheral back. The probe has no console of its
+own, so nothing is lost.
 
 Source: the board header in ARM's CMSIS-DAP MCU-Link example. **Independently confirmed** against
 the schematic's net names.
