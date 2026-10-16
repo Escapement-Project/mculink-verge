@@ -21,8 +21,9 @@
  *     LAB_READ   [1] arena, [2..3] offset, [4..5] length; reply: status, bytes
  *     LAB_RUN    [1] arena, [2..3] entry offset, [4..19] r0..r3; reply: status, r0, r1
  *
- * Every offset and length is checked against the arena and the packet. A function that does not
- * return hangs the probe with interrupts off; that is the host's to avoid.
+ * Every offset and length is checked against the arena and the packet. A function that faults
+ * resets the probe, which comes back on USB without hands; one that never returns hangs it with
+ * interrupts off, and that is the host's to avoid.
  */
 #include <stdbool.h>
 #include <string.h>
@@ -73,6 +74,19 @@ static void put32(uint8_t* out, uint32_t v) {
     out[1] = (uint8_t)(v >> 8);
     out[2] = (uint8_t)(v >> 16);
     out[3] = (uint8_t)(v >> 24);
+}
+
+/** A lab build resets on a fault rather than spinning in the startup code's handler. A function
+ * the host got wrong is the likely cause, and a reset is what gives the probe back. Naked, because
+ * that function may have left the stack pointer anywhere: SYSRESETREQ through AIRCR directly. */
+void HardFault_Handler(void);
+__attribute__((naked)) void HardFault_Handler(void) {
+    __asm volatile("ldr r0, =0xE000ED0C\n\t"
+                   "ldr r1, =0x05FA0004\n\t"
+                   "str r1, [r0]\n\t"
+                   "dsb\n\t"
+                   "1: b 1b\n\t"
+                   ".ltorg\n\t");
 }
 
 typedef uint64_t (*lab_fn)(uint32_t, uint32_t, uint32_t, uint32_t);
