@@ -1,0 +1,122 @@
+# A generator whose SWD clock comes from CTimer 0
+
+Design; nothing here is implemented. Read CODEGEN.md first (the GPIO
+generator as built, which this extends), then this. Every number below was measured 2026-10-16 on
+the MSPM0L1306 bench.
+
+## Why
+
+The GPIO generator makes every clock edge with a core store, so a read clock is four
+instructions (two edges, a sample, its use) and reads stop at P = 4, 37.5 MHz. SWCLK's pin
+(PIO0_0) is also CTIMER0_MAT0. With the timer making the edges, a read bit is a load and a use and
+a write bit an extraction and a store: two instructions, so every phase fits P = 3 (50 MHz).
+The lab prototype (`timerdma.py`) read DPIDR 2000/2000 with the target's 38 clocks at exactly
+50.0 MHz on the analyser. Scope: P = 3 only (requests >= 50 MHz). P >= 4 keeps the GPIO generator,
+which the timer does not beat there.
+
+## Measured facts this design rests on
+
+- CTimer 0 PWM: CTIMERCLKSEL0 = 0 (main clock = core clock), PR = 0, PWMC = 1 (MAT0), MR3 =
+  P - 1 with MCR.MR3R, MR0 = low cycles (output low while TC < MR0, high from MR0 to MR3). Locked
+  to the core: every period from 2 to 10 cycles exact, no drift. A read sees rising edge 0 at
+  6 + low cycles after the start store (in the frame of the instructions after that store).
+- Stores to CTimer or IOCON registers (APB) stall the core: +4 cycles for one, +10 for two in a
+  row; a CTimer load costs +9 (`apbstall.py`, CYCCNT from SRAMX). The m33 model does not know
+  this yet. GPIO and SRAM accesses after an APB store do not stall further.
+- TCR = 0 from the core: the clock freezes at the level a read 9 cycles after the store would see;
+  instructions after the store run 3 cycles late. At P = 3 that stall always swallows one
+  sample window, so no core store may stop or reconfigure the timer inside a timed phase.
+- DMA stop: CTimer 1 (AHBCLKCTRL1 bit 27, CTIMERCLKSEL1 = 0) match 0 -> DMA0 channel 0
+  (INPUTMUX DMA0_ITRIG_INMUX0 = 6; INPUTMUX clock AHBCLKCTRL0 bit 11, DMA0 clock bit 20) copying
+  a zero word from SRAM to CTIMER0 TCR. CFG0 = HWTRIGEN | TRIGPOL (rising edge), XFERCFG0 =
+  CFGVALID | CLRTRIG | WIDTH 32, one transfer. Clear CTimer 1 IR after setting MR0: TC = MR0 = 0
+  after reset raises the request and an edge trigger then never fires. Cycle-exact over repeats
+  only while the core keeps off the SRAM bank the DMA reads (keep samples in registers).
+- Frame of the prototype (CTimer 0 start at slot 0, CTimer 1 start at slot 1, then one
+  instruction a slot): rising edge k reads at 4 + 3k (P = 3, low 1 or 2); a one-shot delay of
+  92 or 93 (low 1) freezes the clock high right after edge 37 (read at 115). Delay mod 3 picks the
+  frozen level.
+- Read window at P = 3: bit k is sampled correctly at slot 8 + 3k and 9 + 3k (100%), 10 + 3k
+  only 65%; take 8.5 + 3k as the centre (use 9 + 3k with a sample-before-edge bias, or recalibrate).
+- A filler must not read a load's destination: `mov.w r12, r12` right after `ldrb r12` stalls a
+  cycle, and with a free-running clock every stall drifts all later samples. Use `mov.w r5, r5`.
+- Probe-driven bits on the timer clock are NOT measured yet (the prototype's packet was GPIO).
+  GPIO writes landed at every SWDIO placement off the edge cycles at P = 3..10, so a B-register
+  store between two timer edges should do; measure before relying on it.
+
+## Architecture
+
+The pin stays on FUNC 3 for the whole generated block call; frozen high is the idle state.
+CTimer 1 runs continuously for the block with a period equal to one transfer in core cycles, and
+its two matches stop CTimer 0 at the two points every transfer must pause; the DMA channels
+that do it reload themselves, so the core never touches the stop machinery inside the loop.
+
+Per transfer (all slots fixed, interrupts masked):
+
+1. Clock frozen high, SWDIO driven high (start bit). Core: CTimer 0 restart store (TCR = 1).
+   Its 4-cycle stall lands before the first rising edge (6 + low later), harmless.
+2. Packet bits 1..7: per bit an extraction and a `strb` to B[0][2], placed between rising edges
+   k-1 and k (two candidate slots at P = 3; centre them). Park is 1, stop 0.
+3. Release (TXEN CLR, DIRCLR) between the park edge and the turnaround edge.
+4. Turnaround edge(s); acknowledge samples into registers (`ldrb` + `orr`, as the GPIO
+   generator), at the window centres.
+5. Decision stop: CTimer 1 match 0 -> DMA ch 0 -> TCR = 0, freezing the clock high right after
+   the first common clock after the acknowledge (the turnaround for writes, data bit 1's edge for
+   reads). The DMA latency is fixed, so match 0's value is a calibrated constant.
+6. While frozen: combine the acknowledge, `cmp`, `bne` fail (the fail paths and WAIT retries are
+   as in the GPIO generator, with tails clocked by GPIO after switching the pin back to FUNC 0;
+   the frozen clock is high, so the switch makes no edge).
+7. OK: reads restart the clock (core TCR = 1 store; nothing is timed in its stall) and keep
+   sampling d1..d31, parity; writes enable SWDIO, store d0, restart, and store d1..parity
+   between edges.
+8. End stop: CTimer 1 match 1 -> DMA ch 1 -> TCR = 0 after the last edge (the turnaround after
+   parity for reads, the parity edge for writes). Then the probe takes the wire (reads), idle
+   cycles if configured (restart and stop again, or GPIO), SWDIO high.
+9. Gap: parity check, store, loop. CTimer 1 keeps counting, so the gap's length is part of its
+   period and must be fixed: no data-dependent timing anywhere in the loop body.
+
+Exits (fail, parity error, done): stop CTimer 1 and CTimer 0, abort both DMA channels (ABORT0),
+pin back to FUNC 0 with the GPIO latch high, unmask.
+
+Cost estimate per read transfer at P = 3: 46 clocks x 3 = 138, plus two restarts (store + 6 to
+the first edge, partly overlapped) and the decision (~4), plus the gap (~14): about 165 cycles
+against 203 for the GPIO generator at P = 3 (37.5 MHz reads) — about 20% more reads per second on
+the wire. Writes gain less (they already run at P = 3). probe-rs is USB-bound at about half the
+37.5 MHz wire rate today, so end to end this shows only once the USB side improves.
+
+Rejected: timer only for each read's data phase, with a one-shot CTimer 1 and the DMA re-armed
+per transfer. Every transfer then pays the pin switch twice, two starts, the CTimer 1 reset and
+the DMA re-arm, all APB stores at ~5 cycles: the read gains ~5%. A free-running clock through the
+acknowledge: the WAIT path must drive SWDIO before the second edge after the turnaround, and at
+P = 3 the decision takes too long (two edges late), so a floating line gives the target a start
+bit.
+
+## To measure before writing the generator (lab blobs)
+
+1. Restart from frozen: TCR = 1 after a DMA freeze mid-period; latency to the next rising edge
+   and that it is the same at every frozen TC value the design produces.
+2. Self-reloading DMA: a descriptor linked to itself (XFERCFG RELOAD, table entry and reload
+   descriptor both pointing at it) stops CTimer 0 on every CTimer 1 match over a long run, at
+   the same cycle every period; two channels (match 0 and match 1).
+3. DMA register stores (AHB, 0x4008_2000): do they stall like APB? Needed for exit cleanup only.
+4. Timer-clocked writes: CTRL/STAT writes with SWDIO stores at each candidate slot between edges,
+   checked by read-back (as gensweep.py does), at P = 3 low 1 and low 2.
+5. A whole timer-clocked DPIDR read and CTRL/STAT write with both stops (decision, end) in one
+   blob, soaked, and on the analyser (edge count 46 per transfer, 20 ns spacing).
+6. The U575 as a second target: window and latency at P = 3 (only the L1306 has run this).
+
+## Generator and tool changes
+
+- `src/swd_gen.c`: a timer-mode emitter beside the GPIO one, chosen when the write period is 3.
+  Schedules are by edge: edge k at a known slot from the frame, data stores and samples placed
+  relative to edges; no edge instructions. Fillers `mov.w r5, r5` only. The peripheral setup
+  (CTimer 0/1, DMA descriptors and channel config, INPUTMUX, clocks) belongs to C at build time;
+  the descriptor table needs 512-byte alignment in SRAM (not the bank samples would use, though
+  samples stay in registers anyway).
+- Calibration constants (rising-edge frame offset, decision and end match values, sample
+  centre) are measured per build at first use or fixed from the lab and checked by
+  `dap.py gen --calibrate`-style DPIDR sweeps.
+- Emulator: `tools/m33.py` needs the APB stall (+4 store, +9 load) and `tools/cycles.py` a CTimer
+  0/1 + DMA model that turns timer state into SWCLK edges at the measured latencies, feeding
+  `TimedSwdTarget`, so equiv (`--ignore-samples`), the gate and `gencheck.py` cover timer mode.
+  Without it the timer mode is verified on hardware only.
