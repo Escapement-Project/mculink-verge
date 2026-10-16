@@ -35,6 +35,20 @@ while the clock is high, and no wire clocks faster than the host asked for beyon
 same edges on the wire it always has, and the sequence commands a host uses to reset a line or
 walk a TAP by hand put out what they always have. `--bless` rewrites the baseline.
 
+The escape hatches are not exercised by any of that, and they do break: inlining a transfer once
+hid an uninitialised-variable warning that only the non-LTO builds could see. Build all four
+before trusting a change.
+
+```
+for t in Release MinSizeRel; do for l in ON OFF; do
+  cmake -B build-$t-$l -G Ninja -DBOARD=mcu_link -DTOOLCHAIN=gcc -DCMAKE_BUILD_TYPE=$t -DLTO=$l .
+  ninja -C build-$t-$l && uv run tools/cycles.py build-$t-$l/mculink_cjtag.elf --check
+done; done
+```
+
+Two of the four report the two-pin path clocking 3% fast at 10 MHz. That is known and recorded;
+see OPTIMISATIONS.md.
+
 `tools/equiv.py` is the heavier check, for replacing code rather than tuning it. It drives two
 builds over 528 SWD block cases, 180 four-wire JTAG cases, 120 two-pin cases and, with
 `--command transfer`, 300 single-register cases -- every acknowledge a target can give, every
