@@ -96,32 +96,35 @@
     macro(30);              \
     macro(31)
 
+/** Put the packet parity in bit 6, which CMSIS-DAP does not use.
+ *
+ * ARM sums the four address bits inside the transfer, so a block recomputed the same parity for
+ * every word. The caller knows the request before the loop; the transfer then writes the bit with
+ * one more shift of a register it is already holding.
+ */
+__STATIC_FORCEINLINE uint32_t SWD_WithParity(uint32_t request) {
+    uint32_t bits = request & 0x0FU;
+    bits ^= bits >> 2;
+    bits ^= bits >> 1;
+    return request | ((bits & 1U) << 6);
+}
+
 #define SWD_TransferFunction(speed)                                                                \
     __STATIC_FORCEINLINE uint8_t SWD_Transfer##speed(uint32_t request, uint32_t* data) {           \
         uint32_t ack;                                                                              \
         uint32_t bit;                                                                              \
         uint32_t val;                                                                              \
-        uint32_t parity;                                                                           \
         uint32_t n;                                                                                \
                                                                                                    \
-        /* Packet request */                                                                       \
-        parity = 0U;                                                                               \
-        SW_WRITE_BIT(1U); /* Start */                                                              \
-        bit = request >> 0;                                                                        \
-        SW_WRITE_BIT(bit); /* APnDP */                                                             \
-        parity += bit;                                                                             \
-        bit = request >> 1;                                                                        \
-        SW_WRITE_BIT(bit); /* RnW */                                                               \
-        parity += bit;                                                                             \
-        bit = request >> 2;                                                                        \
-        SW_WRITE_BIT(bit); /* A2 */                                                                \
-        parity += bit;                                                                             \
-        bit = request >> 3;                                                                        \
-        SW_WRITE_BIT(bit); /* A3 */                                                                \
-        parity += bit;                                                                             \
-        SW_WRITE_BIT(parity); /* Parity */                                                         \
-        SW_WRITE_BIT(0U);     /* Stop */                                                           \
-        SW_WRITE_BIT(1U);     /* Park */                                                           \
+        /* Packet request. The parity is in bit 6, put there by the caller. */                     \
+        SW_WRITE_BIT(1U);           /* Start */                                                    \
+        SW_WRITE_BIT(request >> 0); /* APnDP */                                                    \
+        SW_WRITE_BIT(request >> 1); /* RnW */                                                      \
+        SW_WRITE_BIT(request >> 2); /* A2 */                                                       \
+        SW_WRITE_BIT(request >> 3); /* A3 */                                                       \
+        SW_WRITE_BIT(request >> 6); /* Parity */                                                   \
+        SW_WRITE_BIT(0U);           /* Stop */                                                     \
+        SW_WRITE_BIT(1U);           /* Park */                                                     \
                                                                                                    \
         /* Turnaround */                                                                           \
         PIN_SWDIO_OUT_DISABLE();                                                                   \
@@ -220,6 +223,7 @@ SWD_TransferFunction(Fast)
     SWD_TransferFunction(Slow)
 
         uint8_t SWD_Transfer(uint32_t request, uint32_t* data) {
+    request = SWD_WithParity(request);
     if (DAP_Data.fast_clock) {
         return SWD_TransferFast(request, data);
     } else {
@@ -237,88 +241,88 @@ SWD_TransferFunction(Fast)
  * The logic is ARM's, transcribed. The fast and slow choice is hoisted to the top so each copy
  * inlines one transfer variant rather than both.
  */
-#define SWD_TransferBlockFunction(speed)                                                          \
-    static uint32_t SWD_TransferBlock##speed(const uint8_t* request, uint8_t* response) {         \
-        uint32_t request_count;                                                                   \
-        uint32_t request_value;                                                                   \
-        uint32_t response_count = 0U;                                                             \
-        uint32_t response_value = 0U;                                                             \
-        uint8_t* response_head = response;                                                        \
-        uint32_t retry;                                                                           \
-        uint32_t data = 0U;                                                                       \
-                                                                                                  \
-        response += 3;                                                                            \
-        DAP_TransferAbort = 0U;                                                                   \
-        request++; /* Ignore DAP index */                                                         \
-                                                                                                  \
-        request_count = (uint32_t)(*(request + 0) << 0) | (uint32_t)(*(request + 1) << 8);        \
-        request += 2;                                                                             \
-        if (request_count == 0U) {                                                                \
-            goto end;                                                                             \
-        }                                                                                         \
-                                                                                                  \
-        request_value = *request++;                                                               \
-        if ((request_value & DAP_TRANSFER_RnW) != 0U) {                                           \
-            if ((request_value & DAP_TRANSFER_APnDP) != 0U) {                                     \
-                /* Post AP read */                                                                \
-                retry = DAP_Data.transfer.retry_count;                                            \
-                do {                                                                              \
-                    response_value = SWD_Transfer##speed(request_value, NULL);                    \
-                } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort); \
-                if (response_value != DAP_TRANSFER_OK) {                                          \
-                    goto read_done;                                                               \
-                }                                                                                 \
-            }                                                                                     \
-            while (request_count--) {                                                             \
-                if ((request_count == 0U) && ((request_value & DAP_TRANSFER_APnDP) != 0U)) {      \
-                    request_value = DP_RDBUFF | DAP_TRANSFER_RnW;                                 \
-                }                                                                                 \
-                retry = DAP_Data.transfer.retry_count;                                            \
-                do {                                                                              \
-                    response_value = SWD_Transfer##speed(request_value, &data);                   \
-                } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort); \
-                if (response_value != DAP_TRANSFER_OK) {                                          \
-                    goto read_done;                                                               \
-                }                                                                                 \
-                /* ARM writes the four bytes separately. GCC merges them back into one store      \
-                 * but rebuilds the word from its own bytes first, ten instructions to copy       \
-                 * a register, so take the little-endian store directly. */                       \
-                __builtin_memcpy(response, &data, sizeof(data));                                  \
-                response += sizeof(data);                                                         \
-            }                                                                                     \
-        read_done:                                                                                \
-            /* One word is four bytes, so the count the reply carries is the distance the         \
-             * response pointer moved. Keeping a separate counter cost a load, an add and a       \
-             * store a word, because the unrolled data phase leaves it nowhere but the stack. */  \
-            response_count = (uint32_t)(response - response_head - 3) / 4U;                       \
-            goto end;                                                                             \
-        } else {                                                                                  \
-            while (request_count--) {                                                             \
-                data = (uint32_t)(*(request + 0) << 0) | (uint32_t)(*(request + 1) << 8) |        \
-                       (uint32_t)(*(request + 2) << 16) | (uint32_t)(*(request + 3) << 24);       \
-                request += 4;                                                                     \
-                retry = DAP_Data.transfer.retry_count;                                            \
-                do {                                                                              \
-                    response_value = SWD_Transfer##speed(request_value, &data);                   \
-                } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort); \
-                if (response_value != DAP_TRANSFER_OK) {                                          \
-                    goto end;                                                                     \
-                }                                                                                 \
-                response_count++;                                                                 \
-            }                                                                                     \
-            /* Check last write */                                                                \
-            retry = DAP_Data.transfer.retry_count;                                                \
-            do {                                                                                  \
-                response_value = SWD_Transfer##speed(DP_RDBUFF | DAP_TRANSFER_RnW, NULL);         \
-            } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort);     \
-        }                                                                                         \
-                                                                                                  \
-    end:                                                                                          \
-        *(response_head + 0) = (uint8_t)(response_count >> 0);                                    \
-        *(response_head + 1) = (uint8_t)(response_count >> 8);                                    \
-        *(response_head + 2) = (uint8_t)response_value;                                           \
-                                                                                                  \
-        return ((uint32_t)(response - response_head));                                            \
+#define SWD_TransferBlockFunction(speed)                                                                  \
+    static uint32_t SWD_TransferBlock##speed(const uint8_t* request, uint8_t* response) {                 \
+        uint32_t request_count;                                                                           \
+        uint32_t request_value;                                                                           \
+        uint32_t response_count = 0U;                                                                     \
+        uint32_t response_value = 0U;                                                                     \
+        uint8_t* response_head = response;                                                                \
+        uint32_t retry;                                                                                   \
+        uint32_t data = 0U;                                                                               \
+                                                                                                          \
+        response += 3;                                                                                    \
+        DAP_TransferAbort = 0U;                                                                           \
+        request++; /* Ignore DAP index */                                                                 \
+                                                                                                          \
+        request_count = (uint32_t)(*(request + 0) << 0) | (uint32_t)(*(request + 1) << 8);                \
+        request += 2;                                                                                     \
+        if (request_count == 0U) {                                                                        \
+            goto end;                                                                                     \
+        }                                                                                                 \
+                                                                                                          \
+        request_value = SWD_WithParity(*request++);                                                       \
+        if ((request_value & DAP_TRANSFER_RnW) != 0U) {                                                   \
+            if ((request_value & DAP_TRANSFER_APnDP) != 0U) {                                             \
+                /* Post AP read */                                                                        \
+                retry = DAP_Data.transfer.retry_count;                                                    \
+                do {                                                                                      \
+                    response_value = SWD_Transfer##speed(request_value, NULL);                            \
+                } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort);         \
+                if (response_value != DAP_TRANSFER_OK) {                                                  \
+                    goto read_done;                                                                       \
+                }                                                                                         \
+            }                                                                                             \
+            while (request_count--) {                                                                     \
+                if ((request_count == 0U) && ((request_value & DAP_TRANSFER_APnDP) != 0U)) {              \
+                    request_value = SWD_WithParity(DP_RDBUFF | DAP_TRANSFER_RnW);                         \
+                }                                                                                         \
+                retry = DAP_Data.transfer.retry_count;                                                    \
+                do {                                                                                      \
+                    response_value = SWD_Transfer##speed(request_value, &data);                           \
+                } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort);         \
+                if (response_value != DAP_TRANSFER_OK) {                                                  \
+                    goto read_done;                                                                       \
+                }                                                                                         \
+                /* ARM writes the four bytes separately. GCC merges them back into one store              \
+                 * but rebuilds the word from its own bytes first, ten instructions to copy               \
+                 * a register, so take the little-endian store directly. */                               \
+                __builtin_memcpy(response, &data, sizeof(data));                                          \
+                response += sizeof(data);                                                                 \
+            }                                                                                             \
+        read_done:                                                                                        \
+            /* One word is four bytes, so the count the reply carries is the distance the                 \
+             * response pointer moved. Keeping a separate counter cost a load, an add and a               \
+             * store a word, because the unrolled data phase leaves it nowhere but the stack. */          \
+            response_count = (uint32_t)(response - response_head - 3) / 4U;                               \
+            goto end;                                                                                     \
+        } else {                                                                                          \
+            while (request_count--) {                                                                     \
+                data = (uint32_t)(*(request + 0) << 0) | (uint32_t)(*(request + 1) << 8) |                \
+                       (uint32_t)(*(request + 2) << 16) | (uint32_t)(*(request + 3) << 24);               \
+                request += 4;                                                                             \
+                retry = DAP_Data.transfer.retry_count;                                                    \
+                do {                                                                                      \
+                    response_value = SWD_Transfer##speed(request_value, &data);                           \
+                } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort);         \
+                if (response_value != DAP_TRANSFER_OK) {                                                  \
+                    goto end;                                                                             \
+                }                                                                                         \
+                response_count++;                                                                         \
+            }                                                                                             \
+            /* Check last write */                                                                        \
+            retry = DAP_Data.transfer.retry_count;                                                        \
+            do {                                                                                          \
+                response_value = SWD_Transfer##speed(SWD_WithParity(DP_RDBUFF | DAP_TRANSFER_RnW), NULL); \
+            } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort);             \
+        }                                                                                                 \
+                                                                                                          \
+    end:                                                                                                  \
+        *(response_head + 0) = (uint8_t)(response_count >> 0);                                            \
+        *(response_head + 1) = (uint8_t)(response_count >> 8);                                            \
+        *(response_head + 2) = (uint8_t)response_value;                                                   \
+                                                                                                          \
+        return ((uint32_t)(response - response_head));                                                    \
     }
 
 SWD_TransferBlockFunction(Fast) SWD_TransferBlockFunction(Slow)
