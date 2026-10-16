@@ -18,6 +18,17 @@ been re-derived against it yet.
 
 ## Where the bench stands, end of 2026-10-16
 
+**SWD is finished.** Through probe-rs against the same target, ours reads at 593 KiB/s and writes
+at 612, against stock's 473 and 501: 1.26x and 1.22x. The wire is 92% of a block read and the
+block command itself is as efficient as a raw CMSIS-DAP script's, so what is left belongs to the
+host rather than the probe.
+
+**Nothing on the JTAG or two-pin paths has been measured on hardware**, because neither target
+here can do JTAG: the MSPM0L1306 is a Cortex-M0+ and SWD only. The SRAM move and the clock-delay
+hint are in and pass the emulator, and that is all anyone knows about them.
+
+## Where the bench stood before that
+
 Both halves of the plan's first five steps are done and the firmware beats stock. What is flashed
 on `CJ6B19D4E7` is build `bb44d28`: the bit paths in SRAM and the core at 150 MHz. **Every commit
 since is docs and tools only, so the code on the unit is HEAD's code** -- rebuilding would change
