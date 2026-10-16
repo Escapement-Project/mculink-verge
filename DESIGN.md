@@ -42,16 +42,20 @@ tolerated in the command window. A predicted read-edge count of 43 did not match
 ## Current state
 
 Builds. `cmake -B build -G Ninja -DBOARD=mcu_link -DTOOLCHAIN=gcc . && ninja -C build` produces
-`build/mculink_cjtag.{elf,hex,bin}`, 24,796 bytes of text.
+`build/mculink_cjtag.{elf,hex,bin}`, 46,980 bytes of text at `-O3` with link-time optimisation.
+`-DLTO=OFF` and `-DCMAKE_BUILD_TYPE=MinSizeRel` are there for bisecting a miscompilation.
 
 **Nothing has been flashed or run on hardware yet.** The bench is unavailable; everything below
 about the stock firmware comes from captures taken before it went away.
 
-Implemented: the vendor-class (CMSIS-DAP v2) USB interface, the MCU-Link pin layer, the serial
-number, ARM's DAP, SW_DP and JTAG_DP compiled unchanged, and the cJTAG activation sequence and
-frame primitive behind two vendor commands.
+Implemented: CMSIS-DAP v2 on a vendor interface and v1 on HID, a CDC console bridged to Flexcomm 0,
+SWO capture on Flexcomm 3, the MCU-Link pin layer, the serial number, ARM's DAP, SW_DP and JTAG_DP
+compiled unchanged, and the cJTAG activation sequence and frame primitive behind two vendor
+commands. All five JTAG entry points are routed.
 
-All five JTAG entry points are routed. **None of it has run on hardware.**
+`tools/cycles.py` emulates the built image on a Cortex-M33 and counts what a debug-port bit costs.
+It is the only instrument this project has while the bench is away, and it is what the numbers in
+`OPTIMISATIONS.md` come from.
 
 ### Parity against the stock image
 
@@ -99,12 +103,23 @@ expand, in order, to `PIN_TDI_OUT` (sometimes), `PIN_TCK_CLR`, `PIN_DELAY`, `PIN
 `PIN_TCK_CLR`, and emits it at whichever of `PIN_TDO_IN` or `PIN_TCK_SET` comes first. The
 submodule is pinned to a release, so the order cannot change without someone bumping the tag.
 
+**Where a frame rests, and why it is not where ARM's four-wire code rests.** A frame is entered and
+left with TCKC low and the wire driven. That is deliberate and it is the second half of the fix.
+Taking the wire back after the TDO packet moves TMSC from whatever the target drove to whatever our
+output latch holds; doing it while TCKC was still high put one escape edge in every frame, which is
+the same density as the SWD path this firmware exists to replace. OpenOCD's OScan1 driver sequences
+the same three packets the same way, with TCK resting low between them.
+
 ### Vendor commands
 
 | id | | |
 | --- | --- | --- |
 | 0x82 | `CJTAG_INFO` | answers "CJTAG", a format version and whether OScan1 is active. Read-only, so a host may send it blindly: stock firmware answers `ID_DAP_Invalid`, which is how a host tells the two images apart. |
 | 0x83 | `CJTAG_CONTROL` | one byte, non-zero activates OScan1 and zero returns to four-wire framing. |
+
+Anything else in 0x80..0x9F answers `ID_DAP_Invalid` here too. `DAP_ProcessCommand` returns what
+`DAP_ProcessVendorCommand` returns without inspecting it, so the rejection has to be written by the
+default case rather than left to the caller.
 
 Stock's 0x80 and 0x81 do something unknown and are **not implemented here**, so any LinkServer
 feature resting on them will not work against this firmware.
@@ -157,6 +172,30 @@ own, so nothing is lost.
 
 Source: the board header in ARM's CMSIS-DAP MCU-Link example. **Independently confirmed** against
 the schematic's net names.
+
+### What the board support does not start
+
+Three clock facts, all from the manual and the board support rather than the bench, each of which
+would present as a silent dead peripheral.
+
+**The core runs at 144 MHz, not 150.** `BOARD_InitBootClocks` calls `BOARD_BootClockPLL150M`, whose
+name is wrong: it runs PLL1 at 16 MHz times 18 and attaches that to MAIN_CLK. `CPU_CLOCK` and
+`TIMESTAMP_CLOCK` in `DAP_config.h` say 144 MHz, and every requested SWD or JTAG clock is computed
+from that number.
+
+**FRO_HF is off and so is its divider.** The 96 MHz output of FRO192M is disabled out of reset
+(UM11126: `ENA_96MHZCLK` resets to 0) and the board support only ever asks for the 12 MHz one,
+because the core runs off PLL1. `FROHFDIV`'s HALT bit resets to 1 as well (UM11126 table 104). Both
+the console and SWO clock off `FRO_HF_DIV`: with either missing, `CLOCK_GetFroHfFreq` reports 0 Hz,
+`USART_Init` rejects the baud rate it cannot reach, and the peripheral stays silent without
+reporting anything. `board_clocks_init` starts both. Anything else added here that attaches to
+`FRO_HF_DIV` depends on that call.
+
+**DWT is dormant until it is told otherwise.** `TIMESTAMP_GET` reads `DWT->CYCCNT`, which does not
+run until TRCENA and CYCCNTENA are set. Two commands need it: `DAP_SWJ_Pins` with a non-zero wait
+spins until the counter passes a deadline, so a pin that never reaches the asked level would hang
+the probe rather than time out, and a transfer with `DAP_TRANSFER_TIMESTAMP` set would report 0 to
+a host that asked for a time. `board_timestamp_init` starts it.
 
 **The two TXEN pins are buffer direction controls and they matter.** Releasing SWDIO means clearing
 `TMS_SWDIO_TXEN` as well as making the pin an input: the buffer keeps driving the wire otherwise.
@@ -226,30 +265,30 @@ Captures: `mculink-swd-clock-*.sal`.
 
 ## Next steps
 
-1. Route the JTAG entry points through `cJTAG_Frame` when the mode flag is set. The plan is to
-   rename ARM's symbols at compile time with `-DJTAG_Sequence=jtag4_Sequence` and friends, and
-   define the real names in our own file that dispatches on the flag. That keeps ARM's file
-   unpatched and keeps the four-wire path free of a per-bit branch.
-2. Flash and enumerate. Nothing has run on hardware. Until it does, every line of this is theory.
-3. Bench: confirm probe-rs attaches over SWD, then the OScan1 read on a CC13xx.
-4. Parity: SWO, the UART commands, and the HID and CDC interfaces.
-5. Then, and only then, throughput.
+1. Flash and enumerate. Nothing has run on hardware. Until it does, every line of this is theory,
+   and the UUID read above is the line most likely to stop the device appearing at all.
+2. Bench: confirm probe-rs attaches over SWD, then the console, then SWO, then the OScan1 read on a
+   CC13xx with the analyser watching.
+3. Settle the two bench questions parity depends on: whether stock answers DAP over HID, and
+   whether stock maps CDC line state to anything.
+4. Then, and only then, throughput, starting with the clock calibration.
 
 ### Open questions
 
-- **Fixed, but worth knowing about:** `FROHFDIV`'s HALT bit resets to 1 (UM11126 table 104), so the
-  FRO_HF divider is stopped out of reset and TinyUSB's board support does not start it -- it only
-  configures the USB clock. Both the console and SWO clock off that divider, and a Flexcomm with no
-  clock reports nothing, it just never produces a baud rate. `board_clocks_init` starts it before
-  anything attaches. Anything else added here that attaches to `FRO_HF_DIV` depends on that call.
 - The UUID read at 0x0009_FC70 is untested on hardware. If that region faults rather than reading,
   it faults during `GetSerialNum` and the device will not enumerate. The uniform-value guard
   catches an unprogrammed region but cannot catch a bus fault.
+- `IO_PORT_WRITE_CYCLES` is 2 and the emulator says the code costs about 5, which makes every
+  requested clock come out at half to two-thirds. The fix is one constant, but setting it on the
+  model alone risks clocking faster than the host asked for. One analyser capture settles it;
+  `OPTIMISATIONS.md` item 1 has the procedure and the numbers.
 - In `cJTAG_Frame`, TDO is sampled while TCKC is low, just before the rising edge, following the
   shape of ARM's `SW_READ_BIT`. Whether the target drives it early enough is an analyser question.
-- The OScan1 path pays `PIN_DELAY` twice per frame that it does not need: once from the frame's own
-  pacing and once from `JTAG_DP.c`'s macros, whose delays become dead time around a no-op clock.
-  Harmless, and roughly doubles the time a two-pin frame takes.
+- `cJTAG_Frame` takes the wire back immediately after the falling edge of the TDO packet. If the
+  target is slow to release TMSC, that is a brief contention. OpenOCD has the same exposure, so it
+  is a bench check rather than a known fault.
+- Whether a CDC host asserting DTR or RTS should do anything. Some probes map them to target reset
+  or boot mode; this one ignores line state, and what stock does is unknown.
 
 ## References
 

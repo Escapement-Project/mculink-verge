@@ -87,7 +87,7 @@ class Model:
     other: int = 1
     load: int = 2
     store: int = 1
-    taken_branch: int = 3
+    taken_branch: int = 2
     gpio_store: int = 1  # a store to the GPIO block, which sits on its own AHB port
 
     def total(self, c: "Counts") -> int:
@@ -442,7 +442,12 @@ def main() -> int:
     ap.add_argument("--store-cycles", type=int, default=1)
     ap.add_argument("--gpio-store-cycles", type=int, default=1)
     ap.add_argument("--load-cycles", type=int, default=2)
-    ap.add_argument("--branch-cycles", type=int, default=3)
+    ap.add_argument(
+        "--branch-cycles",
+        type=int,
+        default=2,
+        help="a taken branch on this core is one issue plus a short refill",
+    )
     ap.add_argument(
         "--config",
         default="src/DAP_config.h",
