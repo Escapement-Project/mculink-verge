@@ -9,8 +9,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/** Where the generated code lives: the lower half of SRAMX. src/code_lab.c has the upper half. */
+/** Where the generated code lives: the lower half of SRAMX. src/code_lab.c has the upper half.
+ * tools/gen_host builds the generator elsewhere and puts it at an address of its own. */
+#ifndef SWD_GEN_BASE
 #define SWD_GEN_BASE 0x04000000U
+#endif
 #define SWD_GEN_SIZE 0x4000U
 
 /** A write clock is three instructions: two edges and the next bit's extraction. */
