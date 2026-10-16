@@ -111,6 +111,22 @@ __STATIC_FORCEINLINE uint32_t SWD_WithParity(uint32_t request) {
     return request | ((bits & 1U) << 6);
 }
 
+/** The turnaround period, with its range stated so the compiler stops testing for the rest.
+ *
+ * `DAP_SWD_Configure` stores `(value & 3) + 1` and `DAP_Setup` stores 1, so the field is 1 to 4
+ * and nothing else can write it. Read as a plain `uint8_t` the compiler has to allow 0 to 255,
+ * and it spends a zero test and a three-way dispatch per turnaround discovering what it already
+ * is. **Anything that writes this field outside those two places breaks the assumption here**,
+ * which is the one way this goes wrong.
+ */
+__STATIC_FORCEINLINE uint32_t SWD_Turnaround(void) {
+    const uint32_t cycles = DAP_Data.swd_conf.turnaround;
+    if ((cycles - 1U) > 3U) {
+        __builtin_unreachable();
+    }
+    return cycles;
+}
+
 #define SWD_TransferFunction(speed)                                                                \
     __STATIC_FORCEINLINE uint8_t SWD_Transfer##speed(uint32_t request, uint32_t* data) {           \
         uint32_t ack;                                                                              \
@@ -130,7 +146,7 @@ __STATIC_FORCEINLINE uint32_t SWD_WithParity(uint32_t request) {
                                                                                                    \
         /* Turnaround */                                                                           \
         PIN_SWDIO_OUT_DISABLE();                                                                   \
-        for (n = DAP_Data.swd_conf.turnaround; n; n--) {                                           \
+        for (n = SWD_Turnaround(); n; n--) {                                           \
             SW_CLOCK_CYCLE();                                                                      \
         }                                                                                          \
                                                                                                    \
@@ -155,13 +171,13 @@ __STATIC_FORCEINLINE uint32_t SWD_WithParity(uint32_t request) {
                     *data = val;                                                                   \
                 }                                                                                  \
                 /* Turnaround */                                                                   \
-                for (n = DAP_Data.swd_conf.turnaround; n; n--) {                                   \
+                for (n = SWD_Turnaround(); n; n--) {                                   \
                     SW_CLOCK_CYCLE();                                                              \
                 }                                                                                  \
                 PIN_SWDIO_OUT_ENABLE();                                                            \
             } else {                                                                               \
                 /* Turnaround */                                                                   \
-                for (n = DAP_Data.swd_conf.turnaround; n; n--) {                                   \
+                for (n = SWD_Turnaround(); n; n--) {                                   \
                     SW_CLOCK_CYCLE();                                                              \
                 }                                                                                  \
                 PIN_SWDIO_OUT_ENABLE();                                                            \
@@ -193,7 +209,7 @@ __STATIC_FORCEINLINE uint32_t SWD_WithParity(uint32_t request) {
                 }                                                                                  \
             }                                                                                      \
             /* Turnaround */                                                                       \
-            for (n = DAP_Data.swd_conf.turnaround; n; n--) {                                       \
+            for (n = SWD_Turnaround(); n; n--) {                                       \
                 SW_CLOCK_CYCLE();                                                                  \
             }                                                                                      \
             PIN_SWDIO_OUT_ENABLE();                                                                \
@@ -208,7 +224,7 @@ __STATIC_FORCEINLINE uint32_t SWD_WithParity(uint32_t request) {
         }                                                                                          \
                                                                                                    \
         /* Protocol error: back off the data phase */                                              \
-        for (n = DAP_Data.swd_conf.turnaround + 32U + 1U; n; n--) {                                \
+        for (n = SWD_Turnaround() + 32U + 1U; n; n--) {                                \
             SW_CLOCK_CYCLE();                                                                      \
         }                                                                                          \
         PIN_SWDIO_OUT_ENABLE();                                                                    \
