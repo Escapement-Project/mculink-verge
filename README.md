@@ -28,6 +28,7 @@ uv run tools/cycles.py --explain          # name the code in the longest gap bet
 uv run tools/equiv.py <ref.elf> <new.elf> # hold a rewrite to a reference build, case by case
 uv run tools/image.py               # the USB descriptors and the serial number
 uv run tools/cycles.py --table     # KiB/s for every rate a host can ask for
+uv run tools/window.py             # disassemble the gap that repeats once a word
 ```
 
 `ninja check` runs `tools/image.py` as well, which asks what the built image says about itself:

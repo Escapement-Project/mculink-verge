@@ -8,9 +8,17 @@ What has been done, what was tried and rejected, and what is left.
 command layer against a target that always acknowledges, and counts what executes between one wire
 edge and the next.
 
+Two of the changes below came off `tools/window.py`, which groups every gap by length and
+disassembles one of the length asked for. The longest gap is the first word of a block and is paid
+once; the one that repeats is what costs. Neither change was visible in a disassembly of the
+function, because the optimiser hoists this code to the top of a loop body thousands of
+instructions long.
+
 ```
 uv run tools/cycles.py --clock 10 50 --words 64        # throughput and where the time goes
 uv run tools/cycles.py --explain                       # name the code in the longest gap
+uv run tools/cycles.py --table                        # KiB/s for every rate a host can ask for
+uv run tools/window.py                                # disassemble the gap that repeats a word
 uv run tools/cycles.py --trace DIR                     # the wire event stream, to diff
 uv run tools/cycles.py --calibrate                     # recover ARM's two clock constants
 ```
