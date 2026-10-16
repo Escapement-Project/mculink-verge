@@ -238,6 +238,9 @@ class Machine:
         self._window: list[int] = []
         self._window_start = 0
         self.longest: tuple[int, list[int]] = (0, [])
+        # Every gap, not only the longest. The longest is the first word of a block, which carries
+        # the command dispatch; the one that costs is the steady-state gap repeated once a word.
+        self.windows: list[tuple[int, list[int]]] = []
         self.counts = Counts()
         self.md = Cs(CS_ARCH_ARM, CS_MODE_THUMB)
         self.md.detail = False
@@ -357,6 +360,7 @@ class Machine:
                 span = self.cycle - self._window_start
                 if span > self.longest[0]:
                     self.longest = (span, self._window)
+                self.windows.append((span, self._window))
                 self._window = []
                 self._window_start = self.cycle
             self.counts.trace.append(f"^{after_wire}{after_tdi}")
