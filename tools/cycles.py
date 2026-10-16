@@ -534,6 +534,40 @@ def measure(
     return probe.end(), response, probe
 
 
+def measure_transfer(
+    elf: str, wire: str, clock_hz: int, count: int, read: bool, model: Model, explain: bool = False
+) -> tuple[Counts, bytes, "Machine"]:
+    """The same measurement through DAP_Transfer instead of DAP_TransferBlock.
+
+    Not the throughput path -- a host reads memory in blocks -- but it is most of what an attach
+    is made of, and of anything that touches one register at a time. The per-transfer gap is much
+    larger here than in a block, which is what src/swd_transfer.h is about.
+    """
+    probe = build(elf, wire, read, model)
+    if "DAP_Setup" in probe.sym:
+        probe.call("DAP_Setup")
+    probe.command(bytes([ID_CONNECT, 1 if wire == "swd" else 2]))
+    probe.command(bytes([ID_SWJ_CLOCK]) + u32(clock_hz))
+    probe.command(bytes([ID_TRANSFER_CONFIG, 0]) + u16(100) + u16(0))
+    if wire == "swd":
+        probe.command(bytes([ID_SWD_CONFIGURE, 0x00]))
+    else:
+        probe.command(bytes([ID_JTAG_CONFIGURE, 1, 4]))
+    if wire == "cjtag":
+        probe.command(bytes([ID_CJTAG_CONTROL, 1]))
+
+    if read:
+        payload = bytes([ID_TRANSFER, 0, count]) + bytes([AP_DRW_READ]) * count
+    else:
+        payload = bytes([ID_TRANSFER, 0, count]) + (bytes([AP_DRW_WRITE]) + u32(0xA5A5_5A5A)) * count
+
+    probe.explain = explain
+    probe.begin()
+    probe._window_start = 0
+    response = probe.command(payload)
+    return probe.end(), response, probe
+
+
 def measure_bit_loop(elf: str, clock_hz: int, model: Model, bits: int = 248) -> Counts:
     """Cost of a bare clocked bit, with no transfer around it.
 
@@ -963,6 +997,11 @@ def main() -> int:
         help="write the wire event stream per scenario, to diff across a change",
     )
     ap.add_argument(
+        "--transfer",
+        action="store_true",
+        help="measure DAP_Transfer rather than DAP_TransferBlock",
+    )
+    ap.add_argument(
         "--table",
         action="store_true",
         help="KiB/s for every rate a host can ask for, as markdown",
@@ -990,7 +1029,8 @@ def main() -> int:
         return table(args.elf, model, cpu_hz, args.words)
     if args.calibrate:
         return calibrate(args.elf, args.wire, args.words, cpu_hz, model, args.config)
-    print(f"{args.elf}, {args.wire}, {args.words}-word block, core {args.cpu:g} MHz")
+    shape = f"{args.words}-transfer DAP_Transfer" if args.transfer else f"{args.words}-word block"
+    print(f"{args.elf}, {args.wire}, {shape}, core {args.cpu:g} MHz")
     print(
         f"cost model: load {model.load}, store {model.store}, GPIO store {model.gpio_store},"
         f" taken branch {model.taken_branch}, other {model.other}"
@@ -999,7 +1039,8 @@ def main() -> int:
         clock_hz = int(mhz * 1e6)
         print(f"\n{mhz:g} MHz requested")
         for label, read in (("read", True), ("write", False)):
-            counts, _, probe = measure(
+            drive = measure_transfer if args.transfer else measure
+            counts, _, probe = drive(
                 args.elf, args.wire, clock_hz, args.words, read, model, explain=args.explain
             )
             report(label, counts, model, clock_hz, cpu_hz, args.words)
