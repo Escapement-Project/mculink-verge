@@ -31,25 +31,31 @@ byte-identical cannot have altered the protocol.
 
 ## Where this stands against the bar
 
+**A change under about 1.5% on four-wire JTAG is not attributable to itself.** Three edits that
+did not touch the JTAG bit paths moved its 50 MHz figures by up to 1.3%, in both directions: the
+emulation is deterministic, so these are real differences in the generated code, but they are
+link-time register allocation landing differently rather than the change doing anything. SWD has
+not shown this. Attribute a small JTAG move from the disassembly or not at all.
+
 Stock measured 476 KiB/s read and 502 KiB/s write at its best setting. KiB/s of wire time, 64-word
 block, before and after tonight:
 
 | | asked | before | after | |
 | --- | --- | --- | --- | --- |
-| SWD read | 10 MHz | 538 | 631 | +17% |
+| SWD read | 10 MHz | 538 | 634 | +18% |
 | SWD write | 10 MHz | 547 | 681 | +24% |
-| SWD read | 50 MHz | 1161 | 1743 | +50% |
+| SWD read | 50 MHz | 1161 | 1765 | +52% |
 | SWD write | 50 MHz | 1387 | 2145 | +55% |
-| JTAG read | 10 MHz | 616 | 684 | +11% |
-| JTAG write | 10 MHz | 621 | 756 | +22% |
-| JTAG read | 50 MHz | 1355 | 1804 | +33% |
-| JTAG write | 50 MHz | 1630 | 2431 | +49% |
+| JTAG read | 10 MHz | 616 | 685 | +11% |
+| JTAG write | 10 MHz | 621 | 759 | +22% |
+| JTAG read | 50 MHz | 1355 | 1799 | +33% |
+| JTAG write | 50 MHz | 1630 | 2462 | +51% |
 | two-pin read | 10 MHz | 166 | 213 | +28% |
 | two-pin write | 10 MHz | 177 | 218 | +23% |
-| two-pin read | 50 MHz | 283 | 646 | +128% |
+| two-pin read | 50 MHz | 283 | 647 | +129% |
 | two-pin write | 50 MHz | 290 | 616 | +112% |
 
-Text grows from 46,980 bytes to 109,104, which is 17% of the part's flash.
+Text grows from 46,980 bytes to 108,700, which is 17% of the part's flash.
 
 The bar is cleared on wire time at every setting, by 4.3x at the top. **Wire time is not the same
 as throughput**: the stock capture put the USB gap at about 10% of a transfer at 14 MHz, and a
@@ -132,9 +138,27 @@ store: putting ARM's four bytes back in `jtag_block.h` alone leaves all four JTA
 unchanged and the image 8 bytes larger, so the loss arrives from the SWD file through link-time
 optimisation. Taken for the SWD gain. Text falls 184 bytes.
 
+### Take a read block's word count from the response pointer
+
+One word is four bytes, so the count the reply carries is the distance the response pointer moved.
+ARM keeps a separate counter, and the unrolled data phase leaves it nowhere but the stack: a load,
+an add and a store per word. Deriving it where the read branch leaves, at a label the two failure
+paths jump to as well, costs one divide once.
+
+SWD reads gain 1.3% at 50 MHz and 0.5% at 10. The same change in the JTAG loop gains 1.3% on
+writes and loses 0.3% on reads, which is the allocation moving rather than the read path doing
+more. Together the image is 404 bytes smaller.
+
 ## Tried and rejected
 
 Recorded because each one is the obvious next thing to try.
+
+### Loading the retry count once a block
+
+`DAP_Data.transfer.retry_count` is reloaded for every word, and only `DAP_TransferConfigure`
+changes it, so it cannot move during a block. Hoisting the load leaves SWD unchanged, gains 0.6%
+on JTAG reads, loses 1.3% on JTAG writes and does not change the image size at all. Nothing is
+being bought; the load was not what cost.
 
 ### Hoisting the packet request out of the block loop
 
@@ -266,12 +290,12 @@ model serving paths that do not cost the same.
 
 ### 1. What is left between transfers
 
-About 52 cycles on a SWD read at the delay-free setting, 16% of the time, down from 65. The
-write loop, which carries less, is at 34.
+About 48 cycles on a SWD read at the delay-free setting, 15% of the time, down from 65.
 
-What is in those 52, counted off the instruction trace: about ten rebuilding the packet request,
-six loading and storing the response pointer and the word count, which live on the stack, five on
-the loop counter, and the rest the tail of one transfer and the head of the next. The two biggest
+What is in those 48, counted off the instruction trace: fourteen rebuilding the packet request and
+spilling it, five on the loop counter, three storing the response pointer, which lives on the
+stack, three loading and testing the idle-cycle count, and the rest the tail of one transfer and
+the head of the next. The two biggest
 are both register pressure -- the unrolled data phase wants every register, so the loop's own
 state is spilled and the invariant parts of the packet are recomputed rather than kept.
 
