@@ -438,6 +438,119 @@ def cmd_reboot(args) -> int:
     return 0
 
 
+def clock_ladder(cpu_hz: int, half_bit_cycles: float = 2.5) -> list[tuple[int, int, float]]:
+    """Every distinct wire rate the firmware can produce, and a request that selects each.
+
+    Sweeping requested Hz wastes most of its points. `Set_Clock_Delay` turns a request into a
+    counted delay, so requests between two steps land on the same step: 12 and 14 MHz both become
+    the 10 MHz one. Walking the delay instead gives one point per achievable rate and no
+    duplicates.
+
+    ARM's arithmetic, transcribed from DAP.c: a request at or above (CPU/2)/IO_PORT_WRITE_CYCLES
+    takes the delay-free path, and below it the count is
+    `ceil((ceil((CPU/2)/clock) - IO_PORT_WRITE_CYCLES) / DELAY_SLOW_CYCLES)`, floored at one.
+
+    The period comes from the measured per-half-bit cost rather than ARM's model, which understates
+    its own firmware threefold. A bit is `2 * (half_bit_cycles + 3 * delay - 1)`, the minus one
+    because PIN_DELAY_SLOW is a `subs` and a `bne` and n iterations cost 3n-1. Ours solves to 2.5
+    cycles a half-bit, from 15.01 at delay 2, 33.01 at delay 5 and 153.04 at delay 25 on a 150 MHz
+    core. Stock's wire fits 6.0 in the same formula, so sweeping a stock unit wants `--half-bit-cycles 6`.
+
+    **The two firmwares make different ladders, and together they make a finer one.** Ours has
+    nothing between 10.00 and 16.67 MHz; stock's delay-free step lands at 15.00, inside that gap.
+    """
+    io_port_write_cycles = 2
+    delay_slow_cycles = 3
+    half = cpu_hz // 2
+
+    # The delay-free copy, which a request at or above this threshold selects. Its rate is the
+    # same arithmetic with the delay gone, and it is the only step above the delay-1 one.
+    fast_from = half // io_port_write_cycles
+    fast_wire = cpu_hz / (2.0 * half_bit_cycles)
+
+    seen: dict[int, tuple[int, float]] = {}
+    for want in range(1_000_000, 37_000_000, 50_000):
+        raw = -(-half // want)  # ceil
+        delay = max(1, -(-(raw - io_port_write_cycles) // delay_slow_cycles)) if raw > io_port_write_cycles else 1
+        if delay not in seen:
+            period = 2.0 * (half_bit_cycles + delay_slow_cycles * delay - 1)
+            seen[delay] = (want, cpu_hz / period)
+    rows = [(delay, want, wire) for delay, (want, wire) in sorted(seen.items())]
+    return [(0, fast_from, fast_wire)] + rows
+
+
+def cmd_limit(args) -> int:
+    """Where the wire stops working, as a number rather than a bracket.
+
+    Repeats a DPIDR read with DAP_TransferBlock at every rate the firmware can produce and checks
+    every word that comes back. DPIDR rather than RDBUFF because its value is known, so a bit that
+    flips on the wire shows up as a wrong word and not only as a bad acknowledge -- a marginal
+    clock corrupts data long before the acknowledge stops decoding.
+
+    No access port, no target memory and no target state, so nothing here can leave the part in a
+    different condition than it found it, and a failure at a high rate does not spoil the next
+    point. The debug port is reset and its sticky errors cleared between rates for the same reason.
+    """
+    probe = one(args)
+    print(f"{probe.serial}  {probe.product}")
+    print(f"  DAP_Connect -> {probe.connect(1)}")
+
+    ladder = clock_ladder(args.cpu_hz, args.half_bit_cycles)
+    if args.max_mhz:
+        ladder = [row for row in ladder if row[2] <= args.max_mhz * 1e6]
+
+    print(f"\n  {'delay':>5}  {'asked':>9}  {'wire':>9}  {'transfers':>9}  {'bad words':>9}  {'short':>6}  verdict")
+    worst_good = 0.0
+    best_bad = None
+    for delay, want, wire in ladder:
+        probe.swj_clock(want)
+        try:
+            reference = swd_reset(probe)
+        except RuntimeError as exc:
+            print(f"  {delay:>5}  {want / 1e6:>8.2f}M  {wire / 1e6:>8.2f}M  {'-':>9}  {'-':>9}  {'-':>6}  no DPIDR: {exc}")
+            best_bad = wire if best_bad is None else min(best_bad, wire)
+            continue
+
+        transfers = bad_words = short = 0
+        for _ in range(args.blocks):
+            reply = probe.command(
+                bytes([DAP_TRANSFER_BLOCK, 0]) + args.words.to_bytes(2, "little") + bytes([0x02])
+            )
+            count = int.from_bytes(reply[1:3], "little")
+            if count != args.words or reply[3] != 1:
+                short += 1
+                break
+            transfers += count
+            for i in range(count):
+                if int.from_bytes(reply[4 + i * 4 : 8 + i * 4], "little") != reference:
+                    bad_words += 1
+
+        ok = bad_words == 0 and short == 0
+        if ok:
+            worst_good = max(worst_good, wire)
+        else:
+            best_bad = wire if best_bad is None else min(best_bad, wire)
+        print(f"  {delay:>5}  {want / 1e6:>8.2f}M  {wire / 1e6:>8.2f}M  {transfers:>9}  {bad_words:>9}  {short:>6}  "
+              f"{'ok' if ok else 'FAILED'}")
+
+        # Whatever happened, leave the port clean for the next rate: a sticky error latches and
+        # would make every later point fail for a reason that has nothing to do with its clock.
+        probe.swj_clock(1_000_000)
+        try:
+            swd_reset(probe)
+            probe.command(bytes([DAP_TRANSFER, 0, 1, 0x00, 0x1E, 0x00, 0x00, 0x00]))
+        except RuntimeError:
+            pass
+
+    print()
+    if best_bad is None:
+        print(f"  every rate up to {worst_good / 1e6:.2f} MHz was clean; the ceiling is above this ladder")
+    else:
+        print(f"  clean to {worst_good / 1e6:.2f} MHz, failing at {best_bad / 1e6:.2f} MHz")
+    probe.release()
+    return 0
+
+
 def cmd_block(args) -> int:
     """Read one DP register over and over with DAP_TransferBlock, as a clean bit-path instrument.
 
@@ -516,6 +629,15 @@ def main() -> int:
     j8.add_argument("--levels", type=lambda s: int(s, 0), default=0x00, help="levels for those pins")
     j8.add_argument("--release", action="store_true", help="give all four back to the marker")
     j8.set_defaults(run=cmd_j8)
+
+    limit = sub.add_parser("limit", help="sweep every achievable rate and check the data")
+    limit.add_argument("--cpu-hz", type=int, default=150_000_000, help="the probe's core clock")
+    limit.add_argument("--half-bit-cycles", type=float, default=2.5,
+                       help="measured non-delay cost of a half bit: 2.5 for ours, 6 for stock")
+    limit.add_argument("--words", type=int, default=64, help="transfers per block command")
+    limit.add_argument("--blocks", type=int, default=50, help="block commands per rate")
+    limit.add_argument("--max-mhz", type=float, default=0.0, help="stop above this wire rate")
+    limit.set_defaults(run=cmd_limit)
 
     reboot = sub.add_parser("reboot", help="reset the probe, optionally into the ROM bootloader")
     reboot.add_argument("--bootloader", action="store_true", help="come back in ISP mode, not the firmware")
