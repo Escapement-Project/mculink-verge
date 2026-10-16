@@ -750,6 +750,39 @@ from 653 to 783 KiB/s and left gcc's output unchanged.
 and hardware puts gcc ahead. Same blind spot as the rejected peel: it counts instructions, and
 whatever makes clang's data bit 0.78 cycles dearer is not in the count.
 
+### The USB side: the probe held one packet and told the host eight
+
+`tools/dap.py block --pipeline N` keeps N commands in flight instead of waiting for each reply.
+Measured on a 64-word block read at 10 MHz asked:
+
+| commands in flight | end to end |
+| --- | --- |
+| 1 | 581 KiB/s |
+| 2 | 646 |
+| 3 | 646 |
+| 4 | times out |
+
+**A second command in flight is worth 11%**, and it is worth it for a reason nothing on the wire
+can fix: with one in flight the wire sits idle while the host notices the reply and sends the next
+request. The third adds nothing, and the fourth does not work.
+
+`DAP_Info` said eight packets, copied from ARM's reference. It is now 2, which is what the stack
+can actually hold: one packet in the endpoint buffer and one in the class buffer.
+
+**TinyUSB's vendor class is a byte stream, not a packet interface**, and that is the whole reason.
+`tud_vendor_read` drains whatever the receive buffer holds, so a buffer sized for two commands
+hands both to one read and the second is answered by nobody. Raising both buffers to eight packets
+was tried and made it worse: the host times out from three in flight upward and throughput falls
+as 1/N. A buffer of exactly one packet is what keeps CMSIS-DAP's one-command-per-packet framing
+true, so `CFG_TUD_VENDOR_RX_BUFSIZE` and `TX_BUFSIZE` must stay at 512.
+
+Going deeper than two needs the replies to leave as framed transfers, which means driving the bulk
+endpoints directly instead of through the class FIFO. That is the remaining USB work.
+
+The command loop also waits for the transmit side to drain before starting the next command.
+`tud_vendor_write` writes what fits and returns the count, and nothing was reading it, so a full
+buffer truncated a reply silently.
+
 ## What the bench has sized, and what is left
 
 - **Running the bit paths from SRAM.** Done; it was the biggest item there was and it doubled the
@@ -757,8 +790,10 @@ whatever makes clang's data bit 0.78 cycles dearer is not in the count.
   script and already copied by its startup code, which the earlier note here got wrong.
 - **A DAP packet above 512 bytes.** Worth less than this document used to claim. The marker puts
   USB and the host at 19.6% of a block read, not 34%, so the ceiling on this is a fifth rather
-  than a third. It deviates from stock, so check pyOCD and OpenOCD before changing what `DAP_Info`
-  reports.
+  than a third, and two commands in flight has already taken 11% of it. It deviates from stock, so
+  check pyOCD and OpenOCD before changing what `DAP_Info` reports.
+- **Framed replies, so more than two packets can be in flight.** Needs the bulk endpoints driven
+  directly rather than through TinyUSB's vendor FIFO, which cannot keep a packet boundary.
 - **Clocks 44 and 45 of every transfer**, 51.9 and 66.1 cycles against a 15-cycle data bit. 89
   extra cycles once per word and 12.9% of a transfer, but one attempt at them already came out
   worse by disturbing the data phase. See the rejected change above before trying again.
