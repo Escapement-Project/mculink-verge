@@ -26,6 +26,7 @@
 #include "DAP_config.h"
 
 #include "DAP.h"
+#include "swd_dp.h"
 
 // The same shape as SW_DP.c's, so the two can be read side by side.
 #define PIN_SWCLK_SET PIN_SWCLK_TCK_SET
@@ -96,7 +97,7 @@
     macro(31)
 
 #define SWD_TransferFunction(speed)                                                                \
-    static uint8_t SWD_Transfer##speed(uint32_t request, uint32_t* data) {                         \
+    __STATIC_FORCEINLINE uint8_t SWD_Transfer##speed(uint32_t request, uint32_t* data) {           \
         uint32_t ack;                                                                              \
         uint32_t bit;                                                                              \
         uint32_t val;                                                                              \
@@ -224,4 +225,112 @@ SWD_TransferFunction(Fast)
     } else {
         return SWD_TransferSlow(request, data);
     }
+}
+
+/** ARM's DAP_SWD_TransferBlock, with the transfer inlined into the loop.
+ *
+ * A transfer saves eight registers on entry and restores them on exit, and reloads the two GPIO
+ * base addresses and the pin masks each time. Called once per word from DAP.c that is about 30
+ * cycles of dead wire between one transfer and the next, which at the delay-free setting is a
+ * tenth of a read. Inlining it into the loop pays for all of that once per block instead.
+ *
+ * The logic is ARM's, transcribed. The fast and slow choice is hoisted to the top so each copy
+ * inlines one transfer variant rather than both.
+ */
+#define SWD_TransferBlockFunction(speed)                                                          \
+    static uint32_t SWD_TransferBlock##speed(const uint8_t* request, uint8_t* response) {         \
+        uint32_t request_count;                                                                   \
+        uint32_t request_value;                                                                   \
+        uint32_t response_count = 0U;                                                             \
+        uint32_t response_value = 0U;                                                             \
+        uint8_t* response_head = response;                                                        \
+        uint32_t retry;                                                                           \
+        uint32_t data;                                                                            \
+                                                                                                  \
+        response += 3;                                                                            \
+        DAP_TransferAbort = 0U;                                                                   \
+        request++; /* Ignore DAP index */                                                         \
+                                                                                                  \
+        request_count = (uint32_t)(*(request + 0) << 0) | (uint32_t)(*(request + 1) << 8);        \
+        request += 2;                                                                             \
+        if (request_count == 0U) {                                                                \
+            goto end;                                                                             \
+        }                                                                                         \
+                                                                                                  \
+        request_value = *request++;                                                               \
+        if ((request_value & DAP_TRANSFER_RnW) != 0U) {                                           \
+            if ((request_value & DAP_TRANSFER_APnDP) != 0U) {                                     \
+                /* Post AP read */                                                                \
+                retry = DAP_Data.transfer.retry_count;                                            \
+                do {                                                                              \
+                    response_value = SWD_Transfer##speed(request_value, NULL);                    \
+                } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort); \
+                if (response_value != DAP_TRANSFER_OK) {                                          \
+                    goto end;                                                                     \
+                }                                                                                 \
+            }                                                                                     \
+            while (request_count--) {                                                             \
+                if ((request_count == 0U) && ((request_value & DAP_TRANSFER_APnDP) != 0U)) {      \
+                    request_value = DP_RDBUFF | DAP_TRANSFER_RnW;                                 \
+                }                                                                                 \
+                retry = DAP_Data.transfer.retry_count;                                            \
+                do {                                                                              \
+                    response_value = SWD_Transfer##speed(request_value, &data);                   \
+                } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort); \
+                if (response_value != DAP_TRANSFER_OK) {                                          \
+                    goto end;                                                                     \
+                }                                                                                 \
+                *response++ = (uint8_t)data;                                                      \
+                *response++ = (uint8_t)(data >> 8);                                               \
+                *response++ = (uint8_t)(data >> 16);                                              \
+                *response++ = (uint8_t)(data >> 24);                                              \
+                response_count++;                                                                 \
+            }                                                                                     \
+        } else {                                                                                  \
+            while (request_count--) {                                                             \
+                data = (uint32_t)(*(request + 0) << 0) | (uint32_t)(*(request + 1) << 8) |        \
+                       (uint32_t)(*(request + 2) << 16) | (uint32_t)(*(request + 3) << 24);       \
+                request += 4;                                                                     \
+                retry = DAP_Data.transfer.retry_count;                                            \
+                do {                                                                              \
+                    response_value = SWD_Transfer##speed(request_value, &data);                   \
+                } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort); \
+                if (response_value != DAP_TRANSFER_OK) {                                          \
+                    goto end;                                                                     \
+                }                                                                                 \
+                response_count++;                                                                 \
+            }                                                                                     \
+            /* Check last write */                                                                \
+            retry = DAP_Data.transfer.retry_count;                                                \
+            do {                                                                                  \
+                response_value = SWD_Transfer##speed(DP_RDBUFF | DAP_TRANSFER_RnW, NULL);         \
+            } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort);     \
+        }                                                                                         \
+                                                                                                  \
+    end:                                                                                          \
+        *(response_head + 0) = (uint8_t)(response_count >> 0);                                    \
+        *(response_head + 1) = (uint8_t)(response_count >> 8);                                    \
+        *(response_head + 2) = (uint8_t)response_value;                                           \
+                                                                                                  \
+        return ((uint32_t)(response - response_head));                                            \
+    }
+
+SWD_TransferBlockFunction(Fast) SWD_TransferBlockFunction(Slow)
+
+    /** The same return shape DAP.c's own DAP_TransferBlock produces. */
+    uint32_t SWD_TransferBlock(const uint8_t* request, uint8_t* response) {
+    uint32_t num;
+
+    if (DAP_Data.fast_clock) {
+        num = SWD_TransferBlockFast(request, response);
+    } else {
+        num = SWD_TransferBlockSlow(request, response);
+    }
+
+    if ((*(request + 3) & DAP_TRANSFER_RnW) != 0U) {
+        num |= 4U << 16;
+    } else {
+        num |= (4U + (((uint32_t)(*(request + 1)) | (uint32_t)(*(request + 2) << 8)) * 4)) << 16;
+    }
+    return num;
 }

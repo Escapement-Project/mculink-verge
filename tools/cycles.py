@@ -440,7 +440,11 @@ class Machine:
     def command(self, request: bytes) -> bytes:
         self.uc.mem_write(SCRATCH, request + bytes(600 - len(request)))
         self.uc.mem_write(SCRATCH + 0x400, bytes(600))
-        produced = self.call("DAP_ProcessCommand", SCRATCH, SCRATCH + 0x400) & 0xFFFF
+        # The entry point main() uses. DAP_ProcessCommand sits behind it and is not always a
+        # symbol: a build that routes some commands of its own leaves a wrapper small enough to
+        # inline away.
+        entry = "DAP_ExecuteCommand" if "DAP_ExecuteCommand" in self.sym else "DAP_ProcessCommand"
+        produced = self.call(entry, SCRATCH, SCRATCH + 0x400) & 0xFFFF
         return bytes(self.uc.mem_read(SCRATCH + 0x400, max(produced, 1)))
 
     def begin(self):
@@ -551,6 +555,12 @@ def explain_gap(probe: "Machine") -> None:
     print(f"    the longest gap is {span} cycles, {len(window)} instructions, in:")
     for name, n in ranked:
         print(f"      {n:5d}  {name}")
+    if os.environ.get("CYCLES_GAP_LISTING"):
+        print("    the instructions, in order:")
+        for pc in window:
+            i = bisect.bisect_right(addrs, pc) - 1
+            name = ordered[i][1] if i >= 0 else "?"
+            print(f"      {pc:#010x}  {name}")
 
 
 def report(name: str, c: Counts, model: Model, clock_hz: int, cpu_hz: int, words: int):
