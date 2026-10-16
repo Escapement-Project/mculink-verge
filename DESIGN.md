@@ -47,11 +47,27 @@ Builds. `cmake -B build -G Ninja -DBOARD=mcu_link -DTOOLCHAIN=gcc . && ninja -C 
 **Nothing has been flashed or run on hardware yet.** The bench is unavailable; everything below
 about the stock firmware comes from captures taken before it went away.
 
-Implemented: the vendor-class (CMSIS-DAP v2) USB interface, the MCU-Link pin layer, serial number
-from the part's unique id, and ARM's DAP, SW_DP and JTAG_DP compiled unchanged.
+Implemented: the vendor-class (CMSIS-DAP v2) USB interface, the MCU-Link pin layer, the serial
+number, ARM's DAP, SW_DP and JTAG_DP compiled unchanged, and the cJTAG activation sequence and
+frame primitive behind two vendor commands.
 
-Not yet: SWO (8 of the 25 stock commands), the `DAP_UART_*` commands, the HID and CDC interfaces,
-and the cJTAG work itself.
+**The frame primitive has no caller yet.** `cJTAG_Frame` is written and compiles, but nothing in
+the JTAG path calls it, so the linker drops it. Activation can be triggered and the mode flag set;
+the TAP is still driven as four-wire afterwards. Routing the JTAG entry points through it is the
+next piece of work and the one that makes the firmware do its job.
+
+Not yet: that routing, SWO (8 of the 25 stock commands), the `DAP_UART_*` commands, and the HID and
+CDC interfaces.
+
+### Vendor commands
+
+| id | | |
+| --- | --- | --- |
+| 0x82 | `CJTAG_INFO` | answers "CJTAG", a format version and whether OScan1 is active. Read-only, so a host may send it blindly: stock firmware answers `ID_DAP_Invalid`, which is how a host tells the two images apart. |
+| 0x83 | `CJTAG_CONTROL` | one byte, non-zero activates OScan1 and zero returns to four-wire framing. |
+
+Stock's 0x80 and 0x81 do something unknown and are **not implemented here**, so any LinkServer
+feature resting on them will not work against this firmware.
 
 ## Architecture, and why
 
@@ -154,17 +170,22 @@ Captures: `mculink-swd-clock-*.sal`.
 
 ## Next steps
 
-1. Flash and enumerate. Nothing has run on hardware. Until it does, every line of this is theory.
-2. Bring the command set to parity: SWO, the UART commands, and the HID and CDC interfaces.
-3. The cJTAG work: a vendor command in 0x82..0x9F, the activation sequence, and OScan1 framing on
-   the JTAG bit path with **TMSC moved only while TCKC is low**.
-4. Then, and only then, throughput.
+1. Route the JTAG entry points through `cJTAG_Frame` when the mode flag is set. The plan is to
+   rename ARM's symbols at compile time with `-DJTAG_Sequence=jtag4_Sequence` and friends, and
+   define the real names in our own file that dispatches on the flag. That keeps ARM's file
+   unpatched and keeps the four-wire path free of a per-bit branch.
+2. Flash and enumerate. Nothing has run on hardware. Until it does, every line of this is theory.
+3. Bench: confirm probe-rs attaches over SWD, then the OScan1 read on a CC13xx.
+4. Parity: SWO, the UART commands, and the HID and CDC interfaces.
+5. Then, and only then, throughput.
 
 ### Open questions
 
-- Serial number: `board_get_unique_id` has no LPC55 implementation in TinyUSB, so the serial is
-  probably not unique yet. Two MCU-Links on one bench are indistinguishable without it, and the
-  planned A/B needs exactly that.
+- The UUID read at 0x0009_FC70 is untested on hardware. If that region faults rather than reading,
+  it faults during `GetSerialNum` and the device will not enumerate. The uniform-value guard
+  catches an unprogrammed region but cannot catch a bus fault.
+- In `cJTAG_Frame`, TDO is sampled while TCKC is low, just before the rising edge, following the
+  shape of ARM's `SW_READ_BIT`. Whether the target drives it early enough is an analyser question.
 
 ## References
 

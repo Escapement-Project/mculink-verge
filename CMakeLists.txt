@@ -18,7 +18,8 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/ser_num.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/board_pins.c
   ${DAP_SRC}/DAP.c
-  ${DAP_SRC}/DAP_vendor.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_vendor.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag.c
   ${DAP_SRC}/SW_DP.c
   ${DAP_SRC}/JTAG_DP.c
   )
@@ -27,7 +28,7 @@ target_sources(${PROJECT_NAME} PRIVATE
 # leaves a variable unused when SWO is configured out, which is upstream's code and not a defect
 # worth carrying a patch for.
 set_source_files_properties(
-  ${DAP_SRC}/DAP.c ${DAP_SRC}/DAP_vendor.c ${DAP_SRC}/SW_DP.c ${DAP_SRC}/JTAG_DP.c
+  ${DAP_SRC}/DAP.c ${DAP_SRC}/SW_DP.c ${DAP_SRC}/JTAG_DP.c
   PROPERTIES COMPILE_OPTIONS "-Wno-unused-variable;-Wno-unused-but-set-variable"
   )
 
