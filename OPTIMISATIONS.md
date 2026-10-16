@@ -407,11 +407,14 @@ decomposes it into four values once a word. On SWD that value stays in a registe
 loop is a notch further over the edge, which is also why its numbers move by up to 1.3% when
 something else in the image changes.
 
-**Anything that does not reduce register pressure will land here too.** What would reduce it is
-shortening the unrolled data phase, and that trades against the wire: a loop costs a compare and a
-branch per bit, which is a third of a read bit and would have to be won back from a 46-cycle gap
-that is 15% of a word. The arithmetic says no, but it is the only lever left, so measure it before
-trying anything else in this section.
+**Anything that does not reduce register pressure will land here too.** The one lever that would
+reduce it is shortening the unrolled data phase, and that has now been measured: four passes of
+eight bits, with a rotate to reassemble the word, costs **4.4% of a SWD read at 10 MHz and 1.0% at
+50, for 2,056 more bytes**. It is correct -- the gate passes -- and it is simply a bad trade. The
+loop overhead and the rotate cost more than the freed registers return.
+
+So the gap stays. Seven attempts, all recorded, and the thing they have in common is that none of
+them made the wire shorter.
 
 ### 2. DAP_Transfer spends a quarter of its time not clocking
 
