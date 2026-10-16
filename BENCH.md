@@ -1448,6 +1448,65 @@ cycles, which at 50 MHz always swallows one bit's sampling window, so the protot
 timer with a DMA write instead, triggered by a second timer. None of this is in the generator
 yet; `timer-swclk-2026-10-16.txt` has the measurements.
 
+### The USB path at 50 MHz, and what a perfect host gets
+
+At 50 MHz the wire stopped being most of a block read. probe-rs read SRAM at 1,397 KiB/s, half
+of what the wire allows, so the question became how much of the rest is the probe.
+
+**`tools/dap.py block --queue N` is the instrument.** It queues commands through libusb's
+asynchronous API, so the probe never waits on the host. A queue of 2 already saturates, deeper
+queues change nothing, and the host's CPU is 17% busy at 126 words: what it measures is the
+probe and the link. 50 MHz, DP reads, queue 8, three runs each, identical to 0.1%:
+
+| build | 1 word | 32 words | 126 words |
+| --- | --- | --- | --- |
+| generated transfers, as before | 22,965 commands/s | 1,349 KiB/s | 2,067 KiB/s |
+| + memcpy a block at a time | 23,093 | 1,429 | 2,242 |
+| + TinyUSB in SRAM | 30,399 | 1,618 | 2,351 |
+| clang, same, buffers aligned | 33,476 | 1,686 | 2,383 |
+
+The shipping configuration (ARM's C paths, 10 MHz) gains from TinyUSB in SRAM too: 25,235 to
+35,103 one-word commands a second, 717 to 729 KiB/s at 126 words.
+
+**Where a command's time went, from the marker** (126-word blocks, before → after the two changes):
+
+| | before | after |
+| --- | --- | --- |
+| clocks running | 186.1 µs | 186.5 µs |
+| before the first clock | 6.1 | 6.0 |
+| after the last clock | 1.8 | 1.8 |
+| gap to the next command | 45.5 | 14.6 |
+| period | 239.6 | 208.9 |
+
+The generator schedules 170.5 µs of clocking for 126 reads; the other 16 µs are interrupts, which
+run between transfers because the transfers mask them. Folding the gaps between transfers shows
+about 2.4 per command at 4.4 µs each from SRAM, 6 µs from flash. A one-word command spends 14 µs
+before its first clock, mostly those same interrupts.
+
+**newlib-nano's memcpy was 8 cycles a byte.** It is built for size and copies a byte per
+iteration, and every reply passes through it into the endpoint buffer: 26 µs for a 507-byte
+reply. Ours (`src/mem.S`) moves
+32 bytes per ldm/stm pair. It saved 18.5 µs of the predicted 24.
+
+**clang left the reply buffer on a halfword**, so its replies still went through the byte path
+and its 126-word figure was 7% under gcc's until the buffers were aligned.
+
+**What is left, per 126-word command:** 14.6 µs between commands (dispatch, TinyUSB's task, the
+main loop), 6 µs before the first clock (command dispatch, still in flash), and about 10 µs of
+interrupts inside the block. At 50 MHz that is 15% of the period. The copy into the endpoint
+buffer can go entirely: the high-speed controller reaches only USB RAM, so the slots and the reply
+would have to live there and the bulk endpoints be driven without TinyUSB's vendor class.
+
+**probe-rs, against the same probe, is a separate gap.** Within a run of blocks it keeps the probe
+as busy as the perfect host does (39 µs between blocks against 45 for dap.py on the old build).
+But every 1 KB, where the access port's address wraps, it sends two small commands and waits for
+each reply before continuing: about 170 µs of round trips per 1 KB against 470 µs of blocks.
+That, not the probe, is most of the difference between 1,397 and the 2,000 the probe gave a
+script.
+
+Tools: `qsweep.sh`, `marker_gaps.py`, `isr_gaps.py` and the sweeps, with the
+captures `usb-*.sal` beside them.
+
 ## What the bench has sized, and what is left
 
 - **MCU-Link Pro support.** Stock runs one image on every LPC55S69 MCU-Link, the Pro
