@@ -9,113 +9,110 @@
  * length fields have to agree with the bytes that follow them and nothing at run time reports a
  * mismatch -- the device simply fails to bind.
  */
-#include "tusb.h"
 #include "ser_num.h"
+#include "tusb.h"
 
-#define USB_VID   0x1FC9      // NXP
-#define USB_PID   0x0143      // MCU-Link CMSIS-DAP
-#define USB_BCD   0x0210      // 2.1, which is what makes the host ask for the BOS descriptor
+#define USB_VID 0x1FC9 // NXP
+#define USB_PID 0x0143 // MCU-Link CMSIS-DAP
+#define USB_BCD 0x0210 // 2.1, which is what makes the host ask for the BOS descriptor
 
 static const tusb_desc_device_t desc_device = {
-    .bLength            = sizeof(tusb_desc_device_t),
-    .bDescriptorType    = TUSB_DESC_DEVICE,
-    .bcdUSB             = USB_BCD,
-    .bDeviceClass       = 0x00,
-    .bDeviceSubClass    = 0x00,
-    .bDeviceProtocol    = 0x00,
-    .bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE,
-    .idVendor           = USB_VID,
-    .idProduct          = USB_PID,
-    .bcdDevice          = 0x0100,
-    .iManufacturer      = 0x01,
-    .iProduct           = 0x02,
-    .iSerialNumber      = 0x03,
+    .bLength = sizeof(tusb_desc_device_t),
+    .bDescriptorType = TUSB_DESC_DEVICE,
+    .bcdUSB = USB_BCD,
+    .bDeviceClass = 0x00,
+    .bDeviceSubClass = 0x00,
+    .bDeviceProtocol = 0x00,
+    .bMaxPacketSize0 = CFG_TUD_ENDPOINT0_SIZE,
+    .idVendor = USB_VID,
+    .idProduct = USB_PID,
+    .bcdDevice = 0x0100,
+    .iManufacturer = 0x01,
+    .iProduct = 0x02,
+    .iSerialNumber = 0x03,
     .bNumConfigurations = 0x01,
 };
 
-uint8_t const *tud_descriptor_device_cb(void) {
-  return (uint8_t const *)&desc_device;
-}
+uint8_t const* tud_descriptor_device_cb(void) { return (uint8_t const*)&desc_device; }
 
 enum { ITF_NUM_VENDOR = 0, ITF_NUM_CDC, ITF_NUM_CDC_DATA, ITF_NUM_HID, ITF_NUM_TOTAL };
 
-#define EPNUM_VENDOR_OUT  0x01
-#define EPNUM_VENDOR_IN   0x81
-#define EPNUM_CDC_NOTIF   0x82
-#define EPNUM_CDC_OUT     0x03
-#define EPNUM_CDC_IN      0x83
-#define EPNUM_HID_OUT     0x04
-#define EPNUM_HID_IN      0x84
+#define EPNUM_VENDOR_OUT 0x01
+#define EPNUM_VENDOR_IN 0x81
+#define EPNUM_CDC_NOTIF 0x82
+#define EPNUM_CDC_OUT 0x03
+#define EPNUM_CDC_IN 0x83
+#define EPNUM_HID_OUT 0x04
+#define EPNUM_HID_IN 0x84
 
-#define CONFIG_TOTAL_LEN \
-  (TUD_CONFIG_DESC_LEN + TUD_VENDOR_DESC_LEN + TUD_CDC_DESC_LEN + TUD_HID_INOUT_DESC_LEN)
+#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_VENDOR_DESC_LEN + TUD_CDC_DESC_LEN + TUD_HID_INOUT_DESC_LEN)
 
 /** A vendor-defined report pair, 64 bytes each way: what CMSIS-DAP v1 is. */
 static uint8_t const desc_hid_report[] = {
     TUD_HID_REPORT_DESC_GENERIC_INOUT(CFG_TUD_HID_EP_BUFSIZE),
 };
 
-uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance) {
-  (void)instance;
-  return desc_hid_report;
+uint8_t const* tud_hid_descriptor_report_cb(uint8_t instance) {
+    (void)instance;
+    return desc_hid_report;
 }
 
 static uint8_t const desc_configuration[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, 0x00, 100),
     TUD_VENDOR_DESCRIPTOR(ITF_NUM_VENDOR, 4, EPNUM_VENDOR_OUT, EPNUM_VENDOR_IN, 512),
     TUD_CDC_DESCRIPTOR(ITF_NUM_CDC, 5, EPNUM_CDC_NOTIF, 8, EPNUM_CDC_OUT, EPNUM_CDC_IN, 512),
-    TUD_HID_INOUT_DESCRIPTOR(ITF_NUM_HID, 6, HID_ITF_PROTOCOL_NONE, sizeof(desc_hid_report),
-                             EPNUM_HID_OUT, EPNUM_HID_IN, CFG_TUD_HID_EP_BUFSIZE, 1),
+    TUD_HID_INOUT_DESCRIPTOR(ITF_NUM_HID, 6, HID_ITF_PROTOCOL_NONE, sizeof(desc_hid_report), EPNUM_HID_OUT,
+                             EPNUM_HID_IN, CFG_TUD_HID_EP_BUFSIZE, 1),
 };
 
-uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
-  (void)index;
-  return desc_configuration;
+uint8_t const* tud_descriptor_configuration_cb(uint8_t index) {
+    (void)index;
+    return desc_configuration;
 }
 
 // ---- Strings ------------------------------------------------------------------------------------
 
-static char const *string_desc[] = {
-    [0] = (const char[]){0x09, 0x04},   // English (US)
+static char const* string_desc[] = {
+    [0] = (const char[]){0x09, 0x04}, // English (US)
     [1] = "NXP Semiconductors",
     [2] = "MCU-Link CMSIS-DAP cJTAG",
-    [3] = NULL,                           // serial, filled in from the part's unique id
-    [4] = "CMSIS-DAP v2",                 // the prefix host tools match on
+    [3] = NULL,           // serial, filled in from the part's unique id
+    [4] = "CMSIS-DAP v2", // the prefix host tools match on
     [5] = "MCU-Link VCOM",
-    [6] = "CMSIS-DAP v1",                 // the same prefix, on the HID interface
+    [6] = "CMSIS-DAP v1", // the same prefix, on the HID interface
 };
 
 static uint16_t string_buffer[32];
 
-uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
-  (void)langid;
-  size_t count;
+uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
+    (void)langid;
+    size_t count;
 
-  if (index == 0) {
-    memcpy(&string_buffer[1], string_desc[0], 2);
-    count = 1;
-  } else {
-    if (index >= TU_ARRAY_SIZE(string_desc)) {
-      return NULL;
+    if (index == 0) {
+        memcpy(&string_buffer[1], string_desc[0], 2);
+        count = 1;
+    } else {
+        if (index >= TU_ARRAY_SIZE(string_desc)) {
+            return NULL;
+        }
+        char const* text = (index == 3) ? GetSerialNum() : string_desc[index];
+        count = strlen(text);
+        if (count > TU_ARRAY_SIZE(string_buffer) - 1) {
+            count = TU_ARRAY_SIZE(string_buffer) - 1;
+        }
+        for (size_t i = 0; i < count; i++) {
+            string_buffer[1 + i] = text[i];
+        }
     }
-    char const *text = (index == 3) ? GetSerialNum() : string_desc[index];
-    count = strlen(text);
-    if (count > TU_ARRAY_SIZE(string_buffer) - 1) {
-      count = TU_ARRAY_SIZE(string_buffer) - 1;
-    }
-    for (size_t i = 0; i < count; i++) {
-      string_buffer[1 + i] = text[i];
-    }
-  }
 
-  string_buffer[0] = (uint16_t)((TUSB_DESC_STRING << 8) | (2 * count + 2));
-  return string_buffer;
+    string_buffer[0] = (uint16_t)((TUSB_DESC_STRING << 8) | (2 * count + 2));
+    return string_buffer;
 }
 
 // ---- WinUSB, so the interface binds with no vendor driver ---------------------------------------
 
-#define MS_OS_20_DESC_LEN         178u
-#define VENDOR_REQUEST_MICROSOFT  2
+#define MS_OS_20_DESC_LEN 178u
+#define VENDOR_REQUEST_MICROSOFT 2
 
 #define BOS_TOTAL_LEN (TUD_BOS_DESC_LEN + TUD_BOS_MICROSOFT_OS_DESC_LEN)
 
@@ -124,10 +121,10 @@ static uint8_t const desc_bos[] = {
     TUD_BOS_MS_OS_20_DESCRIPTOR(MS_OS_20_DESC_LEN, VENDOR_REQUEST_MICROSOFT),
 };
 
-uint8_t const *tud_descriptor_bos_cb(void) {
-  return desc_bos;
-}
+uint8_t const* tud_descriptor_bos_cb(void) { return desc_bos; }
 
+// clang-format off: the layout mirrors the descriptor structure, which is the only thing that
+// makes these bytes readable.
 uint8_t const desc_ms_os_20[] = {
     // Set header
     U16_TO_U8S_LE(0x000A), U16_TO_U8S_LE(MS_OS_20_SET_HEADER_DESCRIPTOR),
@@ -164,19 +161,19 @@ uint8_t const desc_ms_os_20[] = {
     0x36, 0x00, 0x34, 0x00, 0x36, 0x00, 0x33, 0x00, 0x37, 0x00,
     0x37, 0x00, 0x36, 0x00, 0x7D, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
+// clang-format on
 
 TU_VERIFY_STATIC(sizeof(desc_ms_os_20) == MS_OS_20_DESC_LEN, "MS OS 2.0 descriptor length mismatch");
 
-bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_request_t const *request) {
-  if (stage != CONTROL_STAGE_SETUP) {
-    return true;
-  }
-  if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_VENDOR &&
-      request->bRequest == VENDOR_REQUEST_MICROSOFT &&
-      request->wIndex == 7) {
-    uint16_t total_len;
-    memcpy(&total_len, desc_ms_os_20 + 8, 2);
-    return tud_control_xfer(rhport, request, (void *)(uintptr_t)desc_ms_os_20, total_len);
-  }
-  return false;
+bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_request_t const* request) {
+    if (stage != CONTROL_STAGE_SETUP) {
+        return true;
+    }
+    if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_VENDOR && request->bRequest == VENDOR_REQUEST_MICROSOFT &&
+        request->wIndex == 7) {
+        uint16_t total_len;
+        memcpy(&total_len, desc_ms_os_20 + 8, 2);
+        return tud_control_xfer(rhport, request, (void*)(uintptr_t)desc_ms_os_20, total_len);
+    }
+    return false;
 }

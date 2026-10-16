@@ -1,0 +1,6 @@
+# src/DAP_config.h is ARM's file from the CMSIS-DAP MCU-LINK example, carried with a handful of
+# edits so it still diffs against theirs. Reformatting it would bury those edits.
+src/DAP_config.h
+external/*
+references/*
+build/*

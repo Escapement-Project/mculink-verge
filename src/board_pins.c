@@ -1,7 +1,7 @@
-#include "fsl_device_registers.h"
-#include "fsl_clock.h"
-#include "fsl_iocon.h"
 #include "board_pins.h"
+#include "fsl_clock.h"
+#include "fsl_device_registers.h"
+#include "fsl_iocon.h"
 
 /** Start the FRO_HF divider, which both the console and SWO clock off.
  *
@@ -10,9 +10,7 @@
  * to FRO_HF_DIV without this gives the peripheral no clock at all, and a UART with no clock does
  * not report an error, it simply never produces a baud rate.
  */
-void board_clocks_init(void) {
-  CLOCK_SetClkDiv(kCLOCK_DivFrohfClk, 1U, true);
-}
+void board_clocks_init(void) { CLOCK_SetClkDiv(kCLOCK_DivFrohfClk, 1U, true); }
 
 /** Digital GPIO, no pull, standard slew: what every debug pin wants.
  *
@@ -23,30 +21,29 @@ void board_clocks_init(void) {
 #define DEBUG_PIN_MODE (IOCON_FUNC0 | IOCON_MODE_INACT | IOCON_DIGITAL_EN)
 
 void board_debug_pins_init(void) {
-  CLOCK_EnableClock(kCLOCK_Iocon);
-  CLOCK_EnableClock(kCLOCK_Gpio0);
+    CLOCK_EnableClock(kCLOCK_Iocon);
+    CLOCK_EnableClock(kCLOCK_Gpio0);
 
-  static const uint32_t pins[] = {
-      DBGIF_TCK_SWCLK_PIN, DBGIF_TDI_PIN,  DBGIF_TMS_SWDIO_PIN,      DBGIF_TDO_SWO_PIN,
-      DBGIF_RESET_PIN,     LED1_PIN,       DBGIF_TMS_SWDIO_TXEN_PIN, DBGIF_RESET_TXEN_PIN,
-  };
-  for (size_t i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) {
-    IOCON_PinMuxSet(IOCON, DBGIF_TCK_SWCLK_PORT, (uint8_t)pins[i], DEBUG_PIN_MODE);
-  }
+    static const uint32_t pins[] = {
+        DBGIF_TCK_SWCLK_PIN, DBGIF_TDI_PIN, DBGIF_TMS_SWDIO_PIN,      DBGIF_TDO_SWO_PIN,
+        DBGIF_RESET_PIN,     LED1_PIN,      DBGIF_TMS_SWDIO_TXEN_PIN, DBGIF_RESET_TXEN_PIN,
+    };
+    for (size_t i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) {
+        IOCON_PinMuxSet(IOCON, DBGIF_TCK_SWCLK_PORT, (uint8_t)pins[i], DEBUG_PIN_MODE);
+    }
 
-  // Buffers off first, then the pins they gate. Doing it the other way round drives the target
-  // for however long the two writes are apart.
-  GPIO->CLR[DBGIF_TMS_SWDIO_TXEN_PORT] = (1UL << DBGIF_TMS_SWDIO_TXEN_PIN);
-  GPIO->CLR[DBGIF_RESET_TXEN_PORT] = (1UL << DBGIF_RESET_TXEN_PIN);
-  GPIO->DIRSET[DBGIF_TMS_SWDIO_TXEN_PORT] =
-      (1UL << DBGIF_TMS_SWDIO_TXEN_PIN) | (1UL << DBGIF_RESET_TXEN_PIN);
+    // Buffers off first, then the pins they gate. Doing it the other way round drives the target
+    // for however long the two writes are apart.
+    GPIO->CLR[DBGIF_TMS_SWDIO_TXEN_PORT] = (1UL << DBGIF_TMS_SWDIO_TXEN_PIN);
+    GPIO->CLR[DBGIF_RESET_TXEN_PORT] = (1UL << DBGIF_RESET_TXEN_PIN);
+    GPIO->DIRSET[DBGIF_TMS_SWDIO_TXEN_PORT] = (1UL << DBGIF_TMS_SWDIO_TXEN_PIN) | (1UL << DBGIF_RESET_TXEN_PIN);
 
-  // Everything that talks to the target starts as an input, so connecting the probe to a running
-  // board disturbs nothing until the host asks for a port.
-  GPIO->DIRCLR[DBGIF_TCK_SWCLK_PORT] = (1UL << DBGIF_TCK_SWCLK_PIN) | (1UL << DBGIF_TDI_PIN) |
-                                       (1UL << DBGIF_TMS_SWDIO_PIN) | (1UL << DBGIF_TDO_SWO_PIN) |
-                                       (1UL << DBGIF_RESET_PIN);
+    // Everything that talks to the target starts as an input, so connecting the probe to a running
+    // board disturbs nothing until the host asks for a port.
+    GPIO->DIRCLR[DBGIF_TCK_SWCLK_PORT] = (1UL << DBGIF_TCK_SWCLK_PIN) | (1UL << DBGIF_TDI_PIN) |
+                                         (1UL << DBGIF_TMS_SWDIO_PIN) | (1UL << DBGIF_TDO_SWO_PIN) |
+                                         (1UL << DBGIF_RESET_PIN);
 
-  GPIO->SET[LED1_PORT] = (1UL << LED1_PIN);  // active low, so set is off
-  GPIO->DIRSET[LED1_PORT] = (1UL << LED1_PIN);
+    GPIO->SET[LED1_PORT] = (1UL << LED1_PIN); // active low, so set is off
+    GPIO->DIRSET[LED1_PORT] = (1UL << LED1_PIN);
 }

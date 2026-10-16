@@ -11,11 +11,11 @@
 
 #include "swo_board.h"
 
-#define RTE_USART3             1
-#define RTE_USART3_DMA_EN      0
+#define RTE_USART3 1
+#define RTE_USART3_DMA_EN 0
 
 /* P0_3 is shared with JTAG TDO, so the mux follows the driver's own lifecycle. */
-#define RTE_USART3_PIN_INIT    board_swo_pin_init
-#define RTE_USART3_PIN_DEINIT  board_swo_pin_deinit
+#define RTE_USART3_PIN_INIT board_swo_pin_init
+#define RTE_USART3_PIN_DEINIT board_swo_pin_deinit
 
 #endif

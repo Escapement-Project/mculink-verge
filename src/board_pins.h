@@ -9,37 +9,37 @@
 #ifndef BOARD_PINS_H
 #define BOARD_PINS_H
 
-#define DBGIF_TCK_SWCLK_GPIO            GPIO
-#define DBGIF_TCK_SWCLK_PORT            0U
-#define DBGIF_TCK_SWCLK_PIN             0U
+#define DBGIF_TCK_SWCLK_GPIO GPIO
+#define DBGIF_TCK_SWCLK_PORT 0U
+#define DBGIF_TCK_SWCLK_PIN 0U
 
-#define DBGIF_TDI_GPIO                  GPIO
-#define DBGIF_TDI_PORT                  0U
-#define DBGIF_TDI_PIN                   1U
+#define DBGIF_TDI_GPIO GPIO
+#define DBGIF_TDI_PORT 0U
+#define DBGIF_TDI_PIN 1U
 
-#define DBGIF_TMS_SWDIO_GPIO            GPIO
-#define DBGIF_TMS_SWDIO_PORT            0U
-#define DBGIF_TMS_SWDIO_PIN             2U
+#define DBGIF_TMS_SWDIO_GPIO GPIO
+#define DBGIF_TMS_SWDIO_PORT 0U
+#define DBGIF_TMS_SWDIO_PIN 2U
 
-#define DBGIF_TDO_SWO_GPIO              GPIO
-#define DBGIF_TDO_SWO_PORT              0U
-#define DBGIF_TDO_SWO_PIN               3U
+#define DBGIF_TDO_SWO_GPIO GPIO
+#define DBGIF_TDO_SWO_PORT 0U
+#define DBGIF_TDO_SWO_PIN 3U
 
-#define DBGIF_TMS_SWDIO_TXEN_GPIO       GPIO
-#define DBGIF_TMS_SWDIO_TXEN_PORT       0U
-#define DBGIF_TMS_SWDIO_TXEN_PIN        28U
+#define DBGIF_TMS_SWDIO_TXEN_GPIO GPIO
+#define DBGIF_TMS_SWDIO_TXEN_PORT 0U
+#define DBGIF_TMS_SWDIO_TXEN_PIN 28U
 
-#define DBGIF_RESET_GPIO                GPIO
-#define DBGIF_RESET_PORT                0U
-#define DBGIF_RESET_PIN                 19U
+#define DBGIF_RESET_GPIO GPIO
+#define DBGIF_RESET_PORT 0U
+#define DBGIF_RESET_PIN 19U
 
-#define DBGIF_RESET_TXEN_GPIO           GPIO
-#define DBGIF_RESET_TXEN_PORT           0U
-#define DBGIF_RESET_TXEN_PIN            13U
+#define DBGIF_RESET_TXEN_GPIO GPIO
+#define DBGIF_RESET_TXEN_PORT 0U
+#define DBGIF_RESET_TXEN_PIN 13U
 
-#define LED1_GPIO                       GPIO
-#define LED1_PORT                       0U
-#define LED1_PIN                        5U
+#define LED1_GPIO GPIO
+#define LED1_PORT 0U
+#define LED1_PIN 5U
 
 /** Start the clocks the peripherals here depend on.
  *
