@@ -237,6 +237,11 @@ Captures: `mculink-swd-clock-*.sal`.
 
 ### Open questions
 
+- **Fixed, but worth knowing about:** `FROHFDIV`'s HALT bit resets to 1 (UM11126 table 104), so the
+  FRO_HF divider is stopped out of reset and TinyUSB's board support does not start it -- it only
+  configures the USB clock. Both the console and SWO clock off that divider, and a Flexcomm with no
+  clock reports nothing, it just never produces a baud rate. `board_clocks_init` starts it before
+  anything attaches. Anything else added here that attaches to `FRO_HF_DIV` depends on that call.
 - The UUID read at 0x0009_FC70 is untested on hardware. If that region faults rather than reading,
   it faults during `GetSerialNum` and the device will not enumerate. The uniform-value guard
   catches an unprogrammed region but cannot catch a bus fault.

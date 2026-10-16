@@ -41,6 +41,13 @@
 #define LED1_PORT                       0U
 #define LED1_PIN                        5U
 
+/** Start the clocks the peripherals here depend on.
+ *
+ * Call before anything attaches a Flexcomm. See the note in board_pins.c for why this is not
+ * something the board support already did.
+ */
+void board_clocks_init(void);
+
 /** Put the debug interface pins into their idle state.
  *
  * Called from DAP_SETUP, so it runs before any host command can reach the pin layer.

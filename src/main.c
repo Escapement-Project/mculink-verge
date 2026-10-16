@@ -8,6 +8,7 @@
 #include "bsp/board_api.h"
 #include "tusb.h"
 
+#include "board_pins.h"
 #include "vcom.h"
 
 #include "DAP_config.h"
@@ -81,6 +82,7 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
 
 int main(void) {
   board_init();
+  board_clocks_init();
   DAP_Setup();
   vcom_init();
 

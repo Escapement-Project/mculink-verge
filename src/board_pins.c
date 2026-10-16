@@ -1,6 +1,18 @@
 #include "fsl_device_registers.h"
+#include "fsl_clock.h"
 #include "fsl_iocon.h"
 #include "board_pins.h"
+
+/** Start the FRO_HF divider, which both the console and SWO clock off.
+ *
+ * Its HALT bit resets to 1 (UM11126 table 104), so the divider is stopped until someone starts it
+ * and TinyUSB's board support does not -- it only configures the USB clock. Attaching a Flexcomm
+ * to FRO_HF_DIV without this gives the peripheral no clock at all, and a UART with no clock does
+ * not report an error, it simply never produces a baud rate.
+ */
+void board_clocks_init(void) {
+  CLOCK_SetClkDiv(kCLOCK_DivFrohfClk, 1U, true);
+}
 
 /** Digital GPIO, no pull, standard slew: what every debug pin wants.
  *
