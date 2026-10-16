@@ -49,6 +49,14 @@ miscompilation.
 **Nothing has been flashed or run on hardware yet.** The bench is unavailable; everything below
 about the stock firmware comes from captures taken before it went away.
 
+What does exist is emulation. The built image runs on an emulated Cortex-M33, driven through the
+real DAP command layer against a modelled target, and all three wires read and write correctly:
+four-wire JTAG and SWD against a target that acknowledges and shifts, and **the two-pin path
+through a modelled 1149.7 target that decodes OScan1 framing off the wire**. Data words come back
+exactly, WAIT reports WAIT and FAULT reports FAULT. That is not hardware, and it says nothing about
+analog behaviour, timing margin or whether a real target tolerates any of it. It does mean the
+protocol logic has been exercised rather than only read.
+
 Implemented: CMSIS-DAP v2 on a vendor interface and v1 on HID, a CDC console bridged to Flexcomm 0,
 SWO capture on Flexcomm 3, the MCU-Link pin layer, the serial number, ARM's DAP, SW_DP and JTAG_DP
 compiled unchanged, and the cJTAG activation sequence and frame primitive behind two vendor
@@ -293,8 +301,9 @@ Captures: `mculink-swd-clock-*.sal`.
 
 ## Next steps
 
-1. Flash and enumerate. Nothing has run on hardware. Until it does, every line of this is theory,
-   and the UUID read above is the line most likely to stop the device appearing at all.
+1. Flash and enumerate. Nothing has run on hardware. Until it does, every line of this is theory
+   or emulation, and the UUID read above is the line most likely to stop the device appearing at
+   all.
 2. Bench: confirm probe-rs attaches over SWD, then the console, then SWO, then the OScan1 read on a
    CC13xx with the analyser watching.
 3. Settle the two bench questions parity depends on: whether stock answers DAP over HID, and
