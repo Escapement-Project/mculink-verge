@@ -11,7 +11,7 @@
 _Static_assert(DBGIF_TCK_SWCLK_PORT == DBGIF_PORT && DBGIF_TDI_PORT == DBGIF_PORT &&
                    DBGIF_TMS_SWDIO_PORT == DBGIF_PORT && DBGIF_TDO_SWO_PORT == DBGIF_PORT &&
                    DBGIF_TMS_SWDIO_TXEN_PORT == DBGIF_PORT && DBGIF_RESET_PORT == DBGIF_PORT &&
-                   DBGIF_RESET_TXEN_PORT == DBGIF_PORT && LED1_PORT == DBGIF_PORT,
+                   DBGIF_RESET_TXEN_PORT == DBGIF_PORT,
                "the per-port writes below assume every signal is on DBGIF_PORT");
 
 /** Start the high-speed FRO and its divider, which both the console and SWO clock off.
@@ -90,8 +90,8 @@ void board_debug_pins_init(void) {
     // Every debug signal is on port 0, which is what lets one port number serve the whole loop
     // and the single-port writes below.
     static const uint8_t pins[] = {
-        DBGIF_TCK_SWCLK_PIN, DBGIF_TDI_PIN, DBGIF_TMS_SWDIO_PIN,      DBGIF_TDO_SWO_PIN,
-        DBGIF_RESET_PIN,     LED1_PIN,      DBGIF_TMS_SWDIO_TXEN_PIN, DBGIF_RESET_TXEN_PIN,
+        DBGIF_TCK_SWCLK_PIN, DBGIF_TDI_PIN,            DBGIF_TMS_SWDIO_PIN,  DBGIF_TDO_SWO_PIN,
+        DBGIF_RESET_PIN,     DBGIF_TMS_SWDIO_TXEN_PIN, DBGIF_RESET_TXEN_PIN,
     };
     for (size_t i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) {
         IOCON_PinMuxSet(IOCON, DBGIF_PORT, pins[i], DEBUG_PIN_MODE);
@@ -106,9 +106,6 @@ void board_debug_pins_init(void) {
     // board disturbs nothing until the host asks for a port.
     GPIO->DIRCLR[DBGIF_PORT] = (1UL << DBGIF_TCK_SWCLK_PIN) | (1UL << DBGIF_TDI_PIN) | (1UL << DBGIF_TMS_SWDIO_PIN) |
                                (1UL << DBGIF_TDO_SWO_PIN) | (1UL << DBGIF_RESET_PIN);
-
-    GPIO->SET[LED1_PORT] = (1UL << LED1_PIN); // active low, so set is off
-    GPIO->DIRSET[LED1_PORT] = (1UL << LED1_PIN);
 
 #ifdef MARKER_PINS
     // J8 is on port 1, which nothing else here uses, so it needs its own clock.

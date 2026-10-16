@@ -41,7 +41,6 @@
 #define DBGIF_RESET_TXEN_PORT 0U
 #define DBGIF_RESET_TXEN_PIN 13U
 
-#define LED1_GPIO GPIO
 #define LED1_PORT 0U
 #define LED1_PIN 5U
 

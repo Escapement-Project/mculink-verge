@@ -589,6 +589,98 @@ def check_info(c: Checker, elf: str, packet_size: int, packet_count: int) -> Non
 DAP_ID_PRODUCT, DAP_ID_SER_NUM = 2, 3
 
 
+CTIMER3_MR0 = 0x40029018
+CTIMER3_MR3 = 0x40029024
+ID_DAP_HOST_STATUS = 0x01
+
+# A flash shorter than this is one a person staring at the board can miss, and the whole point
+# of the LED is to be seen.
+LED_VISIBLE_MS = 50
+
+# How long after the traffic stops the LED has to have stopped blinking. Generous: the check is
+# that the blinking ends at all, not what the hold time is.
+LED_SETTLE_MS = 800
+
+# What CTIMER3 counts at. A tick is one PWM period, so this is what turns ticks into time.
+LED_TIMER_HZ = 1_000_000
+
+
+def check_led(c: Checker, elf: str) -> None:
+    """CTIMER3 drives the LED as a PWM and its period interrupt decides the level.
+
+    Nothing about the LED is visible from a capture -- P0_5 goes nowhere but the LED -- so the
+    policy is checked here, by running the interrupt the way the timer would and reading back the
+    match register it writes. MR0 is how long each period the pin is held low, and the LED is lit
+    while it is low, so MR0 is the brightness: zero is dark and anything past the period is full.
+
+    Three properties. An idle probe breathes, smoothly and through nearly the whole range. A probe
+    whose host says it is connected sits fully lit. And one command is visible: its flash is cut
+    out of a blink phase the tick owns rather than started where the command lands, so the length
+    depends on the tick it arrives on, and the shortest of those is what a person would see.
+    """
+    probe = Machine(elf, Target([]), restart_at=set(), model=Model())
+    for name in ("board_clocks_init", "led_init", "CTIMER3_IRQHandler", "led_activity_seen", "led_ticks"):
+        if name not in probe.sym:
+            c.note(f"{name} is not a symbol; the LED policy not checked")
+            return
+
+    probe.call("board_clocks_init")
+    probe.call("led_init")
+    period = int.from_bytes(probe.uc.mem_read(CTIMER3_MR3, 4), "little") + 1
+    smooth = period // 50  # the largest step a fade may take in one tick
+    tick_ms = period * 1000 / LED_TIMER_HZ
+    settle = int(LED_SETTLE_MS / tick_ms)
+
+    def run(n: int) -> list[int]:
+        levels = []
+        for _ in range(n):
+            probe.call("CTIMER3_IRQHandler")
+            levels.append(int.from_bytes(probe.uc.mem_read(CTIMER3_MR0, 4), "little"))
+        return levels
+
+    def largest_step(levels: list[int]) -> int:
+        return max(abs(a - b) for a, b in zip(levels, levels[1:]))
+
+    levels = run(2 * int(10_000 / tick_ms))  # two breaths, if a breath is under ten seconds
+    c.check(min(levels) <= smooth, f"an idle probe's LED never goes darker than {min(levels)}/{period}")
+    c.check(max(levels) >= period * 9 // 10, f"an idle probe's LED never gets brighter than {max(levels)}/{period}")
+    c.check(largest_step(levels) <= smooth, f"an idle probe's fade jumps by {largest_step(levels)}/{period} in one tick")
+
+    # Through the protocol, so the path from DAP_HostStatus to the LED is checked as well.
+    probe.command(bytes([ID_DAP_HOST_STATUS, 0, 1]))
+    c.check(all(level >= period for level in run(1000)), "the LED is not fully lit after a host said it is connected")
+    probe.command(bytes([ID_DAP_HOST_STATUS, 0, 0]))
+    c.check(largest_step(run(1000)) <= smooth, "the LED does not go back to breathing after the host disconnected")
+
+    # One command, landing on each tick of a blink period in turn. 128 covers any half-period up
+    # to 64 ticks without this check knowing which one the firmware picked. What is measured is
+    # the longest unbroken stretch the LED is fully lit, because that is the flash a person sees.
+    ticks = probe.sym["led_ticks"]
+    seen = probe.sym["led_activity_seen"]
+    worst = settle
+    for phase in range(128):
+        probe.uc.mem_write(ticks, u32(100_000 + phase))
+        probe.uc.mem_write(seen, b"\x01")
+        longest = 0
+        stretch = 0
+        for level in run(settle):
+            stretch = stretch + 1 if level >= period else 0
+            longest = max(longest, stretch)
+        worst = min(worst, longest)
+        if largest_step(run(200)) > smooth:
+            c.problems.append(f"the LED is still blinking {LED_SETTLE_MS} ms after one command")
+            return
+
+    c.check(
+        worst * tick_ms >= LED_VISIBLE_MS,
+        f"a command landing on the wrong tick flashes the LED for only {worst * tick_ms:.0f} ms",
+    )
+    c.note(
+        f"LED: {LED_TIMER_HZ / period:.0f} Hz PWM, breathes 0 to {max(levels) * 100 // period}% when idle, "
+        f"full when connected, one command flashes it for {worst * tick_ms:.0f} ms at worst"
+    )
+
+
 def check_clocks(c: Checker, elf: str) -> None:
     """Run the boot-time clock setup and ask the clock driver what came out.
 
@@ -663,6 +755,7 @@ def main() -> int:
     check_request_bounds(c, args.elf)
     check_identity(c, args.elf)
     check_clocks(c, args.elf)
+    check_led(c, args.elf)
     check_timestamp(c, args.elf)
     check_swo_baudrate(c, args.config, 96_000_000)
     check_info(c, args.elf, args.packet_size, args.packet_count)

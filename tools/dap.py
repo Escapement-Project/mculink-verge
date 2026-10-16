@@ -329,7 +329,8 @@ def cmd_blink(args) -> int:
     """Flash one unit's LED, so two identical probes on a bench can be told apart by eye.
 
     `DAP_HostStatus` drives the connect and running LEDs, and every CMSIS-DAP probe answers it, so
-    this works on stock as well as on ours.
+    this works on stock as well as on ours. On ours the commands themselves are what blink it, at
+    the firmware's own rate: any traffic does, and these happen to be the cheapest.
     """
     probe = one(args)
     print(f"blinking {probe.serial} ({probe.product}) for {args.seconds:.0f} s")

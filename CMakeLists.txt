@@ -71,6 +71,7 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/ser_num.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/board_pins.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/reboot.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/led.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/swo_board.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/vcom.c
   ${DAP_SRC}/DAP.c

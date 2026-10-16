@@ -11,6 +11,7 @@
 #include "tusb.h"
 
 #include "board_pins.h"
+#include "led.h"
 #include "marker.h"
 #include "reboot.h"
 #include "core_clock.h"
@@ -107,6 +108,7 @@ static void dap_task(void) {
 
     // The high half of the return value counts request bytes consumed; only the response length
     // matters here, because one packet carries one command.
+    led_activity();
     MARKER_BUSY();
     uint32_t produced = DAP_ExecuteCommand(request[request_head], response) & 0xFFFFU;
     MARKER_IDLE();
@@ -161,6 +163,7 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
         return;
     }
 
+    led_activity();
     DAP_ExecuteCommand(buffer, hid_response);
     hid_report_packet_size(buffer, hid_response);
     tud_hid_n_report(instance, 0U, hid_response, CFG_TUD_HID_EP_BUFSIZE);
@@ -173,6 +176,7 @@ int main(void) {
     board_clocks_init();
     board_timestamp_init();
     DAP_Setup();
+    led_init();
     vcom_init();
 
     board_init_after_tusb();

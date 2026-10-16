@@ -55,6 +55,7 @@ This information includes:
 #include "fsl_device_registers.h"               // LPC55S69 register map, via the TinyUSB BSP
 #include "board_pins.h"                         // MCU-Link debug interface pin map
 #include "core_clock.h"                         // what the core actually runs at
+#include "led.h"                                // the onboard LED, which has two things to say
 #include "ser_num.h"                            // serial number, read from the part's UUID
 
 /// Processor Clock of the Cortex-M MCU used in the Debug Unit.
@@ -611,11 +612,9 @@ It is recommended to provide the following LEDs for status indication:
            - 0: Connect LED OFF: debugger is not connected to CMSIS-DAP Debug Unit.
 */
 __STATIC_INLINE void LED_CONNECTED_OUT (uint32_t bit) {
-  if (bit) {
-    LED1_GPIO->CLR[LED1_PORT] = (1U << LED1_PIN);
-  } else {
-    LED1_GPIO->SET[LED1_PORT] = (1U << LED1_PIN);
-  }
+  // The pin is not driven from here. One LED carries this and the probe's own activity, and
+  // src/led.h is where the two are combined.
+  led_connected(bit);
 }
 
 /** Debug Unit: Set status Target Running LED.
