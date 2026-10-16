@@ -54,13 +54,13 @@ This information includes:
 #include "fw_version.h"
 #include "fsl_device_registers.h"               // LPC55S69 register map, via the TinyUSB BSP
 #include "board_pins.h"                         // MCU-Link debug interface pin map
+#include "core_clock.h"                         // what the core actually runs at
 #include "ser_num.h"                            // serial number, read from the part's UUID
 
 /// Processor Clock of the Cortex-M MCU used in the Debug Unit.
 /// This value is used to calculate the SWD/JTAG clock speed.
-/// 144 MHz, not the 150 MHz the name of the board support's clock configuration suggests:
-/// BOARD_BootClockPLL150M runs PLL1 at 16 MHz * 18 and attaches it to MAIN_CLK.
-#define CPU_CLOCK               144000000U      ///< Specifies the CPU Clock in Hz.
+/// src/core_clock.h decides it: 144 MHz on PLL1 as the board support leaves it, or 150 on PLL0.
+#define CPU_CLOCK               CORE_CLOCK_HZ   ///< Specifies the CPU Clock in Hz.
 
 /// Number of processor cycles for I/O Port write operations.
 /// This value is used to calculate the SWD/JTAG clock speed that is generated with I/O
@@ -129,7 +129,7 @@ This information includes:
 #define SWO_STREAM              0               ///< SWO Streaming Trace: 1 = available, 0 = not available.
 
 /// Clock frequency of the Test Domain Timer. Timer value is returned with \ref TIMESTAMP_GET.
-#define TIMESTAMP_CLOCK         144000000U      ///< Timestamp clock in Hz (0 = timestamps not supported).
+#define TIMESTAMP_CLOCK         CORE_CLOCK_HZ   ///< Timestamp clock in Hz (0 = timestamps not supported).
 
 /// Indicate that UART Communication Port is available.
 /// This information is returned by the command \ref DAP_Info as part of <b>Capabilities</b>.

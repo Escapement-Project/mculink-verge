@@ -9,6 +9,7 @@
 #include "tusb.h"
 
 #include "board_pins.h"
+#include "core_clock.h"
 #include "vcom.h"
 
 // DAP_config.h first: DAP.h reads the DAP_SWD and DAP_JTAG settings it defines, so a sorted
@@ -92,6 +93,7 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
 
 int main(void) {
     board_init();
+    board_core_clock_init();
     board_clocks_init();
     board_timestamp_init();
     DAP_Setup();

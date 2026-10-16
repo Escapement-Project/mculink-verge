@@ -672,8 +672,13 @@ def report(name: str, c: Counts, model: Model, clock_hz: int, cpu_hz: int, words
     print(f"    {words * 4 / seconds / 1024:.0f} KiB/s of wire time for {words} words")
 
 
-def dap_constants(path: str) -> tuple[int, int, int]:
-    """CPU_CLOCK, IO_PORT_WRITE_CYCLES and DELAY_SLOW_CYCLES, as the image was built with them."""
+def dap_constants(path: str, cpu_hz: int) -> tuple[int, int, int]:
+    """CPU_CLOCK, IO_PORT_WRITE_CYCLES and DELAY_SLOW_CYCLES, as the image was built with them.
+
+    CPU_CLOCK is a macro from src/core_clock.h whose value turns on a build option, so the source
+    alone cannot say which core clock an image was built for. When it does not resolve to a number
+    here, `--cpu` is what decides, and CMake passes the figure the build used.
+    """
     text = open(path).read()
 
     def value(name: str, default: int | None = None) -> int:
@@ -684,7 +689,7 @@ def dap_constants(path: str) -> tuple[int, int, int]:
             raise SystemExit(f"{name} not found in {path}")
         return default
 
-    return value("CPU_CLOCK"), value("IO_PORT_WRITE_CYCLES"), value("DELAY_SLOW_CYCLES", 3)
+    return value("CPU_CLOCK", cpu_hz), value("IO_PORT_WRITE_CYCLES"), value("DELAY_SLOW_CYCLES", 3)
 
 
 def calibrate(elf: str, wire: str, words: int, cpu_hz: int, model: Model, config: str) -> int:
@@ -695,7 +700,7 @@ def calibrate(elf: str, wire: str, words: int, cpu_hz: int, model: Model, config
     iterations per bit and the line's slope and intercept are those two constants. Where they are
     wrong, every requested clock is wrong by the same amount.
     """
-    cpu_clock, io_cycles, slow_cycles = dap_constants(config)
+    cpu_clock, io_cycles, slow_cycles = dap_constants(config, cpu_hz)
     fast_above = (cpu_clock / 2) / io_cycles
     points = []
     print(f"{elf}, calibration against a bare clocked bit (DAP_SWJ_Sequence)")

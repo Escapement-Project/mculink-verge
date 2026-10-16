@@ -1,6 +1,8 @@
 #include "board_pins.h"
 
+#include "core_clock.h"
 #include "fsl_clock.h"
+#include "fsl_power.h"
 #include "fsl_device_registers.h"
 #include "fsl_iocon.h"
 
@@ -24,6 +26,26 @@ _Static_assert(DBGIF_TCK_SWCLK_PORT == DBGIF_PORT && DBGIF_TDI_PORT == DBGIF_POR
  *
  * Anything else here that attaches to FRO_HF_DIV depends on this call.
  */
+/** Take MAIN_CLK off PLL1 and put it on PLL0, which is already locked at 150 MHz.
+ *
+ * Order matters going up in frequency: the core voltage and the flash wait states have to be
+ * right for the new rate before the rate changes. 130 to 150 MHz is one wait-state bracket, so
+ * the flash call changes nothing here and is made because the next person to move this number
+ * will not be moving it within a bracket.
+ *
+ * board_init has already run SysTick_Config against the old SystemCoreClock, so the millisecond
+ * tick TinyUSB counts on needs setting again.
+ */
+void board_core_clock_init(void) {
+#ifdef CORE_150MHZ
+    POWER_SetVoltageForFreq(CORE_CLOCK_HZ);
+    CLOCK_SetFLASHAccessCyclesForFreq(CORE_CLOCK_HZ);
+    CLOCK_AttachClk(kPLL0_to_MAIN_CLK);
+    SystemCoreClock = CORE_CLOCK_HZ;
+    SysTick_Config(SystemCoreClock / 1000U);
+#endif
+}
+
 __attribute__((noinline)) void board_clocks_init(void) {
     CLOCK_SetupFROClocking(96000000U);
     CLOCK_SetClkDiv(kCLOCK_DivFrohfClk, 1U, true);

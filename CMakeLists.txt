@@ -30,6 +30,10 @@ endif()
 # m_data is 204 KB and also holds the stack. Refuse it here rather than leave the linker to report
 # a 119 KB overflow, since Debug exists only to bisect a miscompilation.
 option(RAMFUNC "Run the bit paths from SRAM" ON)
+
+# Run the core at 150 MHz on PLL0 rather than the 144 MHz on PLL1 the board support leaves.
+# See src/core_clock.h for why the 144 does not bind this firmware.
+option(CORE_150MHZ "Run the core at 150 MHz" ON)
 if(RAMFUNC AND CMAKE_BUILD_TYPE STREQUAL "Debug")
   message(FATAL_ERROR
     "RAMFUNC does not fit a Debug build: the unrolled bit paths are about 300 KB at -O0 and SRAM "
@@ -123,6 +127,13 @@ if(RAMFUNC)
   target_compile_definitions(${PROJECT_NAME} PRIVATE RAMFUNC_BIT_PATHS=1)
 endif()
 
+if(CORE_150MHZ)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE CORE_150MHZ=1)
+  set(CORE_CLOCK_MHZ 150)
+else()
+  set(CORE_CLOCK_MHZ 144)
+endif()
+
 # ARM's JTAG entry points are renamed here so src/cjtag_dp.c can own the real names and dispatch
 # between four-wire and OScan1. Renaming at compile time rather than patching keeps the submodule
 # at a released tag.
@@ -164,6 +175,7 @@ if(UV_EXECUTABLE)
   add_custom_target(check
     COMMAND ${UV_EXECUTABLE} run ${CMAKE_CURRENT_SOURCE_DIR}/tools/cycles.py
             --check $<TARGET_FILE:${PROJECT_NAME}>
+            --cpu ${CORE_CLOCK_MHZ}
             --config ${CMAKE_CURRENT_SOURCE_DIR}/src/DAP_config.h
     DEPENDS ${PROJECT_NAME}
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
