@@ -120,10 +120,17 @@ transfer, and those are small functions under no register pressure at all. So it
 allocator spilling in the big loop, and a local may not help.
 
 It is 1,344 of the 52,109 instructions a two-pin write block runs, so 2.6% is the ceiling on
-removing it, not a prediction. The check that would settle it: build one variant that threads the
-TDI bit through `cjtag_emit`'s argument list instead of the static, and look at whether the store
-survives in `cjtagf_Sequence`. It is also the setting with no pacing margin to begin with, so
-measure the period distribution before changing anything there.
+removing it, not a prediction.
+
+And removing it is not cheap. The static exists because the shadowed pin layer is a set of macros
+that take no arguments: `PIN_TDI_OUT(bit)` has nowhere to put the bit but a variable with static
+storage, and `PIN_SWCLK_TCK_SET()` has no argument to read it back through. Making it a local
+means giving every enclosing function a declaration, and those functions are ARM's `JTAG_DP.c`,
+compiled unchanged three times. That property is what keeps the three copies from drifting, and it
+is worth more than 2.6%.
+
+It is also the setting with no pacing margin to begin with, so measure the period distribution
+before changing anything there.
 
 ## Done
 
