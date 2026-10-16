@@ -38,9 +38,13 @@ our probe, D3 our J8 marker, D4-D6 stock's. The JTAG plan below moves it.
 
 ## Next session: the JTAG bench
 
-**One target, moved between the two probes.** A single STM32U585ZI, which probe-rs knows by that
-name. It is a Cortex-M33 behind an SWJ-DP, so it answers four-wire JTAG out of reset: TMS on PA13,
-TCK PA14, TDI PA15, TDO PB3, nTRST PB4, and NRST. The MSPM0L1306 pair stays out of this.
+**One target, moved between the two probes: the NUCLEO-U575ZI-Q** (MB1549), the board the embassy
+`examples/stm32u575` crate runs on. probe-rs knows the chip as `STM32U575ZI`. It was called a
+U585ZI when this bench was planned, so check the marking. The two are pin-identical in LQFP144,
+but UM2861 lists only the U575ZI and U5A5ZJ for this board. It is a Cortex-M33 behind an SWJ-DP,
+so it answers four-wire JTAG out of reset: TMS on PA13, TCK PA14, TDI PA15, TDO PB3, and NRST.
+nTRST (PB4) has no pin on J6 or on the Nucleo's debug header and stays on its internal pull-up.
+The MSPM0L1306 pair stays out of this.
 
 **J6 carries all of four-wire JTAG.** It is the standard 10-pin Cortex Debug layout: 1 VREF,
 2 TMS, 4 TCK, 6 TDO, 8 TDI, 10 nRESET, 3/5/9 ground. Pin 7 is `IF_ISPEN`, NXP's target-ISP line,
@@ -55,9 +59,9 @@ load. That is why a target hung off it stayed unpowered. No other connector carr
 J7 is RX, TX and ground. The one path is a hand-wired mod from J2's unpopulated pad 1, which is the
 probe's own 3V3 rail. That rail has a 700 mA regulator the probe's own MCU and USB PHY also draw
 on, with no current limit and no switch, so a target fault resets the probe. The MCU-Link Pro
-supplies a target by design (its J6 to enable, J5 for 3.3 or 1.8 V). So power the U585 from its
-own board and wire pin 1 to its VDD. With pin 1 unwired the shifters have no reference, and the probe drives
-nothing at all.
+supplies a target by design (its J6 to enable, J5 for 3.3 or 1.8 V). So the target powers itself,
+and the Nucleo's CN5 already puts its VDD on pin 1. With pin 1 unwired the shifters have no
+reference, and the probe drives nothing at all.
 
 **The probe can measure the target, and tell an empty connector from a dead target.** The buffered
 level goes through a 2K/2K divider (R22/R23) to `DBGIF_VREF`, an analog input on PIO0_31, so the
@@ -104,19 +108,53 @@ controlled for.
 **Make the swap one connector.** One harness stays on the target and only its J6 end moves
 between probes, so both are measured through the same wires.
 
+**The Nucleo's CN5 takes a straight 10-pin cable.** It is a 10-pin 1.27 mm header fitted on a
+14-pin STDC14 footprint, middle ten positions only, and its MIPI10 pinout is J6's: 1 VDD, 2 TMS,
+4 TCK, 6 TDO, 8 TDI, 10 NRST, 3/5 ground, 7 not connected, 9 GNDDetect through R17 (100R) to
+ground. Pin 7 being open suits our `IF_ISPEN`. From UM2861 Rev 10 and schematic MB1549 C-05.
+
+**The board needs two solder bridges changed before TDI works.**
+- **SB39 closed.** It is open by default, so CN5 pin 8 reaches nothing: PA15 is not wired to the
+  debug header at all.
+- **SB42 opened.** It is fitted by default and puts PA15 on `UCPD_CC1`: the TCPP01-M12's CC1 pin
+  and C62, 330 pF to ground. Leave it and TDI drives 330 pF. UM2861 Table 13 gives SB42 off with
+  SB39 on as the T_JTDI configuration. USB-C power delivery on CC1 goes; nothing here uses it.
+- Both are on the bottom side, a stacked pair beside the CN8 Zio connector (UM2861 Figure 5). SB39
+  is the open one.
+- SB44, PB3 to CN5's TDO, is fitted by default. Leave it.
+
+Without the rework the IDCODE still reads, since it needs no TDI after Test-Logic-Reset and PA15
+pulls itself up. Nothing past that does, because every IR load comes in on TDI.
+
+**Jumpers: JP1 on, JP2 off.** JP1 holds the onboard STLINK-V3E in reset, so its PF9 and PH6, which
+drive PA13 and PA14 through 47R, go high-impedance. JP2 disconnects its NRST. Its level shifter U9
+(SN74LVC2T45 with DIR tied low) only ever reads the target's TMS and TDO, so it loads them and never
+drives them. T_JTDI goes only to CN5 and the ESD array.
+
+**JP1 on also cuts the default power.** JP6 [1-2] takes 5 V from the ST-LINK's USB port through
+U2, a TPS2051C. Its enable comes from the ST-LINK after USB enumeration, with R9 (10K) holding it
+low, so with the ST-LINK in reset it stays off. Use JP6 [7-8] and a cable into the user USB-C port
+CN15, good for up to 1 A. JP6 [9-10] also skips the switch, but UM2861 forbids it from a computer
+port. That reading comes from the schematic and is unconfirmed: LD5, the green 5 V LED, lighting
+with JP1 on and only CN1 plugged would prove it wrong.
+
 **Tap the analyser at the target, not the probes.** The target is the one thing both probes
 share, so one set of clips serves both, and the probe-side taps stop meaning anything once the
 target moves:
 
-| channel | signal | now |
-| --- | --- | --- |
-| D0 | nRESET | moves from our probe's side to the target's |
-| D1 | TMS | moves the same way; was SWDIO |
-| D2 | TCK | moves the same way; was SWCLK |
-| D3 | marker, our J8 pin 4 | unchanged |
-| D4 | TDI | new; was stock's nRESET |
-| D5 | TDO | new; was stock's SWDIO |
-| D6, D7 | free | were stock's SWCLK and J8 |
+| channel | signal | on the Nucleo | was |
+| --- | --- | --- | --- |
+| D0 | nRESET | CN8 pin 5, Zio | our probe's nRESET |
+| D1 | TMS | CN11 pin 13, morpho | our probe's SWDIO |
+| D2 | TCK | CN11 pin 15, morpho | our probe's SWCLK |
+| D3 | marker | our J8 pin 4 | unchanged |
+| D4 | TDI | CN11 pin 17, morpho | stock's nRESET |
+| D5 | TDO | CN7 pin 15, Zio D23 | stock's SWDIO |
+| D6, D7 | free | | stock's SWCLK and J8 |
+
+Ground on CN11 pin 19 or 20, or CN8 pin 11 or 13. The Zio connectors are fitted sockets. The morpho
+headers ship unsoldered, so CN11 needs a 1x4 strip on pins 13, 15, 17 and 19. PB3 runs to CN7 with
+no bridge in the way. These taps hang off traces that exist anyway, so they add only the clip.
 
 D2 stays the clock and D3 the marker, so the fold and `clockscope.py --channel 2` carry over.
 Timing captures take D1, D2 and D3 at 100 MS/s, exactly as the SWD marker captures did. Protocol
@@ -124,8 +162,8 @@ decodes take D1, D2, D4 and D5 at 50 MS/s, the rate the cJTAG reference capture 
 channels. Stock never drives J8, so a stock capture has the clock and no marker.
 
 **Hazards specific to this target.**
-- An onboard debugger sharing PA13 and PA14, as on a Nucleo, has to be isolated, or it fights the
-  probe.
+- The Nucleo's STLINK-V3E shares PA13, PA14, PB3 and NRST. JP1 on and JP2 off isolate it, as
+  above; skip that and it fights the probe.
 - Do not set TZEN or raise RDP. Level 1 only comes back with a mass erase, and level 2 never does.
   Nothing here asks for either, but a flash tool's option-byte page can.
 - Ask probe-rs for JTAG explicitly. An SWJ-DP starts in JTAG, and a host that defaults to SWD
@@ -134,8 +172,8 @@ channels. Stock never drives J8, so a stock capture has the clock and no marker.
   record of which probe produced it. Alternate the probes run by run (ABAB) so drift lands on both.
 
 **Check the target before every attach**, with the harness on whichever probe runs ours: `dap.py
-target` should say about 3.3 V with pin 9 grounded. 1 V or so means the U585 is unpowered, and
-3.3 V with pin 9 open means the harness is not plugged in.
+target` should say about 3.3 V with pin 9 grounded. Well under that means the Nucleo is
+unpowered (check LD5), and 3.3 V with pin 9 open means the harness is not plugged in.
 
 **Tooling to write first; none of it needs the bench.**
 1. `dap.py scan`: count the TAPs on four-wire JTAG and read their IDCODEs. Older STM32s put a
