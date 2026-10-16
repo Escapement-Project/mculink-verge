@@ -42,6 +42,7 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_dp.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp.c
   ${DAP_SRC}/SW_DP.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_dp.c
   ${DAP_SRC}/SWO.c
   ${CMAKE_CURRENT_SOURCE_DIR}/external/lpc55s69-sdk/fsl_usart_cmsis.c
   ${DAP_SRC}/JTAG_DP.c
@@ -65,6 +66,17 @@ set_source_files_properties(
   ${DAP_SRC}/DAP.c ${DAP_SRC}/SW_DP.c ${DAP_SRC}/JTAG_DP.c ${DAP_SRC}/SWO.c
   ${CMAKE_CURRENT_SOURCE_DIR}/external/lpc55s69-sdk/fsl_usart_cmsis.c
   PROPERTIES COMPILE_OPTIONS "${UPSTREAM_RELAX}"
+  )
+
+# ARM's SWD_Transfer is renamed out of the way so src/swd_dp.c can own the name with a cheaper
+# data phase. The rest of SW_DP.c -- SWJ_Sequence and SWD_Sequence -- is still ARM's and still
+# linked, so this is a replaced function rather than a replaced file.
+set_source_files_properties(${DAP_SRC}/SW_DP.c PROPERTIES COMPILE_DEFINITIONS
+  "SWD_Transfer=arm_SWD_Transfer"
+  )
+set_source_files_properties(
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_dp.c
+  PROPERTIES COMPILE_OPTIONS "-funroll-loops"
   )
 
 # ARM's JTAG entry points are renamed here so src/cjtag_dp.c can own the real names and dispatch
