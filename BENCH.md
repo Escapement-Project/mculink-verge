@@ -67,7 +67,9 @@ tolerance of any real regulator. What differs is source impedance, 33 kOhm again
 ohm, and the board has no switchable load to measure it with. SJ1 in its 2-3 position would put
 the divider straight on pin 1, and then an empty connector would read ~0.36 V. That is a solder
 change, and it loads every target with ~0.8 mA. So presence comes from pin 9, or from the target
-answering an IDCODE or DPIDR read. **Ground pin 9 in the harness**, or the detect pin says
+answering an IDCODE or DPIDR read. The connector standard names pin 9 GNDDetect and has the target
+ground it, so a board with the standard 10-pin header usually does it already; check continuity on
+an unfamiliar one. **With flying leads, ground pin 9 in the harness**, or the detect pin says
 nothing. Our firmware reads neither pin.
 
 **Make the swap one connector.** One harness stays on the target and only its J6 end moves
