@@ -59,15 +59,21 @@ All five JTAG entry points are routed. **None of it has run on hardware.**
 | --- | --- | --- |
 | the 25 DAP commands, SWO included | yes | yes |
 | `DAP_UART_*` (0x1F..0x23) | **no** | no |
-| vendor 0x80, 0x81 | yes, purpose unknown | no |
+| vendor 0x80, 0x81 | yes, LinkServer-specific | no |
 | vendor cJTAG commands | no | 0x82, 0x83 |
 | CMSIS-DAP v2, bulk, 512-byte packets | yes | yes |
 | CMSIS-DAP v1, HID | yes | **not yet** |
 | CDC virtual COM port | yes | yes |
 
-HID is the one functional gap left, and it is not a simple addition: `DAP_PACKET_SIZE` is 512 to
-match the bulk interface, while a HID report is 64 bytes, so the two interfaces cannot share one
-packet size.
+**Whether stock's HID interface is CMSIS-DAP v1 at all is unverified, and the evidence is against
+it.** Its `DAP_Info` packet-size reply is 512.
+A v1 host would read 512 and try to send it in a 64-byte report. probe-rs
+does list the HID interface as a candidate probe, but that is probe-rs reading a HID descriptor on
+a known CMSIS-DAP vendor and product id, not proof that DAP commands are answered there.
+
+Settling it needs the bench: send `DAP_Info` to the HID interface and see whether anything replies.
+Until then, implementing a v1 interface here would risk adding a feature stock does not have rather
+than reaching parity.
 
 Interface numbering differs from stock, which has HID between the vendor and CDC interfaces. Ours
 is vendor, CDC, CDC data, and adding HID will append rather than insert. Hosts enumerate by
@@ -182,6 +188,13 @@ These are ARM's standard commands, which its reference answers:
 
 plus `0x7F ExecuteCommands`. **Our build has to answer all of these or it is a downgrade.**
 
+
+### Stock's own vendor commands
+
+Stock answers vendor 0x80 and 0x81, and nothing in probe-rs asks for them.
+They are **not implemented here**,
+which is a documented difference rather than a defect: it only matters if LinkServer has to work
+against this firmware.
 
 ### The vendor range
 
