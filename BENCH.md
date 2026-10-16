@@ -1,15 +1,39 @@
 # Bench guide
 
-Everything in this repository is compile-time truth or emulation. Nothing has run on hardware.
-This document is the reference to keep open during the first bench session, and the plan for what
-that session should do.
+The firmware runs on hardware and beats the stock image. This document is the reference to keep
+open at the bench, and the plan for what is still untested.
 
-Two halves: **Reference** is what you will need to look up quickly. **The plan** is the ordered
-list of what to test and what each result unlocks.
+Three parts: **Reference** is what you will need to look up quickly, starting with where the bench
+stands today. **The plan** is the ordered list of what to test and what each result unlocks, with
+steps 1 to 5 now carrying what they measured. The sections after it record what the bench settled
+and what it is still guessing.
+
+The emulator's cost model has been calibrated against the wire, so it can be trusted for ranking
+again -- within the 3.6% it is still out over a whole transfer. Nothing in `OPTIMISATIONS.md` has
+been re-derived against it yet.
 
 ---
 
 # Reference
+
+## Where the bench stands, end of 2026-10-16
+
+Both halves of the plan's first five steps are done and the firmware beats stock. What is flashed
+on `CJ6B19D4E7` is build `bb44d28`: the bit paths in SRAM and the core at 150 MHz. **Every commit
+since is docs and tools only, so the code on the unit is HEAD's code** -- rebuilding would change
+only the build string, and nothing needs reflashing to carry on measuring.
+
+| | at 10 MHz asked |
+| --- | --- |
+| stock | 22.0 cycles a data bit, 494 KiB/s |
+| ours, before | 22/20/34/54 cycles, 269 KiB/s |
+| ours, now | 15.0 cycles uniform, ~562 KiB/s |
+
+
+**Steps 6 to 10 are untouched**: the console, SWO, cJTAG activation on a CC13xx, the two-pin data
+read, and the HID parity question. The open optimisation work includes moving
+the two-pin block paths to SRAM the way the SWD ones went.
+
 
 ## Hazards, before anything else
 
@@ -122,10 +146,14 @@ image. A flag is how a later feature arrives without every host learning a new v
 Each has its own MSPM0L1306, and each is wired to its own analyser channel group. The mapping was
 established by driving a clock burst on one unit at a time and seeing which channels moved.
 
-| serial (stock) | analyser | nRESET | SWDIO | SWCLK |
-| --- | --- | --- | --- | --- |
-| `07HW51KCTNRZQ` | D0-D2 | D0 | D1 | D2 |
-| `QK7RM2VTX8D41` | D4-D6 | D4 | D5 | D6 |
+| serial | running | analyser | nRESET | SWDIO | SWCLK | its target |
+| --- | --- | --- | --- | --- | --- | --- |
+| `CJ6B19D4E7` (was `07HW51KCTNRZQ`) | ours | D0-D2 | D0 | D1 | D2 | alive |
+| `QK7RM2VTX8D41` | stock | D4-D6 | D4 | D5 | D6 | recovered, left halted |
+
+**A unit's serial changes when it is flashed with ours**, from NXP's 13-character string to `CJ`
+plus 8 hex of a CRC over the unique id. `uv run tools/flash.py --check` says what every attached
+unit is running without touching any of them.
 
 A stock unit calls itself `MCU-LINK (r0FB) CMSIS-DAP V3.172` and reports firmware `3.172`,
 protocol `2.1.1`, 512-byte packets, eight of them, and a 150 MHz test domain timer. The serial is
