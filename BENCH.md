@@ -633,11 +633,16 @@ Acknowledge 3 is an OK (1,0,0) seen one bit behind: the turnaround's high level,
 The block command peels its last read into `SWD_TransferTailSlow`, an out-of-line copy of the
 transfer, and that copy misreads its acknowledge on every call. The loop that does the other 63
 never does. At 10 MHz all four sizes come back whole. The tail's acknowledge reads are the same
-instructions as the loop's, in the same order, at a different address. On the wire, the tail's
-acknowledge clocks are high for 20 ns where the loop's are high for 28, with the low phase
-longer by the same amount. So its rising-edge stores reach the pin later than the loop's do.
-The likely cause is the M33's single system-bus port, which both the instruction fetches from
-SRAM and the GPIO accesses go through. That is inferred, not shown.
+instructions as the loop's, in the same order and the same sizes, using the same GPIO aliases,
+at a different address.
+
+**It is not instruction alignment.** A build with a `nop` at the top of the tail shifted it by a
+halfword. That flips the 4-byte alignment of every instruction in it, and the compiler re-laid the
+neighbours too. The tail still failed 200 of 200 at every block size, and the loop and
+`DAP_Transfer` stayed clean. A wire difference claimed here earlier, the tail's clock high for
+20 ns against 28, compared one transfer at 10 ns resolution with a mean over 63. Within one
+transfer the analyser's sampling phase hardly moves, so that is not evidence of anything. The
+cause is open.
 
 **An earlier reading here, that the probe's own pins and buffers take ~45 ns, was wrong.** It
 was a model fitted to one failure, and the two results above break it.
@@ -650,7 +655,8 @@ between gave a mixture. The filler times as exactly one cycle a step from a fill
 costs 5), and the period does not move with the sample. A computed branch of about two cycles
 sits between the store and the filler, so the edge is near five cycles, ~35 ns, after the store
 issues. In the loop, the sample before the next edge comes about eight cycles after this one at
-the faster setting, so the loop has two or three cycles in hand, and the tail spends them.
+the faster setting, so the loop has two or three cycles in hand. The tail runs the same
+instructions and does not.
 
 Four-wire JTAG reads TDO, which changes on the falling edge, before the rising one: half a period
 rather than a whole one.
