@@ -619,15 +619,41 @@ The faster setting is not 16.67 MHz on the wire for a block: data bits run at 60
 (mean 67.5), acknowledge bits at 60 and 80, and the period at 10 MHz is 100 ns throughout.
 
 Acknowledge 3 is an OK (1,0,0) seen one bit behind: the turnaround's high level, then 1 and 0.
-The probe samples with `ldrb` two instructions before its own rising-edge store, as ARM's code
-does. The bit it needs was launched by the previous rising-edge store, so it has about one period
-to travel out through the pin and U3, through the target and back (15 ns), and in through U4 and
-the GPIO input. It is still in flight at ~60 ns and arrives in time at 100 ns, so **the probe's
-own output and input paths take roughly 45 ns between them**: three times what the wire takes.
-The datasheet ceiling on the target was never the limit.
 
-The same arithmetic caps four-wire JTAG harder. TDO changes on the falling edge and is sampled
-before the rising one, so it gets half a period, not a whole one.
+**Only one function misreads, and it does every time.** At the faster setting `DAP_Transfer` read
+19,200 DPIDRs without a fault, and every block-size test gave the same answer, 200 runs each:
+
+| block | words returned, acknowledge |
+| --- | --- |
+| 1 word | 0, 3 |
+| 2 words | 1, 3 |
+| 4 words | 3, 3 |
+| 64 words | 63, 3 |
+
+The block command peels its last read into `SWD_TransferTailSlow`, an out-of-line copy of the
+transfer, and that copy misreads its acknowledge on every call. The loop that does the other 63
+never does. At 10 MHz all four sizes come back whole. The tail's acknowledge reads are the same
+instructions as the loop's, in the same order, at a different address. On the wire, the tail's
+acknowledge clocks are high for 20 ns where the loop's are high for 28, with the low phase
+longer by the same amount. So its rising-edge stores reach the pin later than the loop's do.
+The likely cause is the M33's single system-bus port, which both the instruction fetches from
+SRAM and the GPIO accesses go through. That is inferred, not shown.
+
+**An earlier reading here, that the probe's own pins and buffers take ~45 ns, was wrong.** It
+was a model fitted to one failure, and the two results above break it.
+
+**Measured with vendor 0x87 (`dap.py sample`): the next edge's bit reaches the sample about five
+cycles after the store that raised the clock.** At a 333 ns period, 1,000 reads at each position:
+production's place before the edge and every position up to 2 filler cycles after it read
+correctly, and from 3 on every read comes back one bit ahead, acknowledge 4. No position in
+between gave a mixture. The filler times as exactly one cycle a step from a fill of 4 up (0 to 4
+costs 5), and the period does not move with the sample. A computed branch of about two cycles
+sits between the store and the filler, so the edge is near five cycles, ~35 ns, after the store
+issues. In the loop, the sample before the next edge comes about eight cycles after this one at
+the faster setting, so the loop has two or three cycles in hand, and the tail spends them.
+
+Four-wire JTAG reads TDO, which changes on the falling edge, before the rising one: half a period
+rather than a whole one.
 
 A failed connect still clocks the wire for five seconds while probe-rs retries, and those groups
 are not worth reading: the retry changes the requested rate, so the period in them is not the one
