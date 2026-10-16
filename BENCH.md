@@ -51,8 +51,12 @@ reset through TMS.
 voltage follower (U6) buffers it, and the buffered level becomes the reference for every level
 shifter on the debug lines. The only path from the probe's 3V3 to pin 1 is R16, 33 kOhm, which
 gives the shifters a defined reference when nothing is plugged in and collapses under any real
-load. That is why a target hung off it stayed unpowered. So power the U585 from its own board and
-wire pin 1 to its VDD. With pin 1 unwired the shifters have no reference, and the probe drives
+load. That is why a target hung off it stayed unpowered. No other connector carries power either:
+J7 is RX, TX and ground. The one path is a hand-wired mod from J2's unpopulated pad 1, which is the
+probe's own 3V3 rail. That rail has a 700 mA regulator the probe's own MCU and USB PHY also draw
+on, with no current limit and no switch, so a target fault resets the probe. The MCU-Link Pro
+supplies a target by design (its J6 to enable, J5 for 3.3 or 1.8 V). So power the U585 from its
+own board and wire pin 1 to its VDD. With pin 1 unwired the shifters have no reference, and the probe drives
 nothing at all.
 
 **The probe can measure the target, and tell an empty connector from a dead target.** The buffered
