@@ -125,6 +125,24 @@ An odd number of `nop`s makes the high and low phases unequal. That is not a new
 only ever lengthens a phase, so neither edge gets tighter than the delay-free path that already
 ships.
 
+## Telling the host what it actually got
+
+`DAP_SWJ_Clock` takes four bytes of frequency and answers one byte, `DAP_OK` or `DAP_ERROR`. There
+is no field anywhere in CMSIS-DAP for the rate the probe will actually run at — `DAP_Info` has no
+entry for it, and the nearest precedent, `DAP_ID_TIMESTAMP_CLOCK`, is a different clock. So a host
+asks for 30 MHz, is told yes, and gets 13.1.
+
+We own `0x84` upward, so a vendor command can answer it: given a frequency, report what the probe
+would actually clock; given nothing, report what it is clocking now. `0x82` already lets a host
+recognise this firmware before asking, so nothing else needs to change.
+
+**Build it as part of this work rather than before it.** The number such a command would report is
+computed from `clock_delay` and the same per-path constants that are wrong, so shipping it first
+would publish the model that is in question, with a precision it has not earned. Once the capture
+below has settled the costs and the paths have pacing of their own, the command reports something
+true — and it is then also the cheapest way for a host to find the right request, which with steps
+this coarse is worth more than it sounds.
+
 ## Settle the cost model before changing a constant
 
 Every figure above is arithmetic over a cost model whose constants are command-line arguments to
