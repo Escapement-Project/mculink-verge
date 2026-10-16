@@ -36,20 +36,22 @@ block, before and after tonight:
 
 | | asked | before | after | |
 | --- | --- | --- | --- | --- |
-| SWD read | 10 MHz | 538 | 614 | +14% |
-| SWD write | 10 MHz | 547 | 645 | +18% |
-| SWD read | 50 MHz | 1161 | 1624 | +40% |
-| SWD write | 50 MHz | 1387 | 1862 | +34% |
-| JTAG read | 10 MHz | 616 | 665 | +8% |
-| JTAG write | 10 MHz | 621 | 713 | +15% |
-| JTAG read | 50 MHz | 1355 | 1639 | +21% |
-| JTAG write | 50 MHz | 1630 | 2047 | +26% |
-| two-pin read | 10 MHz | 166 | 208 | +25% |
-| two-pin write | 10 MHz | 177 | 215 | +21% |
-| two-pin read | 50 MHz | 283 | 631 | +123% |
-| two-pin write | 50 MHz | 290 | 603 | +108% |
+| SWD read | 10 MHz | 538 | 624 | +16% |
+| SWD write | 10 MHz | 547 | 681 | +24% |
+| SWD read | 50 MHz | 1161 | 1693 | +46% |
+| SWD write | 50 MHz | 1387 | 2148 | +55% |
+| JTAG read | 10 MHz | 616 | 687 | +12% |
+| JTAG write | 10 MHz | 621 | 759 | +22% |
+| JTAG read | 50 MHz | 1355 | 1812 | +34% |
+| JTAG write | 50 MHz | 1630 | 2433 | +49% |
+| two-pin read | 10 MHz | 166 | 213 | +28% |
+| two-pin write | 10 MHz | 177 | 218 | +23% |
+| two-pin read | 50 MHz | 283 | 646 | +128% |
+| two-pin write | 50 MHz | 290 | 617 | +113% |
 
-The bar is cleared on wire time at every setting, by 3.4x at the top. **Wire time is not the same
+Text grows from 46,980 bytes to 108,772, which is 17% of the part's flash.
+
+The bar is cleared on wire time at every setting, by 4.3x at the top. **Wire time is not the same
 as throughput**: the stock capture put the USB gap at about 10% of a transfer at 14 MHz, and a
 target that will not attach above 14 MHz makes the top of this table unreachable. The bench decides.
 
@@ -102,6 +104,21 @@ that cycle.
 Reads go from 283 KiB/s to 631 above the switch point, with the fastest edge at 48 MHz against the
 50 asked. Below it the extra copy costs 2% to 3%, and SWD and four-wire JTAG lose up to 2% to the
 same code growth. Text grows 11 KB.
+
+### Pay for a transfer's registers once a block, not once a word
+
+ARM's block command calls the transfer per word, and a transfer saves eight or nine registers on
+entry, restores them on exit and reloads the GPIO addresses and pin masks each time. At the
+delay-free setting that was 60 to 80 cycles of dead wire between one transfer and the next, a fifth
+of a read.
+
+`src/jtag_block.h` holds ARM's block loop, transcribed once, and it is expanded next to each
+transfer it drives: SWD in `src/swd_dp.c`, four wires in `src/jtag_dp_block.c`, and the two OScan1
+copies in `src/cjtag_jtag_dp.c`. `src/dap_dispatch.c` owns the two command entry points and routes
+a block command to the right one, sending everything else to ARM's processing unchanged.
+
+SWD gains 4% on reads and 15% on writes at the top end, four-wire JTAG 11% and 19%, two-pin 2%.
+The dead stretch between SWD writes halves, from 62 cycles to 34. Text grows 42 KB.
 
 ## Tried and rejected
 
@@ -219,19 +236,15 @@ model serving paths that do not cost the same.
 
 ## Left, ranked
 
-### 1. A seventh of a read is still spent between transfers
+### 1. What is left between transfers
 
-Measured at 50 MHz asked: around 70 cycles of dead wire between one transfer and the next, 13% of a
-read. `--explain` names it: the tail and head of the transfer function, and the block loop that
-`DAP_ProcessCommand` inlined. The block loop stores the result a byte at a time and re-reads the
-retry count per word; the transfer tail checks parity, walks the turnaround, re-drives SWDIO and
-restores nine registers.
+About 65 cycles on a SWD read at the delay-free setting, 19% of the time. The prologue, the
+epilogue and the address reloads are gone; what remains is the loop's own work and the transfer's
+head and tail, and the read loop spills because the inlined transfer and the loop state compete
+for registers. The write loop, which carries less, is down to 34.
 
-Letting the optimiser inline the transfer into the loop does not touch it, and the JTAG result
-above says making the function bigger makes this worse. What is left is making the loop itself
-cheaper, in our own copy of `DAP_SWD_TransferBlock`.
-
-Predicts: most of 13%, and the risk that it goes the way the JTAG rewrite went.
+Letting the optimiser inline more does not help: raising GCC's inlining parameters cost 33 KB and
+moved the gap by one cycle. Nothing cheap is left here.
 
 ### 2. The read bit is two cycles above the floor
 
