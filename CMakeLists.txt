@@ -20,6 +20,7 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${DAP_SRC}/DAP.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_vendor.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_dp.c
   ${DAP_SRC}/SW_DP.c
   ${DAP_SRC}/JTAG_DP.c
   )
@@ -30,6 +31,13 @@ target_sources(${PROJECT_NAME} PRIVATE
 set_source_files_properties(
   ${DAP_SRC}/DAP.c ${DAP_SRC}/SW_DP.c ${DAP_SRC}/JTAG_DP.c
   PROPERTIES COMPILE_OPTIONS "-Wno-unused-variable;-Wno-unused-but-set-variable"
+  )
+
+# ARM's JTAG entry points are renamed here so src/cjtag_dp.c can own the real names and dispatch
+# between four-wire and OScan1. Renaming at compile time rather than patching keeps the submodule
+# at a released tag.
+set_source_files_properties(${DAP_SRC}/JTAG_DP.c PROPERTIES COMPILE_DEFINITIONS
+  "JTAG_Sequence=jtag4_Sequence;JTAG_IR=jtag4_IR;JTAG_ReadIDCode=jtag4_ReadIDCode;JTAG_WriteAbort=jtag4_WriteAbort;JTAG_Transfer=jtag4_Transfer"
   )
 
 target_include_directories(${PROJECT_NAME} PUBLIC
