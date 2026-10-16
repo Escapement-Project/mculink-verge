@@ -1,10 +1,27 @@
 cmake_minimum_required(VERSION 3.20)
 
+# -O3, not the board support's -Os. What this firmware sells is the speed of a bit-banged clock,
+# and the image is a small fraction of the part's flash. family_support.cmake forces MinSizeRel on
+# an unset build type, so the choice has to be made before it is included.
+if(NOT DEFINED CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "")
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 # TinyUSB's board support carries the toolchain file, startup code, linker script and clock setup
 # for the MCU-Link, so the only board code here is the debug interface pin map.
 include(${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/bsp/family_support.cmake)
 
 project(mculink_cjtag C CXX ASM)
+
+# Link-time optimisation. family_support.cmake asks for it as well, but it gates on
+# check_ipo_supported, which runs before project() has enabled a language and so always answers
+# no. The probe cannot be repeated from here either: it builds a throwaway project against the
+# same toolchain file, whose includes are relative paths out of the real one. So set it outright,
+# behind a switch for bisecting a miscompilation.
+option(LTO "Build with link-time optimisation" ON)
+if(LTO)
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+endif()
 
 family_initialize_project(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR})
 
