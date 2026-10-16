@@ -477,6 +477,36 @@ effect measured, and it points the other way from every ranking in `OPTIMISATION
 The two things to try are running the bit paths from SRAM, which needs a linker script of our own,
 and simply unrolling less. Both are cheap. Neither can be ranked from emulation.
 
+### Fixed: the bit paths now run from SRAM
+
+Moving the four SWD entry points to `.ramfunc` removed the stall completely, and the firmware now
+beats stock at every rate this target will answer.
+
+| asked | data bit before | after | stock | KiB/s before | after | stock |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 MHz | 147, 147, 159, 171 | **147.0 every bit** | 160.0 | 71.7 | 78.9 | 77.2 |
+| 5 MHz | 33, 33, 45, 57 | **33.0 every bit** | 40.0 | 221.3 | 305.5 | 290.8 |
+| 10 MHz | 22, 20, 34, 54 | **15.0 every bit** | 22.0 | 269.4 | 562.6 | 494.3 |
+
+The four-bit pattern is gone: every data bit at every setting is now one value, with the whole
+28-bit span measuring within a nanosecond of itself. Solving each setting for the non-delay cost
+gives **2.5 cycles per half-bit against stock's 6.0**, the same figure at all three, which is the
+unrolling finally doing what it was written to do. 2.09x our own previous throughput at 10 MHz,
+and 1.14x stock.
+
+It also confirms the emulator was right about the instruction stream all along. It predicted a
+5-cycle data bit at the delay-free setting, which is 2.5 a half-bit; the flash was the entire
+discrepancy.
+
+**20 MHz requested now fails to connect**, and that is the fix working rather than a regression.
+Without the stalls a 20 MHz request puts about 16 MHz on the wire, well past the 7-9 MHz this
+MSPM0L1306 will answer. Stock fails there for the same reason. 10 MHz requested is 9.6 MHz on the
+wire and is the most this target will take.
+
+What is not yet moved: the two-pin and four-wire JTAG block paths, which are the same unrolled
+shape and will have the same stall. `cjtag_BlockImpl` and `cjtagf_BlockImpl` are 67 KB together
+against the 79 KB already in SRAM and 112 KB still free.
+
 ### A free 4% that is being left on the table
 
 Our core runs at 144 MHz because TinyUSB's board file sets PLL0 to 150 MHz and then attaches
