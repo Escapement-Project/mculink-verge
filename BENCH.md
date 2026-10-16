@@ -636,13 +636,33 @@ never does. At 10 MHz all four sizes come back whole. The tail's acknowledge rea
 instructions as the loop's, in the same order and the same sizes, using the same GPIO aliases,
 at a different address.
 
-**It is not instruction alignment.** A build with a `nop` at the top of the tail shifted it by a
-halfword. That flips the 4-byte alignment of every instruction in it, and the compiler re-laid the
-neighbours too. The tail still failed 200 of 200 at every block size, and the loop and
-`DAP_Transfer` stayed clean. A wire difference claimed here earlier, the tail's clock high for
-20 ns against 28, compared one transfer at 10 ns resolution with a mean over 63. Within one
-transfer the analyser's sampling phase hardly moves, so that is not evidence of anything. The
-cause is open.
+**It is not instruction alignment, and it is not the out-of-line function.** Two rebuilds, each
+run through the same block-size test, 200 runs a size:
+
+- A `nop` at the top of the tail shifted it by a halfword, flipping the 4-byte alignment of every
+  instruction in it, and the compiler re-laid the neighbours too. Still 200 of 200 failing.
+- Forcing the tail inline into the block function, so the last read is code in the loop's own
+  function again, the peel undone. Still 200 of 200 failing, and the loop's reads still clean.
+
+So the failure goes with the block's last read, whatever code carries it.
+
+**On the wire the last read's clock is a cycle off.** Averaged over a capture of 14,977 one-word
+blocks and 4,025 sixty-four-word blocks (`mculink-ours-u575-tail-vs-loop.sal`),
+which washes out the analyser's 10 ns steps because its phase differs from read to read:
+
+| | high after ack0's rise | low before ack1's rise | target's ack1 edge after the rise |
+| --- | --- | --- | --- |
+| last read, 1-word blocks | 21.8 ns | 38.2 ns | 17.6 ns |
+| last read, 64-word blocks | 21.7 | 38.4 | 17.8 |
+| the loop's reads | 27.9 | 32.2 | 17.1 |
+
+Standard errors are 0.01 to 0.15 ns. The period is the same 60 ns and the target answers the
+same, but in the last read the falling edge comes 6 ns, one core cycle, sooner after the rising
+edge. Its instructions are the loop's, so one of the two clock stores reaches the pin a cycle
+off from where it does in the loop. That one cycle is the difference between every read passing
+and every read failing, which puts the loop's own margin at this setting under a cycle. A
+comparison made earlier from a single transfer pointed the same way and was wrongly retracted as
+quantisation: the averages bear it out.
 
 **An earlier reading here, that the probe's own pins and buffers take ~45 ns, was wrong.** It
 was a model fitted to one failure, and the two results above break it.
