@@ -1,6 +1,6 @@
-/** MCU-Link debug interface pin map.
+/** MCU-Link board bring-up: the debug interface pin map, and the clocks the BSP leaves off.
  *
- * The names match the board header in ARM's CMSIS-DAP MCU-Link example, so the pin layer in
+ * The pin names match the board header in ARM's CMSIS-DAP MCU-Link example, so the pin layer in
  * DAP_config.h compiles against this unchanged. The map follows the schematic's net names.
  *
  * Both buffer-direction pins are outputs the firmware owns. Releasing SWDIO means clearing
@@ -8,6 +8,10 @@
  */
 #ifndef BOARD_PINS_H
 #define BOARD_PINS_H
+
+/** Every signal below is on port 0, which is what lets the init code write them a port at a time.
+ * board_pins.c holds a static assertion for it. */
+#define DBGIF_PORT 0U
 
 #define DBGIF_TCK_SWCLK_GPIO GPIO
 #define DBGIF_TCK_SWCLK_PORT 0U
@@ -47,6 +51,9 @@
  * something the board support already did.
  */
 void board_clocks_init(void);
+
+/** Start the cycle counter that TIMESTAMP_GET reads. Call before the first host command. */
+void board_timestamp_init(void);
 
 /** Put the debug interface pins into their idle state.
  *

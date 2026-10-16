@@ -86,6 +86,7 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
 int main(void) {
     board_init();
     board_clocks_init();
+    board_timestamp_init();
     DAP_Setup();
     vcom_init();
 
