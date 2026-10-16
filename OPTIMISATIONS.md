@@ -243,9 +243,12 @@ ceiling for a DAP packet: `DAP_Info` reports packet size as a 16-bit value, a bu
 many endpoint packets as it needs, and probe-rs sizes its buffer from the reported value
 (`packet_buffer_len` is `max_packet_size + 1`) rather than from the descriptor.
 
-Predicts: **at most 10%**, probably half that, and nothing the emulator can confirm because the
-host round trip is not modelled. Worth more once the wire is faster, since the same gap is a larger
-share of a shorter transfer.
+Predicts: **at most 10%**, probably half that, and all of it on the host side. The firmware's own
+per-command cost is already negligible: a 255-word block runs at 1647 KiB/s against 1639 for a
+127-word one, so doubling what fits in a packet is worth 0.5% of wire time. Everything else a
+larger packet could buy is USB round trips, which the emulator does not model.
+
+Worth more once the wire is faster, since the same gap is a larger share of a shorter transfer.
 
 Two caveats. It deviates from stock, which reports 512, so a host that hardcodes rather than reading
 `DAP_Info` would break: check pyOCD and OpenOCD first. And it costs RAM.
