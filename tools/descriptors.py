@@ -219,10 +219,58 @@ def check_commands(c: Checker, elf: str) -> None:
     c.note(f"{answered} of {len(DAP_COMMANDS)} commands answered, unimplemented ids rejected")
 
 
+# What DAP_Info tells a host about the probe. probe-rs sizes its buffers from the packet size and
+# decides what it may ask for from the capabilities, so a wrong answer here breaks every transfer
+# rather than one.
+CAPABILITY_BITS = {
+    0: "SWD",
+    1: "JTAG",
+    2: "SWO UART",
+    3: "SWO Manchester",
+    4: "atomic commands",
+    5: "timestamps",
+    6: "SWO streaming",
+    7: "UART port",
+}
+
+
+def check_info(c: Checker, elf: str, packet_size: int, packet_count: int) -> None:
+    probe = Machine(elf, Target([0] * 64), restart_at=set(), model=Model())
+
+    def info(sub: int) -> bytes:
+        reply = probe.command(bytes([0x00, sub]))
+        return reply[2 : 2 + reply[1]] if len(reply) > 1 else b""
+
+    size = int.from_bytes(info(0xFF), "little")
+    count = int.from_bytes(info(0xFE), "little")
+    c.check(size == packet_size, f"DAP_Info reports a {size}-byte packet, wanted {packet_size}")
+    c.check(count == packet_count, f"DAP_Info reports {count} packets, wanted {packet_count}")
+
+    caps = info(0xF0)
+    bits = caps[0] if caps else 0
+    named = [n for b, n in CAPABILITY_BITS.items() if bits & (1 << b)]
+    for wanted in ("SWD", "JTAG", "SWO UART", "atomic commands", "timestamps"):
+        c.check(wanted in named, f"DAP_Info does not claim {wanted}, which COMMANDS relies on")
+    for unwanted in ("UART port",):
+        c.check(unwanted not in named, f"DAP_Info claims {unwanted}, which is not implemented")
+
+    product = info(DAP_ID_PRODUCT).rstrip(b"\x00").decode("ascii", "replace")
+    serial = info(DAP_ID_SER_NUM).rstrip(b"\x00").decode("ascii", "replace")
+    c.check(bool(serial), "DAP_Info has no serial number, so two probes cannot be told apart")
+    c.check(bool(product), "DAP_Info has no product name, so a host cannot say what it found")
+    c.note(f"DAP_Info: {size}-byte packets x{count}, {', '.join(named)}")
+    c.note(f"DAP_Info: product {product!r}, serial {serial!r}")
+
+
+DAP_ID_PRODUCT, DAP_ID_SER_NUM = 2, 3
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("elf", nargs="?", default="build/mculink_cjtag.elf")
     ap.add_argument("--prefix", default="CJ", help="what the serial should start with")
+    ap.add_argument("--packet-size", type=int, default=512)
+    ap.add_argument("--packet-count", type=int, default=8)
     args = ap.parse_args()
 
     sym = symbols_with_size(args.elf)
@@ -240,6 +288,7 @@ def main() -> int:
     else:
         c.note("the MS OS 2.0 descriptor was folded away; its length not cross-checked")
     check_commands(c, args.elf)
+    check_info(c, args.elf, args.packet_size, args.packet_count)
     check_serial(c, args.elf, bytes(range(1, 17)), args.prefix)
     check_serial(c, args.elf, b"\xff" * 16, args.prefix, uniform=True)
 

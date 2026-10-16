@@ -9,6 +9,11 @@
  * length fields have to agree with the bytes that follow them and nothing at run time reports a
  * mismatch -- the device simply fails to bind.
  */
+// DAP_config.h first: DAP.h reads the DAP_SWD and DAP_JTAG settings it defines, so a sorted
+// include block that puts DAP.h ahead of it will not compile. The names the probe answers to
+// live there, so the USB strings and DAP_Info cannot drift apart.
+#include "DAP_config.h"
+
 #include "ser_num.h"
 #include "tusb.h"
 
@@ -74,8 +79,8 @@ uint8_t const* tud_descriptor_configuration_cb(uint8_t index) {
 
 static char const* string_desc[] = {
     [0] = (const char[]){0x09, 0x04}, // English (US)
-    [1] = "NXP Semiconductors",
-    [2] = "MCU-Link CMSIS-DAP cJTAG",
+    [1] = DAP_VENDOR_NAME,
+    [2] = DAP_PRODUCT_NAME,
     [3] = NULL,           // serial, filled in from the part's unique id
     [4] = "CMSIS-DAP v2", // the prefix host tools match on
     [5] = "MCU-Link VCOM",

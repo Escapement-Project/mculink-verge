@@ -159,13 +159,18 @@ static const char TargetBoardVendor  [] = TARGET_BOARD_VENDOR;
 static const char TargetBoardName    [] = TARGET_BOARD_NAME;
 #endif
 
+/// Answered by DAP_Info, and also the USB strings. A host asking what it is talking to gets
+/// these; ARM's example answers nothing, which is how the stock image was told apart from it.
+#define DAP_VENDOR_NAME         "NXP Semiconductors"
+#define DAP_PRODUCT_NAME        "MCU-Link CMSIS-DAP cJTAG"
+
 /** Get Vendor Name string.
 \param str Pointer to buffer to store the string (max 60 characters).
 \return String length (including terminating NULL character) or 0 (no string).
 */
 __STATIC_INLINE uint8_t DAP_GetVendorString (char *str) {
-  (void)str;
-  return (0U);
+  strcpy(str, DAP_VENDOR_NAME);
+  return ((uint8_t)(sizeof(DAP_VENDOR_NAME)));
 }
 
 /** Get Product Name string.
@@ -173,8 +178,8 @@ __STATIC_INLINE uint8_t DAP_GetVendorString (char *str) {
 \return String length (including terminating NULL character) or 0 (no string).
 */
 __STATIC_INLINE uint8_t DAP_GetProductString (char *str) {
-  (void)str;
-  return (0U);
+  strcpy(str, DAP_PRODUCT_NAME);
+  return ((uint8_t)(sizeof(DAP_PRODUCT_NAME)));
 }
 
 /** Get Serial Number string.
