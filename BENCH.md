@@ -599,6 +599,10 @@ its own size until the USB side moves, which is what the 512-byte packet questio
 - **The two-pin and four-wire JTAG block paths are still in flash** and will have the same stall
   the SWD paths had. `cjtag_BlockImpl` and `cjtagf_BlockImpl` are 67 KB together, against 79 KB
   already in SRAM and 112 KB still free.
+- **The onboard LED says nothing.** `LED_CONNECTED_OUT` and `LED_RUNNING_OUT` are stubs and
+  `DAP_HostStatus` does nothing. Deferred until the probe is functionally complete. It has
+  the two constraints that matter, that `P0_5` is also `ISP1` and that a GPIO store is one cycle of
+  a fifteen-cycle data bit, so this belongs in the dispatch layer and not in a bit path.
 - **Where the wire actually stops working** is still a guess from two points: 9.6 MHz works on
   this MSPM0L1306 and 16 MHz does not. `tools/dap.py block` is already the right instrument --
   idempotent, no access port, no target state -- so sweeping the clock and counting errors would
