@@ -25,7 +25,75 @@ host rather than the probe.
 
 **Nothing on the JTAG or two-pin paths has been measured on hardware**, because neither target
 here can do JTAG: the MSPM0L1306 is a Cortex-M0+ and SWD only. The SRAM move and the clock-delay
-hint are in and pass the emulator, and that is all anyone knows about them.
+hint are in and pass the emulator, and that is all anyone knows about them. The next section is
+the bench that fixes that.
+
+The onboard LED is done and checked by eye: see "The LED: a timer's job" below.
+
+## Next session: the JTAG bench
+
+**One target, moved between the two probes.** A single STM32U585ZI, which probe-rs knows by that
+name. It is a Cortex-M33 behind an SWJ-DP, so it answers four-wire JTAG out of reset: TMS on PA13,
+TCK PA14, TDI PA15, TDO PB3, nTRST PB4, and NRST. The MSPM0L1306 pair stays out of this.
+
+**J6 carries all of four-wire JTAG.** It is the standard 10-pin Cortex Debug layout: 1 VREF,
+2 TMS, 4 TCK, 6 TDO, 8 TDI, 10 nRESET, 3/5/9 ground. Pin 7 is `IF_ISPEN`, NXP's target-ISP line,
+where the standard has a key. Leave it unconnected at the target. There is no nTRST, so the TAP is
+reset through TMS.
+
+**Make the swap one connector.** One harness stays on the target and only its J6 end moves
+between probes, so both are measured through the same wires.
+
+**Tap the analyser at the target, not the probes.** The target is the one thing both probes
+share, so one set of clips serves both, and the probe-side taps stop meaning anything once the
+target moves:
+
+| channel | signal | now |
+| --- | --- | --- |
+| D0 | nRESET | moves from our probe's side to the target's |
+| D1 | TMS | moves the same way; was SWDIO |
+| D2 | TCK | moves the same way; was SWCLK |
+| D3 | marker, our J8 pin 4 | unchanged |
+| D4 | TDI | new; was stock's nRESET |
+| D5 | TDO | new; was stock's SWDIO |
+| D6, D7 | free | were stock's SWCLK and J8 |
+
+D2 stays the clock and D3 the marker, so the fold and `clockscope.py --channel 2` carry over.
+Timing captures take D1, D2 and D3 at 100 MS/s, exactly as the SWD marker captures did. Protocol
+decodes take D1, D2, D4 and D5 at 50 MS/s, the rate the cJTAG reference capture used on four
+channels. Stock never drives J8, so a stock capture has the clock and no marker.
+
+**Hazards specific to this target.**
+- An onboard debugger sharing PA13 and PA14, as on a Nucleo, has to be isolated, or it fights the
+  probe.
+- Do not set TZEN or raise RDP. Level 1 only comes back with a mass erase, and level 2 never does.
+  Nothing here asks for either, but a flash tool's option-byte page can.
+- Ask probe-rs for JTAG explicitly. An SWJ-DP starts in JTAG, and a host that defaults to SWD
+  switches it.
+- Put the probe in every capture and CSV name. With the target moving, the filename is the only
+  record of which probe produced it. Alternate the probes run by run (ABAB) so drift lands on both.
+
+**Tooling to write first; none of it needs the bench.**
+1. `dap.py scan`: count the TAPs on four-wire JTAG and read their IDCODEs. Older STM32s put a
+   boundary-scan TAP in series with the debug TAP, so the chain is an open question. Settle it
+   before anything is configured from it.
+2. `dap.py block --wire jtag`: `DAP_JTAG_Configure` from the scan, then the same DP-read block.
+   `dap.py limit` wants the same option.
+3. `swd-throughput`: a `--protocol` flag. `WireProtocol::Swd` is hardcoded at
+   `src/main.rs:294`.
+4. The fold: a JTAG transfer is not 46 clocks, so the period becomes a parameter. Derive it from
+   the TAP path in a capture rather than from arithmetic.
+
+**Then measure, in the order the SWD work found things.** Run each step on both probes unless it
+says otherwise:
+1. The chain scan, and a probe-rs connect over JTAG.
+2. A data bit's cycles, folded by clock position, against `tools/cycles.py --table`. Ours only:
+   stock has no marker.
+3. Whether the SRAM move (`ecaec8a`) did for four-wire JTAG what it did for SWD.
+4. The per-transfer overhead positions, and the rate ladder with `dap.py limit`.
+5. End to end through probe-rs, ABAB.
+
+The two-pin half (plan steps 8 and 9) still needs a CC13xx and is not part of this.
 
 ## Where the bench stood before that
 
