@@ -38,6 +38,9 @@ option(CORE_150MHZ "Run the core at 150 MHz" ON)
 # Drive J8's four pins high while a host command runs, so an analyser sees the gap between
 # commands as well as the clock. src/marker.h says why that is worth a pin.
 option(MARKER "Mark command processing on the J8 header" ON)
+# Sample SWDIO just after the rising edge on the delayed SWD path, with each transfer masked. Off
+# until the bench has settled it; BENCH.md has the measurements behind it.
+option(SWD_SAMPLE_AFTER_EDGE "Sample SWDIO after the rising edge on the delayed SWD path" OFF)
 if(RAMFUNC AND CMAKE_BUILD_TYPE STREQUAL "Debug")
   message(FATAL_ERROR
     "RAMFUNC does not fit a Debug build: the unrolled bit paths are about 300 KB at -O0 and SRAM "
@@ -50,12 +53,19 @@ add_executable(${PROJECT_NAME})
 
 # The build's identity, regenerated every build so it cannot go stale between a commit and a
 # flash. Two units running different builds of ours are otherwise indistinguishable over USB.
+# A build option that changes what goes on the wire is named in it too, or two images built from
+# one commit answer alike.
 set(FW_VERSION_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/fw_version.h)
+set(FW_VARIANT "")
+if(SWD_SAMPLE_AFTER_EDGE)
+  string(APPEND FW_VARIANT "+after-edge")
+endif()
 add_custom_target(fw_version ALL
   BYPRODUCTS ${FW_VERSION_HEADER}
   COMMAND ${CMAKE_COMMAND}
     -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
     -DOUTPUT=${FW_VERSION_HEADER}
+    -DVARIANT=${FW_VARIANT}
     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/fw_version.cmake
   COMMENT "Resolving the firmware version"
   VERBATIM
@@ -174,6 +184,10 @@ set(DAP_PACKET_COUNT ${REQUEST_SLOTS})
 
 if(MARKER)
   target_compile_definitions(${PROJECT_NAME} PRIVATE MARKER_PINS=1)
+endif()
+
+if(SWD_SAMPLE_AFTER_EDGE)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE SWD_SAMPLE_AFTER_EDGE=1)
 endif()
 
 

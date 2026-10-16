@@ -138,6 +138,8 @@ __STATIC_FORCEINLINE uint32_t SWD_Turnaround(void) {
          * bit costs two cycles more. Naming it is what makes the two toolchains agree. */        \
         const uint32_t clock_delay = DAP_Data.clock_delay;                                        \
         (void)clock_delay;                                                                        \
+        const uint32_t primask = SWD_MASK_BEGIN();                                                 \
+        (void)primask;                                                                             \
                                                                                                    \
         /* Packet request. The parity is in bit 6, put there by the caller. */                     \
         SW_WRITE_BIT(1U);           /* Start */                                                    \
@@ -204,6 +206,7 @@ __STATIC_FORCEINLINE uint32_t SWD_Turnaround(void) {
                 }                                                                                  \
             }                                                                                      \
             PIN_SWDIO_OUT(1U);                                                                     \
+            SWD_MASK_END(primask);                                                                 \
             return ((uint8_t)ack);                                                                 \
         }                                                                                          \
                                                                                                    \
@@ -225,6 +228,7 @@ __STATIC_FORCEINLINE uint32_t SWD_Turnaround(void) {
                 }                                                                                  \
             }                                                                                      \
             PIN_SWDIO_OUT(1U);                                                                     \
+            SWD_MASK_END(primask);                                                                 \
             return ((uint8_t)ack);                                                                 \
         }                                                                                          \
                                                                                                    \
@@ -234,8 +238,14 @@ __STATIC_FORCEINLINE uint32_t SWD_Turnaround(void) {
         }                                                                                          \
         PIN_SWDIO_OUT_ENABLE();                                                                    \
         PIN_SWDIO_OUT(1U);                                                                         \
+        SWD_MASK_END(primask);                                                                     \
         return ((uint8_t)ack);                                                                     \
     }
+
+/* No interrupt can make a sample taken before its rising edge wrong: arriving first, it only
+ * delays the sample, and the bit stays readable until well after the edge. */
+#define SWD_MASK_BEGIN() 0U
+#define SWD_MASK_END(primask) ((void)(primask))
 
 #undef PIN_DELAY
 #define PIN_DELAY() PIN_DELAY_FAST()
@@ -243,6 +253,35 @@ SWD_TransferFunction(Fast)
 
 #undef PIN_DELAY
 #define PIN_DELAY() PIN_DELAY_SLOW(clock_delay)
+
+#ifdef SWD_SAMPLE_AFTER_EDGE
+/* Sample just after the rising edge rather than just before it. The bit the target launched on
+ * the previous edge stays readable until the new one has made the round trip through the buffers
+ * and the target, a few cycles after this store, while sampling before the edge leaves only what
+ * the period has to spare beyond that trip: under a cycle at the 16.67 MHz setting. vendor 0x87
+ * measured both edges of the window; BENCH.md has it.
+ *
+ * **The sample must follow the store with nothing in between.** An interrupt there makes the
+ * sample late enough to read the next bit, so every transfer on this path runs masked. Before the
+ * edge an interrupt only delays a sample that has time to spare, which is why the delay-free path,
+ * still sampling there, needs no mask. */
+#undef SW_READ_BIT
+#define SW_READ_BIT(bit)  \
+    PIN_SWCLK_CLR();      \
+    PIN_DELAY();          \
+    PIN_SWCLK_SET();      \
+    bit = PIN_SWDIO_IN(); \
+    PIN_DELAY()
+#undef SWD_MASK_BEGIN
+#undef SWD_MASK_END
+#define SWD_MASK_BEGIN() SWD_MaskBegin()
+#define SWD_MASK_END(primask) __set_PRIMASK(primask)
+__STATIC_FORCEINLINE uint32_t SWD_MaskBegin(void) {
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    return primask;
+}
+#endif
     SWD_TransferFunction(Slow)
 
         uint8_t SWD_Transfer(uint32_t request, uint32_t* data) {

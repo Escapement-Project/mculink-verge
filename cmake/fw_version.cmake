@@ -5,7 +5,7 @@
 # commit, and the number this produces is the one a bench session uses to tell two flashed units
 # apart. `--dirty` is the point of it -- it says the image came from uncommitted work.
 #
-# Expects SOURCE_DIR and OUTPUT to be passed with -D.
+# Expects SOURCE_DIR and OUTPUT to be passed with -D, and VARIANT optionally.
 
 execute_process(
   COMMAND git -C "${SOURCE_DIR}" describe --always --dirty --tags
@@ -17,6 +17,8 @@ execute_process(
 if(NOT GIT_RESULT EQUAL 0 OR FW_VERSION STREQUAL "")
   set(FW_VERSION "unknown")
 endif()
+
+string(APPEND FW_VERSION "${VARIANT}")
 
 # DAP_GetProductFirmwareVersionString documents a 60 character buffer.
 string(SUBSTRING "${FW_VERSION}" 0 59 FW_VERSION)
