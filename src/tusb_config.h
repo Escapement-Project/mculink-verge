@@ -38,13 +38,17 @@
 #define CFG_TUD_VENDOR 1
 
 // One DAP packet each way, so a full packet never has to be split across FIFO wraps.
-// **One packet each way, and it has to stay one packet.** TinyUSB's vendor class is a byte stream
-// and not a packet interface: tud_vendor_read drains whatever the buffer holds, so a buffer that
-// can hold two commands hands both to one call and the second is answered by nobody. Raising
-// these to eight packets was tried and the host timed out from three commands in flight upward.
-// CMSIS-DAP v2 frames one command per packet, and a buffer of exactly one packet is what keeps
-// that true. See DAP_PACKET_COUNT in src/DAP_config.h for what the host is told.
-#define CFG_TUD_VENDOR_RX_BUFSIZE 512
-#define CFG_TUD_VENDOR_TX_BUFSIZE 512
+// **No FIFO, because CMSIS-DAP frames one command per packet and a FIFO does not keep frames.**
+// Zero on either buffer selects TinyUSB's non-buffered mode: a received packet arrives at
+// tud_vendor_rx_cb with its own length, and tud_vendor_write turns into one usbd_edpt_xfer. In
+// the buffered mode the class is a byte stream -- tud_vendor_read drains whatever is there, so
+// two small commands arriving together are handed to one read and the second is answered by
+// nobody. That was measured: the host times out from three commands in flight upward.
+#define CFG_TUD_VENDOR_RX_BUFSIZE 0
+#define CFG_TUD_VENDOR_TX_BUFSIZE 0
+#define CFG_TUD_VENDOR_EPSIZE 512
+// The firmware arms the receive endpoint itself, which is how it refuses a command it has no
+// slot for. src/main.c holds the slots.
+#define CFG_TUD_VENDOR_RX_MANUAL_XFER 1
 
 #endif

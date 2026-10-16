@@ -5,6 +5,8 @@
  * protocol does not need one -- DAP_ExecuteCommands batches on the host's behalf inside a single
  * packet instead.
  */
+#include <string.h>
+
 #include "bsp/board_api.h"
 #include "tusb.h"
 
@@ -21,8 +23,25 @@
 #include "DAP.h"
 #include "dap_dispatch.h"
 
-static uint8_t request[DAP_PACKET_SIZE];
+/** Two request slots, so the host can have a second command in flight while the first runs.
+ *
+ * With one, the wire sits idle from the moment a reply goes out until the host has noticed it and
+ * sent the next request. Measured on a 64-word block read, a second command in flight is worth
+ * 11%. A third measured no better, so two slots is where this stops.
+ *
+ * The receive endpoint is armed only while a slot is free, which is what refuses a command there
+ * is nowhere to put: the host sees NAK and retries, rather than the firmware dropping a packet.
+ */
+#define REQUEST_SLOTS 2U
+
+static uint8_t request[REQUEST_SLOTS][DAP_PACKET_SIZE];
+static volatile uint16_t request_len[REQUEST_SLOTS];
+static uint8_t request_head; // the slot dap_task takes next
+static uint8_t request_tail; // the slot tud_vendor_rx_cb fills next
+
 static uint8_t response[DAP_RESPONSE_SIZE];
+/** Non-zero while a reply is built and the transmit endpoint has not taken it yet. */
+static uint32_t response_len;
 
 // CMSIS-DAP v1 shares the command layer with v2 but not its packet size: a HID report is bounded
 // by the interrupt endpoint while the bulk interface carries 512. The buffer is full size so an
@@ -34,32 +53,42 @@ static uint8_t hid_response[DAP_RESPONSE_SIZE];
 volatile uint32_t marker_mask = J8_PIN_MASK;
 #endif
 
-static void dap_task(void) {
-    if (!tud_vendor_available()) {
-        return;
+/** One received packet, which is one command. Runs inside tud_task, not alongside it. */
+void tud_vendor_rx_cb(uint8_t index, const uint8_t* buffer, uint32_t length) {
+    (void)index;
+    if ((length == 0U) || (length > DAP_PACKET_SIZE)) {
+        return; // dap_task arms the endpoint again
     }
-    // Start a command only with the transmit side empty, so each reply leaves as its own
-    // transfer. TinyUSB's vendor class is a byte stream and not a packet interface: two replies
-    // queued together are flushed as one run of bytes, and a host reading a packet at a time gets
-    // the first reply with the front of the second stuck to it. Measured, it desynchronises at
-    // three commands in flight and the throughput then falls as 1/N.
-    //
-    // This still lets the host run ahead, which is where the gain is -- the receive buffer holds
-    // the commands it sent early, so the wire never waits for the next one. It only stops us
-    // answering faster than the host reads.
-    if (tud_vendor_write_available() != CFG_TUD_VENDOR_TX_BUFSIZE) {
-        return;
+    memcpy(request[request_tail], buffer, length);
+    request_len[request_tail] = (uint16_t)length;
+    request_tail = (uint8_t)((request_tail + 1U) % REQUEST_SLOTS);
+}
+
+static void dap_task(void) {
+    // Arm the receive endpoint whenever a slot can take a command. Idempotent: the call claims
+    // the endpoint and does nothing if a transfer is already up, so this also covers the first
+    // arming after enumeration.
+    if (request_len[request_tail] == 0U) {
+        tud_vendor_read_xfer();
     }
 
-    uint32_t received = tud_vendor_read(request, sizeof(request));
-    if (received == 0) {
+    // A reply the endpoint would not take last time. Nothing else may run until it goes, because
+    // a host reads replies in the order it sent the commands.
+    if (response_len != 0U) {
+        if (tud_vendor_write(response, response_len) != response_len) {
+            return;
+        }
+        response_len = 0U;
+    }
+
+    if (request_len[request_head] == 0U) {
         return;
     }
 
     // The high half of the return value counts request bytes consumed; only the response length
     // matters here, because one packet carries one command.
     MARKER_BUSY();
-    uint32_t produced = DAP_ExecuteCommand(request, response) & 0xFFFFU;
+    uint32_t produced = DAP_ExecuteCommand(request[request_head], response) & 0xFFFFU;
     MARKER_IDLE();
     // One command answers in one packet. A longer reply would split across two, which a v2 host
     // does not expect, so send what fits and drop the rest with the malformed request that caused
@@ -67,9 +96,14 @@ static void dap_task(void) {
     if (produced > DAP_PACKET_SIZE) {
         produced = DAP_PACKET_SIZE;
     }
-    if (produced != 0) {
-        tud_vendor_write(response, produced);
-        tud_vendor_flush();
+    request_len[request_head] = 0U;
+    request_head = (uint8_t)((request_head + 1U) % REQUEST_SLOTS);
+
+    if (produced != 0U) {
+        response_len = produced;
+        if (tud_vendor_write(response, response_len) == response_len) {
+            response_len = 0U;
+        }
     }
 }
 

@@ -180,6 +180,11 @@ def one(args) -> Probe:
     if len(probes) > 1:
         names = ", ".join(probe.serial for probe in probes)
         sys.exit(f"{len(probes)} probes attached ({names}); pass --serial")
+    # A run that stopped early leaves replies queued, and nothing in the protocol resynchronises a
+    # bulk endpoint: the next thing to ask gets them as its own answers, off by one for ever.
+    drained = probes[0].drain()
+    if drained:
+        print(f"  drained {drained} replies left by a run that stopped early")
     return probes[0]
 
 
@@ -581,9 +586,6 @@ def cmd_block(args) -> int:
     print(f"{probe.serial}  {probe.product}")
     # A pipelined run that stopped early leaves replies queued, and the next run reads them as
     # answers to its own commands. Nothing in the protocol clears that, so drain first.
-    drained = probe.drain()
-    if drained:
-        print(f"  drained {drained} stale replies")
     print(f"  DAP_Connect -> {probe.connect(1)}")
     print(f"  DAP_SWJ_Clock {args.hz} Hz -> {'OK' if probe.swj_clock(args.hz) == 0 else 'failed'}")
     idcode = swd_reset(probe)
