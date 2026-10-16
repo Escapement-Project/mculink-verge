@@ -9,8 +9,9 @@
  *
  * - **SRAM**, a buffer in .bss at 0x2000xxxx. The core fetches it over S-AHB, the same port the
  *   GPIO stores go out on, which is where the bit paths in .ramfunc run today.
- * - **SRAMX**, the 32 KB at 0x04000000 that this image leaves unused. The core fetches it over
- *   C-AHB, so instruction fetch and GPIO traffic do not share a port.
+ * - **SRAMX**, the upper 16 KB of the 32 KB at 0x04000000. The core fetches it over C-AHB, so
+ *   instruction fetch and GPIO traffic do not share a port. The lower half holds the generated
+ *   SWD paths (src/swd_gen.c).
  *
  * Request, after the id:
  *
@@ -39,8 +40,8 @@
 #define LAB_RUN 3U
 
 #define LAB_SRAM_SIZE 4096U
-#define LAB_SRAMX_BASE 0x04000000U
-#define LAB_SRAMX_SIZE 0x8000U
+#define LAB_SRAMX_BASE 0x04004000U
+#define LAB_SRAMX_SIZE 0x4000U
 
 #define LAB_WRITE_HEADER 7U // id, op, arena, offset, length
 #define LAB_READ_HEADER 2U  // id, status

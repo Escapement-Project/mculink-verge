@@ -29,7 +29,6 @@ LAB_INFO, LAB_WRITE, LAB_READ, LAB_RUN = 0, 1, 2, 3
 ARENA_SRAM, ARENA_SRAMX = 0, 1
 ARENA_NAMES = {ARENA_SRAM: "sram", ARENA_SRAMX: "sramx"}
 
-SRAMX = (0x04000000, 0x8000)
 DWT_BASE = 0xE0001000
 CYCCNT = DWT_BASE + 4
 
@@ -131,7 +130,6 @@ class EmulatedLab(cy.Machine):
 
     def __init__(self, elf: str, model: "cy.Model | None" = None, engine=None):
         super().__init__(elf, cy.Target([]), restart_at=set(), model=model, engine=engine)
-        self.uc.mem_map(*SRAMX)
         self.uc.mem_unmap(DWT_BASE, 0x1000)
         self.uc.mmio_map(DWT_BASE, 0x1000, self._dwt_read, None, self._dwt_write, None)
         reply = self.command(bytes([VENDOR_LAB, LAB_INFO]))

@@ -66,6 +66,8 @@ SWCLK_BIT = 1 << PIN_TCK
 SWDIO_BIT = 1 << PIN_SWDIO
 
 FLASH = (0x00000000, 0x00100000)
+# Fetched over C-AHB. The image leaves it empty; the SWD paths are generated into it at run time.
+SRAMX = (0x04000000, 0x00008000)
 SRAM = (0x20000000, 0x00050000)
 USB_RAM = (0x40100000, 0x00004000)
 PERIPH_LOW = (0x40000000, GPIO_BASE - 0x40000000)
@@ -438,7 +440,7 @@ class Machine:
         self.mask = 0
 
         self.uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
-        for base, size in (FLASH, SRAM, USB_RAM, PERIPH_LOW, PERIPH_HIGH, PPB):
+        for base, size in (FLASH, SRAMX, SRAM, USB_RAM, PERIPH_LOW, PERIPH_HIGH, PPB):
             self.uc.mem_map(base, size)
         self.uc.mmio_map(GPIO_BASE, GPIO_SIZE, self._gpio_read, None, self._gpio_write, None)
 
@@ -457,7 +459,7 @@ class Machine:
             # Only over plain memory. A memory hook that also covers the MMIO-mapped GPIO block
             # changes what unicorn does there, and the JTAG path then takes a different branch;
             # GPIO and the PPB report their own accesses to the engine anyway.
-            for base, size in (FLASH, (0x04000000, 0x8000), SRAM, USB_RAM):
+            for base, size in (FLASH, SRAMX, SRAM, USB_RAM):
                 self.uc.hook_add(UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE, self._mem, None, base, base + size - 1)
 
     def _mem(self, uc, access, address, size, value, user):
