@@ -55,11 +55,15 @@ MCU reads half the target voltage. The buffer exists so the divider's ~0.8 mA co
 and not the target. J6 pin 9 is `IF_DETECT`, through 2K to `DBGIF_DETECT` on PIO0_22, which needs
 the MCU's pull-up. A target connector that grounds pin 9 pulls it low. Together:
 
-| state | `DBGIF_VREF` | `DBGIF_DETECT` |
-| --- | --- | --- |
-| nothing connected | ~3.3 V, through R16 | high |
-| target connected and powered | the target's VDD | low |
-| target connected and unpowered | ~0 V: R16 cannot lift a dead rail | low |
+| state | J6 pin 1 | pin 9 | measured on the MSPM0 bench board |
+| --- | --- | --- | --- |
+| nothing connected | ~3.3 V, through R16 | open | not yet |
+| target connected and powered | the target's VDD | grounded | 3.268 V, grounded |
+| target connected and unpowered | wherever the dead board pulls R16 | grounded | 1.084 V, grounded |
+
+**An unpowered target does not read zero.** This MSPM0 board, dead, loads R16 like roughly 16K,
+so pin 1 sits at 1.08 V. That is unmistakable against a 3.3 V supply, but the level depends on the
+board. Against a 1.2 V target a dead board and a live one could read the same.
 
 A 3.3 V target and an empty connector read the same voltage. Nothing loads the sense node but the
 buffer's input, so the pull-up delivers the probe's own 3V3 almost exactly, within the divider's
@@ -70,7 +74,17 @@ change, and it loads every target with ~0.8 mA. So presence comes from pin 9, or
 answering an IDCODE or DPIDR read. The connector standard names pin 9 GNDDetect and has the target
 ground it, so a board with the standard 10-pin header usually does it already; check continuity on
 an unfamiliar one. **With flying leads, ground pin 9 in the harness**, or the detect pin says
-nothing. Our firmware reads neither pin.
+nothing. **Ours reads both**: vendor 0x86, `tools/dap.py target`. The ADC
+channel was not in any document here and one third-party source contradicted the obvious guess,
+so it was found on the board: `dap.py target --sweep` with the target unpowered and then powered.
+ADC0 3A went 542 to 1634 mV at the pin, half the supply. No other channel moved by more than
+174 mV. Five repeat reads agree to 2 codes in 65536. The reading is only as absolute as the
+probe's own 3V3, which VDDA and VREFP are tied to.
+
+**Adding code that never runs cost 0.06% of block throughput** (126 words: 702.8 to 702.3 KiB/s,
+three runs each). The ADC only wakes when asked, so this is placement in flash, not work. Treat
+anything under about 0.1% as inside the floor for any change to the image, unless placement is
+controlled for.
 
 **Make the swap one connector.** One harness stays on the target and only its J6 end moves
 between probes, so both are measured through the same wires.
