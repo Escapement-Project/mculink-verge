@@ -34,10 +34,13 @@ class Params:
     fetch_to_issue: int = 2
     # The same from SRAM over S-AHB, which a branch shows and straight-line code hides.
     fetch_to_issue_sram: int = 2
-    # Words the prefetch buffer holds, and how many cycles after an instruction issues the words
-    # it came from are free for new fetches.
+    # The prefetch buffer, in halfwords: a word may be fetched once every halfword more than this
+    # many before its end has issued, plus queue_release cycles. Counted in words instead when
+    # queue_halfwords is None. Five halfwords is what makes a literal load from SRAMX cost a cycle,
+    # as the bench measured, and also fits SRAM better than any whole number of words.
     queue_words: int = 3
     queue_release: int = 0
+    queue_halfwords: int | None = 5
     # Cycles after a branch issues that the fetch of its target takes the bus. Negative means
     # the core redirects before the branch itself issues; it never redirects before it has the
     # branch's own bytes.
@@ -94,6 +97,8 @@ class Engine:
         self.arrived: dict[int, int] = {}  # word address -> earliest issue cycle it allows
         self.order: list[int] = []  # words in the order they were fetched, for capacity
         self.consumed: dict[int, int] = {}  # word address -> cycle the last of it issued
+        self.hw_consumed: dict[int, int] = {}  # halfword address -> cycle it issued
+        self.stream_start = 0
         self.last_issue = -1
         self.last_occupancy = 1
         self.pending_pair = False  # the previous instruction may still take a partner
@@ -111,12 +116,22 @@ class Engine:
     def _claim_fetch(self, word: int, earliest: int) -> int:
         bus = bus_of(word)
         cycle = max(earliest, self.fetch_free)
-        # The buffer holds queue_words words: the one that many back has to be gone first.
-        depth = self.params.queue_words
-        if len(self.order) >= depth:
-            gone = self.consumed.get(self.order[-depth])
-            if gone is not None:
-                cycle = max(cycle, gone + self.params.queue_release)
+        if self.params.queue_halfwords is not None:
+            # Everything before the last queue_halfwords halfwords up to this word's end has to
+            # have issued, the newest of them being the halfword just below that point.
+            depth, release = self.params.queue_halfwords, self.params.queue_release
+            last = word + 4 - 2 * depth - 2
+            if last >= self.stream_start:
+                gone = self.hw_consumed.get(last)
+                if gone is not None:
+                    cycle = max(cycle, gone + release)
+        else:
+            # The buffer holds queue_words words: the one that many back has to be gone first.
+            depth = self.params.queue_words
+            if len(self.order) >= depth:
+                gone = self.consumed.get(self.order[-depth])
+                if gone is not None:
+                    cycle = max(cycle, gone + self.params.queue_release)
         while cycle in self.claims.get(bus, ()):
             cycle += 1
         self.fetch_free = cycle + 1
@@ -142,6 +157,7 @@ class Engine:
 
     def redirect(self, target: int, at: int) -> None:
         """Start fetching at `target` from cycle `at`, dropping whatever was buffered."""
+        self.stream_start = target
         self.fetch_word = target & ~3
         self.fetch_free = max(at, 0)
         self.arrived = {}
@@ -204,6 +220,8 @@ class Engine:
                 self.ready[reg] = at + p.multiply_use
         for word in {insn.address & ~3, (insn.address + insn.size - 2) & ~3}:
             self.consumed[word] = at
+        for half in range(insn.address, insn.address + insn.size, 2):
+            self.hw_consumed[half] = at
         self.current = insn
         self.current_issue = at
         self.accesses = 0
