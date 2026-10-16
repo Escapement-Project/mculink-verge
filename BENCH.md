@@ -1507,6 +1507,29 @@ script.
 Tools: `qsweep.sh`, `marker_gaps.py`, `isr_gaps.py` and the sweeps, with the
 captures `usb-*.sal` beside them.
 
+### DAP_Transfer ran from flash in the generated build
+
+A host sends anything shorter than a block as one DAP_Transfer: an access under 1 KB, the address
+write that opens each 1 KB window, every register poke during an attach. In the generated build
+that command ran ARM's loop from flash, and each transfer re-checked the generator's
+configuration with a memcmp from flash. `dap.py block --command transfer` times the same DP reads
+both ways (50 MHz, 16, 64 and 120 words a command, synchronous, per word from the slope):
+
+| | DAP_TransferBlock | DAP_Transfer |
+| --- | --- | --- |
+| before (`84100db`) | 1.64 µs/word | 7.24 µs/word |
+| loop in SRAM, configuration checked once per command (`1a82cd5`) | 1.68 | 2.60 |
+
+The prediction was 2 to 3 µs. Through probe-rs (`swd-throughput`, same probe-rs build),
+a 256-byte read at 50 MHz went from 562 µs to 251, and 64 bytes from 188 to 104; reads of 1 KB and
+up did not move. The fitted fixed cost per probe-rs call fell from 205 µs to 71, so most of what
+looked like a probe-rs cost was this. The default build never had it: its DAP_Transfer was in
+`.ramfunc` all along, which is why the generated build was slower than it below 1 KB.
+
+The gate missed it because it measures blocks. It also hid the next problem: once
+`swd_gen_ready` had one caller, clang inlined it, and the gate, which recognised a generating
+image by that function's symbol, judged the clang image against the default build's baselines.
+
 ## What the bench has sized, and what is left
 
 - **MCU-Link Pro support.** Stock runs one image on every LPC55S69 MCU-Link, the Pro
