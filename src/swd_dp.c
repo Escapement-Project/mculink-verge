@@ -266,7 +266,7 @@ SWD_TransferFunction(Fast)
                     response_value = SWD_Transfer##speed(request_value, NULL);                    \
                 } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort); \
                 if (response_value != DAP_TRANSFER_OK) {                                          \
-                    goto end;                                                                     \
+                    goto read_done;                                                               \
                 }                                                                                 \
             }                                                                                     \
             while (request_count--) {                                                             \
@@ -278,15 +278,20 @@ SWD_TransferFunction(Fast)
                     response_value = SWD_Transfer##speed(request_value, &data);                   \
                 } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort); \
                 if (response_value != DAP_TRANSFER_OK) {                                          \
-                    goto end;                                                                     \
+                    goto read_done;                                                               \
                 }                                                                                 \
                 /* ARM writes the four bytes separately. GCC merges them back into one store      \
                  * but rebuilds the word from its own bytes first, ten instructions to copy       \
                  * a register, so take the little-endian store directly. */                       \
                 __builtin_memcpy(response, &data, sizeof(data));                                  \
                 response += sizeof(data);                                                         \
-                response_count++;                                                                 \
             }                                                                                     \
+        read_done:                                                                                \
+            /* One word is four bytes, so the count the reply carries is the distance the         \
+             * response pointer moved. Keeping a separate counter cost a load, an add and a       \
+             * store a word, because the unrolled data phase leaves it nowhere but the stack. */  \
+            response_count = (uint32_t)(response - response_head - 3) / 4U;                       \
+            goto end;                                                                             \
         } else {                                                                                  \
             while (request_count--) {                                                             \
                 data = (uint32_t)(*(request + 0) << 0) | (uint32_t)(*(request + 1) << 8) |        \
