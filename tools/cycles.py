@@ -16,6 +16,7 @@ delay settings solves for the store and branch costs.
 """
 
 import argparse
+import itertools
 import os
 import re
 import subprocess
@@ -684,9 +685,11 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
         known = {line.strip() for line in open(known_path) if line.strip() and not line.startswith("#")}
     seen_overshoot = set()
 
-    for wire in CHECK_WIRES:
+    # Two clocks, because the paced and delay-free paths are different code and a baseline taken
+    # at one of them says nothing about the other.
+    for wire, (tag, hz) in itertools.product(CHECK_WIRES, (("10MHz", 10_000_000), ("50MHz", 50_000_000))):
         for label, read in (("read", True), ("write", False)):
-            counts, reply, _ = measure(elf, wire, 10_000_000, 16, read, model)
+            counts, reply, _ = measure(elf, wire, hz, 16, read, model)
 
             # The command layer has to come back with a well formed answer, not just the right
             # waveform: the echoed id, the word count asked for, an OK status, and for a read the
@@ -704,7 +707,7 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
             elif read and any(reply[4:68]):
                 failures.append(f"{wire} {label}: data does not match what the target shifted out")
 
-            name = f"{wire}-{label}.trace"
+            name = f"{wire}-{label}-{tag}.trace"
             path = os.path.join(BASELINE_DIR, name)
             body = "\n".join(counts.trace) + "\n"
             if bless:
