@@ -238,6 +238,11 @@ costs is the spilling, and these values were being rematerialised or reloaded be
 data phase wants every register, not because the compiler could not prove them invariant. Anything
 that does not reduce register pressure will keep landing here.
 
+Attacking the spilling directly does not work either, at least not this way. The packet's four
+address bits are four independent shifts of the request, hoisted to the top of the loop body and
+spilled; writing them as a serial chain through one scratch variable, which cannot be hoisted the
+same way, produces a **byte-identical image**. Value numbering puts the four shifts back.
+
 ### Hoisting the packet request out of the block loop
 
 The eight packet bits are the same for every word of a block, and the compiler was recomputing the
