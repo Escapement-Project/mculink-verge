@@ -940,8 +940,8 @@ no spread within any build:
 - **Moving the handler into SRAM made it worse.** It went in at the head of `.ramfunc`, shifted
   every bit path by 116 bytes and cost 0.11%. `src/hot.h` now says so.
 
-**Not yet seen by a person.** The policy is checked in the emulator and the build runs on the
-bench unit, but nobody has looked at the LED yet and confirmed it breathes, blinks and holds.
+**Confirmed by eye** on the bench unit with `tools/dap.py led`, which walks it through breathing,
+blinking and lit and says which is due.
 
 ## What the bench has sized, and what is left
 
