@@ -193,14 +193,10 @@ plus `0x7F ExecuteCommands`. **Our build has to answer all of these or it is a d
 
 ### Stock's own vendor commands
 
-Nothing in
-probe-rs asks for either, and the CMSIS-DAP specification says nothing about them -- the vendor
-range is defined as being whatever the probe wants it to be.
+**Not implemented here, and that is a decision rather than a gap.**
 
-They are **not implemented here**, and implementing them would mean guessing at LinkServer's
-semantics. The way to settle it without guessing is to watch LinkServer talk to a stock probe on
-the USB bus and see what it sends and expects. That only matters if LinkServer
-has to work against this firmware.
+Nothing in probe-rs asks for either command, and the CMSIS-DAP specification leaves 0x80..0x9F
+entirely to the probe, so there is no standard being violated by answering `ID_DAP_Invalid`.
 
 ### The vendor range
 
