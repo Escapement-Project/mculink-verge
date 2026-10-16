@@ -24,16 +24,17 @@
 
 /** **Do not restructure the functions this marks without measuring a data bit afterwards.**
  *
- * Their data phase is allocation-critical. Peeling the last read out of the block loop, a change
- * that provably leaves the data phase's instruction stream identical -- same opcodes, same order,
- * same count, different registers -- cost exactly one cycle on every one of the 32 data bits on
- * hardware. That is 32 cycles a word against the 24.8 the change saved in the bookkeeping, so it
- * came out 12.2 cycles a transfer worse.
+ * Their data phase is allocation-critical. Peeling the last read out of the block loop with the
+ * peeled transfer inlined a second time -- a change that leaves the data phase's instruction
+ * stream identical, same opcodes, same order, same count, different registers -- cost exactly one
+ * cycle on every one of the 32 data bits on hardware. That is 32 cycles a word against the 24.8
+ * the change saved. Out of line the same peel wins, because the extra transfer then needs no
+ * register here.
  *
- * Nothing predicts it: the emulator counts instructions and sees no change, and forcing the
- * functions to a 16-byte boundary moved the figure by 0.00 cycles, which rules out alignment. The
- * only instrument that catches it is a capture folded by position in the transfer. BENCH.md has
- * the four builds.
+ * Nothing upstream predicts it: the emulator counts instructions and sees no change, the gate
+ * passes it, and so do all 1,212 differential cases. Forcing these functions to a 16-byte
+ * boundary moved the figure by 0.00 cycles, which rules out alignment. The only instrument that
+ * catches it is a capture folded by position in the transfer. BENCH.md has the five builds.
  */
 #ifdef RAMFUNC_BIT_PATHS
 #define HOT_PATH __attribute__((noinline, section(".ramfunc")))

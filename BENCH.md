@@ -672,37 +672,48 @@ The fastest position is what a marginal target breaks on, so 10.72 MHz is the nu
 for the overshoot, not the 9.975 MHz average of the data phase. This supersedes the earlier 10.28 to
 10.30 MHz figure, which was the same effect measured without folding by position.
 
-### Rejected: peeling the last read out of the block loop
+### The per-word bookkeeping, and the one register that decided it
 
-The per-word bookkeeping is a real target and this was a real attempt at it. GCC re-derives five
-shifted request bits and spills them to the stack on every word, because the RDBUFF substitution
-test inside the loop is the only thing that can change `request_value` and leaving it there makes
-the whole packet request loop-variant. Peeling the last read out removes that. It passed the gate
-and all 1,212 differential cases.
+The four clocks that are not data bits cost 112 cycles a word over a 15-cycle baseline. Two
+changes took 36.5 of them, and the first attempt at the second one lost, which is the part worth
+keeping.
 
-It also made the firmware slower, and the way it did is the useful part.
+**Say what the turnaround period can be.** `DAP_SWD_Configure` stores `(value & 3) + 1` and
+`DAP_Setup` stores 1, so the field is 1 to 4. Read as a plain byte the compiler has to allow 0 to
+255 and spends a zero test and a three-way dispatch per turnaround discovering otherwise. One
+`__builtin_unreachable` removes both. Worth 14.9 cycles a word.
+
+**Peel the last read out of the block loop.** It is the only transfer that can use a different
+request, so leaving it inside makes the packet request loop-variant and GCC re-derives five
+shifted bits and spills them on every word. Peeling removes ten instructions a word.
+
+**The peel has to keep its tail out of line, and that is the whole lesson.** Peeled with the
+transfer inlined a second time it came out worse:
 
 | build | data bit | the four overhead clocks | wire a block |
 | --- | --- | --- | --- |
-| as shipped | 15.107 | 112.0 cycles | 343.55 us |
-| peeled | 16.139 | 87.2 | 348.84 us |
-| peeled, functions 16-byte aligned | 16.138 | 87.3 | 348.84 us |
-| reverted, functions 16-byte aligned | 15.106 | 112.1 | 343.61 us |
+| before either change | 15.107 | 112.0 cycles | 343.55 us |
+| peeled, tail inlined | 16.139 | 87.2 | 348.84 us |
+| peeled, tail inlined, 16-byte aligned | 16.138 | 87.3 | 348.84 us |
+| turnaround stated | 15.073 | 97.2 | 336.33 us |
+| turnaround stated, peeled, tail out of line | 15.121 | 75.6 | 330.43 us |
 
-The peel did exactly what it was for: 24.8 cycles off the bookkeeping, nearly all of it at clocks
-11, 44 and 45. **It cost one cycle on every one of the 32 data bits**, which is 32, so the
-transfer came out 12.2 cycles worse.
+The inlined peel saved 24.8 cycles of bookkeeping and **cost one cycle on every one of the 32 data
+bits**, which is 32. Disassembling a data bit in each build gives the same eight instructions in
+the same order and only the registers differ: a second inlined transfer takes one more register
+and the data phase pays for it 32 times a word. Out of line it costs a call once a block instead.
 
-**The data phase's instruction stream did not change.** Disassembling one data bit in each build
-gives the same eight instructions in the same order; only the registers differ. The emulator sees
-no change at all, and forcing the functions to a 16-byte boundary moved the result by 0.00 cycles,
-which rules alignment out. Whatever the extra cycle is, it is below the instruction stream and
-below anything a listing shows.
+**Nothing upstream catches this.** The emulator counts instructions and sees no change. The gate
+passes it. All 1,212 differential cases pass it. Forcing the functions to a 16-byte boundary moved
+the figure by 0.00 cycles, so it is not alignment. The only instrument that separates a 2% win
+from a 1.5% loss is flashing it and folding a capture by position in the transfer.
 
-**So the data phase is allocation-critical and the bookkeeping is not worth much against it.**
-There are 112 cycles a word in the four overhead clocks and 480 in the data phase, and a change
-that disturbs register allocation can spend 32 to save 25. Anything attempted here has to be
-flashed and folded by position; the gate and the emulator both pass a change that loses 1.5%.
+So the rule for this file: **a change may remove work from the bookkeeping but must not take a
+register from the data phase.** 480 of a transfer's cycles are in the data phase and 112 in the
+bookkeeping, so the exchange rate is bad.
+
+End to end the two changes took a 64-word block read from 585 to 602 KiB/s, and the wire from
+343.6 to 330.4 us.
 
 ## What the bench has sized, and what is left
 
