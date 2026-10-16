@@ -571,3 +571,9 @@ its own size until the USB side moves, which is what the 512-byte packet questio
 - **The two-pin and four-wire JTAG block paths are still in flash** and will have the same stall
   the SWD paths had. `cjtag_BlockImpl` and `cjtagf_BlockImpl` are 67 KB together, against 79 KB
   already in SRAM and 112 KB still free.
+- **Where the wire actually stops working** is still a guess from two points: 9.6 MHz works on
+  this MSPM0L1306 and 16 MHz does not. `tools/dap.py block` is already the right instrument --
+  idempotent, no access port, no target state -- so sweeping the clock and counting errors would
+  replace the guess with a number. Read DPIDR rather than RDBUFF so a wrong word is detectable and
+  not just a bad acknowledge, and enumerate the achievable rates from the delay arithmetic rather
+  than sweeping requested Hz, because the steps are coarse.
