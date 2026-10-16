@@ -258,12 +258,25 @@ next, 26% of the command**, against 65 cycles and 19% for the same reads through
 This is not the throughput path -- a host reads and writes memory in blocks -- but it is most of
 what an attach is made of, and of anything that touches one register at a time.
 
-The same treatment would work: expand the loop next to the transfer so the registers and the GPIO
-addresses are paid for once. It was **not attempted**, and the reason is size rather than doubt.
-`DAP_SWD_Transfer` is 353 lines against the block's 90, carrying match values, match masks, match
-retries, timestamps and a post-read protocol, and transcribing that on a probe that has never run
-is not a thing to do in a hurry. The nine `DAP_Transfer` traces the gate now records are the
-groundwork; `tools/equiv.py` would need match-value and timestamp cases before anyone starts.
+**Built, measured and reverted.** ARM's `DAP_SWD_Transfer` extracted the same way the block was,
+with the transfer inlined into its loop:
+
+| | asked | before | after | |
+| --- | --- | --- | --- | --- |
+| read | 10 MHz | 561 | 577 | +3% |
+| write | 10 MHz | 599 | 616 | +3% |
+| read | 50 MHz | 1365 | 1482 | +9% |
+| write | 50 MHz | 1611 | 1759 | +9% |
+
+It passed everything -- the gate's nine `DAP_Transfer` traces, and all 828 equivalence cases -- and
+it costs **56 KB**, taking the image from 108,772 bytes to 164,468. That is 9% at a clock the bench
+has never reached and 3% at the ones it has, for half as much flash again.
+
+Two notes for whoever picks it up. ARM's function carries five `#if (TIMESTAMP_CLOCK != 0U)`
+blocks and several `//` comments, neither of which survives inside a macro, so both have to be
+resolved and the first guarded by an assertion. And `tools/equiv.py` has no `DAP_Transfer` mode:
+the gate's traces cover the wire, but match values, match masks and timestamps would want cases of
+their own before anyone trusts a rewrite further than this one was trusted.
 
 ### 3. The read bit is two cycles above the floor
 
