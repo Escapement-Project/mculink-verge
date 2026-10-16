@@ -229,6 +229,9 @@ DAP_COMMANDS = {
     # the timeout path and answers DAP_ERROR: what is checked is that it answers at all, which is
     # the property that matters on hardware too.
     0x86: b"\x00\x00",
+    # Our SAMPLE, no reads. The port is disconnected by this point, so it answers DAP_ERROR;
+    # check_sample_probe runs it connected.
+    0x87: b"\x00\x00\xff\x00\x00\x00\x00\x00\x00",
 }
 ID_DAP_INVALID = 0xFF
 
@@ -325,7 +328,7 @@ def check_commands(c: Checker, elf: str) -> None:
         else:
             answered += 1
     # Anything we do not implement has to say so rather than echo itself back.
-    for cmd in (0x07, 0x87, 0x9F):
+    for cmd in (0x07, 0x88, 0x9F):
         reply = probe.command(bytes([cmd, 0, 0, 0]))
         if cmd == 0x07:
             continue  # TransferAbort is handled out of band and answers nothing
@@ -527,9 +530,9 @@ def check_identity(c: Checker, elf: str) -> None:
         c.problems.append("vendor string is empty")
     c.note(f"strings: vendor {vendor!r}, product {product!r}")
 
-    unknown = probe.command(bytes([0x87, 0]))
+    unknown = probe.command(bytes([0x88, 0]))
     if not unknown or unknown[0] != ID_DAP_INVALID:
-        c.problems.append("vendor 0x87 should answer ID_DAP_Invalid until something implements it")
+        c.problems.append("vendor 0x88 should answer ID_DAP_Invalid until something implements it")
 
     # A mode the firmware does not define has to be refused, not guessed at: getting it wrong
     # costs the probe until someone replugs it.
@@ -545,6 +548,42 @@ def check_identity(c: Checker, elf: str) -> None:
             c.problems.append(f"vendor 0x84 {mask:#04x}/{levels:#04x} answered {reply.hex()}")
 
     c.note(f"identity: vendor 0x82 magic CJTAG v{version} flags {flags:#04x}, build {build!r}")
+
+
+def check_sample_probe(c: Checker, elf: str) -> None:
+    """Vendor 0x87 frames a DPIDR read the way a target expects, with the sample on either side.
+
+    The emulator's target hands out bits in order and has no wire delay, so both sample positions
+    read the same word. What this checks is the framing and the counting, and that the command
+    refuses operands it cannot honour rather than running with them.
+    """
+    word = 0x0BE12477
+    parity = bin(word).count("1") & 1
+    probe = Machine(elf, Target([1, 0, 0] + [(word >> i) & 1 for i in range(32)] + [parity]),
+                    restart_at=set(), model=Model())
+    probe.resync_on_release = True
+
+    def run(low: int, fill: int, at: int, count: int, expected: int) -> bytes:
+        return probe.command(bytes([0x87, low, fill, at]) + u16(count) + u32(expected))
+
+    refused = run(0, 4, 0xFF, 1, word)
+    if len(refused) < 2 or refused[1] == 0x00:
+        c.problems.append(f"vendor 0x87 ran with no SWD port connected: {refused.hex()}")
+
+    probe.command(bytes([0x02, 0x01]))  # Connect, SWD
+    for at in (0xFF, 0, 4):
+        reply = run(0, 4, at, 3, word)
+        good, bad_ack, bad_word = (int.from_bytes(reply[i:i + 2], "little") for i in (2, 4, 6))
+        if len(reply) != 17 or reply[:2] != b"\x87\x00" or (good, bad_ack, bad_word) != (3, 0, 0):
+            c.problems.append(f"vendor 0x87 at {at:#04x} answered {reply.hex()}, wanted three good reads")
+    wrong = run(0, 4, 0xFF, 2, word ^ 1)
+    if int.from_bytes(wrong[6:8], "little") != 2 or int.from_bytes(wrong[9:13], "little") != word:
+        c.problems.append(f"vendor 0x87 did not report a mismatched word: {wrong.hex()}")
+    for fill, at in ((49, 0), (4, 5)):
+        reply = run(0, fill, at, 1, word)
+        if len(reply) < 2 or reply[1] == 0x00:
+            c.problems.append(f"vendor 0x87 accepted fill {fill} with the sample at {at}")
+    c.note("sample probe: DPIDR framed and counted on both sides of the edge, bad operands refused")
 
 
 # What DAP_Info tells a host about the probe. probe-rs sizes its buffers from the packet size and
@@ -760,6 +799,7 @@ def main() -> int:
     check_identity(c, args.elf)
     check_clocks(c, args.elf)
     check_led(c, args.elf)
+    check_sample_probe(c, args.elf)
     check_timestamp(c, args.elf)
     check_swo_baudrate(c, args.config, 96_000_000)
     check_info(c, args.elf, args.packet_size, args.packet_count)

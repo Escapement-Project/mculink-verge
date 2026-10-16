@@ -14,6 +14,7 @@ whose cycles-per-bit is the quantity ARM's clock arithmetic is about.
     uv run tools/dap.py info --serial QK7RM2VTX8D41
     uv run tools/dap.py identify
     uv run tools/dap.py clock --hz 10000000 --bursts 200
+    uv run tools/dap.py sample --fill 24
 
 Never send `DAP_TransferAbort` and then read: it stalls the bulk endpoint and every later command
 times out. Nothing here sends it.
@@ -42,6 +43,7 @@ DAP_SWJ_SEQUENCE = 0x12
 DAP_VENDOR_J8 = 0x84
 DAP_VENDOR_REBOOT = 0x85
 DAP_VENDOR_TARGET = 0x86
+DAP_VENDOR_SAMPLE = 0x87
 
 INFO_FIELDS = {
     0x01: ("vendor", "str"),
@@ -688,6 +690,99 @@ def cmd_block(args) -> int:
     return 0
 
 
+SAMPLE_BEFORE_EDGE = 0xFF
+SAMPLE_FILL_MAX = 48
+
+
+def parse_positions(text: str, fill: int) -> list[int]:
+    """`before,0-12,20` into sample positions, `before` being production's place."""
+    out = []
+    for part in text.split(","):
+        part = part.strip()
+        if part == "before":
+            out.append(SAMPLE_BEFORE_EDGE)
+        elif "-" in part:
+            lo, hi = (int(x) for x in part.split("-"))
+            out.extend(range(lo, hi + 1))
+        else:
+            out.append(int(part))
+    bad = [at for at in out if at != SAMPLE_BEFORE_EDGE and not 0 <= at <= fill]
+    if bad:
+        raise SystemExit(f"positions {bad} are outside 0..{fill}, the fill")
+    return out
+
+
+def sample_run(probe: "Probe", low: int, fill: int, at: int, count: int, expected: int) -> dict:
+    request = bytes([DAP_VENDOR_SAMPLE, low, fill, at]) + count.to_bytes(2, "little") + expected.to_bytes(4, "little")
+    reply = probe.command(request)
+    if len(reply) < 17 or reply[0] != DAP_VENDOR_SAMPLE:
+        raise SystemExit(f"vendor 0x87 answered {reply.hex()}: not this firmware, or too old for it")
+    if reply[1] != 0:
+        raise SystemExit("vendor 0x87 refused: the port is not plain SWD, or the operands are out of range")
+    u16 = lambda i: int.from_bytes(reply[i:i + 2], "little")  # noqa: E731
+    return {
+        "good": u16(2), "bad_ack": u16(4), "bad_word": u16(6), "last_ack": reply[8],
+        "last_word": int.from_bytes(reply[9:13], "little"),
+        "cycles": int.from_bytes(reply[13:17], "little") / 32,
+    }
+
+
+def cmd_sample(args) -> int:
+    """Where a read has to sample SWDIO: the instrument behind vendor 0x87.
+
+    Each position runs `--count` DPIDR reads with the sample either before the rising edge, where
+    production samples, or that many cycles after it. After the edge the pin still holds the
+    previous edge's bit until the new one has made the whole round trip, so the first position
+    that fails is the length of that trip. The clock period stays fixed across the sweep: the
+    filler after the sample takes up what the filler before it does not.
+
+    The period printed is timed by the probe itself, on a dry run that moves no pin.
+    """
+    probe = one(args)
+    ns = 1e9 / args.cpu_hz
+    print(f"{probe.serial}  {probe.product}")
+    print(f"  DAP_Connect -> {probe.connect(1)}")
+    probe.swj_clock(args.hz)
+    expected = swd_reset(probe)
+    print(f"  DPIDR 0x{expected:08x}, read at {args.hz / 1e6:g} MHz through the production path")
+
+    if args.calibrate:
+        print("\n  dry runs, sample before the edge: one cycle a fill step means the filler is exact")
+        print(f"  {'fill':>4}  {'cycles/clock':>12}  {'step':>5}")
+        previous = None
+        for fill in range(0, SAMPLE_FILL_MAX + 1, 4):
+            cycles = sample_run(probe, args.low, fill, SAMPLE_BEFORE_EDGE, 0, expected)["cycles"]
+            step = "" if previous is None else f"{(cycles - previous) / 4:.2f}"
+            print(f"  {fill:>4}  {cycles:>12.2f}  {step:>5}")
+            previous = cycles
+        print("\n  dry runs at the fill asked for: the period must not move with the sample")
+        for at in [SAMPLE_BEFORE_EDGE] + list(range(0, args.fill + 1, max(1, args.fill // 6))):
+            cycles = sample_run(probe, args.low, args.fill, at, 0, expected)["cycles"]
+            print(f"  {'before' if at == SAMPLE_BEFORE_EDGE else at:>6}  {cycles:.2f} cycles")
+        probe.release()
+        return 0
+
+    positions = parse_positions(args.at or f"before,0-{args.fill}", args.fill)
+    print(f"\n  low {args.low}, fill {args.fill}, {args.count} reads a position")
+    print(f"  {'sample':>8}  {'after edge':>10}  {'period':>9}  {'good':>6}  {'bad ack':>7}  {'bad word':>8}  last bad")
+    for at in positions:
+        r = sample_run(probe, args.low, args.fill, at, args.count, expected)
+        where = "before" if at == SAMPLE_BEFORE_EDGE else f"+{at}"
+        after = "" if at == SAMPLE_BEFORE_EDGE else f"{at * ns:.1f} ns"
+        period = f"{r['cycles'] * ns:.1f} ns"
+        last = ""
+        if r["bad_ack"]:
+            last = f"ack {r['last_ack']}"
+        elif r["bad_word"]:
+            last = f"word 0x{r['last_word']:08x}"
+        print(f"  {where:>8}  {after:>10}  {period:>9}  {r['good']:>6}  {r['bad_ack']:>7}  {r['bad_word']:>8}  {last}")
+        # A misread leaves the target in step, since every read is clocked to the end, but a
+        # line reset between positions costs nothing and rules it out.
+        swd_reset(probe)
+    probe.release()
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--serial", help="pick one probe when several are attached")
@@ -760,6 +855,16 @@ def main() -> int:
     block.add_argument("--pipeline", type=int, default=1,
                        help="commands to keep in flight; 1 waits for each reply before sending")
     block.set_defaults(run=cmd_block)
+
+    sample = sub.add_parser("sample", help="sweep where a read samples SWDIO, with vendor 0x87")
+    sample.add_argument("--hz", type=int, default=1_000_000, help="clock for the line reset only")
+    sample.add_argument("--cpu-hz", type=int, default=150_000_000, help="the probe's core clock")
+    sample.add_argument("--low", type=int, default=0, help="extra delay-loop iterations in the low phase")
+    sample.add_argument("--fill", type=int, default=24, help=f"filler cycles in the high phase, 0..{SAMPLE_FILL_MAX}")
+    sample.add_argument("--at", help="positions, e.g. before,0-24; default: before and every cycle to the fill")
+    sample.add_argument("--count", type=int, default=1000, help="reads at each position")
+    sample.add_argument("--calibrate", action="store_true", help="time the filler instead of reading")
+    sample.set_defaults(run=cmd_sample)
 
     args = parser.parse_args()
     return args.run(args)

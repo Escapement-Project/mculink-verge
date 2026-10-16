@@ -78,6 +78,7 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/vcom.c
   ${DAP_SRC}/DAP.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_vendor.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/sample_probe.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_dp.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp.c

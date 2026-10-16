@@ -15,6 +15,7 @@
 #include "cjtag.h"
 #include "marker.h"
 #include "reboot.h"
+#include "sample_probe.h"
 #include "target_sense.h"
 
 /// Identifies this firmware and says what it can do. Read-only, so a host may send it blindly.
@@ -27,6 +28,8 @@
 #define ID_VENDOR_REBOOT ID_DAP_Vendor5
 /// Reads the target's supply and J6 pin 9's detect line. See TARGET_* below.
 #define ID_VENDOR_TARGET ID_DAP_Vendor6
+/// DPIDR reads with the SWDIO sample placed by the host. An instrument; see sample_probe.c.
+#define ID_VENDOR_SAMPLE ID_DAP_Vendor7
 
 /** Answered by ID_VENDOR_CJTAG_INFO, so a host can recognise this firmware rather than assume it.
  *
@@ -162,6 +165,9 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         response[6] = target_sense_detected() ? 1U : 0U;
         return (3U << 16) | 7U;
     }
+
+    case ID_VENDOR_SAMPLE:
+        return sample_probe_command(request, response);
 
     default:
         // DAP_ProcessCommand hands this return value straight back to the host, so an id we
