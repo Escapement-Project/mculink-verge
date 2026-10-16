@@ -29,7 +29,11 @@
 #define CFG_TUD_CDC_TX_BUFSIZE 512
 #define CFG_TUD_CDC_EP_BUFSIZE 512
 #define CFG_TUD_MSC           0
-#define CFG_TUD_HID           0
+#define CFG_TUD_HID           1
+
+// CMSIS-DAP v1 carries one command per HID report, and a report is capped by the interrupt
+// endpoint. 64 is the size every v1 host expects.
+#define CFG_TUD_HID_EP_BUFSIZE 64
 #define CFG_TUD_MIDI          0
 #define CFG_TUD_VENDOR        1
 
