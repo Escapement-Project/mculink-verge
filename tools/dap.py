@@ -40,6 +40,10 @@ DAP_TRANSFER_BLOCK = 0x06
 DAP_SWJ_PINS = 0x10
 DAP_SWJ_CLOCK = 0x11
 DAP_SWJ_SEQUENCE = 0x12
+DAP_JTAG_SEQUENCE = 0x14
+DAP_EXECUTE_COMMANDS = 0x7F
+DAP_JTAG_CONFIGURE = 0x15
+DAP_VENDOR_CJTAG_CONTROL = 0x83
 DAP_VENDOR_J8 = 0x84
 DAP_VENDOR_REBOOT = 0x85
 DAP_VENDOR_TARGET = 0x86
@@ -130,6 +134,23 @@ class Probe:
         # A count of 256 is encoded as 0; anything above needs several commands.
         count = 0 if bits == 256 else bits
         return self.command(bytes([DAP_SWJ_SEQUENCE, count]) + data)[1]
+
+    def jtag_sequence(self, sequences: list[tuple[int, int, bool, int]]) -> list[int]:
+        """Run `(clocks, tms, capture, tdi)` sequences; return each captured one's TDO bits."""
+        request = bytearray([DAP_JTAG_SEQUENCE, len(sequences)])
+        for clocks, tms, capture, tdi in sequences:
+            request.append((clocks & 0x3F) | (tms << 6) | (capture << 7))
+            request += (tdi & ((1 << clocks) - 1)).to_bytes((clocks + 7) // 8, "little")
+        reply = self.command(bytes(request))
+        if reply[1] != 0:
+            raise RuntimeError(f"DAP_JTAG_Sequence status {reply[1]}")
+        captured, offset = [], 2
+        for clocks, _, capture, _ in sequences:
+            if capture:
+                length = (clocks + 7) // 8
+                captured.append(int.from_bytes(reply[offset : offset + length], "little"))
+                offset += length
+        return captured
 
     def release(self) -> None:
         usb.util.dispose_resources(self.device)
@@ -984,6 +1005,102 @@ def cmd_sample(args) -> int:
     return 0
 
 
+def capture_pin_writes(path: str, tmsc: int, tckc: int, start: float, until: float) -> list[tuple[int, int]]:
+    """A capture's TCKC/TMSC changes between two times, as `(pin bit, level)` writes in order.
+
+    Where both change in one sample the analyser cannot say which went first, so the order is the
+    one that keeps the wire legal: a falling clock before the data moves, the data before a
+    rising clock. Escapes are unaffected, since there the clock does not change.
+    """
+    import csv
+
+    writes, prev = [], None
+    with open(path) as f:
+        rows = csv.reader(f)
+        next(rows)
+        for row in rows:
+            t = float(row[0])
+            levels = (int(row[1 + tmsc]), int(row[1 + tckc]))
+            if prev is None:
+                prev = levels
+                writes += [(0, levels[1]), (1, levels[0])]
+                continue
+            if t > until:
+                break
+            if t < start or levels == prev:
+                prev = levels
+                continue
+            data = [(1, levels[0])] if levels[0] != prev[0] else []
+            clock = [(0, levels[1])] if levels[1] != prev[1] else []
+            writes += clock + data if levels[1] == 0 else data + clock
+            prev = levels
+    return writes
+
+
+def replay_pins(probe: Probe, writes: list[tuple[int, int]]) -> None:
+    """Drive `writes` with DAP_SWJ_Pins, many to a packet so an escape lands in microseconds."""
+    per_packet = (probe.out_ep.wMaxPacketSize - 2) // 7
+    for at in range(0, len(writes), per_packet):
+        chunk = writes[at : at + per_packet]
+        request = bytearray([DAP_EXECUTE_COMMANDS, len(chunk)])
+        for bit, level in chunk:
+            request += bytes([DAP_SWJ_PINS, level << bit, 1 << bit]) + bytes(4)
+        reply = probe.command(bytes(request))
+        if reply[1] != len(chunk):
+            raise RuntimeError(f"DAP_ExecuteCommands ran {reply[1]} of {len(chunk)}")
+
+
+def cmd_cjtag(args) -> int:
+    """Activate OScan1 with vendor 0x83, then read the first TAP's IDCODE over two pins.
+
+    The TAP is reset with TMS high and walked straight to Shift-DR, which is how the working J-Link
+    read does it: a reset leaves IDCODE selected, so no instruction is shifted. With framing on,
+    every one of these clocks leaves the probe as a three-packet OScan1 frame.
+    """
+    probe = one(args)
+    print(f"{probe.serial}  {probe.vendor} / {probe.product}")
+    status = probe.connect(2)
+    print(f"  DAP_Connect -> {status} ({'JTAG' if status == 2 else 'failed'})")
+    status = probe.swj_clock(args.hz)
+    print(f"  DAP_SWJ_Clock {args.hz} Hz -> {'OK' if status == 0 else f'status {status}'}")
+    reply = probe.command(bytes([DAP_JTAG_CONFIGURE, 1, args.ir_length]))
+    print(f"  DAP_JTAG_Configure one TAP, IR {args.ir_length} -> status {reply[1]}")
+    if args.replay:
+        writes = capture_pin_writes(args.replay, args.tmsc, args.tckc, args.start, args.until)
+        replay_pins(probe, writes)
+        print(f"  replayed {len(writes)} pin writes from {args.replay}")
+        reply = probe.command(bytes([DAP_VENDOR_CJTAG_CONTROL, 2]))
+        print(f"  vendor 0x83 02 (frame as OScan1, no activation) -> status {reply[1]}")
+    elif not args.no_activate:
+        reply = probe.command(bytes([DAP_VENDOR_CJTAG_CONTROL, 1]))
+        print(f"  vendor 0x83 01 (activate OScan1) -> status {reply[1]}")
+    ones = (1 << 64) - 1
+    for attempt in range(args.repeat):
+        # A count of zero would encode 64 clocks, so no reset means no sequence at all.
+        reset = [(args.reset_clocks, 1, False, ones)] if args.reset_clocks else []
+        tdo = probe.jtag_sequence(
+            reset
+            + [
+                (1, 0, False, ones),  # Run-Test/Idle
+                (1, 1, False, ones),  # Select-DR-Scan
+                (2, 0, False, ones),  # Capture-DR, Shift-DR
+                (31, 0, True, ones),
+                (1, 1, True, ones),  # the last bit, into Exit1-DR
+                (1, 1, False, ones),  # Update-DR
+                (1, 0, False, ones),  # Run-Test/Idle
+            ]
+        )
+        idcode = tdo[0] | (tdo[1] << 31)
+        verdict = "matches" if idcode == args.expect else f"expected 0x{args.expect:08x}"
+        if idcode == 1 << 31:
+            verdict += "; TDO equals the TMS sent, so nothing drove the wire"
+        print(f"  read {attempt}: IDCODE 0x{idcode:08x} ({verdict})")
+    if not args.keep:
+        probe.command(bytes([DAP_VENDOR_CJTAG_CONTROL, 0]))
+    probe.release()
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--serial", help="pick one probe when several are attached")
@@ -1077,6 +1194,21 @@ def main() -> int:
     gen.add_argument("--calibrate-hz", type=int, default=37_500_000, help="clock to calibrate at")
     gen.add_argument("--blocks", type=int, default=8, help="32-word DPIDR blocks per latency")
     gen.set_defaults(run=cmd_gen)
+
+    cjtag = sub.add_parser("cjtag", help="activate OScan1 and read an IDCODE over two pins")
+    cjtag.add_argument("--hz", type=int, default=1_000_000, help="TCKC rate to ask for")
+    cjtag.add_argument("--ir-length", type=int, default=6, help="the first TAP's IR (ICEPick: 6)")
+    cjtag.add_argument("--reset-clocks", type=int, default=9, help="TMS-high clocks in the reset")
+    cjtag.add_argument("--repeat", type=int, default=1, help="IDCODE reads after one activation")
+    cjtag.add_argument("--expect", type=lambda s: int(s, 0), default=0x3BB4102F)
+    cjtag.add_argument("--no-activate", action="store_true", help="skip vendor 0x83")
+    cjtag.add_argument("--keep", action="store_true", help="leave OScan1 framing on afterwards")
+    cjtag.add_argument("--replay", help="drive the activation from this capture's CSV instead")
+    cjtag.add_argument("--tmsc", type=int, default=0, help="the capture's TMSC channel")
+    cjtag.add_argument("--tckc", type=int, default=1, help="the capture's TCKC channel")
+    cjtag.add_argument("--start", type=float, default=0.0, help="replay from this capture time")
+    cjtag.add_argument("--until", type=float, default=1e9, help="replay up to this capture time")
+    cjtag.set_defaults(run=cmd_cjtag)
 
     args = parser.parse_args()
     return args.run(args)
