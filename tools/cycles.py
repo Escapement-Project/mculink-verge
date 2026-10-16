@@ -127,8 +127,15 @@ class Model:
     # front of: the bench measured a 14-instruction data bit the model priced at 17 cycles taking
     # exactly 15, and the two fall-through `bne`s of its two delay loops are the whole difference.
     not_taken_branch: int = 0
+    # Time instructions with tools/m33.py instead of the constants above.
+    engine: bool = False
+    # With the engine, a SWD target that answers by time, readable this many cycles after the
+    # rising-edge store that launched a bit. None keeps the target that answers in order.
+    latency: int | None = None
 
     def total(self, c: "Counts") -> int:
+        if self.engine:
+            return c.span
         return (
             c.other * self.other
             + c.load * self.load
@@ -159,6 +166,10 @@ class Counts:
     # The running cycle count at each rising clock edge. Differences are wire periods, which is
     # what an analyser measures and what Set_Clock_Delay is trying to control.
     edge_cycles: list[int] = field(default_factory=list)
+    # Cycles from begin() to end(), as the timing engine counts them.
+    span: int = 0
+    # With a timed SWD target, every read and where it sat in its window.
+    reads: list = field(default_factory=list)
 
 
 # The 16 TAP states, and where TMS takes each one. Named as IEEE 1149.1 names them.
@@ -391,6 +402,8 @@ class Machine:
         self.sym = symbols(elf)
         self.model = model or Model()
         # When set, issue and bus cycles come from tools/m33.py instead of the per-class model.
+        if engine is None and self.model.engine:
+            engine = Engine()
         self.engine = engine
         self._insns: dict[int, Insn] = {}
         # How each branch decides, by address: a condition code, or the register cbz/cbnz tests.
@@ -441,7 +454,11 @@ class Machine:
 
         self.uc.hook_add(UC_HOOK_CODE, self._code)
         if self.engine is not None:
-            self.uc.hook_add(UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE, self._mem)
+            # Only over plain memory. A memory hook that also covers the MMIO-mapped GPIO block
+            # changes what unicorn does there, and the JTAG path then takes a different branch;
+            # GPIO and the PPB report their own accesses to the engine anyway.
+            for base, size in (FLASH, (0x04000000, 0x8000), SRAM, USB_RAM):
+                self.uc.hook_add(UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE, self._mem, None, base, base + size - 1)
 
     def _mem(self, uc, access, address, size, value, user):
         # GPIO and the PPB report their own accesses, from their callbacks.
@@ -735,6 +752,11 @@ class Machine:
 
     def end(self) -> Counts:
         self.counting = False
+        if self.engine is not None:
+            self.counts.span = self.cycle
+        if isinstance(self.target, TimedSwdTarget):
+            self.counts.reads = list(self.target.reads)
+            self.target.reads = []
         return self.counts
 
 
@@ -763,7 +785,12 @@ def build(elf: str, wire: str, read: bool, model: Model) -> Machine:
     worked until the optimiser inlined that function, and then the run silently took an error path
     and reported a much better number.
     """
-    probe = Machine(elf, Target(SWD_READ if read else SWD_WRITE), restart_at=set(), model=model)
+    target = Target(SWD_READ if read else SWD_WRITE)
+    if wire == "swd" and model.engine and model.latency is not None:
+        # The bit the target answers with matters for nothing but the reply, so keep the order
+        # target's pattern and serve what each read meant to get; the margins carry the timing.
+        target = TimedSwdTarget(SWD_READ if read else SWD_WRITE, model.latency, serve="intended", idle=0)
+    probe = Machine(elf, target, restart_at=set(), model=model)
     if wire == "swd":
         probe.resync_on_release = True
     elif wire == "jtag":
@@ -919,6 +946,13 @@ def report(name: str, c: Counts, model: Model, clock_hz: int, cpu_hz: int, words
         f"  ->  {achieved / 1e6:.2f} MHz on the wire for {clock_hz / 1e6:.0f} MHz asked"
         f"   ({100 * achieved / clock_hz:.0f}%)"
     )
+    if c.reads:
+        margins = [r.margin for r in c.reads if r.margin is not None]
+        wrong = sum(1 for r in c.reads if r.got != r.wanted)
+        print(
+            f"    sampled {len(c.reads)} target bits: least margin {min(margins)} cycles,"
+            f" {sum(1 for m in margins if m < 0)} outside their window, {wrong} would read wrong"
+        )
     # Wire time only. The host round trip between packets is not modelled and the bench measured
     # it at about 10% of a transfer at 14 MHz, so treat this as a ceiling.
     seconds = cycles / cpu_hz
@@ -1235,7 +1269,18 @@ def main() -> int:
     ap.add_argument(
         "--clock", type=float, nargs="*", default=[1, 5, 10, 14, 25, 50], help="requested wire clocks, MHz"
     )
-    ap.add_argument("--cpu", type=float, default=144.0, help="core clock, MHz")
+    ap.add_argument("--cpu", type=float, default=150.0, help="core clock, MHz")
+    ap.add_argument(
+        "--engine",
+        action="store_true",
+        help="time instructions with tools/m33.py, which models fetch and the bus, not per-class constants",
+    )
+    ap.add_argument(
+        "--latency",
+        type=int,
+        help="with --engine, a SWD target readable this many cycles after the store that launched"
+        " each bit (7 against the U575 on the bench), and every read's margin reported",
+    )
     ap.add_argument("--store-cycles", type=int, default=1)
     ap.add_argument("--gpio-store-cycles", type=int, default=1)
     ap.add_argument("--load-cycles", type=int, default=2)
@@ -1299,6 +1344,8 @@ def main() -> int:
         taken_branch=args.branch_cycles,
         not_taken_branch=args.fallthrough_cycles,
         gpio_store=args.gpio_store_cycles,
+        engine=args.engine or args.latency is not None,
+        latency=args.latency,
     )
     cpu_hz = int(args.cpu * 1e6)
     if args.check:
@@ -1306,16 +1353,17 @@ def main() -> int:
         return check(args.elf, model, cpu_hz, args.bless)
     if args.table:
         return table(args.elf, model, cpu_hz, args.words)
-    if args.table:
-        return table(args.elf, model, cpu_hz, args.words)
     if args.calibrate:
         return calibrate(args.elf, args.wire, args.words, cpu_hz, model, args.config)
     shape = f"{args.words}-transfer DAP_Transfer" if args.transfer else f"{args.words}-word block"
     print(f"{args.elf}, {args.wire}, {shape}, core {args.cpu:g} MHz")
-    print(
-        f"cost model: load {model.load}, store {model.store}, GPIO store {model.gpio_store},"
-        f" taken branch {model.taken_branch}, fall-through {model.not_taken_branch}, other {model.other}"
-    )
+    if model.engine:
+        print("cost model: tools/m33.py" + (f", target latency {model.latency} cycles" if model.latency else ""))
+    else:
+        print(
+            f"cost model: load {model.load}, store {model.store}, GPIO store {model.gpio_store},"
+            f" taken branch {model.taken_branch}, fall-through {model.not_taken_branch}, other {model.other}"
+        )
     for mhz in args.clock:
         clock_hz = int(mhz * 1e6)
         print(f"\n{mhz:g} MHz requested")
