@@ -602,6 +602,22 @@ It also has 786 KB of SRAM against the L1306's 4 KiB, which lifts the transfer-s
 nRF54L15 datasheet (v0.7) caps SWDCLK at 8 MHz, the same band this MSPM0 fails in. The nRF54LM20's
 own figure was not checked.
 
+**Measured 2026-10-16, ours against the U575 over CN5: clean to 10.00 MHz, failing at 16.67.**
+`dap.py limit` checks every word at every rate the firmware has. Delay 2 (10.00 MHz on the wire)
+and below read 3,200 DPIDRs each with no bad word. Delay 1 (16.67 MHz) fails, and so does the
+delay-free path at 30 MHz. There is nothing between 10 and 16.67 on the ladder. The U575 does
+better than the MSPM0, which failed at 9.375 MHz under stock, but nowhere near its datasheet.
+
+**The failure looks like a late sample.** At 16.67 MHz the DPIDR read in the reset succeeds and a
+16-word block returns 15 good words, then acknowledge 3 where OK is 1. Read one bit position
+late, an OK acknowledge (1,0,0) arrives as the turnaround's high level followed by its first two
+bits: (1,1,0), which is 3. The read path samples just before the rising edge, as ARM's does, and
+the target drives on the rising edge (ADIv5 B4.3.1), so the target's bit has almost a full period
+to come back: 60 ns at 16.67 MHz. The probe's own buffers are 74LVC1T45/2T45 with 10R in series,
+a few ns each way, and the U575's output valid time is at most 15 ns. That leaves most of 60 ns
+unaccounted for. Unmeasured: it needs SWDIO and SWCLK on the analyser, and stock on the same target
+says whether the shared hardware or our timing sets it.
+
 A failed connect still clocks the wire for five seconds while probe-rs retries, and those groups
 are not worth reading: the retry changes the requested rate, so the period in them is not the one
 asked for.
