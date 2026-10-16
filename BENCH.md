@@ -286,6 +286,52 @@ intercept gives the cost of a command we do not care about. **The store cost nee
 path**, which means step 5: a `DAP_Transfer` block at a known clock, where the per-bit cost is the
 unrolled code the emulator actually models.
 
+### The store cost, measured on the transfer path instead
+
+A block read gives what `DAP_SWJ_Sequence` cannot. Capture SWCLK while probe-rs reads a RAM block,
+and read the capture as a distribution rather than an average:
+
+```
+probe-rs read --chip MSPM0L1306 --probe 1fc9:0143:<serial> --speed 10000 b32 0x20000000 512
+uv run tools/clockscope.py <dir>/digital.csv --channel 2 --histogram --cpu-hz 150000000
+```
+
+A transfer holds several periods at once, because a read bit, a write bit and the bookkeeping
+between words cost different numbers of I/O operations. `--histogram` averages each run of clocks
+that share a period, so the data bits separate out from the rest and each one is recovered far
+finer than the 10 ns sample period.
+
+Stock, reading 512 words at three requested clocks:
+
+| asked | `clock_delay` | period | wire | cycles at 150 MHz |
+| --- | --- | --- | --- | --- |
+| 1 MHz | 25 | 1066.774 ns | 0.937 MHz | 160.016 |
+| 5 MHz | 5 | 266.774 ns | 3.748 MHz | 40.016 |
+| 10 MHz | 2 | 146.774 ns | 6.813 MHz | 22.016 |
+
+`PIN_DELAY_SLOW` is a `subs` and a `bne`, so n iterations cost 3n-1 cycles rather than 3n. Taking
+that out leaves **6.008 cycles of non-delay work per half-bit, identical at all three points**
+across a twelve-fold range of delay. `IO_PORT_WRITE_CYCLES` declares 2.
+
+So ARM's arithmetic understates stock's own per-bit cost by a factor of three, and a stock probe
+lands at 68% of a 10 MHz request, 75% of 5 MHz and 94% of 1 MHz. The one bench number that existed
+before this session -- 0.94 MHz for a 1 MHz request -- is reproduced exactly.
+
+**That constant may be about right for us.** Our bit paths are unrolled, and the emulator puts a
+SWD data bit at 5 cycles, which is 2.5 per half-bit against the 2 declared. Stock pays 6.
+The comparison to make after flashing is ours at the same three rates.
+
+### The target sets the ceiling, not the probe
+
+The MSPM0L1306 on this bench connects at 1, 5 and 10 MHz and fails to connect at 20, 30 and
+50 MHz. **Step 5 cannot sweep above 10 MHz here**, so the steps the specialisation work aims at
+sit above anything this target will answer. Sizing that work needs either a faster target or a
+capture with no target attached at all, which `tools/dap.py sweep` already does.
+
+A failed connect still clocks the wire for five seconds while probe-rs retries, and those groups
+are not worth reading: the retry changes the requested rate, so the period in them is not the one
+asked for.
+
 ### What this unlocks
 
 **Compile-time delay specialisation, worth up to about 2x in the 13-29 MHz band.** The achievable
