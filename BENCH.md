@@ -58,18 +58,18 @@ answers only `0x80` and `0x81`, so anything above is free.
 
 `0x82` is read-only, so a host may send it blindly to any probe.
 
-Everything the probe says about itself:
+Everything the probe says about itself. In a listing it reads
+`Escapement Project MCU-Link Verge CMSIS-DAP (CJF2551AD5)`:
 
 | | value | where |
 | --- | --- | --- |
 | USB VID:PID | `0x1FC9:0x0143` | `src/usb_descriptors.c:20` — the same pair stock uses |
 | bcdDevice | `0x0100` | `src/usb_descriptors.c:34`, never changed |
-| manufacturer, `DAP_Info` 0x01 | `NXP Semiconductors` | `src/DAP_config.h:166` |
-| product, `DAP_Info` 0x02 | `MCU-Link CMSIS-DAP cJTAG` | `src/DAP_config.h:167`. Stock says `MCU-Link CMSIS-DAP V3.172` |
+| manufacturer, `DAP_Info` 0x01 | `Escapement Project` | `src/DAP_config.h`. Stock says `NXP Semiconductors` |
+| product, `DAP_Info` 0x02 | `MCU-Link Verge CMSIS-DAP` | same. Stock says `MCU-Link CMSIS-DAP V3.172` |
 | serial, `DAP_Info` 0x03 | `CJ` + 8 hex of CRC32 over the unique id, or `CJNOUUID` | `src/ser_num.c:24` |
 | `DAP_Info` 0x04 | `2.1.2` | ARM's CMSIS-DAP protocol version from the pinned submodule, not ours |
-| `DAP_Info` 0x05/0x06 | `NXP` / `Cortex-M` | `src/DAP_config.h:151` |
-| `DAP_Info` 0x07/0x08 | `NXP` / `NXP board` | `src/DAP_config.h:153` |
+| `DAP_Info` 0x05..0x08 | nothing | `TARGET_FIXED` is 0, so the four target strings are compiled out. They are for a probe soldered to a known target; this one has a connector |
 | `DAP_Info` 0x09 | `git describe` of the build | ours, `src/DAP_config.h:276` |
 | vendor `0x82` | `CJTAG`, format 2, capability flags, build string | `src/dap_vendor.c` |
 
