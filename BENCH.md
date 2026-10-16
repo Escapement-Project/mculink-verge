@@ -536,51 +536,38 @@ five bit positions measured 10.28 to 10.30 MHz for a 10 MHz request. Those are r
 `tools/baseline/known-overshoot.txt` as known rather than new, because they are a property the code
 always had and the calibration merely made visible.
 
-### A free 4% that is being left on the table
+### Taken: the core now runs at 150 MHz
 
-Our core runs at 144 MHz because TinyUSB's board file sets PLL0 to 150 MHz and then attaches
-**PLL1** at 144 to `MAIN_CLK`. The reason is two lines further down: `USB0CLKDIV` is 3 and
-`MAIN_CLK` feeds `USB0_CLK`, so 144/3 is exactly the 48 MHz the full-speed USB controller needs.
-150/3 would be 50.
+PLL0 was already configured and locked at 150 MHz by the board file and simply not attached;
+TinyUSB puts PLL1's 144 MHz on `MAIN_CLK` so that MAIN_CLK/3 is the 48 MHz a full-speed USB
+controller needs, and this firmware is on the high-speed port and builds no host controller.
 
-**We never use that controller.** `src/tusb_config.h` sets `BOARD_TUD_RHPORT` to 1, the high-speed
-port, whose PHY PLL is fed from the 16 MHz crystal rather than from `MAIN_CLK`, and the host
-controller is not enabled at all. So the constraint that picks 144 does not apply to this firmware,
-and 130-150 MHz is one wait-state bracket, so 150 MHz costs no extra flash cycles.
+Measured, and every prediction landed:
 
-Attaching PLL0 instead is worth 4.2% on every wire path. `POWER_SetVoltageForFreq` and
-`CLOCK_SetFLASHAccessCyclesForFreq` both need the new figure, and `CPU_CLOCK` in
-`src/DAP_config.h` with them. Untested -- it needs a build and a reflash.
+| asked | data bit at 144 | at 150 | change | why |
+| --- | --- | --- | --- | --- |
+| 1 MHz | 1021.1 ns | 1020.25 ns, 153.04 cycles | +0.1% | `Set_Clock_Delay` went from 24 iterations to 25, and the extra six cycles cancel the faster clock |
+| 5 MHz | 229.3 ns | 220.08 ns, 33.01 cycles | +4.2% | same delay, faster clock |
+| 10 MHz | 104.2 ns | 100.04 ns, 15.01 cycles | +4.2% | same delay, faster clock |
 
-### How to measure a bit path without a target getting in the way
+The core clock itself is confirmed at **150.00 MHz**, solved from a bare clock sweep: the delay 2
+to delay 5 interval spans exactly 18 cycles over 120.00 ns.
 
-`uv run tools/dap.py --serial S block --hz N` reads a DP register over and over with
-`DAP_TransferBlock`. Every other way of putting a long transfer on the wire measures something
-else too: a memory read goes through an access port, and **this MSPM0L1306 answers WAIT to every
-flash read**, so probe-rs retries and the capture fills with 13-clock retry stubs instead of data.
-Stock does the same and worse -- 2.4 million clocks against our 1.08 million for the same 512-word
-read. A DP register always answers OK, needs no access port and no memory, so what reaches the
-analyser is the probe's transfer loop and nothing else.
+**End to end it barely shows, and that is the useful part.** Five runs at 10 MHz spread 553 to
+570 KiB/s, so the 4.2% is inside the noise. Of a 3,840-transfer block read, 17.67 ms is wire time
+and 26.70 ms is the whole thing: **the wire is 66% of it and USB and the host are the other 34%.**
+A wire-only gain is worth about 2.8% from here. Anything further on the bit paths buys less than
+its own size until the USB side moves, which is what the 512-byte packet question below is about.
 
-Align on the request pattern rather than assuming a period. A DP `RDBUFF` read is `10111101` on
-SWDIO sampled at the rising edge, an AP `DRW` read is `11111001`, and a transfer is 46 clocks.
+## What the bench has sized, and what is left
 
-### What is still open
-
-- **The stock unit's target is gone.** `QK7RM2VTX8D41` answers `ack 7` to a DPIDR read, so the
-  identical instrument cannot be run on stock. The comparison above is ours on `DAP_TransferBlock`
-  against stock on probe-rs's own AP reads -- the same 46-clock shape and the same measured
-  quantity, but not the same command. Reflash a unit to stock on a live target to close that.
-- **Steps 6 to 10 are untouched**: the console, SWO, cJTAG activation on a CC13xx, the two-pin data
-  read, and the HID parity question.
-- The MSPM0L1306 connects at 1, 5, 10 and 20 MHz through our firmware and refuses 50.
-
-## Two things only the bench can size
-
-- **Running the bit paths from SRAM.** Sized, and it is the biggest item there is -- see the
-  measurement above. Unrolling put 10.7 KB of straight-line code in flash behind a 144 MHz
-  wait-state setting, and two of every four data bits stall on the fetch. Needs a linker script of
-  our own rather than the board support's. Cannot make the wire slower.
-- **A DAP packet above 512 bytes.** At most 10% and all of it USB round trips, which the emulator
-  does not model. It deviates from stock, so check pyOCD and OpenOCD before changing what
-  `DAP_Info` reports.
+- **Running the bit paths from SRAM.** Done; it was the biggest item there was and it doubled the
+  block read. It needed no linker script of our own: `.ramfunc` is already in the board support's
+  script and already copied by its startup code, which the earlier note here got wrong.
+- **A DAP packet above 512 bytes.** Now worth sizing properly. A block read at 10 MHz spends 34%
+  of its time off the wire, so this is the larger of the two remaining levers and the one the
+  emulator still cannot model at all. It deviates from stock, so check pyOCD and OpenOCD before
+  changing what `DAP_Info` reports.
+- **The two-pin and four-wire JTAG block paths are still in flash** and will have the same stall
+  the SWD paths had. `cjtag_BlockImpl` and `cjtagf_BlockImpl` are 67 KB together, against 79 KB
+  already in SRAM and 112 KB still free.
