@@ -89,6 +89,7 @@ set(DAP_SRC ${CMAKE_CURRENT_SOURCE_DIR}/external/CMSIS-DAP/Firmware/Source)
 
 target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/main.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/mem.S
   ${CMAKE_CURRENT_SOURCE_DIR}/src/usb_descriptors.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/ser_num.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/board_pins.c
