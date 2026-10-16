@@ -89,7 +89,7 @@ static inline uint32_t cjtag_capture(void) {
 // is what makes that actually happen here: this copy's transfer is large enough that the compiler
 // declines to inline it, and the block loop ends up calling it once a word. It costs flash, and
 // the flash was judged worth it. OPTIMISATIONS.md has the numbers.
-#define JTAG_BLOCK_ATTRS __attribute__((flatten))
+#define JTAG_BLOCK_ATTRS __attribute__((flatten)) HOT_PATH
 #include "jtag_block.h"
 
 // clang-format off: each of these expands to a function definition.
