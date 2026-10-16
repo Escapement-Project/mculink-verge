@@ -639,7 +639,9 @@ def main() -> int:
     ap.add_argument("--prefix", default="CJ", help="what the serial should start with")
     ap.add_argument("--config", default="src/DAP_config.h")
     ap.add_argument("--packet-size", type=int, default=512)
-    ap.add_argument("--packet-count", type=int, default=8)
+    # Two, not ARM's eight: TinyUSB's vendor class is a byte stream and a buffer of more than one
+    # packet hands two commands to one read. src/tusb_config.h has the measurement.
+    ap.add_argument("--packet-count", type=int, default=2)
     args = ap.parse_args()
 
     sym = symbols_with_size(args.elf)

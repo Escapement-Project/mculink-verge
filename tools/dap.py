@@ -85,6 +85,21 @@ class Probe:
         self.product = product
         self.vendor = vendor
 
+    def drain(self) -> int:
+        """Throw away replies queued by a run that stopped early.
+
+        Nothing in the protocol resynchronises a bulk endpoint, so a reply nobody read is handed
+        to whatever asks next and every answer after it is off by one. Pipelined runs make this
+        routine rather than rare.
+        """
+        count = 0
+        while True:
+            try:
+                self.in_ep.read(self.in_ep.wMaxPacketSize, 50)
+                count += 1
+            except usb.core.USBError:
+                return count
+
     def command(self, request: bytes, timeout: int = 2000) -> bytes:
         self.out_ep.write(request, timeout)
         reply = bytes(self.in_ep.read(self.in_ep.wMaxPacketSize, timeout))
@@ -564,17 +579,31 @@ def cmd_block(args) -> int:
     """
     probe = one(args)
     print(f"{probe.serial}  {probe.product}")
+    # A pipelined run that stopped early leaves replies queued, and the next run reads them as
+    # answers to its own commands. Nothing in the protocol clears that, so drain first.
+    drained = probe.drain()
+    if drained:
+        print(f"  drained {drained} stale replies")
     print(f"  DAP_Connect -> {probe.connect(1)}")
     print(f"  DAP_SWJ_Clock {args.hz} Hz -> {'OK' if probe.swj_clock(args.hz) == 0 else 'failed'}")
     idcode = swd_reset(probe)
     print(f"  DPIDR 0x{idcode:08x}")
     request = 0x0E if args.register == "rdbuff" else 0x02
+    payload = bytes([DAP_TRANSFER_BLOCK, 0]) + args.words.to_bytes(2, "little") + bytes([request])
     started = time.perf_counter()
     words = 0
-    for _ in range(args.blocks):
-        reply = probe.command(
-            bytes([DAP_TRANSFER_BLOCK, 0]) + args.words.to_bytes(2, "little") + bytes([request])
-        )
+    # `--pipeline N` keeps N commands in flight instead of waiting for each reply before sending
+    # the next. CMSIS-DAP v2 allows it -- DAP_Info reports how many packets the probe will hold --
+    # and it is the one thing that separates a gap the firmware owns from a gap the host owns.
+    inflight = max(1, args.pipeline)
+    sent = 0
+    done = 0
+    while done < args.blocks:
+        while sent < args.blocks and sent - done < inflight:
+            probe.out_ep.write(payload, 2000)
+            sent += 1
+        reply = bytes(probe.in_ep.read(probe.in_ep.wMaxPacketSize, 2000))
+        done += 1
         count = int.from_bytes(reply[1:3], "little")
         if count != args.words or reply[3] != 1:
             print(f"  stopped: block returned {count} words, ack {reply[3]}")
@@ -648,6 +677,8 @@ def main() -> int:
     block.add_argument("--words", type=int, default=64, help="transfers per block command")
     block.add_argument("--blocks", type=int, default=200)
     block.add_argument("--register", choices=("rdbuff", "dpidr"), default="rdbuff")
+    block.add_argument("--pipeline", type=int, default=1,
+                       help="commands to keep in flight; 1 waits for each reply before sending")
     block.set_defaults(run=cmd_block)
 
     args = parser.parse_args()

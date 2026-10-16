@@ -107,6 +107,7 @@ def cycle(elf: pathlib.Path, serial: str | None) -> int:
         names = ", ".join(p.serial for p in dap.find())
         sys.exit(f"need exactly one probe to reflash; attached: {names or 'none'}. Use --serial")
     probe = probes[0]
+    probe.drain()  # a pipelined run that stopped early leaves replies for whoever asks next
     print(f"{probe.serial}: asking for the ROM bootloader")
     reply = probe.command(bytes([0x85, 1]))
     probe.release()

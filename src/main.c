@@ -38,6 +38,18 @@ static void dap_task(void) {
     if (!tud_vendor_available()) {
         return;
     }
+    // Start a command only with the transmit side empty, so each reply leaves as its own
+    // transfer. TinyUSB's vendor class is a byte stream and not a packet interface: two replies
+    // queued together are flushed as one run of bytes, and a host reading a packet at a time gets
+    // the first reply with the front of the second stuck to it. Measured, it desynchronises at
+    // three commands in flight and the throughput then falls as 1/N.
+    //
+    // This still lets the host run ahead, which is where the gain is -- the receive buffer holds
+    // the commands it sent early, so the wire never waits for the next one. It only stops us
+    // answering faster than the host reads.
+    if (tud_vendor_write_available() != CFG_TUD_VENDOR_TX_BUFSIZE) {
+        return;
+    }
 
     uint32_t received = tud_vendor_read(request, sizeof(request));
     if (received == 0) {

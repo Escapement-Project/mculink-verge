@@ -38,6 +38,12 @@
 #define CFG_TUD_VENDOR 1
 
 // One DAP packet each way, so a full packet never has to be split across FIFO wraps.
+// **One packet each way, and it has to stay one packet.** TinyUSB's vendor class is a byte stream
+// and not a packet interface: tud_vendor_read drains whatever the buffer holds, so a buffer that
+// can hold two commands hands both to one call and the second is answered by nobody. Raising
+// these to eight packets was tried and the host timed out from three commands in flight upward.
+// CMSIS-DAP v2 frames one command per packet, and a buffer of exactly one packet is what keeps
+// that true. See DAP_PACKET_COUNT in src/DAP_config.h for what the host is told.
 #define CFG_TUD_VENDOR_RX_BUFSIZE 512
 #define CFG_TUD_VENDOR_TX_BUFSIZE 512
 

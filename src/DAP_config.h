@@ -101,7 +101,13 @@ This information includes:
 /// This configuration settings is used to optimize the communication performance with the
 /// debugger and depends on the USB peripheral. For devices with limited RAM or USB buffer the
 /// setting can be reduced (valid range is 1 .. 255).
-#define DAP_PACKET_COUNT        8U              ///< Specifies number of packets buffered.
+/// Specifies number of packets buffered. Two: one in the endpoint buffer and one in the class
+/// buffer, which is as many as this stack can hold without losing a packet boundary. ARM's
+/// reference says eight and this said eight after it, which invited a host to pipeline deeper
+/// than the firmware can answer; measured, it times out from three in flight upward. Two is worth
+/// having rather than one -- a host that keeps a second command in flight gets about 15% end to
+/// end, because the wire stops waiting for the next request to arrive.
+#define DAP_PACKET_COUNT        2U
 
 /// Indicate that UART Serial Wire Output (SWO) trace is available.
 /// This information is returned by the command \ref DAP_Info as part of <b>Capabilities</b>.
