@@ -630,7 +630,23 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
 
     for wire in CHECK_WIRES:
         for label, read in (("read", True), ("write", False)):
-            counts, _, _ = measure(elf, wire, 10_000_000, 16, read, model)
+            counts, reply, _ = measure(elf, wire, 10_000_000, 16, read, model)
+
+            # The command layer has to come back with a well formed answer, not just the right
+            # waveform: the echoed id, the word count asked for, an OK status, and for a read the
+            # bytes the modelled target shifted out.
+            want = 4 + 64 if read else 4
+            got_words = reply[1] | (reply[2] << 8)
+            if len(reply) != want:
+                failures.append(f"{wire} {label}: reply is {len(reply)} bytes, wanted {want}")
+            elif reply[0] != ID_TRANSFER_BLOCK:
+                failures.append(f"{wire} {label}: reply echoes 0x{reply[0]:02x}, wanted 0x06")
+            elif got_words != 16:
+                failures.append(f"{wire} {label}: reply says {got_words} words, wanted 16")
+            elif reply[3] != 1:
+                failures.append(f"{wire} {label}: transfer status 0x{reply[3]:02x}, wanted OK")
+            elif read and any(reply[4:68]):
+                failures.append(f"{wire} {label}: data does not match what the target shifted out")
 
             name = f"{wire}-{label}.trace"
             path = os.path.join(BASELINE_DIR, name)
@@ -680,7 +696,10 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
         for f in failures:
             print(f"  FAIL  {f}")
         return 1
-    print(f"  all clear: wire events match, no escape edges, {len(known)} known overshoots unchanged")
+    print(
+        "  all clear: every transfer answered OK with the right data, wire events match,"
+        f" no escape edges, {len(known)} known overshoots unchanged"
+    )
     return 0
 
 
