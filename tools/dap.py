@@ -37,6 +37,7 @@ DAP_DISCONNECT = 0x03
 DAP_HOST_STATUS = 0x01
 DAP_TRANSFER = 0x05
 DAP_TRANSFER_BLOCK = 0x06
+DAP_DELAY = 0x09
 DAP_SWJ_PINS = 0x10
 DAP_SWJ_CLOCK = 0x11
 DAP_SWJ_SEQUENCE = 0x12
@@ -1156,6 +1157,85 @@ def run_walk(probe: Probe, walk: TapWalk) -> list[int]:
     return scans
 
 
+def tms_bits(pattern: int, count: int) -> str:
+    """TI's `WriteTmsPattern(pattern, count)`: `count` TMS bits of `pattern`, least significant first."""
+    return "".join(str(pattern >> k & 1) for k in range(count))
+
+
+# TI's XDS110 sequence for OScan1 on a CC13xx/CC26xx, from a TI engineer's post on the TI E2E
+# forum (thread 766675). "raw" steps are one TCKC clock per TMS
+# bit with no framing; "csm" steps are raw clocks the adapter's control state machine consumes
+# and the TAP controller never sees; "frames" steps are OScan1 frames.
+TI_OSCAN1 = [
+    ("raw", tms_bits(0xFF, 8) + tms_bits(0, 1)),  # Test-Logic-Reset, Run-Test/Idle
+    ("raw", tms_bits(0x03, 3) + tms_bits(0, 64) + tms_bits(0x03, 3)),  # BYPASS: control level 0
+    ("raw", (tms_bits(0x05, 4) + tms_bits(0x03, 2)) * 2),  # two zero-bit scans
+    ("raw", tms_bits(0x05, 4) + tms_bits(0x0D, 4) + tms_bits(0x05, 4)),  # 1-bit scan locks level 2
+    ("raw", tms_bits(0x0D, 4) + tms_bits(0x05, 4) + tms_bits(0x0D, 4) + tms_bits(0x05, 4)),  # STC1 1
+    ("raw", tms_bits(0x31, 6) + tms_bits(0x05, 4) + tms_bits(0x1C01, 13)),  # STFMT 9, ends Select-DR
+    ("csm", 4),
+    ("frames", tms_bits(0x02, 3)),  # Capture-DR, Exit1-DR, Pause-DR
+    ("frames", tms_bits(0x03, 2) + tms_bits(0x15, 6) + tms_bits(0x08, 4) + tms_bits(0x01, 2)),  # STMC 4: deselect
+    ("csm", 7),
+    ("frames", tms_bits(0x05, 4)),
+    ("frames", tms_bits(0x01, 2) + tms_bits(0x40, 7) + tms_bits(0x01, 1) + tms_bits(0x05, 4) + tms_bits(0x03, 3)),  # select controller 0
+    ("csm", 7),
+    ("frames", tms_bits(0x05, 4)),
+    ("frames", tms_bits(0x03, 2) + tms_bits(0x05, 4) + tms_bits(0x01, 2) + tms_bits(0x01, 1) + tms_bits(0x01, 2)),  # ECL
+    ("csm", 7),
+]
+
+
+def run_ti_activation(probe: Probe, steps=TI_OSCAN1) -> None:
+    """Drive TI's activation: raw clocks as pin writes, frames through our OScan1 framing.
+
+    One pin program follows the wire's real levels across steps, so a step never assumes a TMSC
+    level the previous one did not leave. Raw clocks change TMSC only with TCKC low.
+    """
+    wire = PinProgram()
+    wire.writes = []  # DAP_Connect leaves both pins high, which is what PinProgram assumes
+    framing = False
+
+    def flush():
+        if wire.writes:
+            replay_pins(probe, wire.writes)
+            wire.writes = []
+
+    for kind, arg in steps:
+        if kind == "pause":
+            wire.writes.append((2, arg))
+            continue
+        if kind == "wait":
+            flush()
+            probe.command(bytes([DAP_DELAY]) + arg.to_bytes(2, "little"))
+            continue
+        if kind == "escape":
+            if not wire.tck:
+                wire.writes.append((0, 1))
+                wire.tck = 1
+            wire.escape(arg)
+        elif kind in ("raw", "csm"):
+            wire.clock(arg if kind == "raw" else "0" * arg)
+            if framing:
+                wire.writes.append((0, 0))  # a frame starts with TCKC low
+                wire.tck = 0
+                flush()
+                probe.command(bytes([DAP_VENDOR_CJTAG_CONTROL, 2]))
+        else:
+            if not framing:
+                wire.writes.append((0, 0))
+                wire.tck = 0
+                flush()
+                probe.command(bytes([DAP_VENDOR_CJTAG_CONTROL, 2]))
+                framing = True
+            walk = TapWalk()
+            walk.tms, walk.tdi, walk.cap = arg, "1" * len(arg), "0" * len(arg)
+            run_walk(probe, walk)
+            # Our frames end with TCKC low and TMSC at the last TMS bit.
+            wire.tck, wire.tmsc = 0, int(arg[-1])
+    flush()
+
+
 def replay_pins(probe: Probe, writes: list[tuple[int, int]]) -> None:
     """Drive `writes` with DAP_SWJ_Pins, many to a packet so an escape lands in microseconds."""
     per_packet = (probe.out_ep.wMaxPacketSize - 2) // 7
@@ -1163,7 +1243,11 @@ def replay_pins(probe: Probe, writes: list[tuple[int, int]]) -> None:
         chunk = writes[at : at + per_packet]
         request = bytearray([DAP_EXECUTE_COMMANDS, len(chunk)])
         for bit, level in chunk:
-            request += bytes([DAP_SWJ_PINS, level << bit, 1 << bit]) + bytes(4)
+            if bit == 2:
+                # A pause inside the packet, `level` microseconds, so it costs no USB round trip.
+                request += bytes([DAP_DELAY]) + level.to_bytes(2, "little")
+            else:
+                request += bytes([DAP_SWJ_PINS, level << bit, 1 << bit]) + bytes(4)
         reply = probe.command(bytes(request))
         if reply[1] != len(chunk):
             raise RuntimeError(f"DAP_ExecuteCommands ran {reply[1]} of {len(chunk)}")
@@ -1278,9 +1362,22 @@ def cmd_cjtag(args) -> int:
         probe.command(bytes([DAP_SWJ_PINS, 0x80, 0x80]) + bytes(4))
         time.sleep(args.settle / 1000)
         print(f"  pulsed nRESET before the activation, then waited {args.settle} ms")
-    if args.synth:
+    if args.ti:
+        escapes = [("escape", int(n)) for n in args.ti_escape.split(",") if n]
+        prefix = "e10,h200,l2,e7,l36" if args.ti_prefix == "jlink" else args.ti_prefix
+        for token in filter(None, prefix.split(",")):
+            n = int(token[1:])
+            if token[0] in "wp":
+                # w: a DAP_Delay command of its own; p: one inside the pin packet. Both in
+                # microseconds, and never 0, which hangs ARM's firmware.
+                escapes.append(("wait" if token[0] == "w" else "pause", n))
+            else:
+                escapes.append(("escape", n) if token[0] == "e" else ("raw", ("1" if token[0] == "h" else "0") * n))
+        run_ti_activation(probe, escapes + TI_OSCAN1[args.ti_from :])
+        print("  TI's XDS110 OScan1 sequence (TI E2E 766675)")
+    elif args.synth:
         program = PinProgram().escape(args.escape_a).clock("1" * args.tap_reset + "00")
-        program.escape(args.escape_b).clock("0" * args.idle + CJTAG_SELECT_OSCAN1 + "0" * args.pad)
+        program.escape(args.escape_b).clock("0" * args.idle + CJTAG_SELECT_OSCAN1 + args.raw + "0" * args.pad)
         replay_pins(probe, program.writes)
         print(f"  synthetic activation: {len(program.writes)} pin writes")
         reply = probe.command(bytes([DAP_VENDOR_CJTAG_CONTROL, 2]))
@@ -1469,10 +1566,16 @@ def main() -> int:
     cjtag.add_argument("--tdi", type=int, default=1, choices=(0, 1), help="TDI level for every frame")
     cjtag.add_argument("--pre-tdi", default="", help="TDI bit per --pre-tms bit")
     cjtag.add_argument("--synth", action="store_true", help="drive the activation decoded from the J-Link's")
+    cjtag.add_argument("--ti", action="store_true", help="drive TI's XDS110 OScan1 sequence")
+    cjtag.add_argument("--ti-escape", default="", help="--ti: escapes to send first, e.g. 10 or 10,7")
+    cjtag.add_argument("--ti-prefix", default="",
+                       help="--ti: steps first: eN escape, hN/lN TMS-high/low clocks; 'jlink' = e10,h200,l2,e7,l36")
+    cjtag.add_argument("--ti-from", type=int, default=0, help="--ti: skip TI's first N steps")
     cjtag.add_argument("--escape-a", type=int, default=10, help="synth: edges in the first escape")
     cjtag.add_argument("--tap-reset", type=int, default=200, help="synth: TMS-high clocks after it")
     cjtag.add_argument("--escape-b", type=int, default=7, help="synth: edges in the second escape")
     cjtag.add_argument("--idle", type=int, default=36, help="synth: TMS-low clocks before the commands")
+    cjtag.add_argument("--raw", default="", help="synth: TMS clocks sent unframed after the command scans")
     cjtag.add_argument("--pad", type=int, default=0, help="TMS-low clocks after the activation, before framing")
     cjtag.set_defaults(run=cmd_cjtag)
 
