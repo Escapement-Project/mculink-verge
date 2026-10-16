@@ -330,6 +330,14 @@ Captures: `mculink-swd-clock-*.sal`.
    all.
 2. Bench: confirm probe-rs attaches over SWD, then the console, then SWO, then the OScan1 read on a
    CC13xx with the analyser watching.
+
+   Then sweep the requested clock, because the emulator says the achieved rate goes up in three
+   steps above 8 MHz and nothing in between: 10 to 14 MHz is one setting, 16 to 30 is one, 40 and
+   50 are the delay-free path. **Which step a target tolerates is worth more than anything left to
+   optimise** -- 14 to 16 MHz is a 46% jump and 30 to 40 is another 91%. The analyser settles both
+   that and the cost model the overshoot figures depend on, since one measurement of the real
+   period at two delay settings solves for the store and branch costs. `uv run tools/cycles.py
+   --table` is the prediction to check against.
 3. Settle the two bench questions parity depends on: whether stock answers DAP over HID, and
    whether stock maps CDC line state to anything.
    **SWO is a bench item too**: its four commands answer in emulation only because the Flexcomm
