@@ -1372,6 +1372,14 @@ the verdict and on the cycle count. The window's edges are included.
 edge to one cycle after the previous one, every write landed, at every period from 3 to 10
 cycles. Setup and hold at the target are each under a cycle.
 
+**A scheduler that places everything from the model runs at every period.** Given a period and a
+list of transfers, a prototype places every edge, SWDIO store and sample by the model alone, with
+each sample at the middle of its window. Two writes and five reads, acknowledges, data and parity
+all checked, ran clean at every period from 4 to 40 cycles, 37.5 to 3.75 MHz, ten times each. The
+cycle count the probe measured equalled the model's at all 37 periods. A rate is then any whole
+number of cycles: the furthest a request falls short is 20% at the top of the range, against 56%
+today, and nothing runs faster than asked.
+
 TIMING.md has the rules these give a generator. CODEGEN.md is the context for implementing it.
 
 ## What the bench has sized, and what is left

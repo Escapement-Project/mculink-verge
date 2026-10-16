@@ -26,6 +26,11 @@ block's last read fail at 16.67 MHz while the loop's reads passed.
 | a 16-bit `b<cc>` that paired, when taken | 1 cycle more than a taken branch |
 | a 16-bit NOP | 0 when it pairs, 1 otherwise |
 | a data access over S-AHB right after one through the PPB, or the reverse | waits until 2 cycles after the other |
+| `push`, `pop`, `ldm`, `stm` | 1 cycle a register |
+| an instruction that uses a multiply's result | issues 2 cycles after the multiply |
+| `udiv` | 5 cycles at 100 / 7; the core stops early by operand size |
+| `it` | 0 cycles; an instruction its block skips still costs its cycle |
+| `bl`, `blx`, `bx lr` | as a taken branch |
 
 Only two instructions pair. A 16-bit NOP or a 16-bit `b<cc>` issues in the same cycle as a 16-bit
 instruction before it, unless that instruction paired already. `cbz` never pairs, and neither
@@ -34,7 +39,11 @@ does anything after a 32-bit instruction.
 Loads and stores pipeline. A GPIO access can issue every cycle, in any mix of loads and stores,
 and none waits for the one before it.
 
-Use `mov.w rN, rN` as filler. It costs one cycle at every alignment. A NOP does not. A counted loop of `subs.w` and `bne.w` costs 3 cycles an iteration plus
+Use `mov.w rN, rN` as filler. It costs one cycle at every alignment. A NOP does not.
+
+Load constants with `movw` and `movt`, never from a literal pool. A literal is a data access on
+the bus the code is fetched over, so it takes a cycle from fetch, and the model is up to two
+cycles out on a run of them. A counted loop of `subs.w` and `bne.w` costs 3 cycles an iteration plus
 its body when its first instruction is word-aligned, and 4 when it straddles a word.
 
 The PPB is the bus the cycle counter sits on. No bit path reads it, but every timing measurement
@@ -68,13 +77,25 @@ The window's ends are sharp. No sample position on the bench ever gave a mixture
 
 A read clock needs four instructions: the falling edge, the rising edge, the sample and a store of
 the sample. At 150 MHz the shortest read period is therefore 4 cycles, 37.5 MHz. Above that, the
-period can be any whole number of cycles, and the split between the high and low phases is free:
+period can be any whole number of cycles, and the split between the high and low phases is free.
+A generator picks the shortest period that does not exceed the rate asked for:
 
-| P | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 12 | 15 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| MHz | 37.5 | 30 | 25 | 21.4 | 18.75 | 16.7 | 15 | 12.5 | 10 |
+| asked | today | generated |
+| --- | --- | --- |
+| 35 MHz | 16.67 | 30 |
+| 25 MHz | 16.67 | 25 |
+| 20 MHz | 16.67 | 18.75 |
+| 12 MHz | 10 | 11.54 |
+| 8 MHz | 7.14 | 7.89 |
 
-The firmware today offers 30, 16.67 and 10 MHz at the top, with nothing between 10 and 16.67.
+The furthest a generated rate falls below the one asked is 20% between 20 and 37.5 MHz, 11%
+between 10 and 20, and 6% between 5 and 10. Today's firmware falls up to 56%, 33% and 24% short in
+the same bands, and it overshoots some requests: 16.67 MHz for 16, 7.14 for 7.
+
+A prototype scheduler places a whole sequence from the model alone: two writes and five reads,
+with every sample at the middle of its window and every turnaround. It ran clean on the bench at
+every period from 4 to 40 cycles, 37.5 to 3.75 MHz, with every acknowledge, word and parity bit
+right. Its cycle count matched the model's at every one of the 37 periods.
 
 At short periods the sample trails the clock. At P = 4 with A = 7, a bit is readable 7 to 10
 cycles after its edge, which is two clocks later. Generated DPIDR reads at every period from 4 to
@@ -95,7 +116,12 @@ On this target a write needs nothing more than its SWDIO store kept off the cycl
   next rising edge is safe: an interrupt there stretches the clock and nothing else. With A = 7
   that is possible only from P = 8 up, at d from 7 to P - 1.
 - **Keep a load two cycles from anything that computes with it.** A store of the sample needs one.
-- **Measure A for each target,** and recompute the placement when the clock changes.
+- **Measure A for each target,** and recompute the placement when the clock changes. Sweep the
+  sample delay on DPIDR reads at a period of 8 or more: A is the shortest delay that reads
+  correctly, and the window is P cycles wide from there. The bench found A = 7 at P = 8, 12 and 16.
+- **Remember the second turnaround.** After the acknowledge of a write, and after the parity of a
+  read, comes one more clock before the probe drives again. Leave it out and the target loses step
+  and stops answering.
 
 ## What the emulator models
 
@@ -104,9 +130,11 @@ it, and from the bus slots data has already taken. `tools/cycles.py --engine` ru
 `--latency 7` adds a SWD target that answers by time and reports every read's distance from both
 ends of its window.
 
-From SRAMX it matches 692 instruction sequences timed in isolation at four alignments, 29 pulse
-trains and every generated read. It is a cycle slow on an unconditional branch straight after a
-read of the cycle counter, which no bit path does.
+From SRAMX it matches 692 instruction sequences timed in isolation at four alignments, plus 132 of
+144 covering calls, stack, masking, multiplies, divides and IT blocks; the 12 it misses are runs of
+literal loads. It matches 29 pulse trains, every generated read, and every scheduled sequence. It
+is a cycle slow on an unconditional branch straight after a read of the cycle counter, which no
+bit path does.
 
 From SRAM it is a cycle out on some straight-line sequences at one alignment, and loops drift by
 up to a cycle an iteration. It still reproduces every SWD result the bench has for the current

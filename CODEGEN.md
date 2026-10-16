@@ -38,6 +38,13 @@ All costs in core cycles at 150 MHz (6.67 ns). Issue cycle = cycle an instructio
 - PPB (0xE000_0000+, DWT->CYCCNT) vs S-AHB data: an access on one waits until 2 cycles after the
   last access on the other. Bit paths never touch PPB; only timing instrumentation does.
 - Filler: `mov.w rN, rN` (1 cycle anywhere). Never NOP.
+- push/pop/ldm/stm: 1 cycle per register. ldrd/strd: 2 accesses. mul: result usable at +2.
+  udiv: 5 at 100/7 (early termination by operand size; keep out of timed code). `it`: 0 cycles;
+  an IT-skipped instruction still costs its cycle (unicorn does not run it; cycles.py issues it).
+  bl/blx/bx: as a taken branch. cpsid/cpsie, mrs/msr primask: 1 cycle each.
+- No literal-pool loads in generated code: a literal is a C-AHB data access from SRAMX and steals
+  a fetch slot; the model is up to 2 cycles out on runs of them (12 of 144 corpus-4 misses).
+  Use movw/movt (exact).
 - Loop `subs.w rX, rX, #1; bne.w head`: 3 cycles/iteration + body if `head` is word-aligned
   (4 if the head is a 32-bit instruction at 2 mod 4). Last iteration (fall-through): 2 + body.
 - Store -> pin: identical delay for SET (GPIO+0x2200+4*port), CLR (+0x2280), NOT (+0x2300),
@@ -59,6 +66,33 @@ Verified end to end: `tools/lab.py swd_read_pipelined` at P = 4..8 (37.5..18.75 
 non-colliding sample delays, 45/45 configurations predicted exactly (verdict and cycle count) on
 the U575. Soak: 200 reads each at P=4 d=9 (margin 1),
 P=4 d=7 (margin 0, window edge), P=5 d=9, P=8 d=10: all clean, 7,200 target bits each.
+
+## Scheduler prototype (validated end to end)
+
+`tools/lab.py swd_schedule(period, transfers, latency=7)` + `schedule_asm()`: given a period and
+`[("w", req, value), ("r", req), ...]`, lays every clock (fall at +0, SWDIO store at +1 for
+probe-driven bits, rise at +P//2), samples each target bit at the max-margin cycle of its window
+avoiding edge cycles, stores samples to the buffer in r1 by the next free cycle (rotating r0,
+r12, lr), and inserts a `settle()` barrier where the probe takes the wire back (waits for all
+outstanding samples; only ever lengthens a clock). Runs of >= 3 empty cycles become
+`movw r7,#n; subs.w; bne.w` loops (3n cycles; all instructions 32-bit so every head is aligned;
+the body start is `.balign 4`). Registers: r5 clock mask (also the data-1 source), r6 = 0,
+r2 SWDIO mask, r3 TXEN mask, r8 B, r9 SET, r10 CLR, r11 DIRSET, r4 CYCCNT, r7 loop counter.
+
+Bench: sequence = write TAR X, AP read TAR,
+read RDBUFF (= X), read DPIDR, write TAR Y, AP read TAR, read RDBUFF (= Y). Every period 4..40
+(37.5..3.75 MHz), 10 runs each: all acks, data and parity correct, and hardware cycle count ==
+model cycle count at all 37 periods. Pitfall found on the way: **each transfer needs the second
+turnaround clock** (after the ack for writes, after parity for reads); without it the target
+loses step and every later ack reads 7.
+
+Rate granularity (P = ceil(150 MHz / requested), never above the request): worst shortfall
+20% in 20-37.5 MHz, 11% in 10-20, 6% in 5-10, 3% in 1-5; today's ladder 56/33/24/13% and it
+overshoots some requests (16 -> 16.67, 7 -> 7.14).
+
+Calibration procedure (validated): sweep the sample delay d with `swd_read_pipelined` at P >= 8;
+A = smallest passing d; the passing range is exactly P wide (A = 7
+at P = 8, 12, 16).
 
 ## Throughput limits implied
 
