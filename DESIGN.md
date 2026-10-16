@@ -62,18 +62,20 @@ All five JTAG entry points are routed. **None of it has run on hardware.**
 | vendor 0x80, 0x81 | yes, LinkServer-specific | no |
 | vendor cJTAG commands | no | 0x82, 0x83 |
 | CMSIS-DAP v2, bulk, 512-byte packets | yes | yes |
-| CMSIS-DAP v1, HID | yes | **not yet** |
+| CMSIS-DAP v1, HID | yes | yes |
 | CDC virtual COM port | yes | yes |
 
-**Whether stock's HID interface is CMSIS-DAP v1 at all is unverified, and the evidence is against
-it.** Its `DAP_Info` packet-size reply is 512.
-A v1 host would read 512 and try to send it in a 64-byte report. probe-rs
-does list the HID interface as a candidate probe, but that is probe-rs reading a HID descriptor on
-a known CMSIS-DAP vendor and product id, not proof that DAP commands are answered there.
+**HID is implemented here, and correctly, whatever stock turns out to do.** The two interfaces
+cannot share a packet size: a HID report is bounded by its interrupt endpoint at 64 bytes while
+bulk carries 512, and `DAP_Info` builds its reply from one constant with no idea which interface
+asked. The HID path corrects the reply on the way out, so a v1 host reads 64 and a v2 host reads
+512 from the same command layer.
 
-Settling it needs the bench: send `DAP_Info` to the HID interface and see whether anything replies.
-Until then, implementing a v1 interface here would risk adding a feature stock does not have rather
-than reaching parity.
+Stock's own HID interface may not answer DAP at all -- its packet-size reply is a fixed 512,
+which no v1 host could use, and the bench settles that. Either way ours is
+a superset, so it is not a parity gap.
+
+**The only remaining difference is stock's two vendor commands.**
 
 Interface numbering differs from stock, which has HID between the vendor and CDC interfaces. Ours
 is vendor, CDC, CDC data, and adding HID will append rather than insert. Hosts enumerate by
@@ -191,10 +193,14 @@ plus `0x7F ExecuteCommands`. **Our build has to answer all of these or it is a d
 
 ### Stock's own vendor commands
 
-Stock answers vendor 0x80 and 0x81, and nothing in probe-rs asks for them.
-They are **not implemented here**,
-which is a documented difference rather than a defect: it only matters if LinkServer has to work
-against this firmware.
+Nothing in
+probe-rs asks for either, and the CMSIS-DAP specification says nothing about them -- the vendor
+range is defined as being whatever the probe wants it to be.
+
+They are **not implemented here**, and implementing them would mean guessing at LinkServer's
+semantics. The way to settle it without guessing is to watch LinkServer talk to a stock probe on
+the USB bus and see what it sends and expects. That only matters if LinkServer
+has to work against this firmware.
 
 ### The vendor range
 
