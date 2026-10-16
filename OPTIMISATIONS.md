@@ -42,10 +42,10 @@ block, before and after tonight:
 
 | | asked | before | after | |
 | --- | --- | --- | --- | --- |
-| SWD read | 10 MHz | 538 | 634 | +18% |
-| SWD write | 10 MHz | 547 | 681 | +24% |
-| SWD read | 50 MHz | 1161 | 1765 | +52% |
-| SWD write | 50 MHz | 1387 | 2145 | +55% |
+| SWD read | 10 MHz | 538 | 635 | +18% |
+| SWD write | 10 MHz | 547 | 682 | +25% |
+| SWD read | 50 MHz | 1161 | 1776 | +53% |
+| SWD write | 50 MHz | 1387 | 2152 | +55% |
 | JTAG read | 10 MHz | 616 | 685 | +11% |
 | JTAG write | 10 MHz | 621 | 759 | +22% |
 | JTAG read | 50 MHz | 1355 | 1799 | +33% |
@@ -55,7 +55,7 @@ block, before and after tonight:
 | two-pin read | 50 MHz | 283 | 647 | +129% |
 | two-pin write | 50 MHz | 290 | 616 | +112% |
 
-Text grows from 46,980 bytes to 108,700, which is 17% of the part's flash.
+Text grows from 46,980 bytes to 108,736, which is 17% of the part's flash.
 
 The bar is cleared on wire time at every setting, by 4.3x at the top. **Wire time is not the same
 as throughput**: the stock capture put the USB gap at about 10% of a transfer at 14 MHz, and a
@@ -148,6 +148,17 @@ paths jump to as well, costs one divide once.
 SWD reads gain 1.3% at 50 MHz and 0.5% at 10. The same change in the JTAG loop gains 1.3% on
 writes and loses 0.3% on reads, which is the allocation moving rather than the read path doing
 more. Together the image is 404 bytes smaller.
+
+### Carry the packet parity in the request
+
+The packet parity is taken over the four address bits, and ARM sums them inside the transfer, so a
+block recomputed the same parity for every word. Bit 6 of a request is unused by CMSIS-DAP: the
+caller puts the parity there once, and the transfer writes it with one more shift of a register it
+is already holding. SWD gains 0.6% on reads and 0.3% on writes at 50 MHz, for 36 bytes.
+
+The differential suite could not have caught this being wrong. Its 300 cases used two request
+values, `0x0F` and `0x0D`, and the parity depends on exactly the four bits those two fix. A
+sixth case now sends all sixteen address patterns in one command, and an inverted parity fails it.
 
 ## Tried and rejected
 
