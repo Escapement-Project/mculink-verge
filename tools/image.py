@@ -50,10 +50,12 @@ class Checker:
         self.problems: list[str] = []
         self.notes: list[str] = []
 
-    def check(self, ok: bool, message: str) -> bool:
+    def check(self, ok: object, message: str) -> bool:
+        """Record a problem when the condition fails, and hand the result back so a note can
+        describe what was actually found rather than what was hoped for."""
         if not ok:
             self.problems.append(message)
-        return ok
+        return bool(ok)
 
     def note(self, message: str) -> None:
         self.notes.append(message)
@@ -242,6 +244,34 @@ def check_swo_baudrate(c: Checker, config: str, clock: int) -> None:
     )
 
 
+# Where the cycle counter and its two enables live, from the ARMv8-M core definitions.
+DCB_DEMCR, DWT_CTRL, DWT_CYCCNT = 0xE000EDFC, 0xE0001000, 0xE0001004
+DEMCR_TRCENA, DWT_CYCCNTENA, DWT_NOCYCCNT = 1 << 24, 1 << 0, 1 << 25
+
+
+def check_timestamp(c: Checker, elf: str) -> None:
+    """DWT is powered down until TRCENA, and the counter does not run until CYCCNTENA.
+
+    Without both, TIMESTAMP_GET reads zero forever: DAP_SWJ_Pins with a wait spins on a deadline
+    that never arrives, and a transfer asked for a timestamp reports nothing.
+    """
+    probe = Machine(elf, Target([]), restart_at=set(), model=Model())
+    if "board_timestamp_init" not in probe.sym:
+        c.note("board_timestamp_init was inlined away; the cycle counter not checked")
+        return
+    probe.call("board_timestamp_init")
+    demcr = int.from_bytes(probe.uc.mem_read(DCB_DEMCR, 4), "little")
+    ctrl = int.from_bytes(probe.uc.mem_read(DWT_CTRL, 4), "little")
+    trcena = c.check(demcr & DEMCR_TRCENA, "TRCENA is clear, so DWT stays powered down")
+    cyccnt = c.check(ctrl & DWT_CYCCNTENA, "CYCCNTENA is clear, so the cycle counter never runs")
+    c.note(
+        "cycle counter: TRCENA "
+        + ("set" if trcena else "CLEAR")
+        + ", CYCCNTENA "
+        + ("set" if cyccnt else "CLEAR")
+    )
+
+
 def check_commands(c: Checker, elf: str) -> None:
     """Every command in COMMANDS has to answer. The claim is that none is a downgrade.
 
@@ -391,6 +421,7 @@ def main() -> int:
         c.note("the MS OS 2.0 descriptor was folded away; its length not cross-checked")
     check_commands(c, args.elf)
     check_clocks(c, args.elf)
+    check_timestamp(c, args.elf)
     check_swo_baudrate(c, args.config, 96_000_000)
     check_info(c, args.elf, args.packet_size, args.packet_count)
     check_serial(c, args.elf, bytes(range(1, 17)), args.prefix)

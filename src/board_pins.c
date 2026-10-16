@@ -37,7 +37,7 @@ __attribute__((noinline)) void board_clocks_init(void) {
  * level hangs the probe rather than timing out; and a transfer with DAP_TRANSFER_TIMESTAMP set
  * reports 0 to a host that asked for a time.
  */
-void board_timestamp_init(void) {
+__attribute__((noinline)) void board_timestamp_init(void) {
     DCB->DEMCR |= DCB_DEMCR_TRCENA_Msk;
     DIB->DLAR = 0xC5ACCE55U; // unlock the SCS, on parts that implement the software lock
     DWT->CYCCNT = 0U;
