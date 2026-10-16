@@ -18,7 +18,7 @@ import os
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -328,11 +328,39 @@ def corpus3() -> list[Case]:
     return cases
 
 
+def corpus4() -> list[Case]:
+    """What else a generator might emit from SRAMX: literals, calls, stack, masking, arithmetic."""
+    d = lambda name, body, setup="": Case(name, body, setup, drained=True)  # noqa: E731
+    w = lambda n: rep("mov.w r12, r12", n)  # noqa: E731
+    cases = []
+    for n in (1, 2, 4):
+        # A literal in the code itself is a data access on the bus the code is fetched over.
+        cases.append(d(f"E ldr literal x{n}", rep("ldr.w r0, 8f", n) + "\n    b.w 9f\n    .balign 4\n8:  .word 0x12345678\n9:"))
+        cases.append(d(f"E ldr literal; 2; use x{n}", "\n".join(["    ldr.w r0, 8f\n" + w(2) + "\n    orr.w r1, r1, r0"] * n) + "\n    b.w 9f\n    .balign 4\n8:  .word 0x12345678\n9:"))
+        cases.append(d(f"E push/pop {n}", f"    push {{{','.join(f'r{i}' for i in range(n))}}}\n    pop {{{','.join(f'r{i}' for i in range(n))}}}"))
+        if n > 1:
+            cases.append(d(f"E ldm sp {n}", f"    ldm.w sp, {{{','.join(f'r{i}' for i in range(n))}}}"))
+            cases.append(d(f"E stm sp {n}", f"    stm.w sp, {{{','.join(f'r{i}' for i in range(n))}}}"))
+        cases.append(d(f"E ldrd/strd x{n}", rep("ldrd r0, r1, [sp, #8]", n) + "\n" + rep("strd r0, r1, [sp, #8]", n)))
+        cases.append(d(f"E mov movw/movt x{n}", rep("movw r0, #0x1234\n    movt r0, #0x5678", n)))
+        cases.append(d(f"E mul x{n}", rep("mul r0, r0, r0", n)))
+        cases.append(d(f"E ubfx/bfi x{n}", rep("ubfx r0, r1, #3, #1\n    bfi r1, r0, #7, #1", n)))
+    for k in (0, 1, 2):
+        cases.append(d(f"E bl; {k}; bx lr", f"    mov r3, lr\n    bl 7f\n    b.w 9f\n7:\n{w(k)}\n    bx lr\n9:  mov lr, r3"))
+        cases.append(d(f"E blx reg; {k}; bx lr", f"    mov r3, lr\n    adr r0, 7f + 1\n    blx r0\n    b.w 9f\n    .balign 4\n7:\n{w(k)}\n    bx lr\n9:  mov lr, r3"))
+    cases.append(d("E cpsid/cpsie", "    cpsid i\n    cpsie i"))
+    cases.append(d("E mrs/msr primask", "    mrs r0, primask\n    cpsid i\n    msr primask, r0"))
+    cases.append(d("E cpsid; str GPIO", "    cpsid i\n    str.w r5, [r9]\n    cpsie i"))
+    cases.append(d("E udiv", "    movs r0, #100\n    movs r1, #7\n    udiv r2, r0, r1"))
+    cases.append(d("E it eq; moveq x2", "    cmp r0, r0\n    it eq\n    moveq r1, #1\n    it ne\n    movne r1, #2"))
+    return cases
+
+
 def run_corpus(labs: dict, arena: int, offset: int, pads: list[int], repeats: int, select: str = "") -> dict:
     """Every case on every lab at every padding; returns {case: {"lab pad": "cycles[/other]"}}."""
     results: dict[str, dict[str, str]] = {}
     names = list(labs)
-    cases = [c for c in (corpus() + corpus3()) if select in c.name]
+    cases = [c for c in (corpus() + corpus3() + corpus4()) if select in c.name]
     print(f"  {'case':<44}" + "".join(f"{n + ' ' + str(p):>10}" for p in pads for n in names))
     for case in cases:
         row = {}
@@ -554,6 +582,176 @@ def swd_write_asm(period: int, lead: int, value: int, request: int = 0x05) -> st
         + "    ldr r1, [r4]\n"
         + "\n".join("    " + line for line in lines)
         + "\n    ldr r0, [r4]\n    subs r0, r0, r1\n    movs r1, #0\n    pop {r4-r11, pc}\n"
+    )
+
+
+@dataclass
+class Schedule:
+    """A SWD sequence laid out cycle by cycle, from the timing model alone.
+
+    Every instruction is a 32-bit encoding costing one cycle from SRAMX, so a slot is a cycle.
+    `samples` lists, for each transfer, where its target bits land in the sample buffer.
+    """
+
+    period: int
+    latency: int
+    slots: dict = field(default_factory=dict)
+    samples: list = field(default_factory=list)
+    t: int = 0  # the cycle the next clock starts on
+    nbuf: int = 0
+
+    def put(self, at: int, insn: str) -> None:
+        if at in self.slots:
+            raise ValueError(f"cycle {at} is taken by {self.slots[at]!r}; cannot place {insn!r}")
+        self.slots[at] = insn
+
+    def free(self, at: int, low: int | None = None) -> int:
+        """The first empty cycle from `at`. With `low`, also keep off the edge and data cycles
+        of the uniform clocks that have not been laid yet, which start at `self.t`."""
+        while at in self.slots or (low is not None and at >= self.t and (at - self.t) % self.period in (0, low)):
+            at += 1
+        return at
+
+
+def swd_schedule(period: int, transfers: list, latency: int = 7) -> Schedule:
+    """Place a list of SWD transfers on a clock of `period` cycles.
+
+    `transfers` holds ("w", request, value) and ("r", request). Every clock is `period` cycles,
+    falling at its start and rising `low` cycles in. A probe-driven bit's SWDIO store sits one
+    cycle after the falling edge. A target bit is sampled at the centre of the window the model
+    gives, `latency` to `period + latency - 1` cycles after the store that launched it, moved
+    off any cycle an edge already holds, and stored to the buffer at r1 by the next free cycle.
+    Where the probe hands the wire over or takes it back, the next clock waits for every sample
+    still outstanding: that lengthens one clock and never shortens any.
+    """
+    if period < 4:
+        raise ValueError("a read clock needs four instructions: period >= 4")
+    low = period // 2
+    sched = Schedule(period, latency)
+    regs = ("r0", "r12", "lr")
+    outstanding = []  # (register, cycle of its load) not yet stored
+
+    def clock(data_reg=None):
+        start = sched.t
+        sched.put(start, "str.w r5, [r10]")
+        if data_reg is not None:
+            sched.put(start + 1, f"strb.w {data_reg}, [r8, #2]")
+        sched.put(start + low, "str.w r5, [r9]")
+        sched.t = start + period
+        return start + low  # the rising edge
+
+    def sample(rise: int, index: int):
+        # Nearest free cycle to the centre of the window, never outside it. Later clocks are
+        # uniform, so their edges fall on known cycles: keep off those too. They are the
+        # target's clocks, with no SWDIO store: the probe drives again only after settle().
+        def edge_like(c):
+            return (c - (sched.t - period)) % period in (0, low)
+        window = range(latency, period + latency)
+        for d in sorted(window, key=lambda d: (-min(d - latency, period + latency - 1 - d), d)):
+            at = rise + d
+            if at in sched.slots or (at >= sched.t and edge_like(at)):
+                continue
+            reg = regs[index % 3]
+            sched.put(at, f"ldrb.w {reg}, [r8, #2]")
+            outstanding.append((reg, at, sched.nbuf))
+            sched.nbuf += 1
+            return at
+        raise ValueError(f"no cycle in the window for a sample after the edge at {rise}")
+
+    def settle():
+        # Store every outstanding sample, then start the next clock after the last one.
+        last = sched.t - 1
+        for reg, at, slot in outstanding:
+            st = sched.free(at + 1, low)
+            sched.put(st, f"strb.w {reg}, [r1, #{slot}]")
+            last = max(last, st)
+        outstanding.clear()
+        sched.t = max(sched.t, last + 1)
+
+    def flush_due():
+        # A sample register is reused three samples later; store any sample that has to go.
+        while len(outstanding) > 2:
+            reg, at, slot = outstanding.pop(0)
+            st = sched.free(at + 1, low)
+            sched.put(st, f"strb.w {reg}, [r1, #{slot}]")
+
+    def op(insn):
+        sched.put(sched.free(sched.t), insn)
+        sched.t = max(sched.t, max(c for c, i in sched.slots.items() if i == insn) + 1)
+
+    for tr in transfers:
+        kind, request = tr[0], tr[1]
+        parity = bin(request & 0x0F).count("1") & 1
+        packet = [1, request & 1, (request >> 1) & 1, (request >> 2) & 1, (request >> 3) & 1, parity, 0, 1]
+        for bit in packet:
+            clock("r5" if bit else "r6")
+        op("str.w r3, [r10]")  # TXEN off
+        op("str.w r2, [r11, #0x80]")  # SWDIO input
+        first = sched.nbuf
+        rise = clock()  # turnaround: the target launches ack0 on this edge
+        bits = 3 if kind == "w" else 36
+        for k in range(bits):
+            nxt = clock()
+            sample(rise, k)
+            flush_due()
+            rise = nxt
+        clock()  # the turnaround after the acknowledge or after parity
+        settle()
+        if kind == "r":
+            op("str.w r2, [r11]")
+            op("str.w r3, [r9]")
+            op("strb.w r5, [r8, #2]")
+        else:
+            op("str.w r2, [r11]")
+            op("str.w r3, [r9]")
+            value = tr[2]
+            data = [(value >> i) & 1 for i in range(32)] + [bin(value).count("1") & 1]
+            for bit in data:
+                clock("r5" if bit else "r6")
+            op("strb.w r5, [r8, #2]")
+        sched.samples.append((kind, first, sched.nbuf - first))
+    # Idle clocks with SWDIO low so the last write completes, then leave it high.
+    op("strb.w r6, [r8, #2]")
+    for _ in range(8):
+        clock()
+    op("strb.w r5, [r8, #2]")
+    return sched
+
+
+def schedule_asm(sched: Schedule) -> str:
+    """The schedule as code. A run of three or more empty cycles becomes a counted loop on r7,
+    which costs exactly three cycles an iteration: every instruction here is 32-bit, so every
+    loop head is word-aligned. The data registers are r6 for 0 and r5, the clock mask, for 1."""
+    first, last = min(sched.slots), max(sched.slots)
+    lines = []
+    c = first
+    while c <= last:
+        if c in sched.slots:
+            lines.append(sched.slots[c])
+            c += 1
+            continue
+        run = 0
+        while c + run <= last and c + run not in sched.slots:
+            run += 1
+        n = run // 3
+        if n >= 1:
+            label = f"L{c}"
+            lines += [f"movw r7, #{n}", f"{label}: subs.w r7, r7, #1", f"bne.w {label}"]
+        lines += ["mov.w r6, r6"] * (run - 3 * n)
+        c += run
+    return (
+        "push {r4-r11, lr}\n    mov r5, r0\n"
+        + const("r4", CYCCNT)
+        + const("r8", GPIO_B0)
+        + const("r9", GPIO_SET0)
+        + const("r10", GPIO_CLR0)
+        + const("r11", GPIO_DIRSET0)
+        + f"    mov.w r2, #{1 << PIN_SWDIO}\n    mov.w r3, #{1 << PIN_TXEN}\n"
+        + "    mov.w r6, #0\n"
+        + "    .balign 4\n    mov r12, r12\n"
+        + "    ldr r0, [r4]\n    push {r0}\n    .balign 4\n"
+        + "\n".join(("" if ":" in line else "    ") + line for line in lines)
+        + "\n    ldr r0, [r4]\n    pop {r1}\n    subs r0, r0, r1\n    movs r1, #0\n    pop {r4-r11, pc}\n"
     )
 
 
