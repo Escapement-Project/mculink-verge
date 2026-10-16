@@ -501,8 +501,9 @@ Two attempts, and the flash is why neither landed.
 `-finline-limit=2000` on the two cJTAG translation units produces a **byte-identical image**:
 link-time optimisation decides inlining at link time and never sees a per-file compile flag.
 
-`__attribute__((flatten))` on the block function does work, and was measured on the paced copy
-alone: **+1.9% and +2.3% at 10 MHz, +0.2% and +3.9% at 50, for 64,564 more bytes.** That is 59%
+`__attribute__((flatten))` on the block function does work, and covers both copies at once --
+`cjtag_jtag_dp_fast.c` is an include of the paced file with different defines, so one define
+reaches both: **+1.9% and +2.3% at 10 MHz, +0.2% and +3.9% at 50, for 64,564 more bytes.** That is 59%
 more image for at most 4% of the slowest wire, and `flatten` is why -- it inlines transitively,
 not just the transfer. The surgical version would be `always_inline` on the transfer only, and
 that transfer is ARM's `JTAG_DP.c`, compiled unchanged three times.
