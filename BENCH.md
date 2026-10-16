@@ -36,13 +36,32 @@ three states under "The probe can measure the target" below.
 10-pin cable is unplugged from its MSPM0L1306. The analyser is still on the SWD-era map: D0-D2 on
 our probe, D3 our J8 marker, D4-D6 stock's. The JTAG plan below moves it.
 
-## Next session: the JTAG bench
+## Next session: cJTAG on the CC13xx, then four-wire through it
+
+**Decided 2026-10-16: two-pin first, on the CC13xx boards.** The pair is already instrumented, and
+the J-Link is a known-good probe on the same wires, so every capture of ours has a working one to
+diff against. That is plan steps 8 and 9 below.
+
+**Four-wire JTAG comes after, on the same part.** probe-rs's `ctag_to_jtag` switches a CC13xx out
+of its power-up two-pin mode into four-pin, and the board routes TDI and TDO (the J-Link reference
+captures have both on the analyser). Once the two-pin path is trusted, four-wire is the same TAP
+behind the same activation with two more wires live.
+
+**The NUCLEO-U575ZI-Q is set aside for JTAG**: TDI needs two solder bridges changed, and the
+board is not to be permanently modified. It stays useful as the fast SWD target, which needs
+jumpers only (JP1 on, JP2 off, JP6 [7-8] with USB-C power): see "The STM32U575 is that faster
+target".
+
+**Analyser, at the target**: the four-wire map below serves both halves. D1 TMSC, D2 TCKC, D3 our
+marker, D4 TDI and D5 TDO, which stay flat throughout a two-pin run and are the check that it
+really is two-pin. `find_oscan.py` and `la_tap.py` take channel numbers, so the reference
+captures' D0-D3 order does not need copying.
+
+## Four-wire JTAG: harness, taps, hazards, and the Nucleo
 
 **One target, moved between the two probes: the NUCLEO-U575ZI-Q** (MB1549), the board the embassy
-`examples/stm32u575` crate runs on. probe-rs knows the chip as `STM32U575ZI`. It was called a
-U585ZI when this bench was planned, so check the marking. The two are pin-identical in LQFP144,
-but UM2861 lists only the U575ZI and U5A5ZJ for this board. It is a Cortex-M33 behind an SWJ-DP,
-so it answers four-wire JTAG out of reset: TMS on PA13, TCK PA14, TDI PA15, TDO PB3, and NRST.
+`examples/stm32u575` crate runs on. probe-rs knows the chip as `STM32U575ZI`. It is a
+Cortex-M33 behind an SWJ-DP, so it answers four-wire JTAG out of reset: TMS on PA13, TCK PA14, TDI PA15, TDO PB3, and NRST.
 nTRST (PB4) has no pin on J6 or on the Nucleo's debug header and stays on its internal pull-up.
 The MSPM0L1306 pair stays out of this.
 
@@ -195,7 +214,7 @@ says otherwise:
 4. The per-transfer overhead positions, and the rate ladder with `dap.py limit`.
 5. End to end through probe-rs, ABAB.
 
-The two-pin half (plan steps 8 and 9) still needs a CC13xx and is not part of this.
+The two-pin half (plan steps 8 and 9) comes first; see the section above.
 
 ## Where the bench stood before that
 
@@ -574,6 +593,14 @@ The MSPM0L1306 on this bench connects at 1, 5 and 10 MHz and fails to connect at
 50 MHz. **Step 5 cannot sweep above 10 MHz here**, so the steps the specialisation work aims at
 sit above anything this target will answer. Sizing that work needs either a faster target or a
 capture with no target attached at all, which `tools/dap.py sweep` already does.
+
+**The STM32U575 is that faster target.** Its datasheet (DS13737 Rev 10, Tables 152 and 153) gives
+SWCLK up to 66.5 MHz and TCK up to 38 MHz at 2.7 to 3.6 V. Both figures come from
+characterisation at 30 pF, so `dap.py limit` through the real harness is the number to trust.
+It also has 786 KB of SRAM against the L1306's 4 KiB, which lifts the transfer-size cap on
+`swd-throughput`. SWD needs none of the TDI rework. The nRF54L family is no help here: the
+nRF54L15 datasheet (v0.7) caps SWDCLK at 8 MHz, the same band this MSPM0 fails in. The nRF54LM20's
+own figure was not checked.
 
 A failed connect still clocks the wire for five seconds while probe-rs retries, and those groups
 are not worth reading: the retry changes the requested rate, so the period in them is not the one
