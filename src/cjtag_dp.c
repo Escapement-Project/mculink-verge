@@ -11,18 +11,8 @@
 
 #include "DAP.h"
 #include "cjtag.h"
+#include "jtag_dp.h"
 
-extern void jtag4_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo);
-extern void jtag4_IR(uint32_t ir);
-extern uint32_t jtag4_ReadIDCode(void);
-extern void jtag4_WriteAbort(uint32_t data);
-extern uint8_t jtag4_Transfer(uint32_t request, uint32_t* data);
-
-extern void cjtag_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo);
-extern void cjtag_IR(uint32_t ir);
-extern uint32_t cjtag_ReadIDCode(void);
-extern void cjtag_WriteAbort(uint32_t data);
-extern uint8_t cjtag_Transfer(uint32_t request, uint32_t* data);
 
 void JTAG_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo) {
     if (cJTAG_Active()) {

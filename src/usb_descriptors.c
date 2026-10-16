@@ -125,7 +125,7 @@ uint8_t const* tud_descriptor_bos_cb(void) { return desc_bos; }
 
 // clang-format off: the layout mirrors the descriptor structure, which is the only thing that
 // makes these bytes readable.
-uint8_t const desc_ms_os_20[] = {
+static uint8_t const desc_ms_os_20[] = {
     // Set header
     U16_TO_U8S_LE(0x000A), U16_TO_U8S_LE(MS_OS_20_SET_HEADER_DESCRIPTOR),
     U32_TO_U8S_LE(0x06030000), U16_TO_U8S_LE(MS_OS_20_DESC_LEN),

@@ -2,8 +2,9 @@
  *
  * CMSIS-DAP leaves 0x80..0x9F to the probe, so anything from 0x82 up is free.
  *
- * What stock's 0x80 and 0x81 do is not known, and this firmware does not implement them. Any
- * LinkServer feature that depends on them will not work here.
+ * Stock answers vendor 0x80 and 0x81.
+ * Neither is implemented here, so any LinkServer feature resting on
+ * them will not work against this image.
  */
 #include <string.h>
 
@@ -24,38 +25,36 @@
 #define CJTAG_INFO_VERSION 1U
 
 uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
-    uint32_t num = (1U << 16) | 1U; // one request byte consumed, one response byte produced
+    const uint8_t id = request[0];
 
-    *response++ = *request;
+    // The echoed command id. Every handled case keeps it; the default case replaces it.
+    response[0] = id;
 
-    switch (*request++) {
+    switch (id) {
     case ID_VENDOR_CJTAG_INFO: {
         // magic, format version, and whether OScan1 is active right now
-        memcpy(response, CJTAG_INFO_MAGIC, sizeof(CJTAG_INFO_MAGIC) - 1U);
-        response += sizeof(CJTAG_INFO_MAGIC) - 1U;
-        *response++ = (uint8_t)CJTAG_INFO_VERSION;
-        *response++ = cJTAG_Active() ? 1U : 0U;
-        num += sizeof(CJTAG_INFO_MAGIC) - 1U + 2U;
-        break;
+        uint8_t* out = response + 1;
+        memcpy(out, CJTAG_INFO_MAGIC, sizeof(CJTAG_INFO_MAGIC) - 1U);
+        out += sizeof(CJTAG_INFO_MAGIC) - 1U;
+        *out++ = (uint8_t)CJTAG_INFO_VERSION;
+        *out++ = cJTAG_Active() ? 1U : 0U;
+        return (1U << 16) | (uint32_t)(out - response);
     }
 
-    case ID_VENDOR_CJTAG_CONTROL: {
-        uint8_t enable = *request;
-        num += 1U << 16; // the mode byte
-
-        if (enable != 0U) {
+    case ID_VENDOR_CJTAG_CONTROL:
+        if (request[1] != 0U) {
             cJTAG_Activate();
         } else {
             cJTAG_Deactivate();
         }
-        *response = DAP_OK;
-        num += 1U;
-        break;
-    }
+        response[1] = DAP_OK;
+        return (2U << 16) | 2U; // the id and the mode byte in, the id and a status out
 
     default:
-        return (1U << 16) | 1U; // the caller turns an unhandled id into ID_DAP_Invalid
+        // DAP_ProcessCommand hands this return value straight back to the host, so an id we
+        // do not answer has to say so itself. A host that got its own id back would read
+        // that as success.
+        response[0] = ID_DAP_Invalid;
+        return (1U << 16) | 1U;
     }
-
-    return num;
 }

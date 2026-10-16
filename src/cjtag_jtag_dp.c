@@ -21,6 +21,7 @@
 
 #include "DAP.h"
 #include "cjtag.h"
+#include "jtag_dp.h"
 
 static uint32_t staged_tms;
 static uint32_t staged_tdi;
@@ -39,15 +40,9 @@ static inline uint32_t cjtag_capture(void) {
     return captured_tdo;
 }
 
-// The entry points this copy produces, declared so -Wmissing-prototypes is satisfied before the
-// renaming macros below take effect. The dispatcher in cjtag_dp.c owns the real names.
-void cjtag_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo);
-void cjtag_IR(uint32_t ir);
-uint32_t cjtag_ReadIDCode(void);
-void cjtag_WriteAbort(uint32_t data);
-uint8_t cjtag_Transfer(uint32_t request, uint32_t* data);
-
-// The entry points this copy produces. The dispatcher in cjtag_dp.c owns the real names.
+// The names JTAG_DP.c's five entry points take in this copy. jtag_dp.h, included above, has
+// already declared them, which is what satisfies -Wmissing-prototypes. The four static helpers
+// are renamed too, so a map file and a debugger can tell the two copies apart.
 #define JTAG_Sequence cjtag_Sequence
 #define JTAG_IR cjtag_IR
 #define JTAG_ReadIDCode cjtag_ReadIDCode
