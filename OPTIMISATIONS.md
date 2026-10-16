@@ -401,10 +401,17 @@ landed on that wall from different directions, and every one is recorded above: 
 allocator's own knobs (`-fsched-pressure` and `-fno-schedule-insns2` change nothing,
 `-fira-algorithm=priority` costs 2%).
 
+Four-wire JTAG is the same wall with one more spill on it. Its gap is 51 cycles, and alongside the
+same response pointer and loop counter it reloads the **request value itself** from the stack and
+decomposes it into four values once a word. On SWD that value stays in a register. So the JTAG
+loop is a notch further over the edge, which is also why its numbers move by up to 1.3% when
+something else in the image changes.
+
 **Anything that does not reduce register pressure will land here too.** What would reduce it is
 shortening the unrolled data phase, and that trades against the wire: a loop costs a compare and a
-branch per bit, which is a third of a read bit. Measure that trade before trying anything else in
-this section.
+branch per bit, which is a third of a read bit and would have to be won back from a 46-cycle gap
+that is 15% of a word. The arithmetic says no, but it is the only lever left, so measure it before
+trying anything else in this section.
 
 ### 2. DAP_Transfer spends a quarter of its time not clocking
 
