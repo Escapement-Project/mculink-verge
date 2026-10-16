@@ -348,10 +348,22 @@ def check_clocks(c: Checker, elf: str) -> None:
     probe.call("vcom_init")
     console = probe.call("CLOCK_GetFlexCommClkFreq", 0) if "CLOCK_GetFlexCommClkFreq" in probe.sym else 0
     c.check(console != 0, "the console Flexcomm has no clock")
-    # Only SWO's figure is exact. The console's Flexcomm runs through a fractional divider the
-    # board support programmes before any of this, and the register model starts it at zero, so
-    # on hardware the console reads lower than it does here. Non-zero is the claim worth making.
-    c.note(f"after boot: SWO Flexcomm {swo / 1e6:g} MHz, console Flexcomm non-zero")
+    c.check(
+        console == 96_000_000,
+        f"the console Flexcomm reads {console} Hz; the fractional divider is not back to one",
+    )
+    c.note(f"after boot: SWO Flexcomm {swo / 1e6:g} MHz, console Flexcomm {console / 1e6:g} MHz")
+
+    # What a host can actually ask the console for. The driver accepts anything within 3%, which
+    # leaves a link no room for the other end's error, so check the rates against a tighter bound.
+    worst = max(
+        (abs(nxp_baudrate(console, r)[0] - r) / r, r) for r in (9600, 115200, 921600, 1_000_000, 3_000_000)
+    )
+    c.check(
+        worst[0] < 0.01,
+        f"the console is {worst[0] * 100:.2f}% out at {worst[1]} baud, which leaves a link nothing",
+    )
+    c.note(f"console baud error at worst {worst[0] * 100:.2f}%, at {worst[1]}")
 
 
 def main() -> int:

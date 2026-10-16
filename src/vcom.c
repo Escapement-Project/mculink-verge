@@ -39,6 +39,11 @@ static void vcom_configure(uint32_t baud, uint8_t stop_bits, uint8_t parity, uin
 
 __attribute__((noinline)) void vcom_init(void) {
     CLOCK_AttachClk(kFRO_HF_DIV_to_FLEXCOMM0);
+    // The board support leaves Flexcomm 0's fractional divider set for its own logging clock,
+    // which puts this at 61.44 MHz rather than 96. Every common rate is still within the 3% the
+    // driver accepts, but at a megabaud and above it is 2.40% out, and a link needs room for the
+    // target's error too. A multiplier of zero is a ratio of one.
+    CLOCK_SetClkDiv(kCLOCK_DivFlexFrg0, 0U, false);
     IOCON_PinMuxSet(IOCON, VCOM_PORT, VCOM_RXD_PIN, VCOM_PIN_MODE);
     IOCON_PinMuxSet(IOCON, VCOM_PORT, VCOM_TXD_PIN, VCOM_PIN_MODE);
     vcom_configure(VCOM_DEFAULT_BAUD, 1U, 0U, 8U);
