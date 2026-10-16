@@ -70,6 +70,16 @@ addresses a probe by VID:PID alone, so **only one unit may be in ISP mode at a t
 That script is also the recovery path from a bad image of ours, so the sequence is: fit the jumper,
 plug in, flash, unplug, remove the jumper, plug in.
 
+`uv run tools/flash.py` writes our image the same way and verifies it; `--check` says what every
+attached unit is running without touching any of them. **Each reflash costs a pair of hands**,
+which is the one step in a measure-change-measure loop that cannot be scripted. A vendor command
+that re-enters the ROM bootloader would remove it, and the jumper stays the
+recovery route for an image that will not enumerate.
+
+**Reading flash back to verify stops at the last fully programmed page.** Erased flash on this
+part has no valid ECC, so a read that runs past the image fails with `FLASH Driver: ECC Error` and
+drops the bootloader off the bus. Round the length down to a multiple of 512.
+
 **`P0_5` is both LED1 and ISP1.** A unit that keeps coming up as `1fc9:0021` and never runs our
 firmware has the jumper still on. That is the first thing to check when a freshly flashed probe
 does not appear, and it is more likely than anything in the failure table below.
