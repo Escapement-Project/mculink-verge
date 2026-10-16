@@ -551,7 +551,7 @@ def check_identity(c: Checker, elf: str) -> None:
 
 
 def check_sample_probe(c: Checker, elf: str) -> None:
-    """Vendor 0x87 frames a DPIDR read the way a target expects, with the sample on either side.
+    """Vendor 0x87 frames a DPIDR read the way a target expects, in both shapes and every position.
 
     The emulator's target hands out bits in order and has no wire delay, so both sample positions
     read the same word. What this checks is the framing and the counting, and that the command
@@ -571,7 +571,7 @@ def check_sample_probe(c: Checker, elf: str) -> None:
         c.problems.append(f"vendor 0x87 ran with no SWD port connected: {refused.hex()}")
 
     probe.command(bytes([0x02, 0x01]))  # Connect, SWD
-    for at in (0xFF, 0, 4):
+    for at in (0xFF, 0, 4, 0x80, 0x84):
         reply = run(0, 4, at, 3, word)
         good, bad_ack, bad_word = (int.from_bytes(reply[i:i + 2], "little") for i in (2, 4, 6))
         if len(reply) != 17 or reply[:2] != b"\x87\x00" or (good, bad_ack, bad_word) != (3, 0, 0):
@@ -579,7 +579,7 @@ def check_sample_probe(c: Checker, elf: str) -> None:
     wrong = run(0, 4, 0xFF, 2, word ^ 1)
     if int.from_bytes(wrong[6:8], "little") != 2 or int.from_bytes(wrong[9:13], "little") != word:
         c.problems.append(f"vendor 0x87 did not report a mismatched word: {wrong.hex()}")
-    for fill, at in ((49, 0), (4, 5)):
+    for fill, at in ((33, 0), (4, 5), (4, 0x85)):
         reply = run(0, fill, at, 1, word)
         if len(reply) < 2 or reply[1] == 0x00:
             c.problems.append(f"vendor 0x87 accepted fill {fill} with the sample at {at}")
