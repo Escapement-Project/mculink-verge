@@ -834,6 +834,21 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
             elif open(path).read() != body:
                 failures.append(f"{name}: wire events differ from the baseline")
 
+    # The count a block reply carries, at the sizes the traces above do not reach. It is derived
+    # from the response pointer rather than counted, so one word and a full packet are the two
+    # that would show an off-by-one, and both are outside every other case here.
+    for wire, (label, read) in itertools.product(CHECK_WIRES, (("read", True), ("write", False))):
+        for words in (1, 2, 3, 127):
+            _, reply, _ = measure(elf, wire, 10_000_000, words, read, model)
+            want = 4 + (4 * words) if read else 4
+            got_words = reply[1] | (reply[2] << 8)
+            if got_words != words:
+                failures.append(f"{wire} {label}: a {words}-word block replied {got_words} words")
+            elif len(reply) != want:
+                failures.append(f"{wire} {label}, {words} words: reply is {len(reply)} bytes, wanted {want}")
+            elif reply[3] != 1:
+                failures.append(f"{wire} {label}, {words} words: status 0x{reply[3]:02x}, wanted OK")
+
             if wire == "cjtag" and counts.moves_while_high:
                 failures.append(
                     f"{wire} {label}: {counts.moves_while_high} transitions while the clock was"
