@@ -42,9 +42,10 @@ All costs in core cycles at 150 MHz (6.67 ns). Issue cycle = cycle an instructio
   udiv: 5 at 100/7 (early termination by operand size; keep out of timed code). `it`: 0 cycles;
   an IT-skipped instruction still costs its cycle (unicorn does not run it; cycles.py issues it).
   bl/blx/bx: as a taken branch. cpsid/cpsie, mrs/msr primask: 1 cycle each.
-- No literal-pool loads in generated code: a literal is a C-AHB data access from SRAMX and steals
-  a fetch slot; the model is up to 2 cycles out on runs of them (12 of 144 corpus-4 misses).
-  Use movw/movt (exact).
+- No literal-pool loads in generated code: a literal is a C-AHB data access from SRAMX. On hw
+  each costs +1 cycle (hidden if a taken branch follows); the model's fetch runs further ahead
+  and is up to 2 cycles light on runs of them (the 10 of 144 corpus-4 misses). Tried and failed:
+  more code-bus slots per access, a prefetch flush, a shallower code-bus queue. Use movw/movt.
 - Loop `subs.w rX, rX, #1; bne.w head`: 3 cycles/iteration + body if `head` is word-aligned
   (4 if the head is a 32-bit instruction at 2 mod 4). Last iteration (fall-through): 2 + body.
 - Store -> pin: identical delay for SET (GPIO+0x2200+4*port), CLR (+0x2280), NOT (+0x2300),

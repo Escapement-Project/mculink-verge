@@ -42,8 +42,8 @@ and none waits for the one before it.
 Use `mov.w rN, rN` as filler. It costs one cycle at every alignment. A NOP does not.
 
 Load constants with `movw` and `movt`, never from a literal pool. A literal is a data access on
-the bus the code is fetched over, so it takes a cycle from fetch, and the model is up to two
-cycles out on a run of them. A counted loop of `subs.w` and `bne.w` costs 3 cycles an iteration plus
+the bus the code is fetched over. On the bench each one costs a cycle unless a taken branch follows
+it, and the model, whose fetch runs further ahead, is up to two cycles light on a run of them. A counted loop of `subs.w` and `bne.w` costs 3 cycles an iteration plus
 its body when its first instruction is word-aligned, and 4 when it straddles a word.
 
 The PPB is the bus the cycle counter sits on. No bit path reads it, but every timing measurement
@@ -130,9 +130,9 @@ it, and from the bus slots data has already taken. `tools/cycles.py --engine` ru
 `--latency 7` adds a SWD target that answers by time and reports every read's distance from both
 ends of its window.
 
-From SRAMX it matches 692 instruction sequences timed in isolation at four alignments, plus 132 of
-144 covering calls, stack, masking, multiplies, divides and IT blocks; the 12 it misses are runs of
-literal loads. It matches 29 pulse trains, every generated read, and every scheduled sequence. It
+From SRAMX it matches 692 instruction sequences timed in isolation at four alignments, plus 134 of
+144 covering calls, stack, masking, multiplies, divides and IT blocks; the 10 it misses are runs of
+literal loads, which a generator has no use for. It matches 29 pulse trains, every generated read, and every scheduled sequence. It
 is a cycle slow on an unconditional branch straight after a read of the cycle counter, which no
 bit path does.
 

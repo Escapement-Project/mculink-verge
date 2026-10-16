@@ -112,8 +112,9 @@ class Engine:
         bus = bus_of(word)
         cycle = max(earliest, self.fetch_free)
         # The buffer holds queue_words words: the one that many back has to be gone first.
-        if len(self.order) >= self.params.queue_words:
-            gone = self.consumed.get(self.order[-self.params.queue_words])
+        depth = self.params.queue_words
+        if len(self.order) >= depth:
+            gone = self.consumed.get(self.order[-depth])
             if gone is not None:
                 cycle = max(cycle, gone + self.params.queue_release)
         while cycle in self.claims.get(bus, ()):
