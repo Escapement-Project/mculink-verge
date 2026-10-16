@@ -42,8 +42,9 @@ tolerated in the command window. A predicted read-edge count of 43 did not match
 ## Current state
 
 Builds. `cmake -B build -G Ninja -DBOARD=mcu_link -DTOOLCHAIN=gcc . && ninja -C build` produces
-`build/mculink_cjtag.{elf,hex,bin}`, 108,736 bytes of text at `-O3` with link-time optimisation and
-the bit paths unrolled. `-DLTO=OFF` and `-DCMAKE_BUILD_TYPE=MinSizeRel` are there for bisecting a
+`build/mculink_cjtag.{elf,hex,bin}`, 229,124 bytes of text at `-O3` with link-time optimisation and
+the bit paths unrolled, 36% of the part's flash. Two thirds of that is flash deliberately traded
+for speed; `OPTIMISATIONS.md` has the two trades and their numbers. `-DLTO=OFF` and `-DCMAKE_BUILD_TYPE=MinSizeRel` are there for bisecting a
 miscompilation.
 
 **Nothing has been flashed or run on hardware yet.** The bench is unavailable; everything below
