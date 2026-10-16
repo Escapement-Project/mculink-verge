@@ -25,6 +25,7 @@
 #include "DAP_config.h"
 
 #include "DAP.h"
+#include "jtag_block.h"
 #include "jtag_dp.h"
 
 // The same shape as JTAG_DP.c's, so the two can be read side by side.
@@ -159,108 +160,20 @@
         return ((uint8_t)ack);                                                             \
     }
 
-/** ARM's DAP_JTAG_TransferBlock, with the transfer inlined into the loop. */
-#define JTAG_TransferBlockFunction(speed)                                                         \
-    static uint32_t JTAG_TransferBlock##speed(const uint8_t* request, uint8_t* response) {        \
-        uint32_t request_count;                                                                   \
-        uint32_t request_value;                                                                   \
-        uint32_t response_count = 0U;                                                             \
-        uint32_t response_value = 0U;                                                             \
-        uint8_t* response_head = response;                                                        \
-        uint32_t retry;                                                                           \
-        uint32_t data;                                                                            \
-        uint32_t ir;                                                                              \
-                                                                                                  \
-        response += 3;                                                                            \
-        DAP_TransferAbort = 0U;                                                                   \
-                                                                                                  \
-        DAP_Data.jtag_dev.index = *request++;                                                     \
-        if (DAP_Data.jtag_dev.index >= DAP_Data.jtag_dev.count) {                                 \
-            goto end;                                                                             \
-        }                                                                                         \
-                                                                                                  \
-        request_count = (uint32_t)(*(request + 0) << 0) | (uint32_t)(*(request + 1) << 8);        \
-        request += 2;                                                                             \
-        if (request_count == 0U) {                                                                \
-            goto end;                                                                             \
-        }                                                                                         \
-                                                                                                  \
-        request_value = *request++;                                                               \
-                                                                                                  \
-        /* Select JTAG chain */                                                                   \
-        ir = (request_value & DAP_TRANSFER_APnDP) ? JTAG_APACC : JTAG_DPACC;                      \
-        jtag4_IR(ir);                                                                             \
-                                                                                                  \
-        if ((request_value & DAP_TRANSFER_RnW) != 0U) {                                           \
-            /* Post read */                                                                       \
-            retry = DAP_Data.transfer.retry_count;                                                \
-            do {                                                                                  \
-                response_value = jtag4_Transfer##speed(request_value, NULL);                      \
-            } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort);     \
-            if (response_value != DAP_TRANSFER_OK) {                                              \
-                goto end;                                                                         \
-            }                                                                                     \
-            while (request_count--) {                                                             \
-                if (request_count == 0U) {                                                        \
-                    if (ir != JTAG_DPACC) {                                                       \
-                        jtag4_IR(JTAG_DPACC);                                                     \
-                    }                                                                             \
-                    request_value = DP_RDBUFF | DAP_TRANSFER_RnW;                                 \
-                }                                                                                 \
-                retry = DAP_Data.transfer.retry_count;                                            \
-                do {                                                                              \
-                    response_value = jtag4_Transfer##speed(request_value, &data);                 \
-                } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort); \
-                if (response_value != DAP_TRANSFER_OK) {                                          \
-                    goto end;                                                                     \
-                }                                                                                 \
-                *response++ = (uint8_t)data;                                                      \
-                *response++ = (uint8_t)(data >> 8);                                               \
-                *response++ = (uint8_t)(data >> 16);                                              \
-                *response++ = (uint8_t)(data >> 24);                                              \
-                response_count++;                                                                 \
-            }                                                                                     \
-        } else {                                                                                  \
-            while (request_count--) {                                                             \
-                data = (uint32_t)(*(request + 0) << 0) | (uint32_t)(*(request + 1) << 8) |        \
-                       (uint32_t)(*(request + 2) << 16) | (uint32_t)(*(request + 3) << 24);       \
-                request += 4;                                                                     \
-                retry = DAP_Data.transfer.retry_count;                                            \
-                do {                                                                              \
-                    response_value = jtag4_Transfer##speed(request_value, &data);                 \
-                } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort); \
-                if (response_value != DAP_TRANSFER_OK) {                                          \
-                    goto end;                                                                     \
-                }                                                                                 \
-                response_count++;                                                                 \
-            }                                                                                     \
-            /* Check last write */                                                                \
-            if (ir != JTAG_DPACC) {                                                               \
-                jtag4_IR(JTAG_DPACC);                                                             \
-            }                                                                                     \
-            retry = DAP_Data.transfer.retry_count;                                                \
-            do {                                                                                  \
-                response_value = jtag4_Transfer##speed(DP_RDBUFF | DAP_TRANSFER_RnW, NULL);       \
-            } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort);     \
-        }                                                                                         \
-                                                                                                  \
-    end:                                                                                          \
-        *(response_head + 0) = (uint8_t)(response_count >> 0);                                    \
-        *(response_head + 1) = (uint8_t)(response_count >> 8);                                    \
-        *(response_head + 2) = (uint8_t)response_value;                                           \
-                                                                                                  \
-        return ((uint32_t)(response - response_head));                                            \
-    }
-
+// clang-format off: each of these expands to a function definition, which the formatter reads
+// as a declaration and runs into the next one.
 #undef PIN_DELAY
 #define PIN_DELAY() PIN_DELAY_FAST()
-JTAG_TransferFunction(Fast) JTAG_TransferBlockFunction(Fast)
+JTAG_TransferFunction(Fast)
+JTAG_BLOCK_FUNCTION(JTAG_TransferBlockFast, jtag4_TransferFast, jtag4_IR)
 
 #undef PIN_DELAY
 #define PIN_DELAY() PIN_DELAY_SLOW(DAP_Data.clock_delay)
-    JTAG_TransferFunction(Slow) JTAG_TransferBlockFunction(Slow)
+JTAG_TransferFunction(Slow)
+JTAG_BLOCK_FUNCTION(JTAG_TransferBlockSlow, jtag4_TransferSlow, jtag4_IR)
+    // clang-format on
 
-        uint8_t jtag4_Transfer(uint32_t request, uint32_t* data) {
+    uint8_t jtag4_Transfer(uint32_t request, uint32_t* data) {
     if (DAP_Data.fast_clock) {
         return jtag4_TransferFast(request, data);
     } else {

@@ -26,6 +26,7 @@ void cjtag_IR(uint32_t ir);
 uint32_t cjtag_ReadIDCode(void);
 void cjtag_WriteAbort(uint32_t data);
 uint8_t cjtag_Transfer(uint32_t request, uint32_t* data);
+uint32_t cjtag_TransferBlock(const uint8_t* request, uint8_t* response);
 
 // The same copy again without the pacing, for requests above the switch point.
 void cjtagf_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo);
@@ -33,5 +34,6 @@ void cjtagf_IR(uint32_t ir);
 uint32_t cjtagf_ReadIDCode(void);
 void cjtagf_WriteAbort(uint32_t data);
 uint8_t cjtagf_Transfer(uint32_t request, uint32_t* data);
+uint32_t cjtagf_TransferBlock(const uint8_t* request, uint8_t* response);
 
 #endif

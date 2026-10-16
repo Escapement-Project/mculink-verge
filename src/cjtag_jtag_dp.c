@@ -83,3 +83,23 @@ static inline uint32_t cjtag_capture(void) {
 #define PIN_DELAY_FAST() ((void)0)
 
 #include "JTAG_DP.c"
+
+// The same block loop the four-wire path uses, expanded next to this copy's transfer so the
+// registers and the GPIO addresses are paid for once a block rather than once a word.
+#include "jtag_block.h"
+
+// clang-format off: each of these expands to a function definition.
+JTAG_BLOCK_FUNCTION(CJTAG_NAME(BlockImpl), CJTAG_NAME(Transfer), CJTAG_NAME(IR))
+// clang-format on
+
+/** The same return shape DAP.c's own DAP_TransferBlock produces. */
+uint32_t CJTAG_NAME(TransferBlock)(const uint8_t* request, uint8_t* response) {
+    uint32_t num = CJTAG_NAME(BlockImpl)(request, response);
+
+    if ((*(request + 3) & DAP_TRANSFER_RnW) != 0U) {
+        num |= 4U << 16;
+    } else {
+        num |= (4U + (((uint32_t)(*(request + 1)) | (uint32_t)(*(request + 2) << 8)) * 4)) << 16;
+    }
+    return num;
+}

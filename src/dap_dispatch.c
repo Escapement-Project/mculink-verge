@@ -36,11 +36,15 @@ uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* response) {
             *response = *request;
             return (1U << 16) + 1U + SWD_TransferBlock(request + 1, response + 1);
         }
-        // Four wires only. A two-pin block goes to ARM's processing, which reaches the OScan1
-        // copies through the dispatcher in src/cjtag_dp.c.
-        if ((DAP_Data.debug_port == DAP_PORT_JTAG) && !cJTAG_Active()) {
+        if (DAP_Data.debug_port == DAP_PORT_JTAG) {
             *response = *request;
-            return (1U << 16) + 1U + JTAG_TransferBlock(request + 1, response + 1);
+            if (!cJTAG_Active()) {
+                return (1U << 16) + 1U + JTAG_TransferBlock(request + 1, response + 1);
+            }
+            if (DAP_Data.fast_clock) {
+                return (1U << 16) + 1U + cjtagf_TransferBlock(request + 1, response + 1);
+            }
+            return (1U << 16) + 1U + cjtag_TransferBlock(request + 1, response + 1);
         }
     }
     return arm_DAP_ProcessCommand(request, response);
