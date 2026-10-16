@@ -24,14 +24,24 @@
 #include "DAP_config.h"
 
 #include "DAP.h"
+#include "cjtag.h"
+#include "jtag_dp.h"
 #include "swd_dp.h"
 
 extern uint32_t arm_DAP_ProcessCommand(const uint8_t* request, uint8_t* response);
 
 uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* response) {
-    if ((*request == ID_DAP_TransferBlock) && (DAP_Data.debug_port == DAP_PORT_SWD)) {
-        *response = *request;
-        return (1U << 16) + 1U + SWD_TransferBlock(request + 1, response + 1);
+    if (*request == ID_DAP_TransferBlock) {
+        if (DAP_Data.debug_port == DAP_PORT_SWD) {
+            *response = *request;
+            return (1U << 16) + 1U + SWD_TransferBlock(request + 1, response + 1);
+        }
+        // Four wires only. A two-pin block goes to ARM's processing, which reaches the OScan1
+        // copies through the dispatcher in src/cjtag_dp.c.
+        if ((DAP_Data.debug_port == DAP_PORT_JTAG) && !cJTAG_Active()) {
+            *response = *request;
+            return (1U << 16) + 1U + JTAG_TransferBlock(request + 1, response + 1);
+        }
     }
     return arm_DAP_ProcessCommand(request, response);
 }

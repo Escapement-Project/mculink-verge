@@ -12,6 +12,9 @@
 
 #include <stdint.h>
 
+/** ARM's DAP_JTAG_TransferBlock with the transfer inlined; four-wire only. */
+uint32_t JTAG_TransferBlock(const uint8_t* request, uint8_t* response);
+
 void jtag4_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo);
 void jtag4_IR(uint32_t ir);
 uint32_t jtag4_ReadIDCode(void);

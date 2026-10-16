@@ -45,6 +45,7 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${DAP_SRC}/SW_DP.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_dp.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_dispatch.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_dp_block.c
   ${DAP_SRC}/SWO.c
   ${CMAKE_CURRENT_SOURCE_DIR}/external/lpc55s69-sdk/fsl_usart_cmsis.c
   ${DAP_SRC}/JTAG_DP.c
@@ -86,6 +87,7 @@ set_source_files_properties(${DAP_SRC}/DAP.c PROPERTIES COMPILE_DEFINITIONS
 set_source_files_properties(
   ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_dp.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_dispatch.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_dp_block.c
   PROPERTIES COMPILE_OPTIONS "-funroll-loops"
   )
 
@@ -93,7 +95,7 @@ set_source_files_properties(
 # between four-wire and OScan1. Renaming at compile time rather than patching keeps the submodule
 # at a released tag.
 set_source_files_properties(${DAP_SRC}/JTAG_DP.c PROPERTIES COMPILE_DEFINITIONS
-  "JTAG_Sequence=jtag4_Sequence;JTAG_IR=jtag4_IR;JTAG_ReadIDCode=jtag4_ReadIDCode;JTAG_WriteAbort=jtag4_WriteAbort;JTAG_Transfer=jtag4_Transfer"
+  "JTAG_Sequence=jtag4_Sequence;JTAG_IR=jtag4_IR;JTAG_ReadIDCode=jtag4_ReadIDCode;JTAG_WriteAbort=jtag4_WriteAbort;JTAG_Transfer=arm_jtag4_Transfer"
   )
 
 # Unroll the bit paths. ARM unrolls the packet phases of a transfer by hand but leaves the 32-bit
