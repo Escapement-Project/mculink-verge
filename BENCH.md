@@ -403,12 +403,101 @@ this goes upstream.
 Whether stock answers DAP over HID needs a stock unit and a v1 host. It decides whether
 our HID interface is parity or surplus.
 
+## What the bench measured, 2026-10-16
+
+The firmware runs. It also loses to stock on the wire, by about half, for a reason the emulator
+cannot see.
+
+### Bring-up, steps 1 to 3: all clear
+
+The image boots, enumerates as `MCU-Link Verge CMSIS-DAP`, and answers vendor `0x82` with magic
+`CJTAG`, format 2, flags 0x01 and its build string. The serial came back `CJ6B19D4E7` rather than
+`CJNOUUID`, so **the unique-id read at `0x0009_FC70` works on silicon** -- the single most likely
+thing to stop the device appearing at all. Every `DAP_Info` field matches what `tools/image.py`
+predicted. `rblhost` read all 229,464 bytes back and they are identical to the built image.
+
+SWD works against the MSPM0L1306: RAM and flash read correctly, and the words match what a stock
+probe read from the same addresses. **It connects at 20 MHz, where stock does not.**
+
+### The transfer path is 1.5x slower than stock
+
+Measured on the same target, at the same requested clock, through the same physical probe, with
+only the firmware differing. A 46-clock SWD read transfer, averaged over thousands:
+
+| | data bit | spread |
+| --- | --- | --- |
+| stock | 146.7 ns = 22.00 cycles at 150 MHz | 146-147 ns, uniform |
+| ours | 229.9 ns = 33.10 cycles at 144 MHz | 139-377 ns, a fixed four-bit cycle |
+
+Stock holds one period for the whole data phase. Ours repeats **22, 20, 34, 54 cycles** and does
+it to within a few ns over 3,444 transfers. Our cheapest bits match stock; two of every four stall.
+
+### The emulator is about twice as optimistic as silicon
+
+`uv run tools/cycles.py --wire swd --clock N --words 64` against the wire:
+
+| asked | emulator | silicon | emulator wire | silicon wire |
+| --- | --- | --- | --- | --- |
+| 1 MHz | 150.95 cycles/clock | 161.66 | 0.95 MHz | 0.891 MHz |
+| 5 MHz | 36.95 | 47.60 | 3.90 MHz | 3.025 MHz |
+| 10 MHz | 18.95 | 37.64 | 7.60 MHz | 3.826 MHz |
+| 20 MHz | 12.95 | 24.54 | 11.12 MHz | 5.868 MHz |
+
+About eleven cycles per wire clock that the emulator does not model. It is nearly right at 1 MHz,
+where the delay loop dominates and hides the cost, and twice wrong at 10 and 20 MHz where it does
+not. **Every figure in `OPTIMISATIONS.md` is an emulator figure and inherits this.**
+
+### It is the flash, and that was the one item nobody could size
+
+The emulator's own breakdown puts 65% of the transfer at a single 17-cycle period: the instruction
+stream is uniform and has no four-bit structure in it anywhere. The four-bit stall exists only on
+silicon, so it is not in the code -- it is the memory system fetching it.
+
+That is the item this document already listed as the one thing the emulator cannot model:
+10.7 KB of straight-line unrolled code sitting in flash behind a 144 MHz wait-state setting. It is
+now sized, and it is the largest single effect measured: **the unrolling that cost 120 KB of flash
+is losing to stock.** Stock's bit path keeps one period throughout;
+ours does not.
+
+Two supporting observations. The penalty is a constant 12 and 24 cycles on two of every four bits
+at delay 25, 5 and 2, and nearly vanishes at delay 1 -- a fixed stall, not anything scaled by the
+delay. And our own `DAP_SWJ_Sequence`, which is ARM's compact loop rather than our unrolled code,
+runs its bits at 23.1 cycles where our unrolled transfer needs 33.1. **A tight loop beating the
+unrolled version by 30% is the signature.**
+
+Next step is to run the bit paths from SRAM, which needs a linker script of our own, and to
+re-measure with less unrolling. Until one of those happens, do not trust a ranking in
+`OPTIMISATIONS.md` that depends on cycles per bit.
+
+### How to measure a bit path without a target getting in the way
+
+`uv run tools/dap.py --serial S block --hz N` reads a DP register over and over with
+`DAP_TransferBlock`. Every other way of putting a long transfer on the wire measures something
+else too: a memory read goes through an access port, and **this MSPM0L1306 answers WAIT to every
+flash read**, so probe-rs retries and the capture fills with 13-clock retry stubs instead of data.
+Stock does the same and worse -- 2.4 million clocks against our 1.08 million for the same 512-word
+read. A DP register always answers OK, needs no access port and no memory, so what reaches the
+analyser is the probe's transfer loop and nothing else.
+
+Align on the request pattern rather than assuming a period. A DP `RDBUFF` read is `10111101` on
+SWDIO sampled at the rising edge, an AP `DRW` read is `11111001`, and a transfer is 46 clocks.
+
+### What is still open
+
+- **The stock unit's target is gone.** `QK7RM2VTX8D41` answers `ack 7` to a DPIDR read, so the
+  identical instrument cannot be run on stock. The comparison above is ours on `DAP_TransferBlock`
+  against stock on probe-rs's own AP reads -- the same 46-clock shape and the same measured
+  quantity, but not the same command. Reflash a unit to stock on a live target to close that.
+- **Steps 6 to 10 are untouched**: the console, SWO, cJTAG activation on a CC13xx, the two-pin data
+  read, and the HID parity question.
+- The MSPM0L1306 connects at 1, 5, 10 and 20 MHz through our firmware and refuses 50.
+
 ## Two things only the bench can size
 
-- **Running the bit paths from SRAM.** Unrolling put 10.7 KB of straight-line code in flash behind
-  a 144 MHz wait-state setting. The emulator has no flash model, so this is the one item in
-  `OPTIMISATIONS.md` it cannot size at all. Cheap to try, cannot make the wire slower, needs a
-  linker script of our own rather than the board support's.
+- **Running the bit paths from SRAM.** Sized, and it is the biggest item there is -- see the
+  measurement above. Unrolling put 10.7 KB of straight-line code in flash behind a 144 MHz
+  wait-state setting, and two of every four data bits stall on the fetch. Needs a linker script of
+  our own rather than the board support's. Cannot make the wire slower.
 - **A DAP packet above 512 bytes.** At most 10% and all of it USB round trips, which the emulator
   does not model. It deviates from stock, so check pyOCD and OpenOCD before changing what
   `DAP_Info` reports.

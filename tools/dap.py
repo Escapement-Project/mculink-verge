@@ -34,6 +34,9 @@ DAP_INFO = 0x00
 DAP_CONNECT = 0x02
 DAP_DISCONNECT = 0x03
 DAP_HOST_STATUS = 0x01
+DAP_TRANSFER = 0x05
+DAP_TRANSFER_BLOCK = 0x06
+DAP_SWJ_PINS = 0x10
 DAP_SWJ_CLOCK = 0x11
 DAP_SWJ_SEQUENCE = 0x12
 
@@ -321,6 +324,90 @@ def cmd_blink(args) -> int:
     return 0
 
 
+PIN_NAMES = [(0, "SWCLK/TCK"), (1, "SWDIO/TMS"), (2, "TDI"), (3, "TDO"), (5, "nTRST"), (7, "nRESET")]
+
+
+def show_pins(level: int) -> str:
+    return " ".join(f"{name}={(level >> bit) & 1}" for bit, name in PIN_NAMES)
+
+
+def cmd_pins(args) -> int:
+    """Read the probe's own pin levels, and optionally drive one, without needing a target.
+
+    This separates a probe that is not driving its pins from a probe whose cable has come off:
+    the readback is of the probe's own pin, so it follows a drive even with nothing attached.
+    The wait is always zero -- a non-zero wait spins until the pin reaches the asked level, which
+    hangs the probe when it never does.
+    """
+    probe = one(args)
+    print(f"{probe.serial}  {probe.product}")
+    if args.connect:
+        print(f"  DAP_Connect -> {probe.connect(1)}")
+    read_only = probe.command(bytes([DAP_SWJ_PINS, 0, 0]) + (0).to_bytes(4, "little"))
+    print(f"  as found:  {show_pins(read_only[1])}")
+    if args.drive is not None:
+        select = 1 << args.bit
+        for value in (0, 1):
+            reply = probe.command(
+                bytes([DAP_SWJ_PINS, value << args.bit, select]) + (0).to_bytes(4, "little")
+            )
+            print(f"  drove bit {args.bit} to {value}: {show_pins(reply[1])}")
+    probe.release()
+    return 0
+
+
+def swd_reset(probe: "Probe") -> int:
+    """Put the target's debug port into SWD and leave it addressable.
+
+    Line reset, the JTAG-to-SWD switch word, line reset again, then idle. The DPIDR read that
+    follows is what actually clears the reset condition, and its value says a target answered.
+    """
+    probe.swj_sequence(56, b"\xff" * 7)
+    probe.swj_sequence(16, b"\x9e\xe7")
+    probe.swj_sequence(56, b"\xff" * 7)
+    probe.swj_sequence(8, b"\x00")
+    reply = probe.command(bytes([DAP_TRANSFER, 0, 1, 0x02]))
+    if reply[1] != 1 or reply[2] != 1:
+        raise RuntimeError(f"DPIDR read answered count {reply[1]} ack {reply[2]}")
+    return int.from_bytes(reply[3:7], "little")
+
+
+def cmd_block(args) -> int:
+    """Read one DP register over and over with DAP_TransferBlock, as a clean bit-path instrument.
+
+    Every other way of putting a long transfer on the wire measures something else as well. A
+    memory read goes through an access port, so the target can answer WAIT and the capture fills
+    with retries instead of data. A DP register always answers OK and needs no access port, no
+    memory and in fact no target beyond one that drives the line -- so what reaches the analyser is
+    the probe's own transfer loop and nothing else.
+
+    RDBUFF is the register to pick: reading it has no side effects on the debug port's state.
+    """
+    probe = one(args)
+    print(f"{probe.serial}  {probe.product}")
+    print(f"  DAP_Connect -> {probe.connect(1)}")
+    print(f"  DAP_SWJ_Clock {args.hz} Hz -> {'OK' if probe.swj_clock(args.hz) == 0 else 'failed'}")
+    idcode = swd_reset(probe)
+    print(f"  DPIDR 0x{idcode:08x}")
+    request = 0x0E if args.register == "rdbuff" else 0x02
+    started = time.perf_counter()
+    words = 0
+    for _ in range(args.blocks):
+        reply = probe.command(
+            bytes([DAP_TRANSFER_BLOCK, 0]) + args.words.to_bytes(2, "little") + bytes([request])
+        )
+        count = int.from_bytes(reply[1:3], "little")
+        if count != args.words or reply[3] != 1:
+            print(f"  stopped: block returned {count} words, ack {reply[3]}")
+            break
+        words += count
+    elapsed = time.perf_counter() - started
+    print(f"  {args.blocks} blocks x {args.words} words = {words} transfers in {elapsed * 1e3:.1f} ms")
+    print(f"  {words * 4 / elapsed / 1024:.1f} KiB/s end to end, including USB")
+    probe.release()
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--serial", help="pick one probe when several are attached")
@@ -349,6 +436,19 @@ def main() -> int:
     blink = sub.add_parser("blink", help="flash one unit's LED to identify it by eye")
     blink.add_argument("--seconds", type=float, default=10.0)
     blink.set_defaults(run=cmd_blink)
+
+    pins = sub.add_parser("pins", help="read, and optionally drive, the probe's own pins")
+    pins.add_argument("--connect", action="store_true", help="DAP_Connect first, so pins are outputs")
+    pins.add_argument("--drive", action="store_true", default=None, help="toggle one pin and read back")
+    pins.add_argument("--bit", type=int, default=0, help="which pin to drive, default SWCLK")
+    pins.set_defaults(run=cmd_pins)
+
+    block = sub.add_parser("block", help="repeat a DP read with DAP_TransferBlock")
+    block.add_argument("--hz", type=int, default=10000000)
+    block.add_argument("--words", type=int, default=64, help="transfers per block command")
+    block.add_argument("--blocks", type=int, default=200)
+    block.add_argument("--register", choices=("rdbuff", "dpidr"), default="rdbuff")
+    block.set_defaults(run=cmd_block)
 
     args = parser.parse_args()
     return args.run(args)
