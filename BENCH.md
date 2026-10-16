@@ -37,8 +37,9 @@ ninja -C build                  # build/mculink_cjtag.{elf,hex,bin}
 ninja -C build check            # the gate: wire, descriptors, reply bounds
 ```
 
-The shipping configuration is the default, `-O3` with link-time optimisation, 108,736 bytes of
-text. `-DLTO=OFF` and `-DCMAKE_BUILD_TYPE=Debug` exist for bisecting a miscompilation, and both
+The shipping configuration is the default, `-O3` with link-time optimisation, 229,024 bytes of
+text, 36% of the part's flash. Two thirds of that is flash deliberately traded for speed on the
+two transfer commands. `-DLTO=OFF` and `-DCMAKE_BUILD_TYPE=Debug` exist for bisecting a miscompilation, and both
 change which side of the two-pin pacing line the build lands on.
 
 Stock firmware for recovery: LinkServer's `MCU-LINK_CMSIS-DAP_V3_172.s19`, flashed by
@@ -110,10 +111,13 @@ KiB/s of wire time over a 64-word block. Regenerate with `uv run tools/cycles.py
 
 | asked | SWD read | SWD write | JTAG read | JTAG write | two-pin read | two-pin write |
 | --- | --- | --- | --- | --- | --- | --- |
-| 5 MHz | 326 | 338 | 361 | 381 | 116 | 117 |
-| 10 MHz | 635 | 682 | 685 | 759 | 213 | 218 |
-| 16 MHz | 930 | 1033 | 977 | 1135 | 295 | 304 |
-| 40 MHz | 1776 | 2152 | 1799 | 2462 | 647 | 616 |
+| 5 MHz | 326 | 338 | 361 | 380 | 117 | 119 |
+| 10 MHz | 635 | 682 | 684 | 757 | 217 | 223 |
+| 16 MHz | 930 | 1033 | 975 | 1131 | 304 | 315 |
+| 40 MHz | 1776 | 2152 | 1800 | 2463 | 648 | 639 |
+
+Single-register transfers are a different command and move independently:
+`uv run tools/cycles.py --transfer --words 16` gives 569/613 at 10 MHz and 1439/1705 at 50.
 
 Stock measured 476 read and 502 write at its best setting. Wire time is not throughput: the stock
 capture put the USB gap at about 10% of a transfer at 14 MHz, so treat the table as a ceiling.
