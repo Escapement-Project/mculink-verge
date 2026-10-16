@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["pyusb"]
+# dependencies = ["libusb1", "pyusb"]
 # ///
 """Talk to a CMSIS-DAP v2 probe over its bulk endpoints, without probe-rs in the way.
 
@@ -665,6 +665,9 @@ def cmd_block(args) -> int:
     print(f"  DPIDR 0x{idcode:08x}")
     request = 0x0E if args.register == "rdbuff" else 0x02
     payload = bytes([DAP_TRANSFER_BLOCK, 0]) + args.words.to_bytes(2, "little") + bytes([request])
+    if args.queue:
+        queued_blocks(probe, payload, args.blocks, args.queue, args.words)
+        return 0
     started = time.perf_counter()
     words = 0
     # `--pipeline N` keeps N commands in flight instead of waiting for each reply before sending
@@ -689,6 +692,104 @@ def cmd_block(args) -> int:
     print(f"  {words * 4 / elapsed / 1024:.1f} KiB/s end to end, including USB")
     probe.release()
     return 0
+
+
+def queued_blocks(probe: Probe, payload: bytes, blocks: int, depth: int, words: int) -> None:
+    """Run `blocks` copies of one command with `depth` of them queued in the host controller.
+
+    The synchronous loop in `cmd_block` cannot go deeper than the probe's request slots: a write
+    the probe refuses blocks the only thread, which then never reads the reply that would free a
+    slot. libusb's asynchronous API queues the writes and keeps `depth` reads posted, so the probe
+    takes the next command the moment a slot frees and never waits on the host. That makes this
+    the ceiling any host could reach through the current USB path.
+    """
+    import usb1
+
+    serial = probe.serial
+    number = probe.interface.bInterfaceNumber
+    out_address = probe.out_ep.bEndpointAddress
+    in_address = probe.in_ep.bEndpointAddress
+    size = probe.in_ep.wMaxPacketSize
+    probe.release()
+
+    with usb1.USBContext() as context:
+        handle = None
+        for device in context.getDeviceIterator(skip_on_error=True):
+            if (device.getVendorID(), device.getProductID()) != (0x1FC9, 0x0143):
+                continue
+            candidate = device.open()
+            if candidate.getSerialNumber() == serial:
+                handle = candidate
+                break
+            candidate.close()
+        if handle is None:
+            sys.exit(f"{serial} vanished between setup and the queued run")
+        with handle.claimInterface(number):
+            state = {"sent": 0, "posted": 0, "done": 0, "words": 0, "owed": 0, "error": None}
+            free_out = [handle.getTransfer() for _ in range(depth)]
+            reads = [handle.getTransfer() for _ in range(depth)]
+
+            def send() -> None:
+                if state["sent"] >= blocks:
+                    return
+                if not free_out:
+                    state["owed"] += 1
+                    return
+                transfer = free_out.pop()
+                transfer.setBulk(out_address, payload, callback=on_out, timeout=5000)
+                transfer.submit()
+                state["sent"] += 1
+
+            def on_out(transfer) -> None:
+                free_out.append(transfer)
+                if transfer.getStatus() != usb1.TRANSFER_COMPLETED:
+                    state["error"] = state["error"] or f"write status {transfer.getStatus()}"
+                    return
+                if state["owed"]:
+                    state["owed"] -= 1
+                    send()
+
+            def post(transfer) -> None:
+                transfer.setBulk(in_address, size, callback=on_in, timeout=5000)
+                transfer.submit()
+                state["posted"] += 1
+
+            def on_in(transfer) -> None:
+                if transfer.getStatus() != usb1.TRANSFER_COMPLETED:
+                    state["error"] = state["error"] or f"read status {transfer.getStatus()}"
+                    return
+                reply = transfer.getBuffer()[: transfer.getActualLength()]
+                count = int.from_bytes(reply[1:3], "little")
+                if reply[0] != payload[0] or count != words or reply[3] != 1:
+                    state["error"] = state["error"] or f"reply {bytes(reply[:4]).hex()} to block {state['done']}"
+                    return
+                state["done"] += 1
+                state["words"] += count
+                if state["posted"] < blocks:
+                    post(transfer)
+                send()
+
+            started = time.perf_counter()
+            cpu = time.process_time()
+            for transfer in reads[: min(depth, blocks)]:
+                post(transfer)
+            for _ in range(min(depth, blocks)):
+                send()
+            while state["done"] < blocks and state["error"] is None:
+                context.handleEventsTimeout(1.0)
+            elapsed = time.perf_counter() - started
+            cpu = time.process_time() - cpu
+            if state["error"] is not None:
+                for transfer in reads + [t for t in free_out]:
+                    try:
+                        transfer.cancel()
+                    except usb1.USBError:
+                        pass
+                print(f"  stopped after {state['done']} blocks: {state['error']}")
+            print(f"  {state['done']} blocks x {words} words, {depth} queued, in {elapsed * 1e3:.1f} ms")
+            print(f"  {state['words'] * 4 / elapsed / 1024:.1f} KiB/s, {state['done'] / elapsed:.0f} commands/s, "
+                  f"host CPU {100 * cpu / elapsed:.0f}% of the run")
+        handle.close()
 
 
 SAMPLE_BEFORE_EDGE = 0xFF
@@ -942,6 +1043,8 @@ def main() -> int:
     block.add_argument("--register", choices=("rdbuff", "dpidr"), default="rdbuff")
     block.add_argument("--pipeline", type=int, default=1,
                        help="commands to keep in flight; 1 waits for each reply before sending")
+    block.add_argument("--queue", type=int, default=0,
+                       help="queue this many commands asynchronously instead, so the host never waits")
     block.set_defaults(run=cmd_block)
 
     sample = sub.add_parser("sample", help="sweep where a read samples SWDIO, with vendor 0x87")
