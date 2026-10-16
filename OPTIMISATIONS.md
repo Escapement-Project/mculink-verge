@@ -191,6 +191,32 @@ for three. ARM's reference has the same shape.
 Nothing has been changed. A 3% overshoot is inside any target's margin; 44% is not, and the setting
 that produces it is one the bench has never reached.
 
+## The pacing has no margin, and the compiler decides which side of the line it lands on
+
+A 10 MHz request needs a period of at least 14.4 cycles at 144 MHz. The firmware emits 15 or 14
+depending on nothing more than optimisation flags. Running the gate against all four build
+configurations:
+
+| | text | two-pin at 10 MHz |
+| --- | --- | --- |
+| -O3, LTO (ships) | 66,672 | 9.60 MHz, within |
+| -O3, no LTO | 59,472 | **10.29 MHz, over** |
+| -Os, LTO | 33,128 | **10.29 MHz, over** |
+| -Os, no LTO | 37,600 | 9.60 MHz, within |
+
+The build that ships is on the right side of it, and the two documented escape hatches are not
+reliably. Nothing is wrong with the arithmetic: `Set_Clock_Delay` rounds the delay up and the
+model is sound. What is missing is margin. A period that lands within one cycle of the limit is
+decided by instruction scheduling, and the frame's cost is not something `Set_Clock_Delay` knows
+about -- the two-pin path borrows `clock_delay` without ever telling anyone what a packet costs.
+
+The fix is to give the two-pin frame a pacing calculation of its own, with a cycle of headroom,
+rather than borrowing one calibrated for a four-wire bit. Until then, **check a build before
+flashing it**: `ninja -C build check` is the whole test.
+
+This is the same shape as the four-wire JTAG overshoot above, and the same root cause: one clock
+model serving paths that do not cost the same.
+
 ## Left, ranked
 
 ### 1. A seventh of a read is still spent between transfers
