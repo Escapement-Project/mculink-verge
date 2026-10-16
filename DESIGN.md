@@ -366,10 +366,14 @@ is the summary.
   `CJNOUUID`, so the arithmetic and the uniform-value guard are right. **A bus fault is the part
   that cannot be checked from here**, and it is still the single line most likely to stop the
   device appearing.
-- `IO_PORT_WRITE_CYCLES` is 2 and the emulator says the code costs about 5, which makes every
-  requested clock come out at half to two-thirds. The fix is one constant, but setting it on the
-  model alone risks clocking faster than the host asked for. One analyser capture settles it;
-  `OPTIMISATIONS.md` item 1 has the procedure and the numbers.
+- Whether `IO_PORT_WRITE_CYCLES`, which is 2, is right. **An earlier reading of this was wrong and
+  is worth not repeating**: dividing a whole transfer's cycles by its clock count gives about 5,
+  which looks like the constant is 2.5x too low, and raising it on that basis would have made the
+  probe clock targets *faster* than asked. A transfer is not one rate. Its packet bits, write bits
+  and read bits each run at a different period, and the constant is calibrated against the fastest
+  of them, where it is already about right: SWD asked for 10 MHz measures 9.60. What is actually
+  wrong is that one constant serves three wires that cost different amounts per clock. `PACING.md`
+  traces it through the source, and `BENCH.md` has the capture that settles it.
 - In `cJTAG_Frame`, TDO is sampled while TCKC is low, just before the rising edge, following the
   shape of ARM's `SW_READ_BIT`. Whether the target drives it early enough is an analyser question.
 - `cJTAG_Frame` takes the wire back immediately after the falling edge of the TDO packet. If the
