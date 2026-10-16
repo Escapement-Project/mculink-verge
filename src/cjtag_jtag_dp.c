@@ -67,4 +67,12 @@ static inline uint32_t cjtag_capture(void) {
 #define PIN_SWCLK_TCK_CLR() (frame_open = true)
 #define PIN_SWCLK_TCK_SET() cjtag_emit()
 
+// The frame does its own pacing, so the delays JTAG_DP.c wraps around these no-op clock calls are
+// dead time: eight per frame where six are wanted. Suppressing them is worth 20% of a two-pin bit
+// at a paced clock, and nothing at all on the delay-free path, where they are already empty.
+#undef PIN_DELAY_SLOW
+#undef PIN_DELAY_FAST
+#define PIN_DELAY_SLOW(delay) ((void)(delay))
+#define PIN_DELAY_FAST() ((void)0)
+
 #include "JTAG_DP.c"
