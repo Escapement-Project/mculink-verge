@@ -704,6 +704,29 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
     that is already recorded as known -- a new one is a regression.
     """
     failures = []
+
+    # The activation sequence is the one thing here that has to match a published format rather
+    # than only match itself, and it is driven by a table extracted from OpenOCD's. Recording what
+    # the pin layer actually emits for it catches a change to the table, to the loop that walks it,
+    # or to the buffer handling around it.
+    probe = Machine(elf, Target([]), restart_at=set(), model=model)
+    probe.command(bytes([ID_CONNECT, 2]))
+    # The clock first: DAP_Setup normally leaves a default behind and the emulator skips it, so
+    # without this the pacing loop counts down from zero.
+    probe.command(bytes([ID_SWJ_CLOCK]) + u32(10_000_000))
+    probe.begin()
+    probe.command(bytes([ID_CJTAG_CONTROL, 1]))
+    activation = probe.end()
+    path = os.path.join(BASELINE_DIR, "cjtag-activation.trace")
+    body = "\n".join(activation.trace) + "\n"
+    if bless:
+        os.makedirs(BASELINE_DIR, exist_ok=True)
+        open(path, "w").write(body)
+    elif not os.path.exists(path):
+        failures.append("cjtag-activation.trace: no baseline recorded")
+    elif open(path).read() != body:
+        failures.append("cjtag-activation.trace: the activation sequence changed on the wire")
+
     known_path = os.path.join(BASELINE_DIR, "known-overshoot.txt")
     known = set()
     if os.path.exists(known_path):
@@ -782,7 +805,8 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
         return 1
     print(
         "  all clear: every transfer answered OK with the right data, wire events match,"
-        f" no escape edges, {len(known)} known overshoots unchanged"
+        f" the activation is {activation.tck_rise} clocks unchanged, no escape edges,"
+        f" {len(known)} known overshoots unchanged"
     )
     return 0
 

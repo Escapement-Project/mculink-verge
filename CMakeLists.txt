@@ -113,3 +113,18 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   )
 
 family_configure_device_example(${PROJECT_NAME} noos)
+
+# `ninja -C build check` runs the gate against what was just built. It needs uv, which fetches its
+# own Python and the emulator, so it is a target rather than part of the build.
+find_program(UV_EXECUTABLE uv)
+if(UV_EXECUTABLE)
+  add_custom_target(check
+    COMMAND ${UV_EXECUTABLE} run ${CMAKE_CURRENT_SOURCE_DIR}/tools/cycles.py
+            --check $<TARGET_FILE:${PROJECT_NAME}>
+            --config ${CMAKE_CURRENT_SOURCE_DIR}/src/DAP_config.h
+    DEPENDS ${PROJECT_NAME}
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "Checking the wire against tools/baseline"
+    USES_TERMINAL
+    )
+endif()

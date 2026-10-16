@@ -21,16 +21,18 @@ Nothing here has run on hardware. What stands in for that is an emulated Cortex-
 built image, driven through the real DAP command layer against a modelled target.
 
 ```
-uv run tools/cycles.py --check            # the gate: run this after touching the bit paths
+ninja -C build check                      # the gate, against what was just built
+uv run tools/cycles.py --check            # the same thing by hand
 uv run tools/cycles.py --clock 10 50      # throughput, wire period, where the time goes
 uv run tools/cycles.py --explain          # name the code in the longest gap between edges
 uv run tools/equiv.py <ref.elf> <new.elf> # hold a rewrite to a reference build, case by case
 ```
 
-The gate requires four things of a build: every transfer answers with the right data, the wire
+The gate requires five things of a build: every transfer answers with the right data, the wire
 event stream matches `tools/baseline/` at both clock paths, the two-pin path emits no transition
 while the clock is high, and no wire clocks faster than the host asked for beyond what
-`tools/baseline/known-overshoot.txt` already records. `--bless` rewrites the baseline.
+`tools/baseline/known-overshoot.txt` already records, and the cJTAG activation sequence puts the
+same edges on the wire it always has. `--bless` rewrites the baseline.
 
 `tools/equiv.py` is the heavier check, for replacing code rather than tuning it: it drives two
 builds over 528 SWD cases, 180 four-wire JTAG cases and 120 two-pin cases -- every acknowledge a
