@@ -132,6 +132,27 @@ if(RAMFUNC)
   target_compile_definitions(${PROJECT_NAME} PRIVATE RAMFUNC_BIT_PATHS=1)
 endif()
 
+# Clang reaches for its own compiler-rt start files and runtime, which the distribution only
+# builds for the host. This firmware brings its own reset handler and linker script, so there are
+# no start files to want, and libgcc from the arm-none-eabi toolchain supplies the helpers.
+if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+  # Clang's driver for a bare-metal arm target reaches for compiler-rt start files and libgloss,
+  # neither of which the distribution builds for this triple. Everything needed is in the
+  # arm-none-eabi gcc install instead, so take the libraries from there explicitly. gcc's
+  # multilib for these flags is soft-float v8-m.main, which is what picks the directory.
+  execute_process(COMMAND ${CMAKE_C_COMPILER} --target=arm-none-eabi -print-resource-dir
+                  OUTPUT_VARIABLE _unused ERROR_QUIET)
+  execute_process(COMMAND arm-none-eabi-gcc -mcpu=cortex-m33 -print-libgcc-file-name
+                  OUTPUT_VARIABLE _libgcc OUTPUT_STRIP_TRAILING_WHITESPACE)
+  get_filename_component(_libgcc_dir "${_libgcc}" DIRECTORY)
+  execute_process(COMMAND arm-none-eabi-gcc -mcpu=cortex-m33 -print-multi-directory
+                  OUTPUT_VARIABLE _multi OUTPUT_STRIP_TRAILING_WHITESPACE)
+  target_link_options(${PROJECT_NAME} PRIVATE
+    -nostdlib -nostartfiles -L${_libgcc_dir} -L/usr/arm-none-eabi/lib/${_multi})
+  # As libraries rather than link options, so CMake puts them after the objects that need them.
+  target_link_libraries(${PROJECT_NAME} PRIVATE -Wl,--start-group c_nano nosys gcc -Wl,--end-group)
+endif()
+
 if(MARKER)
   target_compile_definitions(${PROJECT_NAME} PRIVATE MARKER_PINS=1)
 endif()
@@ -177,6 +198,21 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   )
 
 family_configure_device_example(${PROJECT_NAME} noos)
+
+# TinyUSB's hw/bsp/board.c is stdio retargeting and weak board stubs, and this firmware uses
+# none of it: the console is its own CDC interface and nothing here calls printf. It also assumes
+# clang means picolibc and redefines FILE, stdin, stdout and stderr on that basis, which does not
+# compile against the newlib that an arm-none-eabi clang finds here. Dropping the file is what
+# makes the two toolchains build the same sources rather than one of them needing another libc.
+# It arrives as PUBLIC, so it is on both properties and both have to lose it.
+foreach(_property SOURCES INTERFACE_SOURCES)
+  get_target_property(_sources ${PROJECT_NAME} ${_property})
+  if(_sources)
+    list(FILTER _sources EXCLUDE REGEX "/board\\.c$")
+    set_property(TARGET ${PROJECT_NAME} PROPERTY ${_property} ${_sources})
+  endif()
+endforeach()
+
 
 # `ninja -C build check` runs the gate against what was just built. It needs uv, which fetches its
 # own Python and the emulator, so it is a target rather than part of the build.

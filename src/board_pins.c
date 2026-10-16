@@ -1,5 +1,7 @@
 #include "board_pins.h"
 
+#include "bsp/board_api.h"
+
 #include "core_clock.h"
 #include "fsl_clock.h"
 #include "fsl_power.h"
@@ -65,6 +67,13 @@ __attribute__((noinline)) void board_timestamp_init(void) {
     DWT->CYCCNT = 0U;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 }
+
+/** TinyUSB's hook for anything a board needs doing once the stack is up. This one needs nothing.
+ *
+ * Its weak default lives in the hw/bsp/board.c that CMakeLists.txt drops, so with that file gone
+ * the board layer owns it. See the note there for why it is dropped.
+ */
+void board_init_after_tusb(void) {}
 
 /** Digital GPIO, no pull, standard slew: what every debug pin wants.
  *

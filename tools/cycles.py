@@ -75,12 +75,27 @@ def sh(*args: str) -> str:
     return subprocess.run(args, capture_output=True, text=True, check=True).stdout
 
 
+def base_name(symbol: str) -> str:
+    """The name as written, with whatever the compiler appended when it privatised it.
+
+    GCC's link-time optimiser renames a static it has made local to `name.lto_priv.0`, and clang's
+    renames one to `name.llvm.<hash>`. Both are the same symbol a person wrote, and a tool that
+    looks one up by name finds nothing in one toolchain's build and everything in the other's.
+    """
+    for marker in (".lto_priv.", ".llvm.", ".constprop.", ".isra."):
+        cut = symbol.find(marker)
+        if cut > 0:
+            return symbol[:cut]
+    return symbol
+
+
 def symbols(elf: str) -> dict[str, int]:
     out = {}
     for line in sh("arm-none-eabi-nm", elf).splitlines():
         parts = line.split()
         if len(parts) == 3:
             out[parts[2]] = int(parts[0], 16)
+            out.setdefault(base_name(parts[2]), int(parts[0], 16))
     return out
 
 

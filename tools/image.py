@@ -34,6 +34,20 @@ from unicorn.arm_const import UC_ARM_REG_R0  # noqa: E402
 UUID_ADDRESS = 0x0009FC70
 
 
+def base_name(symbol: str) -> str:
+    """The name as written, with whatever the compiler appended when it privatised it.
+
+    GCC's link-time optimiser renames a static it has made local to `name.lto_priv.0`, and clang's
+    renames one to `name.llvm.<hash>`. Both are the same symbol a person wrote, and a tool that
+    looks one up by name finds nothing in one toolchain's build and everything in the other's.
+    """
+    for marker in (".lto_priv.", ".llvm.", ".constprop.", ".isra."):
+        cut = symbol.find(marker)
+        if cut > 0:
+            return symbol[:cut]
+    return symbol
+
+
 def symbols_with_size(elf: str) -> dict[str, tuple[int, int]]:
     out = {}
     for line in subprocess.run(
@@ -41,7 +55,9 @@ def symbols_with_size(elf: str) -> dict[str, tuple[int, int]]:
     ).stdout.splitlines():
         parts = line.split()
         if len(parts) == 4:
-            out[parts[3]] = (int(parts[0], 16), int(parts[1], 16))
+            entry = (int(parts[0], 16), int(parts[1], 16))
+            out[parts[3]] = entry
+            out.setdefault(base_name(parts[3]), entry)
     return out
 
 
