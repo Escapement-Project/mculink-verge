@@ -21,6 +21,54 @@ the evidence.
   Gate: `ninja -C build check`.
   Never put LED or other work in a bit path. Fix unbounded accesses when found.
 
+## The generator as built (src/swd_gen.c, behind SWD_CODEGEN, off by default)
+
+- `swd_gen_build(config)` writes two functions into SRAMX 0x0400_0000..0x0400_3FFF (lab arena is
+  the upper 16 KB): read and write, each `uint64_t fn(packet, words, count)`. Runs `count`
+  transfers of one request back to back, stops at the first non-OK ack; returns ack (ERROR for a
+  read parity mismatch) in r0 and transfers not completed (failing one included) in r1. `packet`
+  = `swd_gen_packet(request)`: bit n clocked on clock n (start..park).
+- C keeps ARM's command logic (`src/swd_dp.c` codegen section): posted AP reads, the RDBUFF read
+  ending a block, write-block RDBUFF check, WAIT retries (`transfer_words` retries the failing
+  transfer with count 1, ARM's `retry--` semantics), timestamps (captured after the transfer;
+  only OK). DAP_Transfer reuses the generated `swd_transfer.h` macro with `SWD_Transfer` = one
+  generated transfer. `arm_SWD_Transfer` (SW_DP.c's, renamed) runs when generation fails
+  (`arm_words` wraps it in the same contract).
+- When: `swd_gen_ready()` compares (period, latency, turnaround, data_phase, idle) with the last
+  build; `dap_dispatch.c` captures DAP_SWJ_Clock's Hz (ARM keeps only a delay) and calls it after
+  SWJ_Clock / SWD_Configure / TransferConfigure, so generation never lands inside a transfer.
+  `swd_gen_builds` / `swd_gen_failures` count outcomes (read them in the emulator).
+- Periods: requested P = ceil(CPU/Hz). Probe-driven clocks (packet, write data) at max(P, 3), low
+  = 2 at P = 3 else P/2; target-driven, turnaround and idle clocks at max(P, 4), low = P/2. No
+  clock is ever shorter than asked; stretches only lengthen. P <= 2^24 else ARM's path.
+- Clock = fall store + rise store `str r5, [r9, #SET]`. Probe-driven falls are MPIN stores
+  carrying SWDIO (MASK0 = ~(SWCLK|SWDIO), set at build; nothing else uses MPIN), so data changes
+  with the fall: trace order W-then-v matches ARM's, and setup = low, hold = high. Target-driven
+  falls are CLR stores (they must not touch SWDIO's latch: the enable shows its level).
+- Samples: masked iff read period < A + 6 (centre of [A, P+A-1], may follow the next rise;
+  `msr primask` at body start, unmask in the gap so pending IRQs run between transfers); else
+  unmasked, as late as possible before the next rise (early margin P-1-A >= 5, late margin A).
+- Registers: r0 packet, r1 words (post-inc), r2 SWDIO mask (=4, MPIN 1), r3 TXEN mask, r4 count,
+  r5 1 (SWCLK mask, B-register 1), r6 0, r7 delay loops, r8 GPIO (B regs), r9 MPIN0 (SET +0x80,
+  CLR +0x100, DIRSET +0x200, DIRCLR +0x280), r10 word, r11 ack/temp, r12 + lr samples/temps.
+  Packet extraction temps alternate r11/r12 (never overwrite a register a store read the cycle
+  before); write data temps r12/r11, parity folded into lr in free slots.
+- Scheduler: sorted (cycle, insn) events (256 max, static 2 KB); `clock()` bumps a clock until
+  both edge cycles are free; `op()` = before the next clock (pushes `t`); `side()` = must not
+  delay a clock (avoids the grid of the clocks still to come); `sample()` picks the max-margin
+  free cycle. Emission fills gaps with `mov.w r6, r6` or `movw r7,#n; subs.w; bne.w` (3n cycles).
+  Tails (WAIT/FAULT/protocol error, long idle runs) are sequential code with clock loops on r12.
+- Two bugs found by equiv, both now structural rules: a delay loop between the ack `cmp` and its
+  `bne` clobbered the flags (cmp now sits in the cycle before the branch); the branch was placed
+  before the last turnaround clock (now after the last common rising edge).
+- Verified: equiv `--ignore-samples` 536/536 blocks at 50/37.5/25/12.5/10/1/0.1 MHz, 360/360
+  DAP_Transfer at 50/37.5/10/1. `tools/gencheck.py` (engine + timed target serving the wire):
+  every P 3..40, 75, 150, 1500 clean; margins P4:1 P5-6:2 P8:3 P9-10:4 P11-13:5 P>=15:7. Running
+  block cycles a transfer vs floor (8 packet clocks at the write period, 38 at the read period):
+  P3 read 203/176 write 164/143; P4 210/184, 197/184; from P = 29 exactly the floor. Gate: codegen
+  images run on the engine against `tools/baseline-codegen` (S positions differ from ARM's).
+  Hardware (L1306): see Bench state.
+
 ## The timing model (exact from SRAMX; see TIMING.md for prose)
 
 All costs in core cycles at 150 MHz (6.67 ns). Issue cycle = cycle an instruction enters execute.
@@ -48,7 +96,8 @@ All costs in core cycles at 150 MHz (6.67 ns). Issue cycle = cycle an instructio
 - Loop `subs.w rX, rX, #1; bne.w head`: 3 cycles/iteration + body if `head` is word-aligned
   (4 if the head is a 32-bit instruction at 2 mod 4). Last iteration (fall-through): 2 + body.
 - Store -> pin: identical delay for SET (GPIO+0x2200+4*port), CLR (+0x2280), NOT (+0x2300),
-  B byte (GPIO + 32*port + pin), W word (GPIO + 0x1000 + 128*port + 4*pin). Edge spacing on the
+  B byte (GPIO + 32*port + pin), W word (GPIO + 0x1000 + 128*port + 4*pin), and MPIN (+0x2180;
+  low phases of MPIN-fall and CLR-fall clocks agree to 0.2 ns over 2.4 M clocks, L1306, P=20). Edge spacing on the
   wire = store issue spacing (analyser, to 0.1 cycle; ~1.7 ns analog rise/fall skew at J6).
 - **Read window:** target launches bit k on rising-edge store R_k. A load issued at R_k + d reads
   bit k iff `A <= d <= P + A - 1` (P = period in cycles, assuming uniform period; in general
@@ -212,7 +261,13 @@ at P = 8, 12, 16).
 
 ## Bench state and hygiene
 
-- Probe `CJ6B19D4E7` runs `0f301e9+lab`. Flash: `uv run tools/flash.py --cycle --serial
+- 2026-10-16 evening: `CJ3E7A91C2` runs `5f3db32+codegen+lab` (build-genlab/), MSPM0L1306
+  (erased, SWD stays up, DPIDR 0x6BA02477) with the analyser at the target: D0 NRST, D1 SWDIO,
+  D2 SWCLK, D3 probe J8 pin 4 (command marker); 100 MS/s only with two channels. Results there:
+  a lab sweep (DPIDR blocks + CTRL/STAT writes checked on 18 bits) clean at every P 3..40,
+  50, 75, 150, 1500; probe-rs SRAM write+readback clean 0.1..50 MHz; probe-rs 64 KB read
+  1407 KiB/s at 50 MHz, 1312 at 37.5, 629 at 10 (default build: fails above 10, 577 at 10).
+- Probe `CJ6B19D4E7` runs `0f301e9+lab` (not on the bench now). Flash: `uv run tools/flash.py --cycle --serial
   CJ6B19D4E7 --elf <elf>`. Target NUCLEO-U575ZI-Q on J6 (SWD), DPIDR 0x0BE12477. Analyser
   Logic 8 (no settable threshold): D0 SWDIO, D1 SWCLK at J6; 100 MS/s; cannot resolve 1-2 cycle
   pulses.
@@ -224,15 +279,15 @@ at P = 8, 12, 16).
 
 ## Open questions for the generator
 
-- Generator in firmware (C emitting Thumb-2 into SRAMX at DAP_SWJ_Clock / SWD_Configure /
-  TransferConfig time) vs host-side. Firmware-side is the target; the Python prototypes in
-  lab.py are the reference encodings.
-- How to cover WAIT/FAULT/protocol-error branches: generated straight-line fast path plus
-  out-of-line (non-timing-critical) handlers, or generated branches. A taken branch costs 2-3
-  cycles and stretches a clock; place it where a stretch is harmless (low phase before a fall).
 - A calibration at connect (A sweep) vs a fixed A with margin. Margin at P=4 is only 1 either
-  side even when centred.
-- Reads above 37.5 MHz need fewer than four instructions a read clock (not possible with one
-  load and one consume per bit at 150 MHz). Clocks can differ in length within a transfer, so
-  writes at P = 3 and reads at P = 4 can share one transfer.
+  side even when centred. `swd_gen_latency` exists; nothing sets it from the host yet.
+- Reads above 37.5 MHz: not in software. A read clock is 2 edge stores + 1 load + 1 use, and the
+  core pairs nothing but a 16-bit NOP or b<cc>: the corpus timed `ldr sp/adds`, `adds/ldr sp`,
+  `str sp/adds`, `adds/adds` pairs at 1 cycle each. Duty cycle
+  does not change the count. Only a peripheral clocking/shifting the wire would (SWDIO P0_2 is
+  FC3 MISO; P0_0's functions are in the LPC55S6x datasheet).
+- Overhead left at the top: P4 read 26 cycles a transfer over the floor (release 2, decision ~3,
+  settle ~4, gap ~14: unmask, 8-instruction parity check, store, loop). The read parity fold
+  could move into the settle wait.
+- Default on: equiv and gate pass and the L1306 passes; U575 (memory AP, WAIT) not run yet.
 - Timed TAP model for JTAG/two-pin (TDO window after the falling edge) not built.

@@ -1390,6 +1390,54 @@ today, and nothing runs faster than asked.
 
 TIMING.md has the rules these give a generator. CODEGEN.md is the context for implementing it.
 
+### The transfers are generated at run time, and the wire runs at every period from three cycles
+
+**What it is.** A build with `-DSWD_CODEGEN=ON` writes its SWD transfer code into SRAMX whenever
+the host changes the clock, the turnaround, the data phase or the idle cycles. Every edge, data
+store and sample sits at a cycle the timing model chose. ARM's command logic stays in C around
+it: posted reads, the RDBUFF reads and WAIT retries. `src/swd_gen.c` has the details and
+CODEGEN.md the reasoning.
+
+**The host now gets the rate it asks for, to one cycle.** The period is the shortest whole number
+of cycles that is no faster than the request. Clocks the probe drives go down to 3 cycles, 50 MHz.
+Clocks the target drives go down to 4, 37.5 MHz, because a read needs a sample and its use as well
+as the two edges.
+
+**It holds to ARM's wire.** `tools/equiv.py --ignore-samples` passes all 536 block cases at 50,
+37.5, 25, 12.5, 10, 1 and 0.1 MHz, and all 360 single-register cases at 50, 37.5, 10 and 1 MHz.
+Only where the samples sit differs: a sample can trail the edge that launched its bit by two clocks.
+
+**Every period ran clean on the MSPM0L1306.** `lab/gensweep.py` reads DPIDR in blocks and writes
+CTRL/STAT, checking 18 bits of each write. It found no error at any period from 3 to 40 cycles,
+or at 3, 2, 1 and 0.1 MHz. probe-rs wrote random words to SRAM and read them back correctly at
+every clock from 0.1 to 50 MHz.
+
+**Throughput through probe-rs, 64 KB of flash, same probe and same part:**
+
+| asked | generated | previous firmware |
+| --- | --- | --- |
+| 50 MHz | 1407 KiB/s | fails |
+| 37.5 MHz | 1312 | fails |
+| 25 MHz | 1172 | fails |
+| 15 MHz | 830 | fails |
+| 10 MHz | 629 | 577 |
+| 5 MHz | 360 | 324 |
+| 1 MHz | 80 | 79 |
+
+The previous firmware fails above 10 MHz on this part because it samples too close to the edge,
+which the section above found. At 37.5 MHz the wire is idle about half the time. A running block
+reads a word in 210 cycles, which is 2.7 MB/s, and probe-rs gets 1.3. USB and the host take the
+rest.
+
+**The masked port register reaches the pin when CLR does.** The generator lowers the clock and
+sets the data bit in one store to that register, which no earlier measurement covered. On the
+analyser at the target, over 2.4 million clocks at P = 20, the low phases of clocks that fall that
+way and of clocks that fall on CLR differ by 0.17 ns.
+
+**Reads stop at 37.5 MHz in software.** A read clock is four instructions and the core pairs none
+of them: the corpus timed a 16-bit load or store against a 16-bit add, in both orders, at a cycle
+each. Only a peripheral that clocks or shifts the wire could go further.
+
 ## What the bench has sized, and what is left
 
 - **MCU-Link Pro support.** Stock runs one image on every LPC55S69 MCU-Link, the Pro
@@ -1412,9 +1460,10 @@ TIMING.md has the rules these give a generator. CODEGEN.md is the context for im
 - **The two-pin and four-wire JTAG block paths are still in flash** and will have the same stall
   the SWD paths had. `cjtag_BlockImpl` and `cjtagf_BlockImpl` are 67 KB together, against 79 KB
   already in SRAM and 112 KB still free.
-- **Where the wire actually stops working** is still a guess from two points: 9.6 MHz works on
-  this MSPM0L1306 and 16 MHz does not. `tools/dap.py block` is already the right instrument --
-  idempotent, no access port, no target state -- so sweeping the clock and counting errors would
-  replace the guess with a number. Read DPIDR rather than RDBUFF so a wrong word is detectable and
-  not just a bad acknowledge, and enumerate the achievable rates from the delay arithmetic rather
-  than sweeping requested Hz, because the steps are coarse.
+- **Make the generated SWD paths the default.** The equivalence, the gate and the MSPM0L1306 pass.
+  A target with a memory access port that answers WAIT has not run them yet.
+- **Measure the read latency per target.** The generator places samples for a latency of 7 cycles,
+  which two targets measured. At 37.5 MHz that leaves one cycle either side, so a slower target or
+  a longer cable needs its own number, measured at connect.
+- **Generate the JTAG and two-pin paths the same way.** They are 80 KB of SRAM and are still
+  paced by ARM's delay loop.

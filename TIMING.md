@@ -52,7 +52,7 @@ does, so the last rule matters to anyone reading a count.
 ## When a store reaches the pin
 
 Every GPIO store form reaches the pin at the same delay after it issues: SET, CLR and NOT, a byte
-to the B register, a word to the W register. Two edges are as many cycles apart on the wire as
+to the B register, a word to the W register, and the masked port register. Two edges are as many cycles apart on the wire as
 their stores are in issue order. The analyser agrees to a tenth of a cycle. The only other effect
 it sees is analog, about 1.7 ns between rising and falling edges at J6.
 
@@ -109,6 +109,24 @@ A write clock needs three instructions, with the data bits held in registers, so
 P = 3, 50 MHz. The target took every write at every placement of the SWDIO store, from one cycle
 before its rising edge to one cycle after the previous one, at every period from 3 to 10 cycles.
 On this target a write needs nothing more than its SWDIO store kept off the cycles of the edges.
+
+## What the generator does with it
+
+The firmware now writes its SWD transfer code at run time, for the clock the host asks for
+(`src/swd_gen.c`, built with `-DSWD_CODEGEN=ON`). Each clock period is a whole number of cycles
+from 3 up, and no period is ever shorter than the host asked for.
+
+A clock the probe drives needs three instructions, so packets and write data run at up to 50 MHz.
+A clock the target drives needs four, so reads run at up to 37.5 MHz. Moving cycles between the
+low and the high phase does not change that count. The core issues one of these instructions a
+cycle and pairs none of them, which the bench measured.
+
+On the MSPM0L1306 every period from 3 to 40 cycles ran clean, and so did 2, 1 and 0.1 MHz. Through
+probe-rs, a 64 KB read took 1407 KiB/s at 50 MHz and 1312 KiB/s at 37.5 MHz. The previous firmware
+could not read this part above 10 MHz, and managed 577 KiB/s there, against 629 now.
+
+The generated code changes the data bit and the falling edge in one store, to the masked port
+register. The data then has half a period before the rising edge and half a period after it.
 
 ## Rules for placing a sample
 
