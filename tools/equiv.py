@@ -1,0 +1,127 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["unicorn", "capstone"]
+# ///
+"""Compare two builds of the firmware on the wire, across the cases a transfer can take.
+
+The wire traces in tools/baseline cover one case: a target that acknowledges OK and shifts out
+zeros. That is enough to catch a pin-layer mistake and not enough to let anyone rewrite a transfer
+function, because the acknowledge, retry and back-off paths are where the hard-to-see mistakes
+live.
+
+This drives both builds over the same matrix -- every acknowledge a target can give, every
+turnaround length, with and without the data phase, with and without idle cycles -- and requires
+that they produce the same wire events and the same answer. Byte for byte, case for case.
+"""
+
+import argparse
+import itertools
+import sys
+
+sys.path.insert(0, __file__.rsplit("/", 1)[0])
+
+from cycles import (  # noqa: E402
+    ID_CONNECT,
+    ID_SWD_CONFIGURE,
+    ID_SWJ_CLOCK,
+    ID_TRANSFER_BLOCK,
+    ID_TRANSFER_CONFIG,
+    Machine,
+    Model,
+    Target,
+    u16,
+    u32,
+)
+
+AP_DRW_READ, AP_DRW_WRITE = 0x0F, 0x0D
+
+# The acknowledge, in the order SW_READ_BIT reads it: bit 0 first.
+ACKS = {
+    "ok": (1, [1, 0, 0]),
+    "wait": (2, [0, 1, 0]),
+    "fault": (4, [0, 0, 1]),
+    "none": (0, [0, 0, 0]),
+    "bogus": (7, [1, 1, 1]),
+}
+
+
+class SwdTarget(Target):
+    """A SWD target with a chosen acknowledge, data word and parity.
+
+    The probe reads the wire in order within one transfer and lets go of it exactly once, at the
+    turnaround, so the release is where the bit list restarts. That marker is on the wire rather
+    than in the symbol table, which is what makes it survive whatever the optimiser does.
+    """
+
+    def __init__(self, ack: str, word: int, bad_parity: bool):
+        bits = list(ACKS[ack][1])
+        if ACKS[ack][0] == 1:
+            data = [(word >> i) & 1 for i in range(32)]
+            parity = sum(data) & 1
+            bits += data + [parity ^ (1 if bad_parity else 0)]
+        super().__init__(bits)
+
+
+def run(
+    elf: str, ack: str, read: bool, turnaround: int, data_phase: bool, idle: int, word: int, bad_parity: bool
+) -> tuple[list[str], bytes]:
+    probe = Machine(elf, SwdTarget(ack, word, bad_parity), restart_at=set(), model=Model())
+    probe.resync_on_release = True
+    probe.command(bytes([ID_CONNECT, 1]))
+    probe.command(bytes([ID_SWJ_CLOCK]) + u32(10_000_000))
+    probe.command(bytes([ID_TRANSFER_CONFIG, idle]) + u16(2) + u16(0))
+    probe.command(bytes([ID_SWD_CONFIGURE, (turnaround - 1) | (0x04 if data_phase else 0)]))
+
+    payload = bytes([ID_TRANSFER_BLOCK, 0]) + u16(2) + bytes([AP_DRW_READ if read else AP_DRW_WRITE])
+    if not read:
+        payload += u32(word) * 2
+    probe.begin()
+    reply = probe.command(payload)
+    return probe.end().trace, reply
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("reference")
+    ap.add_argument("candidate")
+    ap.add_argument("--verbose", action="store_true")
+    args = ap.parse_args()
+
+    cases = itertools.product(
+        ACKS, (True, False), (1, 2, 3, 4), (True, False), (0, 3), (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF)
+    )
+    failures = 0
+    total = 0
+    for ack, read, turnaround, data_phase, idle, word in cases:
+        for bad_parity in (False, True) if (ack == "ok" and read) else (False,):
+            total += 1
+            name = (
+                f"ack={ack} {'read' if read else 'write'} turnaround={turnaround}"
+                f" data_phase={int(data_phase)} idle={idle} word=0x{word:08x}"
+                f"{' bad-parity' if bad_parity else ''}"
+            )
+            a = run(args.reference, ack, read, turnaround, data_phase, idle, word, bad_parity)
+            b = run(args.candidate, ack, read, turnaround, data_phase, idle, word, bad_parity)
+            if a[0] != b[0]:
+                first = next(
+                    (i for i, (x, y) in enumerate(zip(a[0], b[0])) if x != y), min(len(a[0]), len(b[0]))
+                )
+                print(f"  WIRE   {name}")
+                print(
+                    f"         diverges at event {first} of {len(a[0])}/{len(b[0])}:"
+                    f" {a[0][first : first + 6]} against {b[0][first : first + 6]}"
+                )
+                failures += 1
+            elif a[1] != b[1]:
+                print(f"  REPLY  {name}")
+                print(f"         {a[1].hex()} against {b[1].hex()}")
+                failures += 1
+            elif args.verbose:
+                print(f"  ok     {name}  ({len(a[0])} events, {len(a[1])} byte reply)")
+
+    print(f"\n{total - failures}/{total} cases identical on the wire and in the reply")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
