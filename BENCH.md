@@ -909,6 +909,40 @@ it would have left USB unserviced for the length of a block, which at 1 MHz and 
 The command loop also never truncates a reply now. `tud_vendor_write` writes what fits and
 returns the count, and nothing was reading it.
 
+### The LED: a timer's job, and what it costs the wire
+
+**Stock fades the LED when nothing is using it.**
+
+**Ours does the same with CTIMER3 and adds activity.** Breathing when nothing is using the probe,
+blinking while commands arrive, fully lit when a host has said it is connected and is idle. The
+period interrupt runs the policy and a command pays one byte store. `tools/image.py` runs the
+interrupt against the image and checks all three, including that one command is visible whatever
+tick it lands on; two mutations of the policy were confirmed to fail it.
+
+Measured with `dap.py block --words 126 --blocks 400 --pipeline 2` at 10 MHz, three runs a build,
+no spread within any build:
+
+| build | KiB/s | against no LED |
+| --- | --- | --- |
+| no LED | 703.1 | |
+| polled from the main loop, the first version | 701.6 | -0.21% |
+| CTIMER3 PWM, 1 kHz tick | 702.5 | -0.09% |
+| CTIMER3 PWM, 488 Hz tick, the one kept | 702.8 | -0.04% |
+| 488 Hz with the handler in `.ramfunc` | 701.9 | -0.17% |
+
+- **The polled version cost 1.5 us a command**, several times what its instructions explain. It
+  ran on the path between one command and the next, which is exactly where the next one waits.
+  Flash fetch misses are the likely reason and were not tested, because the timer design removes
+  the call from that path whatever the cause.
+- **The PWM's cost is its interrupt rate.** Each tick lands wherever the core is, usually in a
+  transfer, and stretches it. Halving the rate recovered 0.23 KiB/s against a predicted 0.3.
+  `LED_PERIOD` in `src/led.c` is the knob.
+- **Moving the handler into SRAM made it worse.** It went in at the head of `.ramfunc`, shifted
+  every bit path by 116 bytes and cost 0.11%. `src/hot.h` now says so.
+
+**Not yet seen by a person.** The policy is checked in the emulator and the build runs on the
+bench unit, but nobody has looked at the LED yet and confirmed it breathes, blinks and holds.
+
 ## What the bench has sized, and what is left
 
 - **Running the bit paths from SRAM.** Done; it was the biggest item there was and it doubled the
@@ -926,10 +960,6 @@ returns the count, and nothing was reading it.
 - **The two-pin and four-wire JTAG block paths are still in flash** and will have the same stall
   the SWD paths had. `cjtag_BlockImpl` and `cjtagf_BlockImpl` are 67 KB together, against 79 KB
   already in SRAM and 112 KB still free.
-- **The onboard LED says nothing.** `LED_CONNECTED_OUT` and `LED_RUNNING_OUT` are stubs and
-  `DAP_HostStatus` does nothing. Deferred until the probe is functionally complete. It has
-  the two constraints that matter, that `P0_5` is also `ISP1` and that a GPIO store is one cycle of
-  a fifteen-cycle data bit, so this belongs in the dispatch layer and not in a bit path.
 - **Where the wire actually stops working** is still a guess from two points: 9.6 MHz works on
   this MSPM0L1306 and 16 MHz does not. `tools/dap.py block` is already the right instrument --
   idempotent, no access port, no target state -- so sweeping the clock and counting errors would

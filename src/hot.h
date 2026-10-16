@@ -18,6 +18,11 @@
  *
  * SRAM is the budget this spends: `m_data` is 204 KB and holds the stack, the heap and everything
  * static. The linker's own ASSERT catches an overflow.
+ *
+ * **Anything else marked lands ahead of the bit paths and moves them.** The LED's 116-byte
+ * interrupt handler, tried here to spare it flash fetches, shifted every bit path by that much and
+ * cost 0.11% of block throughput: more than the whole LED costs from flash. Measure a block read
+ * before and after adding anything to this section.
  */
 #ifndef HOT_H
 #define HOT_H
