@@ -1225,6 +1225,36 @@ def icepick_read_cpuid(probe: Probe, args) -> None:
     reply = probe.command(bytes(request))
     words = [int.from_bytes(reply[3 + 4 * i : 7 + 4 * i], "little") for i in range(2)]
     print(f"  DAP_Transfer count {reply[1]} ack {reply[2]}: AP IDR 0x{words[0]:08x}, CPUID 0x{words[1]:08x}")
+    if args.sweep:
+        sweep_block_reads(probe, index, args)
+
+
+def block_read(probe: Probe, index: int, address: int, words: int) -> tuple[bytes, int]:
+    """TAR, then a DAP_TransferBlock of DRW reads; returns the data and the final ack."""
+    probe.command(bytes([DAP_TRANSFER, index, 1, 0x05]) + address.to_bytes(4, "little"))
+    reply = probe.command(bytes([DAP_TRANSFER_BLOCK, index]) + words.to_bytes(2, "little") + bytes([0x0F]))
+    done = reply[1] | reply[2] << 8
+    return bytes(reply[4 : 4 + 4 * done]), reply[3]
+
+
+def sweep_block_reads(probe: Probe, index: int, args) -> None:
+    """Read the same ROM block at rising clock rates and compare it with the slowest read."""
+    address, words = args.sweep_address, args.sweep_words
+    probe.swj_clock(1_000_000)
+    reference, ack = block_read(probe, index, address, words)
+    print(f"  reference at 1 MHz: {len(reference) // 4} words, ack {ack}, first 0x{reference[:4][::-1].hex()}")
+    for hz in args.sweep:
+        probe.swj_clock(hz)
+        bad = errors = 0
+        started = time.perf_counter()
+        for _ in range(args.sweep_repeat):
+            data, ack = block_read(probe, index, address, words)
+            errors += ack != 1
+            bad += data != reference
+        elapsed = time.perf_counter() - started
+        rate = args.sweep_repeat * words * 4 / elapsed / 1024
+        print(f"  {hz / 1e6:6.2f} MHz: {args.sweep_repeat - bad}/{args.sweep_repeat} blocks match, {errors} bad acks, {rate:.0f} KiB/s with USB")
+    probe.swj_clock(1_000_000)
 
 
 def cmd_cjtag(args) -> int:
@@ -1429,6 +1459,11 @@ def main() -> int:
     cjtag.add_argument("--nreset-first", action="store_true", help="pulse nRESET before the activation")
     cjtag.add_argument("--settle", type=float, default=50, help="ms to wait after --nreset-first")
     cjtag.add_argument("--mem", action="store_true", help="route the ICEPick to the Cortex-M DAP and read CPUID")
+    cjtag.add_argument("--sweep", type=lambda v: [int(float(x) * 1e6) for x in v.split(",")], default=[],
+                       help="--mem: MHz list to read a ROM block at, checked against 1 MHz")
+    cjtag.add_argument("--sweep-address", type=lambda v: int(v, 0), default=0x1000_0000)
+    cjtag.add_argument("--sweep-words", type=int, default=64)
+    cjtag.add_argument("--sweep-repeat", type=int, default=20)
     cjtag.add_argument("--join-idle", type=int, default=10, help="--mem: Run-Test/Idle clocks after the TAP selection")
     cjtag.add_argument("--pre-tms", default="", help="TMS bits to send framed before the reads")
     cjtag.add_argument("--tdi", type=int, default=1, choices=(0, 1), help="TDI level for every frame")
