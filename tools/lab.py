@@ -53,7 +53,7 @@ def assemble(source: str, base: int) -> bytes:
         binary = os.path.join(tmp, "lab.bin")
         with open(src, "w") as fh:
             fh.write(head + source + "\n")
-        subprocess.run(["arm-none-eabi-as", "-o", obj, src], check=True)
+        subprocess.run(["arm-none-eabi-as", "-o", obj, src], check=True, capture_output=True)
         subprocess.run(["arm-none-eabi-ld", "-Ttext", hex(base), "-e", "lab", "-o", elf, obj], check=True)
         subprocess.run(["arm-none-eabi-objcopy", "-O", "binary", elf, binary], check=True)
         return open(binary, "rb").read()
@@ -174,11 +174,24 @@ class Case:
     body: str
     setup: str = ""
     mask: int = 0  # pin mask in r5; zero makes every GPIO store a bus access that moves nothing
+    # Filler around the body, so neither timestamp waits on the body's last bus access. The
+    # count then times the body alone, plus the filler, which is one cycle an instruction.
+    drained: bool = False
+
+
+DRAIN_BEFORE = 2
+DRAIN_AFTER = 4
+
+
+def case_body(case: Case) -> str:
+    if not case.drained:
+        return case.body
+    return rep("mov.w r12, r12", DRAIN_BEFORE) + "\n" + case.body + "\n" + rep("mov.w r12, r12", DRAIN_AFTER)
 
 
 def measure(lab, arena: int, case: Case, pad: int = 0, offset: int = 0, arg: int = 0) -> tuple[int, int]:
     base, _ = lab.arenas[arena]
-    code = assemble(timed(case.body, case.setup, pad), base + offset)
+    code = assemble(timed(case_body(case), case.setup, pad), base + offset)
     lab.write(arena, offset, code)
     return lab.run(arena, offset, (case.mask, arg, 0, 0))
 
@@ -205,11 +218,12 @@ def corpus() -> list[Case]:
         "ldr.w sp": "ldr.w r0, [sp, #4]",
         "str sp (16)": "str r0, [sp]",
         "str.w sp": "str.w r0, [sp, #8]",
-        "ldr PIN word": "ldr.w r0, [r9, #-0x100]",
+        "ldr PIN word": "ldr.w r0, [r1]",
     }
     for name, insn in forms.items():
+        setup = "    sub.w r1, r9, #0x100\n" if "PIN" in name else ""
         for n in (1, 2, 3, 4, 8, 16):
-            cases.append(Case(f"G1 {name} x{n}", rep(insn, n)))
+            cases.append(Case(f"G1 {name} x{n}", rep(insn, n), setup))
     pairs = {
         "adds r0/adds r1": ("adds r0, #1", "adds r1, #1"),
         "movs r0/movs r1": ("movs r0, #1", "movs r1, #2"),
@@ -264,11 +278,61 @@ def corpus() -> list[Case]:
     return cases
 
 
+def corpus3() -> list[Case]:
+    """The generator's vocabulary, drained so each count is the body's own issue span."""
+    d = lambda name, body, setup="": Case(name, body, setup, drained=True)  # noqa: E731
+    w = lambda n: rep("mov.w r12, r12", n)  # noqa: E731
+    cases = [d("D empty", "")]
+    for n in (1, 2, 4, 8):
+        cases.append(d(f"D mov.w x{n}", w(n)))
+        cases.append(d(f"D str.w GPIO x{n}", rep("str.w r5, [r9]", n)))
+        cases.append(d(f"D ldrb.w GPIO x{n}", rep("ldrb.w r0, [r8, #2]", n)))
+        cases.append(d(f"D strb.w B x{n}", rep("strb.w r5, [r8, #2]", n)))
+    for pre in ("mov r12, r12", "mov.w r12, r12", "adds r1, #1", "add.w r1, r1, #1", "nop"):
+        for mem in ("str.w r5, [r9]", "ldrb.w r0, [r8, #2]", "ldr r0, [sp]", "str r0, [sp]"):
+            for n in (1, 4):
+                cases.append(d(f"D ({pre}; {mem}) x{n}", "\n".join(f"    {pre}\n    {mem}" for _ in range(n))))
+    for k in range(0, 5):
+        cases.append(d(f"D ldrb.w; {k}; orr.w use", f"    ldrb.w r0, [r8, #2]\n{w(k)}\n    orr.w r1, r1, r0"))
+        cases.append(d(f"D ldrb.w; {k}; orr.w use; orr.w r2", f"    ldrb.w r0, [r8, #2]\n{w(k)}\n    orr.w r1, r1, r0\n    orr.w r2, r2, r1"))
+        cases.append(d(f"D ldrb.w; {k}; bfi use", f"    ldrb.w r0, [r8, #2]\n{w(k)}\n    bfi r1, r0, #5, #1"))
+        cases.append(d(f"D ldrb.w; {k}; str.w r0 GPIO", f"    ldrb.w r0, [r8, #2]\n{w(k)}\n    str.w r0, [r9]"))
+        cases.append(d(f"D ldr.w sp; {k}; orr.w use", f"    ldr.w r0, [sp, #4]\n{w(k)}\n    orr.w r1, r1, r0"))
+        cases.append(d(f"D str.w; {k}; ldrb.w", f"    str.w r5, [r9]\n{w(k)}\n    ldrb.w r0, [r8, #2]"))
+        cases.append(d(f"D str.w; {k}; str.w", f"    str.w r5, [r9]\n{w(k)}\n    str.w r5, [r10]"))
+    # Forward conditional branches, both encodings, taken and not, flags set 0 to 2 cycles before.
+    for enc in ("", ".w"):
+        for taken in (True, False):
+            cond = "beq" if taken else "bne"
+            for gap in (0, 1, 2):
+                for skip in (0, 4, 8):
+                    body = f"    cmp.w r0, r0\n{w(gap)}\n    {cond}{enc} 9f\n{w(skip // 4)}\n9:  mov.w r12, r12"
+                    cases.append(d(f"D fwd {cond}{enc} {'taken' if taken else 'not'} gap {gap} skip {skip}", body))
+    # Unconditional, forward and to aligned and unaligned targets.
+    for enc in ("b.n", "b.w"):
+        for skip in (0, 2, 4, 6, 8):
+            body = f"    {enc} 9f\n" + "    mov r12, r12\n" * (skip // 2) + "9:  mov.w r12, r12"
+            cases.append(d(f"D {enc} fwd skip {skip}", body))
+    # Backward loops, 32-bit forms as a generator would emit them, at each alignment of the head.
+    for n in (1, 2, 3, 4, 8):
+        for body_fill in (0, 1, 2):
+            loop = f"    mov.w r0, #{n}\n9:\n{w(body_fill)}\n    subs.w r0, r0, #1\n    bne.w 9b"
+            cases.append(d(f"D loop.w fill {body_fill} x{n}", loop))
+            loop = f"    movs r0, #{n}\n9:\n{w(body_fill)}\n    subs r0, #1\n    bne 9b"
+            cases.append(d(f"D loop.n fill {body_fill} x{n}", loop))
+    # A loop around a store, the shape of a per-word block loop.
+    for n in (1, 2, 4):
+        cases.append(d(f"D loop store x{n}", f"    mov.w r0, #{n}\n9:  str.w r5, [r9]\n{w(3)}\n    subs.w r0, r0, #1\n    bne.w 9b"))
+    cases.append(d("D cbz taken", "    movs r0, #0\n    cbz r0, 9f\n    mov.w r12, r12\n9:  mov.w r12, r12"))
+    cases.append(d("D cbz not", "    movs r0, #1\n    cbz r0, 9f\n    mov.w r12, r12\n9:  mov.w r12, r12"))
+    return cases
+
+
 def run_corpus(labs: dict, arena: int, offset: int, pads: list[int], repeats: int, select: str = "") -> dict:
     """Every case on every lab at every padding; returns {case: {"lab pad": "cycles[/other]"}}."""
     results: dict[str, dict[str, str]] = {}
     names = list(labs)
-    cases = [c for c in corpus() if select in c.name]
+    cases = [c for c in (corpus() + corpus3()) if select in c.name]
     print(f"  {'case':<44}" + "".join(f"{n + ' ' + str(p):>10}" for p in pads for n in names))
     for case in cases:
         row = {}
@@ -276,7 +340,11 @@ def run_corpus(labs: dict, arena: int, offset: int, pads: list[int], repeats: in
             for name in names:
                 lab = labs[name]
                 base, _ = lab.arenas[arena]
-                code = assemble(timed(case.body, case.setup, pad), base + offset)
+                try:
+                    code = assemble(timed(case_body(case), case.setup, pad), base + offset)
+                except subprocess.CalledProcessError:
+                    row[f"{name} {pad}"] = "asm?"
+                    continue
                 lab.write(arena, offset, code)
                 seen = sorted({lab.run(arena, offset, (case.mask, 0, 0, 0))[0] for _ in range(repeats)})
                 row[f"{name} {pad}"] = "/".join(str(v) for v in seen)

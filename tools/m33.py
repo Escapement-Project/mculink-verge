@@ -41,13 +41,16 @@ class Params:
     # Cycles after a branch issues that the fetch of its target takes the bus. Negative means
     # the core redirects before the branch itself issues; it never redirects before it has the
     # branch's own bytes.
-    redirect_uncond: int = -1
-    redirect_cond: int = 1
+    redirect_uncond: int = 0
+    redirect_cond: int = 0
     redirect_indirect: int = 0
     # From SRAM the core does not redirect an unconditional branch early.
     redirect_uncond_sram: int = 0
+    # A conditional branch that issued as the second of a pair redirects this much later when
+    # taken: pairing saves its slot only when it falls through.
+    redirect_paired: int = 1
     # A load's result is usable by an instruction issuing this many cycles after it.
-    load_use: int = 3
+    load_use: int = 2
     # An access through the PPB waits for an S-AHB access this many cycles after it issued.
     ppb_after_sahb: int = 3
     # Extra cycles a fetch from flash costs; flash has its own accelerator, modelled crudely.
@@ -65,6 +68,8 @@ class Insn:
     stores: int = 0  # data writes
     branch: str = ""  # "", "uncond", "cond", "indirect"
     occupancy: int = 1
+    # Registers a store writes out, which the core takes a cycle later than its other operands.
+    store_data: frozenset = frozenset()
 
 
 @dataclass
@@ -84,6 +89,7 @@ class Engine:
         self.last_issue = -1
         self.last_occupancy = 1
         self.pending_pair = False  # the previous instruction may still take a partner
+        self.paired = False  # the previous instruction issued as the second of a pair
         self.ready: dict[str, int] = {}
         self.last_sahb = -100
         self.current: Insn | None = None
@@ -144,7 +150,7 @@ class Engine:
             delta = {"uncond": p.redirect_uncond, "cond": p.redirect_cond}.get(kind, p.redirect_indirect)
             latency = p.fetch_to_issue_sram if bus_of(prev.address) == S_AHB else p.fetch_to_issue
             ready_self = self.arrived.get((prev.address + prev.size - 2) & ~3, self.current_issue)
-            at = max(self.current_issue + delta, ready_self - latency + 1)
+            at = max(self.current_issue + delta + (p.redirect_paired if self.paired else 0), ready_self - latency + 1)
             if kind == "uncond" and bus_of(prev.address) == S_AHB:
                 at = max(self.current_issue + p.redirect_uncond_sram, ready_self - latency + 1)
             self.redirect(prev_taken_to, at)
@@ -154,11 +160,14 @@ class Engine:
         at = max(first, last)
         at = max(at, self.last_issue + self.last_occupancy)
         for reg in insn.reads:
-            at = max(at, self.ready.get(reg, 0))
+            ready = self.ready.get(reg, 0)
+            if reg in insn.store_data:
+                ready -= 1
+            at = max(at, ready)
 
-        # Two instructions can issue together when the second is a NOP or a conditional branch,
-        # which the core issues predicted not taken.
-        pairs = (insn.size == 2 and insn.mnemonic == "nop") or insn.branch == "cond"
+        # A 16-bit instruction can take a partner: a 16-bit NOP, or a 16-bit conditional branch,
+        # which the core issues predicted not taken. cbz and cbnz never pair.
+        pairs = insn.size == 2 and (insn.mnemonic == "nop" or (insn.branch == "cond" and not insn.mnemonic.startswith("cb")))
         if (
             prev is not None
             and self.pending_pair
@@ -167,8 +176,10 @@ class Engine:
         ):
             at = self.current_issue
             self.pending_pair = False
+            self.paired = True
         else:
-            self.pending_pair = insn.size == 2 or insn.branch == ""
+            self.paired = False
+            self.pending_pair = insn.size == 2 and insn.branch == ""
             self.last_issue = at
             self.last_occupancy = insn.occupancy
 

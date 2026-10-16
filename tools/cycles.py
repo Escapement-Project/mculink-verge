@@ -345,6 +345,29 @@ CONDITIONAL_PREFIX = ("cbz", "cbnz")
 CONDITIONS = ("eq", "ne", "cs", "hs", "cc", "lo", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le")
 
 
+def condition_holds(cc: int, flags: int) -> bool:
+    """Whether an ARM condition code passes, given NZCV in bits 31..28 of `flags`."""
+    from capstone import arm as A
+
+    n, z, c, v = (flags >> 31) & 1, (flags >> 30) & 1, (flags >> 29) & 1, (flags >> 28) & 1
+    return {
+        A.ARM_CC_EQ: z == 1,
+        A.ARM_CC_NE: z == 0,
+        A.ARM_CC_HS: c == 1,
+        A.ARM_CC_LO: c == 0,
+        A.ARM_CC_MI: n == 1,
+        A.ARM_CC_PL: n == 0,
+        A.ARM_CC_VS: v == 1,
+        A.ARM_CC_VC: v == 0,
+        A.ARM_CC_HI: c == 1 and z == 0,
+        A.ARM_CC_LS: c == 0 or z == 1,
+        A.ARM_CC_GE: n == v,
+        A.ARM_CC_LT: n != v,
+        A.ARM_CC_GT: z == 0 and n == v,
+        A.ARM_CC_LE: z == 1 or n != v,
+    }.get(cc, True)
+
+
 def branch_kind(mnemonic: str, writes_pc: bool) -> str:
     base = mnemonic.split(".")[0]
     if mnemonic in UNCONDITIONAL:
@@ -370,6 +393,9 @@ class Machine:
         # When set, issue and bus cycles come from tools/m33.py instead of the per-class model.
         self.engine = engine
         self._insns: dict[int, Insn] = {}
+        # How each branch decides, by address: a condition code, or the register cbz/cbnz tests.
+        self._branch_test: dict[int, tuple[int, str | None]] = {}
+        self._branch_taken = False
         self.cycle = 0
         self.target = target
         self.counting = False
@@ -423,6 +449,22 @@ class Machine:
             return
         self.engine.access(address, access == 17)  # UC_MEM_WRITE
 
+    def _decide(self, insn: Insn) -> bool:
+        """Whether a branch about to execute will be taken, from the state before it runs."""
+        if insn.branch in ("uncond", "indirect"):
+            return True
+        if insn.branch != "cond":
+            return False
+        cc, reg = self._branch_test[insn.address]
+        if reg is not None:
+            from unicorn import arm_const
+
+            value = self.uc.reg_read(getattr(arm_const, f"UC_ARM_REG_{reg.upper()}"))
+            return (value == 0) == insn.mnemonic.startswith("cbz")
+        from unicorn.arm_const import UC_ARM_REG_APSR
+
+        return condition_holds(cc, self.uc.reg_read(UC_ARM_REG_APSR))
+
     def _insn(self, address: int, size: int) -> Insn:
         hit = self._insns.get(address)
         if hit is None:
@@ -434,7 +476,24 @@ class Machine:
                 read, written = insn.regs_access()
                 reads = frozenset(insn.reg_name(r) for r in read)
                 writes = frozenset(insn.reg_name(r) for r in written)
-                hit = Insn(address, size, insn.mnemonic, reads, writes, branch=branch_kind(insn.mnemonic, "pc" in writes))
+                data = frozenset()
+                if insn.mnemonic.startswith(("str", "push", "stm")) and insn.operands:
+                    # The registers stored, not the ones that form the address.
+                    from capstone.arm import ARM_OP_REG
+
+                    data = frozenset(insn.reg_name(op.reg) for op in insn.operands if op.type == ARM_OP_REG)
+                hit = Insn(
+                    address,
+                    size,
+                    insn.mnemonic,
+                    reads,
+                    writes,
+                    branch=branch_kind(insn.mnemonic, "pc" in writes),
+                    store_data=data,
+                )
+                if hit.branch == "cond":
+                    reg = insn.reg_name(insn.operands[0].reg) if insn.mnemonic.startswith("cb") else None
+                    self._branch_test[address] = (insn.cc, reg)
             self._insns[address] = hit
         return hit
 
@@ -591,8 +650,11 @@ class Machine:
             return
 
         if self.engine is not None:
-            taken = self._prev_end is not None and address != self._prev_end
-            self.cycle = self.engine.issue(self._insn(address, size), address if taken else None)
+            # A branch to the next instruction is taken all the same, and costs as much.
+            taken = self._prev_end is not None and (address != self._prev_end or self._branch_taken)
+            insn = self._insn(address, size)
+            self.cycle = self.engine.issue(insn, address if taken else None)
+            self._branch_taken = self._decide(insn)
             if taken:
                 self.counts.taken_branch += 1
             self._prev_end = address + size
