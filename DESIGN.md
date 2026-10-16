@@ -42,8 +42,9 @@ tolerated in the command window. A predicted read-edge count of 43 did not match
 ## Current state
 
 Builds. `cmake -B build -G Ninja -DBOARD=mcu_link -DTOOLCHAIN=gcc . && ninja -C build` produces
-`build/mculink_cjtag.{elf,hex,bin}`, 46,980 bytes of text at `-O3` with link-time optimisation.
-`-DLTO=OFF` and `-DCMAKE_BUILD_TYPE=MinSizeRel` are there for bisecting a miscompilation.
+`build/mculink_cjtag.{elf,hex,bin}`, 53,724 bytes of text at `-O3` with link-time optimisation and
+the bit paths unrolled. `-DLTO=OFF` and `-DCMAKE_BUILD_TYPE=MinSizeRel` are there for bisecting a
+miscompilation.
 
 **Nothing has been flashed or run on hardware yet.** The bench is unavailable; everything below
 about the stock firmware comes from captures taken before it went away.
@@ -55,7 +56,10 @@ commands. All five JTAG entry points are routed.
 
 `tools/cycles.py` emulates the built image on a Cortex-M33 and counts what a debug-port bit costs.
 It is the only instrument this project has while the bench is away, and it is what the numbers in
-`OPTIMISATIONS.md` come from.
+`OPTIMISATIONS.md` come from. **`uv run tools/cycles.py --check` is the gate**: it holds the wire
+event stream to a recorded baseline, refuses a transition while the clock is high on the two-pin
+path, and refuses a new case of clocking faster than the host asked for. Run it after touching
+anything in the bit paths.
 
 ### Parity against the stock image
 
@@ -241,6 +245,29 @@ entirely to the probe, so there is no standard being violated by answering `ID_D
 
 Stock answers 0x80 and 0x81 in the vendor range, so **0x82 through 0x9F are free**, which is where the cJTAG
 vendor command goes with no risk of colliding with something LinkServer relies on.
+
+## What this firmware does on the wire
+
+From the emulator, KiB/s of wire time for a 64-word block. Wire time only: the USB round trip is
+not modelled and the stock capture put it at about 10% of a transfer, so read these as a ceiling.
+
+| | 10 MHz asked | 50 MHz asked |
+| --- | --- | --- |
+| SWD read | 575 | 1358 |
+| SWD write | 621 | 1679 |
+| JTAG read | 673 | 1681 |
+| JTAG write | 717 | 2079 |
+| two-pin read | 213 | 295 |
+| two-pin write | 217 | 303 |
+
+The bar is stock's 476 KiB/s read and 502 write. **The two-pin path costs 3.0 times four-wire per
+JTAG clock**, which is what the format requires and nothing more, after the duplicate pacing was
+removed.
+
+One finding here is a defect rather than a measurement: **four-wire JTAG clocks the target faster
+than the host asked for**, 3% over at 10 MHz and 44% over at 50. SWD and the two-pin path are
+within the request everywhere. `OPTIMISATIONS.md` has the cause, the two ways out and what each
+costs. Nothing has been changed, because both cost throughput and the choice is not obvious.
 
 ## Measurements, and what the bar actually is
 
