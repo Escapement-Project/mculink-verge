@@ -590,7 +590,9 @@ The comparison to make after flashing is ours at the same three rates.
 ### The target sets the ceiling, not the probe
 
 The MSPM0L1306 on this bench connects at 1, 5 and 10 MHz and fails to connect at 20, 30 and
-50 MHz. **Step 5 cannot sweep above 10 MHz here**, so the steps the specialisation work aims at
+50 MHz with the compiled bit paths. (Later measured: that is the probe's sampling. Placed by the
+timing model, the same part reads and writes clean at 37.5 MHz; see "The cost model now times the
+bus".) **Step 5 cannot sweep above 10 MHz here**, so the steps the specialisation work aims at
 sit above anything this target will answer. Sizing that work needs either a faster target or a
 capture with no target attached at all, which `tools/dap.py sweep` already does.
 
@@ -1371,6 +1373,12 @@ the verdict and on the cycle count. The window's edges are included.
 **Generated writes run at 50 MHz.** With the SWDIO store anywhere from one cycle before its rising
 edge to one cycle after the previous one, every write landed, at every period from 3 to 10
 cycles. Setup and hold at the target are each under a cycle.
+
+**The MSPM0L1306 runs at 37.5 MHz too: its ceiling was ours.** On the second unit, now running
+the lab build, the L1306 shows the same seven-cycle window start as the U575, at every period from
+8 to 30 cycles. The scheduler, placing samples with it, ran clean against the L1306 at every period
+from 4 to 40 cycles. "The target sets the ceiling, not the probe", above, is wrong for this part:
+it fails above 10 MHz with today's firmware because of where the firmware samples.
 
 **A scheduler that places everything from the model runs at every period.** Given a period and a
 list of transfers, a prototype places every edge, SWDIO store and sample by the model alone, with

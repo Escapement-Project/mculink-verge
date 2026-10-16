@@ -54,10 +54,12 @@ All costs in core cycles at 150 MHz (6.67 ns). Issue cycle = cycle an instructio
   bit k iff `A <= d <= P + A - 1` (P = period in cycles, assuming uniform period; in general
   `A <= d < (R_{k+1} - R_k) + A`). d < A reads bit k-1 ("behind"), d >= next + A reads k+1
   ("ahead"). Boundaries sharp, deterministic, no mixtures seen in thousands of reads.
-- **A = 7 against the U575 on the bench** (internal self-loop 3: store to B[SWDIO] then load of
-  it sees the new level 3 cycles later; + 4 external: buffers, ~15 ns cable+target). A is per
-  target/cable: calibrate at connect (sweep d on DPIDR reads, take the midpoint of the passing
-  range). A is in core cycles: recompute if the core clock changes.
+- **A = 7 against the U575 (CJ6B19D4E7) and the MSPM0L1306 (CJ3E7A91C2)**, at P = 8..30
+  Internal self-loop 3 (store to B[SWDIO], load sees it 3 cycles later)
+  + 4 external (buffers, cable, target). Calibrate at connect anyway (sweep d on DPIDR reads,
+  A = smallest passing d); A is in core cycles: recompute if the core clock changes.
+- **The L1306's "fails above 10 MHz" was the probe's sampling.** With model placement it reads
+  and writes clean at P = 4 (37.5 MHz) and every P up to 40.
 - From SRAM (not where generated code goes) the model is approximate: fetch and data share S-AHB
   one transaction a cycle; misses are -1 at the straddling alignment after a CYCCNT read (tried
   and rejected: a separate SRAM buffer depth, PPB ordering applied to fetch). Irrelevant to the generator

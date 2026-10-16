@@ -66,10 +66,11 @@ issues d cycles after the store that launched its bit reads that bit when
 
 where P is the clock period in cycles. The window is P cycles wide at every rate.
 
-A is 7 against the U575 on this bench. A load sees the probe's own SWDIO store 3 cycles later, and
-the buffers, the cable and the target take the other 4. A depends on the target and the cable, so
-a generator has to measure it. Sweeping d on a DPIDR read at connect time does that, as
-`tools/lab.py` does on the bench.
+A is 7 against both targets on this bench, the U575 and the MSPM0L1306, each on its own probe
+unit, and at every period measured from 8 to 30 cycles. A load sees the probe's own SWDIO store 3
+cycles later, and the buffers, the cable and the target take the other 4. Another target or a
+longer cable can add to it, so a generator should still measure it. Sweeping d on a DPIDR read at
+connect time does that, as `tools/lab.py` does on the bench.
 
 The window's ends are sharp. No sample position on the bench ever gave a mixture of results.
 
@@ -95,7 +96,9 @@ the same bands, and it overshoots some requests: 16.67 MHz for 16, 7.14 for 7.
 A prototype scheduler places a whole sequence from the model alone: two writes and five reads,
 with every sample at the middle of its window and every turnaround. It ran clean on the bench at
 every period from 4 to 40 cycles, 37.5 to 3.75 MHz, with every acknowledge, word and parity bit
-right. Its cycle count matched the model's at every one of the 37 periods.
+right. Its cycle count matched the model's at every one of the 37 periods. The same scheduler, with
+the A it measured, ran clean against the MSPM0L1306 at every one of those periods too. That part
+fails above 10 MHz with today's firmware: the failures were the probe's sampling, not the part.
 
 At short periods the sample trails the clock. At P = 4 with A = 7, a bit is readable 7 to 10
 cycles after its edge, which is two clocks later. Generated DPIDR reads at every period from 4 to
