@@ -33,6 +33,7 @@ CMSIS_DAP = "cmsis-dap"
 DAP_INFO = 0x00
 DAP_CONNECT = 0x02
 DAP_DISCONNECT = 0x03
+DAP_HOST_STATUS = 0x01
 DAP_SWJ_CLOCK = 0x11
 DAP_SWJ_SEQUENCE = 0x12
 
@@ -299,6 +300,27 @@ def cmd_sweep(args) -> int:
     return 0
 
 
+def cmd_blink(args) -> int:
+    """Flash one unit's LED, so two identical probes on a bench can be told apart by eye.
+
+    `DAP_HostStatus` drives the connect and running LEDs, and every CMSIS-DAP probe answers it, so
+    this works on stock as well as on ours.
+    """
+    probe = one(args)
+    print(f"blinking {probe.serial} ({probe.product}) for {args.seconds:.0f} s")
+    deadline = time.perf_counter() + args.seconds
+    state = 0
+    while time.perf_counter() < deadline:
+        state ^= 1
+        for kind in (0, 1):
+            probe.command(bytes([DAP_HOST_STATUS, kind, state]))
+        time.sleep(0.2)
+    for kind in (0, 1):
+        probe.command(bytes([DAP_HOST_STATUS, kind, 0]))
+    probe.release()
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--serial", help="pick one probe when several are attached")
@@ -323,6 +345,10 @@ def main() -> int:
     sweep.add_argument("--bursts", type=int, default=20, help="256 clocks each")
     sweep.add_argument("--gap", type=float, default=0.3, help="silent seconds between runs")
     sweep.set_defaults(run=cmd_sweep)
+
+    blink = sub.add_parser("blink", help="flash one unit's LED to identify it by eye")
+    blink.add_argument("--seconds", type=float, default=10.0)
+    blink.set_defaults(run=cmd_blink)
 
     args = parser.parse_args()
     return args.run(args)
