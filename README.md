@@ -35,10 +35,12 @@ while the clock is high, and no wire clocks faster than the host asked for beyon
 same edges on the wire it always has, and the sequence commands a host uses to reset a line or
 walk a TAP by hand put out what they always have. `--bless` rewrites the baseline.
 
-`tools/equiv.py` is the heavier check, for replacing code rather than tuning it: it drives two
-builds over 528 SWD cases, 180 four-wire JTAG cases and 120 two-pin cases -- every acknowledge a
-target can give, every turnaround length and chain layout, with and without the data phase and idle
-cycles -- and requires identical wire events and identical replies from both.
+`tools/equiv.py` is the heavier check, for replacing code rather than tuning it. It drives two
+builds over 528 SWD block cases, 180 four-wire JTAG cases, 120 two-pin cases and, with
+`--command transfer`, 300 single-register cases -- every acknowledge a target can give, every
+turnaround length and chain layout, with and without the data phase and idle cycles, and the match
+values, match masks and timestamps only `DAP_Transfer` reaches. It requires identical wire events
+and identical replies from both.
 
 ## Where to read next
 

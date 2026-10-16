@@ -22,6 +22,7 @@ sys.path.insert(0, __file__.rsplit("/", 1)[0])
 
 from cycles import (  # noqa: E402
     ID_CJTAG_CONTROL,
+    ID_TRANSFER,
     ID_CONNECT,
     ID_JTAG_CONFIGURE,
     JtagTap,
@@ -139,13 +140,89 @@ def run_cjtag(elf: str, ack: int, read: bool, idle: int, word: int, fast: bool) 
     return probe.end().trace, reply
 
 
+def run_transfer(
+    elf: str, ack: str, kind: str, turnaround: int, idle: int, word: int
+) -> tuple[list[str], bytes]:
+    """DAP_Transfer, the command that reaches one register at a time.
+
+    Covers what a block never does: match values, match masks and timestamps, each of which puts
+    the firmware on a path of its own. Anyone rewriting DAP_SWD_Transfer needs these to pass as
+    well as the block cases; the command is ARM's most intricate and the gate only sees its wire.
+    """
+    probe = Machine(elf, SwdTarget(ack, word, False), restart_at=set(), model=Model())
+    probe.resync_on_release = True
+    probe.command(bytes([ID_CONNECT, 1]))
+    probe.command(bytes([ID_SWJ_CLOCK]) + u32(10_000_000))
+    # A match retry budget of two, so a mismatching read exercises the retry path and then gives up.
+    probe.command(bytes([ID_TRANSFER_CONFIG, idle]) + u16(2) + u16(2))
+    probe.command(bytes([ID_SWD_CONFIGURE, turnaround - 1]))
+
+    if kind == "read":
+        payload = bytes([ID_TRANSFER, 0, 3]) + bytes([AP_DRW_READ]) * 3
+    elif kind == "write":
+        payload = bytes([ID_TRANSFER, 0, 2]) + (bytes([AP_DRW_WRITE]) + u32(word)) * 2
+    elif kind == "match-hit":
+        # Mask everything out, then a value that must therefore match whatever comes back.
+        payload = (
+            bytes([ID_TRANSFER, 0, 2])
+            + bytes([0x20])
+            + u32(0x00000000)
+            + bytes([AP_DRW_READ | 0x10])
+            + u32(0x00000000)
+        )
+    elif kind == "match-miss":
+        payload = (
+            bytes([ID_TRANSFER, 0, 2])
+            + bytes([0x20])
+            + u32(0xFFFFFFFF)
+            + bytes([AP_DRW_READ | 0x10])
+            + u32(0xDEADBEEF)
+        )
+    else:  # timestamped
+        payload = bytes([ID_TRANSFER, 0, 2]) + bytes([AP_DRW_READ | 0x80, AP_DRW_READ])
+
+    probe.begin()
+    reply = probe.command(payload)
+    return probe.end().trace, reply
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("reference")
     ap.add_argument("candidate")
     ap.add_argument("--wire", choices=["swd", "jtag", "cjtag"], default="swd")
+    ap.add_argument("--command", choices=["block", "transfer"], default="block")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
+
+    if args.command == "transfer":
+        failures = 0
+        total = 0
+        kinds = ("read", "write", "match-hit", "match-miss", "timestamped")
+        cases = itertools.product(ACKS, kinds, (1, 2), (0, 3), (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF))
+        for ack, kind, turnaround, idle, word in cases:
+            total += 1
+            name = f"ack={ack} {kind} turnaround={turnaround} idle={idle} word=0x{word:08x}"
+            a = run_transfer(args.reference, ack, kind, turnaround, idle, word)
+            b = run_transfer(args.candidate, ack, kind, turnaround, idle, word)
+            if a[0] != b[0]:
+                first = next(
+                    (i for i, (x, y) in enumerate(zip(a[0], b[0])) if x != y),
+                    min(len(a[0]), len(b[0])),
+                )
+                print(f"  WIRE   {name}")
+                print(
+                    f"         diverges at event {first} of {len(a[0])}/{len(b[0])}:"
+                    f" {a[0][first : first + 6]} against {b[0][first : first + 6]}"
+                )
+                failures += 1
+            elif a[1] != b[1]:
+                print(f"  REPLY  {name}\n         {a[1].hex()} against {b[1].hex()}")
+                failures += 1
+            elif args.verbose:
+                print(f"  ok     {name}  ({len(a[0])} events, {len(a[1])}B reply)")
+        print(f"\n{total - failures}/{total} DAP_Transfer cases identical on the wire and in the reply")
+        return 1 if failures else 0
 
     if args.wire == "cjtag":
         failures = 0

@@ -268,15 +268,22 @@ with the transfer inlined into its loop:
 | read | 50 MHz | 1365 | 1482 | +9% |
 | write | 50 MHz | 1611 | 1759 | +9% |
 
-It passed everything -- the gate's nine `DAP_Transfer` traces, and all 828 equivalence cases -- and
-it costs **56 KB**, taking the image from 108,772 bytes to 164,468. That is 9% at a clock the bench
-has never reached and 3% at the ones it has, for half as much flash again.
+**It is correct**, and that is not a guess: `uv run tools/equiv.py --command transfer` drives it
+against ARM's over 300 cases -- every acknowledge, both turnaround lengths, with and without idle
+cycles, and the paths a block never reaches: a match value that hits, one that misses and burns
+its retries, and a timestamped transfer. All 300 are identical on the wire and in the reply, as
+are the gate's nine traces and the 828 block cases.
 
-Two notes for whoever picks it up. ARM's function carries five `#if (TIMESTAMP_CLOCK != 0U)`
-blocks and several `//` comments, neither of which survives inside a macro, so both have to be
-resolved and the first guarded by an assertion. And `tools/equiv.py` has no `DAP_Transfer` mode:
-the gate's traces cover the wire, but match values, match masks and timestamps would want cases of
-their own before anyone trusts a rewrite further than this one was trusted.
+What it costs is **56 KB**, taking the image from 108,772 bytes to 164,468. Half as much flash
+again, for 9% at a clock the bench has never reached and 3% at the ones it has. That is the only
+reason it is not here.
+
+The recipe, because it is mechanical and worth redoing rather than rewriting. Extract
+`DAP_SWD_Transfer` from DAP.c, rename it, and change the one call it makes to the speed-specific
+transfer. Two things do not survive being put in a macro: its five `#if (TIMESTAMP_CLOCK != 0U)`
+blocks, which have to be resolved and then guarded by a `_Static_assert`, and its `//` comments,
+which swallow the line continuation and have to become `/* */`. Then route `ID_DAP_Transfer` for
+the SWD port in `src/dap_dispatch.c` the way the block is routed.
 
 ### 3. The read bit is two cycles above the floor
 
