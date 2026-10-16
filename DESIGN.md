@@ -42,7 +42,7 @@ tolerated in the command window. A predicted read-edge count of 43 did not match
 ## Current state
 
 Builds. `cmake -B build -G Ninja -DBOARD=mcu_link -DTOOLCHAIN=gcc . && ninja -C build` produces
-`build/mculink_cjtag.{elf,hex,bin}`, 109,144 bytes of text at `-O3` with link-time optimisation and
+`build/mculink_cjtag.{elf,hex,bin}`, 108,736 bytes of text at `-O3` with link-time optimisation and
 the bit paths unrolled. `-DLTO=OFF` and `-DCMAKE_BUILD_TYPE=MinSizeRel` are there for bisecting a
 miscompilation.
 
