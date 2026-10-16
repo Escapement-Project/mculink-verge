@@ -1274,6 +1274,85 @@ no spread within any build:
 **Confirmed by eye** on the bench unit with `tools/dap.py led`, which walks it through breathing,
 blinking and lit and says which is due.
 
+### The cost model now times the bus, and reproduces every SWD result so far
+
+**A code lab, vendor 0x88.** A build with `-DCODE_LAB=ON` runs a function the host writes into
+RAM, with interrupts masked. The function reads the cycle counter around the code under test, so
+the call itself never enters the measurement. `tools/lab.py` assembles a case, runs it on the
+probe and in the emulator at the same address, and compares the two. A lab build resets itself if
+a function faults.
+
+**Fetch from SRAM shares a bus with every GPIO access; fetch from SRAMX does not.** The bit paths
+run from SRAM at 0x2000_0000, which the core fetches over S-AHB, the port its loads and stores
+also use. SRAMX at 0x0400_0000 is fetched over C-AHB. The same code in each, every repeat
+identical:
+
+| case | SRAM | SRAMX |
+| --- | --- | --- |
+| 16 GPIO stores, 32-bit encodings | 32 cycles | 16 + 2 |
+| 16 GPIO loads, 32-bit encodings | 32 | 16 + 2 |
+| 16 stack loads, 16-bit encodings | 24 | 16 + 2 |
+| 16 `mov.w` | 16 or 17, by alignment | 16 |
+
+From SRAM every cycle carries one bus transaction, an instruction word or a data access. From
+SRAMX the two run side by side. The +2 is the cycle counter's own read waiting for the last
+access to finish. NOPs pair up and cost half a cycle each, so they are no use as timing filler.
+
+**The pin round trip is seven cycles against the U575, and exact.** A DPIDR read generated as
+straight-line code in SRAMX, one instruction a cycle, with the sample swept across the clock
+period:
+
+- A bit is readable when the sample load issues 7 to P + 6 cycles after the store that raised
+  the clock, where P is the period. The read comes back one bit ahead at 7 cycles past its own
+  edge and one bit behind at 6 cycles past the previous one, so both ends give the same number.
+- No position gave a mixture of results.
+- Without a target, a load sees the probe's own SWDIO store 3 cycles later. The target, its
+  cable and the two buffers make up the other 4.
+
+The window is a whole period wide at every rate. At the delay-free step's five-cycle period a
+sample nine cycles after its edge would have two cycles either side. That sample comes after the
+next rising edge, which a generator can place and compiled C cannot.
+
+**The emulator now models fetch and the bus.** `tools/m33.py` decides when each instruction
+issues, from its fetch, the instruction before it and the bus slots data has already taken. It is
+fitted against the lab: 494 of 516 cases exact. `cycles.py` runs on it on request. A modelled SWD
+target launches each bit on a rising edge and makes it readable 7 cycles later. Every read records
+how far it sits from both ends of its window.
+
+**With nothing fitted to them, it reproduces every SWD result the bench has:**
+
+- the generated read sweep, all 70 positions, including which way each failure goes;
+- vendor 0x87, at every position of both shapes, and its after-shape period to within a cycle
+  over 32 clocks. The old model was two cycles a clock out;
+- the block-size table at 16.67 MHz on the default build: the last read fails at every size, with
+  acknowledge 3, and the loop's reads pass;
+- the same for both variants tried on the bench, the tail shifted by a halfword and the tail
+  inlined;
+- the after-edge build reading clean at 16.67 MHz, and the delay-free step failing in both.
+
+It also measures the tail's clock as the averaged capture did: three cycles high and six low
+after ack0's rising edge, against four and five in the loop. Varying the parameters the fit does
+not pin down leaves the result unchanged.
+
+**Why the block's last read fails.** In the loop the rising-edge store's data access takes the
+bus just as the next instruction word is due. The fetch waits a cycle, and that idle cycle
+separates the rising and falling edges. The tail runs the same instructions at a different word
+alignment and does not wait. Its falling edge comes a cycle sooner, the sample lands 6 cycles
+after the edge, and it reads the bit before. The loop's own reads sit exactly at the window's
+edge, so the loop passes by no margin at all.
+
+**Predictions not yet tested:**
+
+- On the default build at 16.67 MHz, every write through `DAP_Transfer` misreads its acknowledge
+  as 3. Reads pass. One DP write at that rate settles it.
+- `DAP_Transfer` reads at that rate sample data bits 1 and 2 a cycle early. DPIDR hides this,
+  because its bits 0 to 2 are all ones.
+
+**Open in the model:** a load whose result is used after two or more other instructions costs a
+cycle the model misses. A two-word `subs`/`bne` loop costs 3 cycles an iteration where the model
+says 4. Straight-line 32-bit code in SRAM is a cycle out at one alignment. The lab corpus that
+pins these down was cut short by a lab case that hung the probe.
+
 ## What the bench has sized, and what is left
 
 - **MCU-Link Pro support.** Stock runs one image on every LPC55S69 MCU-Link, the Pro
