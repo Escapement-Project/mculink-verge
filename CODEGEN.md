@@ -57,7 +57,8 @@ All costs in core cycles at 150 MHz (6.67 ns). Issue cycle = cycle an instructio
 
 Verified end to end: `tools/lab.py swd_read_pipelined` at P = 4..8 (37.5..18.75 MHz), all
 non-colliding sample delays, 45/45 configurations predicted exactly (verdict and cycle count) on
-the U575. DPIDR reads clean at 37.5 MHz.
+the U575. Soak: 200 reads each at P=4 d=9 (margin 1),
+P=4 d=7 (margin 0, window edge), P=5 d=9, P=8 d=10: all clean, 7,200 target bits each.
 
 ## Throughput limits implied
 
