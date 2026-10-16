@@ -347,6 +347,35 @@ def cmd_blink(args) -> int:
     return 0
 
 
+def cmd_led(args) -> int:
+    """Walk our LED through its three states, saying which is due, so each can be checked by eye.
+
+    Breathing when unused, blinking while commands arrive, lit while a host has said it is
+    connected. The commands sent to make it blink are the running-LED form of `DAP_HostStatus`,
+    which our firmware ignores, so they change nothing but the traffic.
+    """
+    probe = one(args)
+
+    def phase(what: str) -> None:
+        print(f"{what}, for {args.seconds:.0f} s", flush=True)
+
+    phase("breathing: nothing is being sent")
+    time.sleep(args.seconds)
+
+    phase("blinking: commands are arriving")
+    deadline = time.perf_counter() + args.seconds
+    while time.perf_counter() < deadline:
+        probe.command(bytes([DAP_HOST_STATUS, 1, 0]))
+
+    phase("lit: the host says it is connected")
+    probe.command(bytes([DAP_HOST_STATUS, 0, 1]))
+    time.sleep(args.seconds)
+    probe.command(bytes([DAP_HOST_STATUS, 0, 0]))
+    print("back to breathing")
+    probe.release()
+    return 0
+
+
 PIN_NAMES = [(0, "SWCLK/TCK"), (1, "SWDIO/TMS"), (2, "TDI"), (3, "TDO"), (5, "nTRST"), (7, "nRESET")]
 
 
@@ -647,6 +676,10 @@ def main() -> int:
     blink = sub.add_parser("blink", help="flash one unit's LED to identify it by eye")
     blink.add_argument("--seconds", type=float, default=10.0)
     blink.set_defaults(run=cmd_blink)
+
+    led = sub.add_parser("led", help="walk our LED through breathing, blinking and lit")
+    led.add_argument("--seconds", type=float, default=6.0, help="how long to hold each state")
+    led.set_defaults(run=cmd_led)
 
     pins = sub.add_parser("pins", help="read, and optionally drive, the probe's own pins")
     pins.add_argument("--connect", action="store_true", help="DAP_Connect first, so pins are outputs")
