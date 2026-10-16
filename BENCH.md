@@ -814,6 +814,37 @@ the flag was set only once the transfer it was meant to abort had finished. ARM'
 example sets it in the endpoint callback and never queues it; `tud_vendor_rx_cb` now does the
 same.
 
+### The fair comparison: probe-rs against the script, same instrument
+
+The 11% between `dap.py` and probe-rs was not a like-for-like figure, so both were captured with
+the marker and folded the same way. `dap.py` was given probe-rs's own block size, 126 words.
+
+| | `dap.py`, 2 in flight | probe-rs, steady state |
+| --- | --- | --- |
+| wire | 94.6% | 82.0% |
+| other commands | -- | 2.7% |
+| firmware, clock idle | 0.5% | 0.1% |
+| USB and the host | 4.9% | 15.4% |
+| clocks a block command | 5,796 | 5,842 |
+| wire a block command | 660.78 us | 661.39 us |
+| gap after a block command | 34.98 us | 36.82 us |
+
+**The block command is the same in both, to within a cycle.** 661.39 against 660.78 microseconds
+of wire, and 5,842 clocks against 5,796 -- the 46 extra are exactly one more 46-clock transfer,
+which is the posted read an access port needs and the DP read does not. Nothing in the firmware or
+in probe-rs's block path is leaving anything there.
+
+**What differs is how many commands a read is made of.** probe-rs issues 0.69 other commands for
+every block command, and every command costs a round trip of about 40 microseconds whatever it
+carries. That is where the throughput goes: 1.69 round trips per block of data instead of one.
+
+So the remaining work is in probe-rs and not in the probe: fewer commands per block of data, not
+faster commands. The largest gap seen was 2.1 ms against a 40 us median, so something occasionally
+stalls far longer than the rest and is worth finding first.
+
+Captures: `mculink-dap126-marker-2026-10-16.sal` and
+`mculink-probers-marker-2026-10-16.sal`.
+
 ### What limits the pipeline, and why two in flight is the number
 
 The depth a host can use is the number of request slots in `src/main.c`, set by `-DREQUEST_SLOTS`
