@@ -44,6 +44,9 @@ option(SWD_SAMPLE_AFTER_EDGE "Sample SWDIO after the rising edge on the delayed 
 # Generate the SWD transfer paths at run time into SRAMX, for the clock the host asks for. See
 # src/swd_gen.c. Off until the equivalence and the gate pass on it.
 option(SWD_CODEGEN "Generate the SWD transfer paths at run time" OFF)
+# Run TinyUSB's device stack from SRAM. Flash runs at 11 wait states, and the stack's interrupt
+# handler and task are branchy code the prefetcher cannot cover; they are paid once per command.
+option(USB_RAM "Run TinyUSB from SRAM" ON)
 # Vendor 0x88, which runs code the host sends. A bench instrument for the emulator's cost model;
 # src/code_lab.c says what it measures.
 option(CODE_LAB "Build the vendor 0x88 code lab" OFF)
@@ -263,7 +266,31 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
   CONFIG_LPADC_GAIN_CAL_READY_TIMEOUT=1000000U
   )
 
+# USB_RAM moves TinyUSB's code into the RAM copy of .data, after .ramfunc so the bit paths keep
+# their addresses. The linker places input sections by file, which LTO erases, so those sources
+# compile without it. The board support's script is rewritten rather than copied, so a submodule
+# bump carries its changes over.
+if(USB_RAM)
+  file(READ ${LD_FILE_GNU} _ld)
+  string(REPLACE "*(.text)" "*(EXCLUDE_FILE(*/tinyusb/src/*) .text)" _ld "${_ld}")
+  string(REPLACE "*(.text*)" "*(EXCLUDE_FILE(*/tinyusb/src/*) .text*)" _ld "${_ld}")
+  string(REPLACE "*(.ramfunc*)" "*(.ramfunc*)\n    */tinyusb/src/*(.text .text*)" _ld "${_ld}")
+  string(FIND "${_ld}" "*/tinyusb/src/*(.text .text*)" _placed)
+  if(_placed EQUAL -1)
+    message(FATAL_ERROR "USB_RAM: ${LD_FILE_GNU} no longer has the .ramfunc line to place TinyUSB after")
+  endif()
+  set(LD_FILE_GNU ${CMAKE_CURRENT_BINARY_DIR}/generated/flash_usb_ram.ld)
+  set(LD_FILE_Clang ${LD_FILE_GNU})
+  file(WRITE ${LD_FILE_GNU} "${_ld}")
+endif()
+
 family_configure_device_example(${PROJECT_NAME} noos)
+
+if(USB_RAM)
+  get_target_property(_sources ${PROJECT_NAME} SOURCES)
+  list(FILTER _sources INCLUDE REGEX "/tinyusb/src/")
+  set_property(SOURCE ${_sources} APPEND PROPERTY COMPILE_OPTIONS -fno-lto)
+endif()
 
 # TinyUSB's hw/bsp/board.c is stdio retargeting and weak board stubs, and this firmware uses
 # none of it: the console is its own CDC interface and nothing here calls printf. It also assumes
