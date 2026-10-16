@@ -127,9 +127,10 @@ ARM writes the four bytes of a read word separately. GCC merges them back into a
 to copy a register, once per word. `__builtin_memcpy` of the whole word takes one store.
 
 SWD reads gain 3% at 50 MHz and 1% at 10, and the per-word gap drops from 65 cycles to 52. Writes
-do not move, which is the check: a write puts nothing in the response. Four-wire JTAG loses 0.4%,
-which is register allocation shifting elsewhere, and is taken for the SWD gain. Text falls 184
-bytes.
+do not move, which is the check: a write puts nothing in the response. Four-wire JTAG loses 0.4%, and not to its own
+store: putting ARM's four bytes back in `jtag_block.h` alone leaves all four JTAG numbers
+unchanged and the image 8 bytes larger, so the loss arrives from the SWD file through link-time
+optimisation. Taken for the SWD gain. Text falls 184 bytes.
 
 ## Tried and rejected
 
