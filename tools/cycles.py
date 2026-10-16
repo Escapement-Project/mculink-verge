@@ -103,6 +103,10 @@ class Model:
     store: int = 1
     taken_branch: int = 2
     gpio_store: int = 1  # a store to the GPIO block, which sits on its own AHB port
+    # A conditional branch that falls through costs nothing beyond the instruction it sits in
+    # front of: the bench measured a 14-instruction data bit the model priced at 17 cycles taking
+    # exactly 15, and the two fall-through `bne`s of its two delay loops are the whole difference.
+    not_taken_branch: int = 0
 
     def total(self, c: "Counts") -> int:
         return (
@@ -111,6 +115,7 @@ class Model:
             + (c.store - c.gpio_store) * self.store
             + c.gpio_store * self.gpio_store
             + c.taken_branch * (self.taken_branch - self.other)
+            + c.not_taken_branch * (self.not_taken_branch - self.other)
         )
 
 
@@ -122,6 +127,7 @@ class Counts:
     store: int = 0
     gpio_store: int = 0
     taken_branch: int = 0
+    not_taken_branch: int = 0
     delay_iterations: int = 0
     tck_rise: int = 0
     tck_fall: int = 0
@@ -237,6 +243,7 @@ class Machine:
         self.explain = False
         self._window: list[int] = []
         self._window_start = 0
+        self._prev_was_branch = False
         self.longest: tuple[int, list[int]] = (0, [])
         # Every gap, not only the longest. The longest is the first word of a block, which carries
         # the command dispatch; the one that costs is the steady-state gap repeated once a word.
@@ -389,6 +396,8 @@ class Machine:
                 kind = "load"
             elif mnemonic.startswith(("str", "stm", "push", "strex")):
                 kind = "store"
+            elif mnemonic.startswith(("b", "cb")) and not mnemonic.startswith("bic"):
+                kind = "branch"
             hit = (kind, size)
             self._decoded[address] = hit
         return hit
@@ -403,6 +412,12 @@ class Machine:
             self._prev_end = address + size
             return
 
+        if self._prev_was_branch and self._prev_end is not None and address == self._prev_end:
+            # The branch before this one fell through. It was charged as an ordinary instruction
+            # when it issued, because whether it was taken is only visible from where we land.
+            self.counts.not_taken_branch += 1
+            self.cycle += self.model.not_taken_branch - self.model.other
+
         if self._prev_end is not None and address != self._prev_end:
             self.counts.taken_branch += 1
             # The pacing loop is two instructions, so a backward branch this short is one of its
@@ -416,6 +431,7 @@ class Machine:
         if self.explain:
             self._window.append(address)
         kind, _ = self._classify(address, size)
+        self._prev_was_branch = kind == "branch"
         c = self.counts
         c.instructions += 1
         m = self.model
@@ -621,7 +637,7 @@ def report(name: str, c: Counts, model: Model, clock_hz: int, cpu_hz: int, words
     )
     print(
         f"    of those: {c.load} loads, {c.store} stores ({c.gpio_store} to GPIO),"
-        f" {c.taken_branch} taken branches, {c.other} other"
+        f" {c.taken_branch} taken branches, {c.not_taken_branch} fell through, {c.other} other"
     )
     print(f"    wire moved {c.moves_while_high} times while the clock was high")
     periods = [b - a for a, b in zip(c.edge_cycles, c.edge_cycles[1:])]
@@ -966,6 +982,12 @@ def main() -> int:
     ap.add_argument("--gpio-store-cycles", type=int, default=1)
     ap.add_argument("--load-cycles", type=int, default=2)
     ap.add_argument(
+        "--fallthrough-cycles",
+        type=int,
+        default=0,
+        help="a conditional branch that falls through; measured as free on this part",
+    )
+    ap.add_argument(
         "--branch-cycles",
         type=int,
         default=2,
@@ -1017,6 +1039,7 @@ def main() -> int:
         load=args.load_cycles,
         store=args.store_cycles,
         taken_branch=args.branch_cycles,
+        not_taken_branch=args.fallthrough_cycles,
         gpio_store=args.gpio_store_cycles,
     )
     cpu_hz = int(args.cpu * 1e6)
@@ -1033,7 +1056,7 @@ def main() -> int:
     print(f"{args.elf}, {args.wire}, {shape}, core {args.cpu:g} MHz")
     print(
         f"cost model: load {model.load}, store {model.store}, GPIO store {model.gpio_store},"
-        f" taken branch {model.taken_branch}, other {model.other}"
+        f" taken branch {model.taken_branch}, fall-through {model.not_taken_branch}, other {model.other}"
     )
     for mhz in args.clock:
         clock_hz = int(mhz * 1e6)

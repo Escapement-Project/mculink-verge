@@ -507,6 +507,35 @@ What is not yet moved: the two-pin and four-wire JTAG block paths, which are the
 shape and will have the same stall. `cjtag_BlockImpl` and `cjtagf_BlockImpl` are 67 KB together
 against the 79 KB already in SRAM and 112 KB still free.
 
+### The cost model is now calibrated against the wire
+
+With the stall gone the emulator can be checked instruction by instruction, and it was wrong in
+one place. A conditional branch that **falls through** was charged a full cycle; it is free on this
+part. The 14-instruction data bit the model priced at 17 cycles measures exactly 15.00, and its two
+fall-through `bne`s are the whole difference. There are two of them per wire clock, one per delay
+invocation, which is why the error was a constant 2.5 cycles per clock at every requested rate.
+
+| | before | after | measured |
+| --- | --- | --- | --- |
+| 1 MHz asked | 151.02 | 148.89 | 149.54 |
+| 5 MHz | 37.02 | 34.89 | 35.51 |
+| 10 MHz | 19.02 | 16.89 | 17.51 |
+
+Error over a whole transfer goes from 13.4% to 3.6%, and the **data bit is now exact**. The
+remaining 0.63 cycles per clock is an underestimate concentrated in the once-per-word bookkeeping,
+unattributed: fitting the five constants over these three rates prefers a cheaper load and a
+charged fall-through, but that combination prices the data bit at 16 against a measured 15.00, and
+the data bit is the number measured to a hundredth over thousands of transfers. A load of 2 with a
+free fall-through is the only candidate that satisfies it, so the fit was not allowed to override
+it. Separating the rest needs a write block, whose instruction mix differs; `tools/dap.py block`
+only reads today.
+
+**It found a real overshoot.** The model now says SWD and the two-pin path clock faster than asked
+at 10 and 20 MHz, where before it said SWD at 10 MHz was comfortably under. The analyser agrees:
+five bit positions measured 10.28 to 10.30 MHz for a 10 MHz request. Those are recorded in
+`tools/baseline/known-overshoot.txt` as known rather than new, because they are a property the code
+always had and the calibration merely made visible.
+
 ### A free 4% that is being left on the table
 
 Our core runs at 144 MHz because TinyUSB's board file sets PLL0 to 150 MHz and then attaches
