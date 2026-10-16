@@ -43,19 +43,21 @@
 #define REQUEST_SLOTS 2U
 #endif
 
-static uint8_t request[REQUEST_SLOTS][DAP_PACKET_SIZE];
+// Word aligned, which no compiler is obliged to make a byte array: the generated transfers store
+// words into the reply, and the copy into the endpoint buffer moves words only when both ends are.
+static uint8_t request[REQUEST_SLOTS][DAP_PACKET_SIZE] __attribute__((aligned(4)));
 static volatile uint16_t request_len[REQUEST_SLOTS];
 static uint8_t request_head; // the slot dap_task takes next
 static uint8_t request_tail; // the slot tud_vendor_rx_cb fills next
 
-static uint8_t response[DAP_RESPONSE_SIZE];
+static uint8_t response[DAP_RESPONSE_SIZE] __attribute__((aligned(4)));
 /** Non-zero while a reply is built and the transmit endpoint has not taken it yet. */
 static uint32_t response_len;
 
 // CMSIS-DAP v1 shares the command layer with v2 but not its packet size: a HID report is bounded
 // by the interrupt endpoint while the bulk interface carries 512. The buffer is full size so an
 // over-long response cannot run past it; only a report's worth is ever sent.
-static uint8_t hid_response[DAP_RESPONSE_SIZE];
+static uint8_t hid_response[DAP_RESPONSE_SIZE] __attribute__((aligned(4)));
 
 #ifdef MARKER_PINS
 /** Which J8 pins the marker still owns. ID_VENDOR_J8 takes pins away from it and gives them back. */
