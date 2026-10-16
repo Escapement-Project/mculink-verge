@@ -13,7 +13,6 @@
 #include "cjtag.h"
 #include "jtag_dp.h"
 
-
 /** Which of the three copies a call goes to: four-wire, or two-pin paced or not.
  *
  * The two-pin choice is made here rather than inside the frame because making it there costs a
