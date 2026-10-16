@@ -73,10 +73,11 @@
                 if (response_value != DAP_TRANSFER_OK) {                                          \
                     goto end;                                                                     \
                 }                                                                                 \
-                *response++ = (uint8_t)data;                                                      \
-                *response++ = (uint8_t)(data >> 8);                                               \
-                *response++ = (uint8_t)(data >> 16);                                              \
-                *response++ = (uint8_t)(data >> 24);                                              \
+                /* ARM writes the four bytes separately. GCC merges them back into one store      \
+                 * but rebuilds the word from its own bytes first, ten instructions to copy       \
+                 * a register, so take the little-endian store directly. */                       \
+                __builtin_memcpy(response, &data, sizeof(data));                                  \
+                response += sizeof(data);                                                         \
                 response_count++;                                                                 \
             }                                                                                     \
         } else {                                                                                  \
