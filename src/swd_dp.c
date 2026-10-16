@@ -289,6 +289,17 @@ uint32_t SWD_TransferCommand(const uint8_t* request, uint8_t* response) {
  * inlines one transfer variant rather than both.
  */
 #define SWD_TransferBlockFunction(speed)                                                                  \
+    /* The last read of a block is the only one that can use a different request, so leaving it    \
+     * inside the loop makes the packet request loop-variant and GCC re-derives five shifted bits  \
+     * and spills them on every word. Peeling it out fixes that. **It has to stay out of line.**   \
+     * An inlined second transfer costs one register in the loop's data phase, and one register    \
+     * there is one cycle on each of 32 data bits, which is more than the peel saves. That was     \
+     * measured, not guessed: src/hot.h and BENCH.md have the four builds. */                      \
+    static uint8_t SWD_TransferTail##speed(uint32_t request, uint32_t* data) HOT_PATH;                    \
+    static uint8_t SWD_TransferTail##speed(uint32_t request, uint32_t* data) {                            \
+        return SWD_Transfer##speed(request, data);                                                        \
+    }                                                                                                     \
+                                                                                                          \
     static uint32_t SWD_TransferBlock##speed(const uint8_t* request, uint8_t* response) {                 \
         uint32_t request_count;                                                                           \
         uint32_t request_value;                                                                           \
@@ -320,10 +331,7 @@ uint32_t SWD_TransferCommand(const uint8_t* request, uint8_t* response) {
                     goto read_done;                                                                       \
                 }                                                                                         \
             }                                                                                             \
-            while (request_count--) {                                                                     \
-                if ((request_count == 0U) && ((request_value & DAP_TRANSFER_APnDP) != 0U)) {              \
-                    request_value = SWD_WithParity(DP_RDBUFF | DAP_TRANSFER_RnW);                         \
-                }                                                                                         \
+            while (--request_count) {                                                                     \
                 retry = DAP_Data.transfer.retry_count;                                                    \
                 do {                                                                                      \
                     response_value = SWD_Transfer##speed(request_value, &data);                           \
@@ -334,6 +342,18 @@ uint32_t SWD_TransferCommand(const uint8_t* request, uint8_t* response) {
                 /* ARM writes the four bytes separately. GCC merges them back into one store              \
                  * but rebuilds the word from its own bytes first, ten instructions to copy               \
                  * a register, so take the little-endian store directly. */                               \
+                __builtin_memcpy(response, &data, sizeof(data));                                          \
+                response += sizeof(data);                                                                 \
+            }                                                                                             \
+            /* A block posted to an access port reads its last word out of RDBUFF. */                     \
+            if ((request_value & DAP_TRANSFER_APnDP) != 0U) {                                             \
+                request_value = SWD_WithParity(DP_RDBUFF | DAP_TRANSFER_RnW);                             \
+            }                                                                                             \
+            retry = DAP_Data.transfer.retry_count;                                                        \
+            do {                                                                                          \
+                response_value = SWD_TransferTail##speed(request_value, &data);                           \
+            } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort);             \
+            if (response_value == DAP_TRANSFER_OK) {                                                      \
                 __builtin_memcpy(response, &data, sizeof(data));                                          \
                 response += sizeof(data);                                                                 \
             }                                                                                             \
