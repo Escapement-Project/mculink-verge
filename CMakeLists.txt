@@ -72,6 +72,8 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/board_pins.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/reboot.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/led.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/target_sense.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcuxsdk-core/drivers/lpadc/fsl_lpadc.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/swo_board.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/vcom.c
   ${DAP_SRC}/DAP.c
@@ -211,6 +213,16 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   # fsl_usart_cmsis.c reaches fsl_usart_dma.h through the usart header whether or not DMA is
   # enabled, and that wants fsl_dma.h. Headers only: no DMA source is compiled.
   ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcuxsdk-core/drivers/lpc_dma
+  ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcuxsdk-core/drivers/lpadc
+  )
+
+# The ADC driver's calibration waits spin on a status bit for ever unless these are set. A probe
+# that hangs because a host asked for the target's voltage is a worse failure than a reading that
+# says it failed, so every wait is bounded. Counts of poll iterations: tens of milliseconds.
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+  CONFIG_LPADC_CONVERSION_COMPLETE_TIMEOUT=1000000U
+  CONFIG_LPADC_CALIBRATION_READY_TIMEOUT=1000000U
+  CONFIG_LPADC_GAIN_CAL_READY_TIMEOUT=1000000U
   )
 
 family_configure_device_example(${PROJECT_NAME} noos)

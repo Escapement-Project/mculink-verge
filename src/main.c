@@ -14,6 +14,7 @@
 #include "led.h"
 #include "marker.h"
 #include "reboot.h"
+#include "target_sense.h"
 #include "core_clock.h"
 #include "vcom.h"
 
@@ -176,6 +177,7 @@ int main(void) {
     board_clocks_init();
     board_timestamp_init();
     DAP_Setup();
+    target_sense_init();
     led_init();
     vcom_init();
 

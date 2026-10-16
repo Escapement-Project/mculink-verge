@@ -225,6 +225,10 @@ DAP_COMMANDS = {
     # nothing in this harness runs. A build that moved the reset into the command would hang here,
     # which is the right thing for this check to do.
     0x85: b"\x00",
+    # Our TARGET, reading the supply. The emulator's ADC never finishes calibrating, so this takes
+    # the timeout path and answers DAP_ERROR: what is checked is that it answers at all, which is
+    # the property that matters on hardware too.
+    0x86: b"\x00\x00",
 }
 ID_DAP_INVALID = 0xFF
 
@@ -321,7 +325,7 @@ def check_commands(c: Checker, elf: str) -> None:
         else:
             answered += 1
     # Anything we do not implement has to say so rather than echo itself back.
-    for cmd in (0x07, 0x86, 0x9F):
+    for cmd in (0x07, 0x87, 0x9F):
         reply = probe.command(bytes([cmd, 0, 0, 0]))
         if cmd == 0x07:
             continue  # TransferAbort is handled out of band and answers nothing
@@ -523,9 +527,9 @@ def check_identity(c: Checker, elf: str) -> None:
         c.problems.append("vendor string is empty")
     c.note(f"strings: vendor {vendor!r}, product {product!r}")
 
-    unknown = probe.command(bytes([0x86, 0]))
+    unknown = probe.command(bytes([0x87, 0]))
     if not unknown or unknown[0] != ID_DAP_INVALID:
-        c.problems.append("vendor 0x86 should answer ID_DAP_Invalid until something implements it")
+        c.problems.append("vendor 0x87 should answer ID_DAP_Invalid until something implements it")
 
     # A mode the firmware does not define has to be refused, not guessed at: getting it wrong
     # costs the probe until someone replugs it.

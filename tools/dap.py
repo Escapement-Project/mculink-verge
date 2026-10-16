@@ -41,6 +41,7 @@ DAP_SWJ_CLOCK = 0x11
 DAP_SWJ_SEQUENCE = 0x12
 DAP_VENDOR_J8 = 0x84
 DAP_VENDOR_REBOOT = 0x85
+DAP_VENDOR_TARGET = 0x86
 
 INFO_FIELDS = {
     0x01: ("vendor", "str"),
@@ -376,6 +377,45 @@ def cmd_led(args) -> int:
     return 0
 
 
+def read_target(probe, mode: int, channel: int = 0) -> tuple[int, int, int]:
+    """One vendor 0x86 reading: the ADC code, millivolts and J6 pin 9's detect bit."""
+    reply = probe.command(bytes([DAP_VENDOR_TARGET, mode, channel]))
+    if len(reply) < 7 or reply[0] != DAP_VENDOR_TARGET:
+        raise RuntimeError(f"vendor 0x86 answered {reply.hex()}; is this our firmware?")
+    if reply[1] != 0:
+        raise RuntimeError("the probe's ADC did not answer")
+    return int.from_bytes(reply[2:4], "little"), int.from_bytes(reply[4:6], "little"), reply[6]
+
+
+def cmd_target(args) -> int:
+    """The target's supply as J6 pin 1 presents it, and whether anything grounds pin 9.
+
+    An empty connector reads about 3.3 V, because the probe holds pin 1 up through 33K, so the
+    voltage alone does not say a target is there: pin 9 does, when the target header grounds it.
+    A target that is connected but unpowered reads well below its supply but not zero, wherever
+    the dead board pulls the 33K: about 1.1 V for the MSPM0 board on the bench.
+
+    `--sweep` converts every ADC0 channel on both sides instead, which is how the supply's channel
+    is found: run it with the target powered and again unpowered, and the channel that moves is
+    the one.
+    """
+    probe = one(args)
+    if args.sweep:
+        for side in ("A", "B"):
+            row = []
+            for channel in range(16):
+                code, mv, _ = read_target(probe, 1, channel | (0x80 if side == "B" else 0))
+                row.append(f"{channel:>2}{side} {mv:>4}")
+            print("  ".join(row[:8]))
+            print("  ".join(row[8:]))
+    else:
+        code, mv, detect = read_target(probe, 0)
+        pin9 = "grounded" if detect else "open"
+        print(f"target supply {mv / 1000:.3f} V (code {code}), pin 9 {pin9}")
+    probe.release()
+    return 0
+
+
 PIN_NAMES = [(0, "SWCLK/TCK"), (1, "SWDIO/TMS"), (2, "TDI"), (3, "TDO"), (5, "nTRST"), (7, "nRESET")]
 
 
@@ -680,6 +720,10 @@ def main() -> int:
     led = sub.add_parser("led", help="walk our LED through breathing, blinking and lit")
     led.add_argument("--seconds", type=float, default=6.0, help="how long to hold each state")
     led.set_defaults(run=cmd_led)
+
+    target = sub.add_parser("target", help="the target's supply and pin 9 detect, from our firmware")
+    target.add_argument("--sweep", action="store_true", help="read every ADC0 channel, in millivolts")
+    target.set_defaults(run=cmd_target)
 
     pins = sub.add_parser("pins", help="read, and optionally drive, the probe's own pins")
     pins.add_argument("--connect", action="store_true", help="DAP_Connect first, so pins are outputs")
