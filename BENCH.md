@@ -678,6 +678,29 @@ issues. In the loop, the sample before the next edge comes about eight cycles af
 the faster setting, so the loop has two or three cycles in hand. The tail runs the same
 instructions and does not.
 
+**Measured with both shapes of vendor 0x87 (`7d0808e`): production samples at the early end of a
+window about a period wide, and leaves most of it unused.** 1,000 reads a position, fill 24, a
+260-280 ns period, saved as `sample-u575-lead-and-after-7d0808e.txt`:
+
+- **Lead shape, production's own pattern** (rising edge, filler, falling-edge store, production's
+  delay loop, sample): every high phase from 0 to 24 cycles reads correctly. Even the shortest,
+  about five or six cycles from the rising-edge store to the sample, already sees the bit that
+  edge launched.
+- **After shape** (sample in the high phase): correct up to 3 filler cycles past the edge, one bit
+  ahead from 4. With operands reloaded through a struct the edge sat between 2 and 3, so it
+  moves by a cycle with the code around it.
+- A zero-length filler run is one cycle cheaper than the trend in both shapes, so position 0 sits
+  a cycle earlier than its number.
+
+So a bit is readable from about five or six cycles after the store that launches it until about
+as long after the next one. Production samples a cycle before the next rising edge, at the
+window's early end: one or two cycles in at the 16.67 MHz setting, which the block tail's
+one-cycle shift used up, with five or six cycles of the window behind the sample unused.
+**Prediction, not yet tested:** sampling a few cycles after the rising-edge store would sit near
+the middle at that setting, and keep about two cycles either side even at the delay-free step's
+five-cycle period. How much room there is past the edge depends on the target's round trip, which
+was 15 ns here and which a closer or faster target shortens.
+
 Four-wire JTAG reads TDO, which changes on the falling edge, before the rising one: half a period
 rather than a whole one.
 
