@@ -52,7 +52,7 @@ answers only `0x80` and `0x81`, so anything above is free.
 
 | command | meaning |
 | --- | --- |
-| `0x82` | identify. Answers `"CJTAG"`, a format version byte, and 1 if OScan1 is active. Stock answers `ID_DAP_Invalid`. |
+| `0x82` | identify. Magic, format version, capability flags, build string. Stock answers `ID_DAP_Invalid`, which is the discriminator. |
 | `0x83 0x01` | turn OScan1 framing on |
 | `0x83 0x00` | turn it off |
 
@@ -70,16 +70,31 @@ Everything the probe says about itself:
 | `DAP_Info` 0x04 | `2.1.2` | ARM's CMSIS-DAP protocol version from the pinned submodule, not ours |
 | `DAP_Info` 0x05/0x06 | `NXP` / `Cortex-M` | `src/DAP_config.h:151` |
 | `DAP_Info` 0x07/0x08 | `NXP` / `NXP board` | `src/DAP_config.h:153` |
-| `DAP_Info` 0x09 | empty | ARM's stub, unmodified |
-| vendor `0x82` | `CJTAG`, version byte 1, OScan1-active flag | `src/dap_vendor.c:26` |
+| `DAP_Info` 0x09 | `git describe` of the build | ours, `src/DAP_config.h:276` |
+| vendor `0x82` | `CJTAG`, format 2, capability flags, build string | `src/dap_vendor.c` |
 
 `DAP_Info` also reports 512-byte packets, eight of them, and the capabilities SWD, JTAG, SWO UART,
 atomic commands and timestamps.
 
-**Nothing identifies which build of ours is on a unit.** The protocol version is ARM's, the product
-firmware version is an empty stub, `bcdDevice` never moves, and the vendor command's version byte
-has been 1 since it was written. With several units and several builds on the bench that is a real
-way to measure the wrong thing.
+**To tell two builds apart, read the build string.** `DAP_Info` 0x09 answers it to any
+CMSIS-DAP host, and vendor `0x82` answers it along with the capability flags. It is `git describe
+--always --dirty --tags`, regenerated on every build, so a `-dirty` suffix means the image came
+from uncommitted work and nothing in the repository identifies it. That matters here: two of the
+four build configurations fail the pacing gate, so knowing which one is on a unit is the
+difference between a measurement and a guess.
+
+The vendor `0x82` reply, after the echoed id:
+
+```
+[0..4]  "CJTAG"                magic
+[5]     format version         2
+[6]     capability flags       bit 0 OScan1 supported, bit 1 OScan1 active now
+[7]     build string length n
+[8..]   build string, n bytes, not terminated
+```
+
+Check the magic to know it is us, the flags to know what may be used, the string to know which
+image. A flag is how a later feature arrives without every host learning a new version.
 
 ## Pin map
 

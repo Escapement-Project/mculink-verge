@@ -128,7 +128,7 @@ the same three packets the same way, with TCK resting low between them.
 
 | id | | |
 | --- | --- | --- |
-| 0x82 | `CJTAG_INFO` | answers "CJTAG", a format version and whether OScan1 is active. Read-only, so a host may send it blindly: stock firmware answers `ID_DAP_Invalid`, which is how a host tells the two images apart. |
+| 0x82 | `CJTAG_INFO` | answers "CJTAG", a format version, a capability bitmap and the build string. Read-only, so a host may send it blindly: stock firmware answers `ID_DAP_Invalid`, which is how a host tells the two images apart. `BENCH.md` has the byte layout. |
 | 0x83 | `CJTAG_CONTROL` | one byte, non-zero activates OScan1 and zero returns to four-wire framing. |
 
 Anything else in 0x80..0x9F answers `ID_DAP_Invalid` here too. `DAP_ProcessCommand` returns what
