@@ -417,7 +417,12 @@ thing to stop the device appearing at all. Every `DAP_Info` field matches what `
 predicted. `rblhost` read all 229,464 bytes back and they are identical to the built image.
 
 SWD works against the MSPM0L1306: RAM and flash read correctly, and the words match what a stock
-probe read from the same addresses. **It connects at 20 MHz, where stock does not.**
+probe read from the same addresses.
+
+It connects at 20 MHz requested where stock does not, and **that is not an advantage.** The target's
+ceiling is on the wire, somewhere between 7 and 9 MHz: at 20 MHz asked stock puts 9.375 MHz on the
+wire and fails, while we put 6.86 MHz and succeed. Both firmwares meet the same limit at different
+requested rates, because ours is slower.
 
 ### The transfer path is half the speed of stock, and the flash is why
 
