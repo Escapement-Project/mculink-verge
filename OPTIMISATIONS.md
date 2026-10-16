@@ -105,6 +105,42 @@ path from 36 MHz to 14.4 MHz, and that path emits 3-cycle periods, which is 48 M
 The real asymmetry is that the read bit costs three cycles more than the packet bit, and the fix
 for that is to make the read bit cheaper, not to let the clock run away.
 
+## A correctness finding that outranks all of this
+
+**Four-wire JTAG clocks the target faster than the host asked for.** The emulator now reports the
+shortest period in a transfer, which is the only one that can break anything, and compares it with
+the request:
+
+| asked | SWD fastest edge | JTAG fastest edge |
+| --- | --- | --- |
+| 1 MHz | 0.98 | 0.99 |
+| 10 MHz | 9.60 | **10.29** |
+| 20 MHz | 16.00 | 18.00 |
+| 30 MHz | 16.00 | **36.00** |
+| 50 MHz | 48.00 | **72.00** |
+
+SWD and the two-pin path are within the request at every setting. JTAG is 3% over at 10 MHz and
+44% over at 50.
+
+The cause is structural rather than a slip. `Set_Clock_Delay` models a bit as
+`2 * (IO_PORT_WRITE_CYCLES + delay * DELAY_SLOW_CYCLES)` with one constant for every protocol, and
+a SWD bit really is three stores while a bare `JTAG_CYCLE_TCK` is two. The constant is calibrated
+for three. ARM's reference has the same shape.
+
+**This is a decision, not a fix, because both ways out cost throughput.** Measured:
+
+- `DELAY_FAST_CYCLES = 1` puts a NOP in each half of the delay-free path. It fixes the 50 MHz case,
+  leaves 10 MHz and 30 MHz still over, and costs SWD **22%** at the top end, because SWD shares the
+  same delay.
+- Overriding `PIN_DELAY_FAST` for the four-wire copy of JTAG_DP.c alone fixes everything above the
+  switch point and leaves SWD untouched, at about **22% of JTAG's top-end throughput**. The 3%
+  overshoot below the switch point stays.
+- Doing nothing keeps the throughput and leaves a probe that will overdrive a target asked for a
+  clock near its limit.
+
+Nothing has been changed. A 3% overshoot is inside any target's margin; 44% is not, and the setting
+that produces it is one the bench has never reached.
+
 ## Left, ranked
 
 ### 1. A seventh of a read is spent between transfers
@@ -130,16 +166,16 @@ read bit pays a two-cycle byte load it cannot avoid and three ALU operations it 
 Predicts: 7 cycles to 5 is 29% of the data phase, which is 36 of a transfer's 46 clocks. Same
 objection as item 1: it means replacing ARM's loop body.
 
-### 3. The pacing quantum straddles the clocks a host asks for
+### 3. Nothing is left in the pacing itself
 
-`DELAY_SLOW_CYCLES` is 3 and measurement agrees exactly, so the delay can only move in 3-cycle
-steps per half period. At 10 MHz asked, one step too few gives 11.1 MHz, which is faster than the
-host asked for, and one step too many gives 7.6 MHz. There is nothing in between.
+Recorded so it is not tried again. `DELAY_SLOW_CYCLES` is 3 and the measurement agrees to two
+decimal places, so the delay moves in 3-cycle steps and a finer quantum looks like free speed. It
+is not. What the delay has to satisfy is the *shortest* period in a transfer, and at every setting
+that period already lands just under the clock asked for: 9.60 MHz against 10, 48.00 against 50.
+The firmware is already as fast as the request allows on its fastest bit.
 
-A finer quantum, a short sled of `nop`s entered by a computed branch, would let the firmware land
-just under the request instead of well under it. Predicts up to 27% at the settings where the
-quantum straddles, nothing at the settings where it does not. The hazard is that the sled must
-never overshoot, and the only instrument that can confirm that is the analyser.
+The gap between that and what a transfer actually averages is entirely items 1 and 2 -- the slow
+classes costing more than the fast one. There is no third thing.
 
 ### 4. The buffer direction pin toggles every cJTAG frame
 

@@ -523,6 +523,12 @@ def report(name: str, c: Counts, model: Model, clock_hz: int, cpu_hz: int, words
             f"    wire period: shortest {min(periods)}, longest {max(periods)},"
             f" held for most of a transfer {steady} cycles = {cpu_hz / steady / 1e6:.2f} MHz"
         )
+        # The one safety property a debug probe owes its target. A transfer runs at several
+        # periods and only the shortest one can break anything, so that is what has to be under
+        # the clock the host asked for -- not the average, and not the common case.
+        fastest = cpu_hz / min(periods)
+        verdict = "within" if fastest <= clock_hz else "OVER"
+        print(f"    fastest edge {fastest / 1e6:.2f} MHz, {verdict} the {clock_hz / 1e6:g} MHz asked")
         # Ranked by the cycles each class costs in total, which is where the time actually goes.
         total = sum(periods)
         ranked = sorted(tally.items(), key=lambda kv: -kv[0] * kv[1])[:5]
