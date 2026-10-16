@@ -58,12 +58,28 @@ answers only `0x80` and `0x81`, so anything above is free.
 
 `0x82` is read-only, so a host may send it blindly to any probe.
 
-USB identity: VID `0x1fc9`, PID `0x0143`, four interfaces, seven endpoints. Product string
-`MCU-Link CMSIS-DAP cJTAG`, vendor `NXP Semiconductors`. The serial is `CJ` followed by eight hex
-digits derived from the part's unique id, or `CJNOUUID` if that region reads as all ones.
+Everything the probe says about itself:
 
-`DAP_Info` reports 512-byte packets, eight of them, and the capabilities SWD, JTAG, SWO UART,
+| | value | where |
+| --- | --- | --- |
+| USB VID:PID | `0x1FC9:0x0143` | `src/usb_descriptors.c:20` — the same pair stock uses |
+| bcdDevice | `0x0100` | `src/usb_descriptors.c:34`, never changed |
+| manufacturer, `DAP_Info` 0x01 | `NXP Semiconductors` | `src/DAP_config.h:166` |
+| product, `DAP_Info` 0x02 | `MCU-Link CMSIS-DAP cJTAG` | `src/DAP_config.h:167`. Stock says `MCU-Link CMSIS-DAP V3.172` |
+| serial, `DAP_Info` 0x03 | `CJ` + 8 hex of CRC32 over the unique id, or `CJNOUUID` | `src/ser_num.c:24` |
+| `DAP_Info` 0x04 | `2.1.2` | ARM's CMSIS-DAP protocol version from the pinned submodule, not ours |
+| `DAP_Info` 0x05/0x06 | `NXP` / `Cortex-M` | `src/DAP_config.h:151` |
+| `DAP_Info` 0x07/0x08 | `NXP` / `NXP board` | `src/DAP_config.h:153` |
+| `DAP_Info` 0x09 | empty | ARM's stub, unmodified |
+| vendor `0x82` | `CJTAG`, version byte 1, OScan1-active flag | `src/dap_vendor.c:26` |
+
+`DAP_Info` also reports 512-byte packets, eight of them, and the capabilities SWD, JTAG, SWO UART,
 atomic commands and timestamps.
+
+**Nothing identifies which build of ours is on a unit.** The protocol version is ARM's, the product
+firmware version is an empty stub, `bcdDevice` never moves, and the vendor command's version byte
+has been 1 since it was written. With several units and several builds on the bench that is a real
+way to measure the wrong thing.
 
 ## Pin map
 
