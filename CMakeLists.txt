@@ -23,6 +23,19 @@ if(LTO)
   set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 
+# Run the unrolled bit paths out of SRAM rather than flash. See src/hot.h for what the bench
+# measured; behind a switch so the two can be compared on one unit without editing a source file.
+#
+# Not available in a Debug build: unrolled at -O0 the four functions come to about 300 KB, and
+# m_data is 204 KB and also holds the stack. Refuse it here rather than leave the linker to report
+# a 119 KB overflow, since Debug exists only to bisect a miscompilation.
+option(RAMFUNC "Run the bit paths from SRAM" ON)
+if(RAMFUNC AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+  message(FATAL_ERROR
+    "RAMFUNC does not fit a Debug build: the unrolled bit paths are about 300 KB at -O0 and SRAM "
+    "is 204 KB. Configure with -DRAMFUNC=OFF to bisect in Debug.")
+endif()
+
 family_initialize_project(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR})
 
 add_executable(${PROJECT_NAME})
@@ -105,6 +118,10 @@ set_source_files_properties(
   ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_dp_block.c
   PROPERTIES COMPILE_OPTIONS "-funroll-loops"
   )
+
+if(RAMFUNC)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE RAMFUNC_BIT_PATHS=1)
+endif()
 
 # ARM's JTAG entry points are renamed here so src/cjtag_dp.c can own the real names and dispatch
 # between four-wire and OScan1. Renaming at compile time rather than patching keeps the submodule

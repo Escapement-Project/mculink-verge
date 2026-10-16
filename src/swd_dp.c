@@ -26,6 +26,7 @@
 #include "DAP_config.h"
 
 #include "DAP.h"
+#include "hot.h"
 #include "swd_dp.h"
 #include "swd_transfer.h"
 
@@ -246,6 +247,10 @@ SWD_TransferFunction(Fast)
 #define SWD_XFER_SLOW(request, data) SWD_TransferSlow(SWD_WithParity(request), data)
 
 // clang-format off: each of these expands to a function definition.
+// The attribute goes on a declaration because the definitions come out of a macro, which is
+// generated from ARM's DAP.c and should stay a faithful copy of it.
+static uint32_t SWD_TransferCommandFast(const uint8_t* request, uint8_t* response) HOT_PATH;
+static uint32_t SWD_TransferCommandSlow(const uint8_t* request, uint8_t* response) HOT_PATH;
 SWD_TRANSFER_FUNCTION(SWD_TransferCommandFast, SWD_XFER_FAST)
 SWD_TRANSFER_FUNCTION(SWD_TransferCommandSlow, SWD_XFER_SLOW)
 // clang-format on
@@ -351,6 +356,8 @@ uint32_t SWD_TransferCommand(const uint8_t* request, uint8_t* response) {
         return ((uint32_t)(response - response_head));                                                    \
     }
 
+static uint32_t SWD_TransferBlockFast(const uint8_t* request, uint8_t* response) HOT_PATH;
+static uint32_t SWD_TransferBlockSlow(const uint8_t* request, uint8_t* response) HOT_PATH;
 SWD_TransferBlockFunction(Fast) SWD_TransferBlockFunction(Slow)
 
     /** The same return shape DAP.c's own DAP_TransferBlock produces. */
