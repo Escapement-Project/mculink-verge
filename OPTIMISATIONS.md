@@ -1,178 +1,183 @@
 # Optimisation opportunities
 
-Found while building, to be spent at the bench once the probe works. Nothing here is urgent and
-nothing here should be done before the firmware is correct.
+What has been done, what was tried and rejected, and what is left.
 
-## How these are measured now
+## How these are measured
 
 `tools/cycles.py` runs the built image on an emulated Cortex-M33, drives it through the real DAP
 command layer against a target that always acknowledges, and counts what executes between one wire
 edge and the next.
 
 ```
-uv run tools/cycles.py --calibrate              # recover the clock constants
-uv run tools/cycles.py --wire cjtag --clock 10  # cycles per TMSC packet
+uv run tools/cycles.py --clock 10 50 --words 64        # throughput and where the time goes
+uv run tools/cycles.py --explain                       # name the code in the longest gap
+uv run tools/cycles.py --trace DIR                     # the wire event stream, to diff
+uv run tools/cycles.py --calibrate                     # recover ARM's two clock constants
 ```
 
-**What is fact and what is model.** Instruction counts, delay-loop iterations and wire clocks are
-facts about the image. Cycles are a model: one cycle per store, two per load, two per taken branch,
-one otherwise, all overridable on the command line. Nothing below has been seen on an analyser.
+**Fact and model.** Instruction counts, wire clocks, pacing iterations and the wire event stream
+are facts about the image. Cycles are a model: one per store, two per load, two per taken branch,
+one otherwise, all overridable. Flash wait states, the USB round trip and bus contention are not
+modelled, so every throughput figure here is a ceiling.
 
-The instrument agrees with the one bench measurement that can check it. It says a 10 MHz request
-and a 14 MHz request compile to the same path, and the stock sweep measured 469.1 and 475.4 KiB/s
-at those two settings.
+**It agrees with the bench where the bench can check it.** Asked for 1 MHz, it says the wire runs
+at 0.94 MHz; the analyser measured 0.94 MHz on the stock image. It says a 10 MHz request and a
+14 MHz request compile to the same path; the stock sweep measured 469.1 and 475.4 KiB/s at those
+two settings.
 
-Baseline, this build, SWD read, 16-word block, 144 MHz core:
+**Every change below was checked against the wire event stream**, which records each clock edge,
+each transition, each sample and each release. A change that leaves all six traced scenarios
+byte-identical cannot have altered the protocol.
 
-| asked | on the wire | |
-| --- | --- | --- |
-| 1 MHz | 0.93 MHz | 93% |
-| 5 MHz | 3.56 MHz | 71% |
-| 10 MHz | 6.41 MHz | 64% |
-| 14 MHz | 6.41 MHz | 46% |
-| 20 MHz | 8.74 MHz | 44% |
-| 50 MHz | 13.79 MHz | 28% |
+## Where this stands against the bar
 
-## 1. IO_PORT_WRITE_CYCLES says 2 where the code costs 5
+Stock measured 476 KiB/s read and 502 KiB/s write at its best setting. KiB/s of wire time, 64-word
+block, before and after tonight:
 
-The headline. One constant, no code change, and it is wrong by more than a factor of two.
+| | asked | before | after | |
+| --- | --- | --- | --- | --- |
+| SWD read | 10 MHz | 538 | 575 | +7% |
+| SWD write | 10 MHz | 547 | 621 | +14% |
+| SWD read | 50 MHz | 1161 | 1358 | +17% |
+| SWD write | 50 MHz | 1387 | 1679 | +21% |
+| JTAG read | 50 MHz | 1355 | 1681 | +24% |
+| JTAG write | 50 MHz | 1630 | 2079 | +28% |
+| cJTAG read | 10 MHz | 166 | 213 | +28% |
+| cJTAG write | 10 MHz | 177 | 217 | +23% |
 
-`DAP.c` models a half period as `IO_PORT_WRITE_CYCLES + clock_delay * DELAY_SLOW_CYCLES` and picks
-`clock_delay` for a requested frequency from that model. Fitting the real image gives
+The bar is cleared on wire time at every setting, by 2.9x at the top. **Wire time is not the same
+as throughput**: the stock capture put the USB gap at about 10% of a transfer at 14 MHz, and a
+target that will not attach above 14 MHz makes the top of this table unreachable. The bench decides.
 
-```
-cycles per bit = 10.47 + 3.00 * delay iterations per bit
-```
+## Done
 
-so `DELAY_SLOW_CYCLES` at 3 is exactly right and `IO_PORT_WRITE_CYCLES` should be about 5, not 2.
+### Unroll the bit paths
 
-It costs twice. The delay computed for a request is longer than it should be. And `Set_Clock_Delay`
-switches to the delay-free path at `(CPU_CLOCK/2) / IO_PORT_WRITE_CYCLES`, which is 36 MHz on this
-build instead of 14.4 MHz, so every request between those two numbers is stuck paying for a pacing
-loop it does not need.
+ARM unrolls the packet phases of a transfer by hand and leaves the 32-bit data phases as loops, so
+a data bit carried a loop branch and an induction variable that a packet bit did not: 22 cycles
+against 16 at the same setting. `-funroll-loops` on SW_DP.c, JTAG_DP.c and our second copy of
+JTAG_DP.c closes most of that.
 
-Setting it to 5, same build otherwise:
+SWD +7% to +21%, JTAG +9% to +30%, cJTAG almost nothing because its cost is framing rather than
+loop overhead. Text grows 10.7 KB. Wire identical.
 
-| asked | today | at 5 | |
-| --- | --- | --- | --- |
-| 1 MHz | 0.93 | 0.97 | +4% |
-| 5 MHz | 3.56 | 4.18 | +17% |
-| 10 MHz | 6.41 | 8.74 | +36% |
-| 14 MHz | 6.41 | 8.74 | +36% |
-| 20 MHz | 8.74 | 13.79 | +58% |
-| 25 MHz | 8.74 | 13.79 | +58% |
+### Stop pacing the OScan1 frames twice
 
-**Do not ship it on the model alone.** If the real fixed cost is below five cycles a half period,
-the probe clocks faster than it was asked to, which is the one failure mode a debugger cannot
-diagnose. One analyser capture of the period at two delay settings solves for the real store cost;
-re-run `--calibrate` with that figure and set the constant to what it says.
+`JTAG_DP.c` wraps every clock in two `PIN_DELAY` calls. On the two-pin path the clock calls they
+surround are no-ops, because `cJTAG_Frame` does the real clocking and its own pacing, so a frame
+paid eight delays where six are wanted.
 
-## 2. The requested clock quantises, so sweep by delay and not by megahertz
+cJTAG +23% to +32% wherever the clock is paced, +5% where it is not. The image gets smaller. Wire
+identical.
 
-10 MHz and 14 MHz produce byte-identical paths, as do 20, 25 and 30. A sweep in round megahertz
-measures the same thing several times and misses the steps. Step the requested clock so that
-`clock_delay` changes each time; `--calibrate` prints the column to steer by.
+## Tried and rejected
 
-The corollary is the cheapest lever on this list and needs no firmware change at all: **ask for more
-than you want.** 50 MHz requested gives 13.79 MHz on the wire where 14 MHz requested gives 6.41.
-Until item 1 lands, that is a host-side setting worth two-thirds of the probe's speed.
+Recorded because each one is the obvious next thing to try.
 
-## 3. Three GPIO stores per bit, where two would do
+### Fusing the data bit into the falling clock edge
 
-The data bit, the falling clock edge and the rising clock edge are three separate stores. The data
-and the falling edge could be one masked `MPIN` write covering both P0_0 and P0_2, since `MPIN`
-writes only unmasked bits and both pins are on port 0.
+The idea: stage the data bit, then write it and the falling edge as one masked `MPIN` store, three
+stores a bit down to two. Measured: **2% to 15% slower.** The staged value is a static the compiler
+must keep in memory, which costs more than the store it saves, and `MPIN` is no cheaper than
+`SET`/`CLR`. It also changes the idle level the probe leaves on SWDIO, and the shortest period on a
+write dropped to 2 cycles, which is 72 MHz.
 
-Predicts: one store in three off a floor of 10.44 cycles per bit, so about 10% on the delay-free
-path and proportionally less wherever pacing dominates. Worth doing after item 1, not before:
-below the switch point the delay loop is most of the bit.
+### Letting the optimiser inline the transfer into the block loop
 
-## 4. The OScan1 frames pay two pacing delays they do not need
+A third of the time at a high clock is spent between transfers rather than clocking, and half of
+that looked like call overhead. Raising GCC's inlining parameters until the transfer was inlined
+cost 33 KB of text and bought **nothing**: the gap went from 78 cycles to 77, and the write path
+got slower.
 
-`JTAG_DP.c`'s cycle macros call `PIN_DELAY()` around what, on the two-pin path, are no-op clock
-calls — the real clocking and pacing happen inside `cJTAG_Frame`. Eight delays per frame where six
-are wanted.
+### Raising IO_PORT_WRITE_CYCLES
 
-Measured, cJTAG read at 10 MHz requested: 27.70 cycles per TMSC packet now, 22.18 with the macro
-delays suppressed. **20%.** On the delay-free path it is worth nothing, because `PIN_DELAY_FAST` is
-already empty and there is no delay left to remove.
+**This was recommended by an earlier version of this file, with a predicted 36% to 58%, and it is
+wrong and unsafe.** The reasoning rested on a per-bit cost averaged over a whole transfer. Measuring
+the wire period directly shows a transfer is not one period but several: at 10 MHz asked, the
+packet bits run at 16 cycles, the data write bits at 17 and the data read bits at 19.
 
-An earlier version of this file predicted this would roughly halve the frame time. It does not.
+ARM's constant is calibrated against the *fastest* class, and for that class it is right: a packet
+bit at 16 cycles is exactly the `2 * (IO_PORT_WRITE_CYCLES + delay * DELAY_SLOW_CYCLES)` the model
+predicts. Raising the constant shortens the computed delay for every class, so the fastest class
+would then exceed the clock the host asked for. It would also drop the switch to the delay-free
+path from 36 MHz to 14.4 MHz, and that path emits 3-cycle periods, which is 48 MHz.
 
-The fix is two `#define`s in `src/cjtag_jtag_dp.c`, next to the ones that already shadow the clock
-calls:
+The real asymmetry is that the read bit costs three cycles more than the packet bit, and the fix
+for that is to make the read bit cheaper, not to let the clock run away.
 
-```c
-#define PIN_DELAY_SLOW(d) ((void)(d))
-#define PIN_DELAY_FAST() ((void)0)
-```
+## Left, ranked
 
-## 5. Two-pin costs 3.7 times four-pin per JTAG clock
+### 1. A seventh of a read is spent between transfers
 
-Measured on the same 16-word block: 700 JTAG clocks four-wire against 2100 TMSC packets two-pin,
-which is the 3x the format requires and nothing wasted. The rest is per-packet overhead — 27.70
-cycles a packet against 22.45 a four-wire clock at 10 MHz requested, so 83 cycles per JTAG clock
-against 22.5.
+Measured at 50 MHz asked: 78 cycles of dead wire between one transfer and the next, 13% of a read
+and 15% of a write. `--explain` names it: 32 instructions in the tail and head of `SWD_TransferFast`
+and 26 in the block loop that `DAP_ProcessCommand` inlined.
 
-Item 4 takes that 3.7 down to 3.0, which is the floor. After it there is nothing left in the framing
-and the remaining work is in the bit path, items 1 and 3.
+The block loop stores the result a byte at a time and re-reads the retry count per word. The
+transfer tail checks parity, walks the turnaround, re-drives SWDIO and restores nine registers.
+None of it is in a macro, so none of it can be reached the way the cJTAG framing was: it needs our
+own copy of ARM's `DAP_SWD_TransferBlock` and `SWD_Transfer`.
 
-## 6. The buffer direction pin toggles every frame
+Predicts: most of 13% to 15% at a high clock, 6% at 10 MHz. Against that, it is the first change
+that would stop ARM's sources compiling as they ship.
+
+### 2. The read data bit costs three cycles more than it needs
+
+At the delay-free setting a packet bit is 3 cycles, a data write bit 5 and a data read bit 7. The
+read bit pays a two-cycle byte load it cannot avoid and three ALU operations it can: `parity += bit`,
+`val >>= 1`, `val |= bit << 31`.
+
+Predicts: 7 cycles to 5 is 29% of the data phase, which is 36 of a transfer's 46 clocks. Same
+objection as item 1: it means replacing ARM's loop body.
+
+### 3. The pacing quantum straddles the clocks a host asks for
+
+`DELAY_SLOW_CYCLES` is 3 and measurement agrees exactly, so the delay can only move in 3-cycle
+steps per half period. At 10 MHz asked, one step too few gives 11.1 MHz, which is faster than the
+host asked for, and one step too many gives 7.6 MHz. There is nothing in between.
+
+A finer quantum, a short sled of `nop`s entered by a computed branch, would let the firmware land
+just under the request instead of well under it. Predicts up to 27% at the settings where the
+quantum straddles, nothing at the settings where it does not. The hazard is that the sled must
+never overshoot, and the only instrument that can confirm that is the analyser.
+
+### 4. The buffer direction pin toggles every cJTAG frame
 
 `cJTAG_Frame` releases TMSC for the TDO packet and takes it back afterwards: four of the thirteen
-GPIO writes a frame makes. Both are needed for correctness — the target drives TDO whatever we do,
-so the buffer has to be off — but a sequence that captures no TDO still pays them.
-`JTAG_SEQUENCE_TDO` says when the host does not want it. The third packet must still be clocked,
-because the target counts packets.
+GPIO writes a frame makes. Both are needed for correctness, but a sequence that captures no TDO
+still pays them, and `JTAG_SEQUENCE_TDO` says when the host does not want it. The third packet must
+still be clocked, because the target counts packets.
 
-Predicts: four writes a frame down to two, so roughly 15% of the frame's stores, on sequences that
-want no TDO — most of a TAP walk.
+Predicts: four writes a frame down to two on TDO-less sequences, most of a TAP walk.
 
 **Unproven and the riskiest item here.** If the target drives TDO regardless, not releasing means
-contention on the wire. Measure before keeping.
+contention. Measure before keeping.
 
-## 7. DAP packet size above 512
+### 5. DAP packet size above 512
 
 512 is the USB 2.0 ceiling for a high-speed **bulk endpoint**, and it is not tunable. It is not the
 ceiling for a DAP packet: `DAP_Info` reports packet size as a 16-bit value, a bulk transfer spans as
 many endpoint packets as it needs, and probe-rs sizes its buffer from the reported value
 (`packet_buffer_len` is `max_packet_size + 1`) rather than from the descriptor.
 
-Predicts: **at most 10%**, probably half that. The stock capture says the wire is busy 90% of the
-time at 14 MHz, with about 52 us of gap between 480-byte bursts; a 4096-byte read spends 416 us of
-its 8.49 ms not clocking. Doubling the packet size recovers about half of that.
-
-Worth more once the bit loop is faster, since the same gap is a larger share of a shorter transfer.
-Worth nothing if done first.
+Predicts: **at most 10%**, probably half that, and nothing the emulator can confirm because the
+host round trip is not modelled. Worth more once the wire is faster, since the same gap is a larger
+share of a shorter transfer.
 
 Two caveats. It deviates from stock, which reports 512, so a host that hardcodes rather than reading
-`DAP_Info` would break — check pyOCD and OpenOCD before relying on it. And it costs RAM: two buffers
-at `DAP_PACKET_SIZE` here plus whatever `DAP.c` holds.
+`DAP_Info` would break: check pyOCD and OpenOCD first. And it costs RAM.
 
-## 8. Compiler flags are not a throughput lever here
+### 6. Run the bit paths from SRAM
 
-Recorded because it is the obvious thing to try and it does not work. The four builds, SWD read at
-50 MHz requested:
+Unrolling put another 10.7 KB into the straight-line bit paths, and they run from flash behind a
+144 MHz wait-state setting. The emulator has no flash model, so this is the one item here it cannot
+size at all. Cheap to try at the bench, cannot make the wire slower, and would need a linker script
+of our own rather than the board support's.
 
-| | text | cycles/bit |
-| --- | --- | --- |
-| -Os | 35,020 | 10.60 |
-| -Os + LTO | 30,444 | 10.59 |
-| -O3 | 43,676 | 10.51 |
-| -O3 + LTO | 46,980 | 10.44 |
+## Before anything else, at the bench
 
-1.5% across a 54% size range. ARM's macros already unroll the bit path by hand and what is left is
-GPIO stores, which no optimiser can remove. The build ships at -O3 with LTO anyway: the flash is
-there, and the command layer and USB plumbing are not bit-bound even if the wire is.
-
-If flash ever matters, `-Os` with LTO is the better corner of that table.
-
-## 9. Measure the delay-free path on hardware, before any of this
-
-Every figure from the bench is from the paced path, because 14 MHz was the highest clock the target
-would attach at and the switch was above it. The emulator says the delay-free path runs at 13.79 MHz
-read and 16.34 MHz write for a 20 MHz request once item 1 lands. Those are the numbers that decide
-whether anything else here is worth doing.
-
-First measurement at the bench: a target that will attach above the switch point, and the same sweep
-the stock baseline was taken with.
+Every figure the probe has ever been measured by is from the paced path, because 14 MHz was the
+highest clock the target would attach at and the switch was above it. Get a target that will attach
+above the switch point and run the sweep the stock baseline was taken with. If the delay-free path
+does not deliver what the emulator says, nothing else on this list is worth doing until that is
+understood.
