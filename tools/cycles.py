@@ -22,7 +22,7 @@ import re
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from capstone import CS_ARCH_ARM, CS_MODE_THUMB, Cs
 from unicorn import (
@@ -168,6 +168,8 @@ class Counts:
     # The running cycle count at each rising clock edge. Differences are wire periods, which is
     # what an analyser measures and what Set_Clock_Delay is trying to control.
     edge_cycles: list[int] = field(default_factory=list)
+    # The same at each falling edge, which with the rising ones gives both phases of a clock.
+    fall_cycles: list[int] = field(default_factory=list)
     # Cycles from begin() to end(), as the timing engine counts them.
     span: int = 0
     # With a timed SWD target, every read and where it sat in its window.
@@ -455,12 +457,20 @@ class Machine:
             self.uc.mem_write(vma, bytes(self.uc.mem_read(lma, size)))
 
         self.uc.hook_add(UC_HOOK_CODE, self._code)
+        # The firmware writes code into SRAMX at run time, and rewrites it when the clock changes.
+        self.uc.hook_add(UC_HOOK_MEM_WRITE, self._code_written, None, SRAMX[0], SRAMX[0] + SRAMX[1] - 1)
         if self.engine is not None:
             # Only over plain memory. A memory hook that also covers the MMIO-mapped GPIO block
             # changes what unicorn does there, and the JTAG path then takes a different branch;
             # GPIO and the PPB report their own accesses to the engine anyway.
             for base, size in (FLASH, SRAMX, SRAM, USB_RAM):
                 self.uc.hook_add(UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE, self._mem, None, base, base + size - 1)
+
+    def _code_written(self, uc, access, address, size, value, user):
+        for at in range(address - 2, address + size):
+            self._insns.pop(at, None)
+            self._decoded.pop(at, None)
+            self._branch_test.pop(at, None)
 
     def _mem(self, uc, access, address, size, value, user):
         # GPIO and the PPB report their own accesses, from their callbacks.
@@ -643,6 +653,7 @@ class Machine:
                 self._packet = (self._packet + 1) % 3
         elif before_clock and not after_clock:
             self.counts.tck_fall += 1
+            self.counts.fall_cycles.append(self.cycle)
             self.counts.trace.append("v")
 
     # -- instruction accounting ---------------------------------------------
@@ -1082,6 +1093,15 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
     """
     failures = []
 
+    # An image that generates its SWD paths runs them from SRAMX, which only the timing engine
+    # prices correctly, and its samples trail the clock, so its traces are its own until it is the
+    # default build.
+    baseline_dir = BASELINE_DIR
+    if "swd_gen_ready" in symbols(elf):
+        baseline_dir = BASELINE_DIR + "-codegen"
+        if not model.engine:
+            model = replace(model, engine=True)
+
     # The activation sequence is the one thing here that has to match a published format rather
     # than only match itself, and it is driven by a table extracted from OpenOCD's. Recording what
     # the pin layer actually emits for it catches a change to the table, to the loop that walks it,
@@ -1094,10 +1114,10 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
     probe.begin()
     probe.command(bytes([ID_CJTAG_CONTROL, 1]))
     activation = probe.end()
-    path = os.path.join(BASELINE_DIR, "cjtag-activation.trace")
+    path = os.path.join(baseline_dir, "cjtag-activation.trace")
     body = "\n".join(activation.trace) + "\n"
     if bless:
-        os.makedirs(BASELINE_DIR, exist_ok=True)
+        os.makedirs(baseline_dir, exist_ok=True)
         open(path, "w").write(body)
     elif not os.path.exists(path):
         failures.append("cjtag-activation.trace: no baseline recorded")
@@ -1127,7 +1147,7 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
         counts = probe.end()
         if reply[1] != 0:
             failures.append(f"{wire} {name}: answered 0x{reply[1]:02x}, wanted DAP_OK")
-        path = os.path.join(BASELINE_DIR, f"{wire}-{name}.trace")
+        path = os.path.join(baseline_dir, f"{wire}-{name}.trace")
         body = "\n".join(counts.trace) + "\n"
         if bless:
             open(path, "w").write(body)
@@ -1168,7 +1188,7 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
             counts = probe.end()
             if reply[0] != ID_TRANSFER:
                 failures.append(f"{wire} {label}: reply echoes 0x{reply[0]:02x}, wanted 0x05")
-            path = os.path.join(BASELINE_DIR, f"{wire}-{label}.trace")
+            path = os.path.join(baseline_dir, f"{wire}-{label}.trace")
             body = "\n".join(counts.trace) + "\n"
             if bless:
                 open(path, "w").write(body)
@@ -1177,7 +1197,7 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
             elif open(path).read() != body:
                 failures.append(f"{wire}-{label}.trace: wire events differ from the baseline")
 
-    known_path = os.path.join(BASELINE_DIR, "known-overshoot.txt")
+    known_path = os.path.join(baseline_dir, "known-overshoot.txt")
     known = set()
     if os.path.exists(known_path):
         known = {line.strip() for line in open(known_path) if line.strip() and not line.startswith("#")}
@@ -1206,10 +1226,10 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
                 failures.append(f"{wire} {label}: data does not match what the target shifted out")
 
             name = f"{wire}-{label}-{tag}.trace"
-            path = os.path.join(BASELINE_DIR, name)
+            path = os.path.join(baseline_dir, name)
             body = "\n".join(counts.trace) + "\n"
             if bless:
-                os.makedirs(BASELINE_DIR, exist_ok=True)
+                os.makedirs(baseline_dir, exist_ok=True)
                 open(path, "w").write(body)
             elif not os.path.exists(path):
                 failures.append(f"{name}: no baseline recorded")
@@ -1253,13 +1273,13 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
                     )
 
     if bless:
-        os.makedirs(BASELINE_DIR, exist_ok=True)
+        os.makedirs(baseline_dir, exist_ok=True)
         with open(known_path, "w") as fh:
             fh.write("# Wires that clock faster than the host asked for. See OPTIMISATIONS.md:\n")
             fh.write("# it is a decision rather than a slip, and both ways out cost throughput.\n")
             for tag in sorted(seen_overshoot):
                 fh.write(tag + "\n")
-        print(f"baseline rewritten in {BASELINE_DIR}")
+        print(f"baseline rewritten in {baseline_dir}")
         return 0
 
     for tag in sorted(known - seen_overshoot):

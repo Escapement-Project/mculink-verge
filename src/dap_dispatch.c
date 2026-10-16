@@ -30,6 +30,9 @@
 #include "dap_dispatch.h"
 #include "jtag_dp.h"
 #include "swd_dp.h"
+#ifdef SWD_CODEGEN
+#include "swd_gen.h"
+#endif
 
 extern uint32_t arm_DAP_ProcessCommand(const uint8_t* request, uint8_t* response);
 
@@ -153,7 +156,25 @@ uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* response) {
             return (1U << 16) + 1U + transfer_block(request + 1, response + 1);
         }
     }
+#ifdef SWD_CODEGEN
+    if (*request == ID_DAP_SWJ_Clock) {
+        // ARM keeps only the delay it derives from the clock, and the generator wants the clock.
+        const uint32_t hz = (uint32_t)request[1] | ((uint32_t)request[2] << 8) | ((uint32_t)request[3] << 16) |
+                            ((uint32_t)request[4] << 24);
+        if (hz != 0U) {
+            swd_gen_clock_hz = hz;
+        }
+    }
+    const uint32_t result = arm_DAP_ProcessCommand(request, response);
+    if ((*request == ID_DAP_SWJ_Clock) || (*request == ID_DAP_SWD_Configure) ||
+        (*request == ID_DAP_TransferConfigure)) {
+        // Generate now rather than in the first transfer, which would carry the time it takes.
+        (void)swd_gen_ready();
+    }
+    return result;
+#else
     return arm_DAP_ProcessCommand(request, response);
+#endif
 }
 
 /** Kept out of line. It runs once per USB packet, so the call costs nothing, and being a symbol

@@ -41,6 +41,9 @@ option(MARKER "Mark command processing on the J8 header" ON)
 # Sample SWDIO just after the rising edge on the delayed SWD path, with each transfer masked. Off
 # until the bench has settled it; BENCH.md has the measurements behind it.
 option(SWD_SAMPLE_AFTER_EDGE "Sample SWDIO after the rising edge on the delayed SWD path" OFF)
+# Generate the SWD transfer paths at run time into SRAMX, for the clock the host asks for. See
+# src/swd_gen.c. Off until the equivalence and the gate pass on it.
+option(SWD_CODEGEN "Generate the SWD transfer paths at run time" OFF)
 # Vendor 0x88, which runs code the host sends. A bench instrument for the emulator's cost model;
 # src/code_lab.c says what it measures.
 option(CODE_LAB "Build the vendor 0x88 code lab" OFF)
@@ -62,6 +65,9 @@ set(FW_VERSION_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/fw_version.h)
 set(FW_VARIANT "")
 if(SWD_SAMPLE_AFTER_EDGE)
   string(APPEND FW_VARIANT "+after-edge")
+endif()
+if(SWD_CODEGEN)
+  string(APPEND FW_VARIANT "+codegen")
 endif()
 if(CODE_LAB)
   string(APPEND FW_VARIANT "+lab")
@@ -194,6 +200,11 @@ endif()
 
 if(SWD_SAMPLE_AFTER_EDGE)
   target_compile_definitions(${PROJECT_NAME} PRIVATE SWD_SAMPLE_AFTER_EDGE=1)
+endif()
+
+if(SWD_CODEGEN)
+  target_sources(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_gen.c)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE SWD_CODEGEN=1)
 endif()
 
 if(CODE_LAB)

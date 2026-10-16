@@ -30,6 +30,10 @@
 #include "swd_dp.h"
 #include "swd_transfer.h"
 
+#ifdef SWD_CODEGEN
+#include "swd_gen.h"
+#else
+
 // The same shape as SW_DP.c's, so the two can be read side by side.
 #define PIN_SWCLK_SET PIN_SWCLK_TCK_SET
 #define PIN_SWCLK_CLR PIN_SWCLK_TCK_CLR
@@ -457,3 +461,170 @@ SWD_TransferBlockFunction(Fast) SWD_TransferBlockFunction(Slow)
     }
     return num;
 }
+#endif
+
+#ifdef SWD_CODEGEN
+/* The transfers run generated code from SRAMX (src/swd_gen.c), at whatever period the host's clock
+ * gives. What stays here is ARM's command logic around it: posted reads, the RDBUFF read that ends
+ * a block, and WAIT retries, which the generated loop hands back by stopping at the transfer that
+ * did not acknowledge OK. */
+
+/** SW_DP.c's own transfer, renamed in CMakeLists.txt: what runs when nothing could be generated. */
+extern uint8_t arm_SWD_Transfer(uint32_t request, uint32_t* data);
+
+/** ARM's transfer behind the generated functions' contract, for when they could not be built. */
+static uint64_t arm_words(uint32_t packet, uint8_t* words, uint32_t count) {
+    const uint32_t request = (packet >> 1) & 0x0FU;
+    for (uint32_t i = 0U; i < count; i++) {
+        uint32_t data;
+        if ((request & DAP_TRANSFER_RnW) == 0U) {
+            __builtin_memcpy(&data, words, sizeof data);
+        }
+        const uint32_t ack = arm_SWD_Transfer(request, &data);
+        if (ack != DAP_TRANSFER_OK) {
+            return ack | ((uint64_t)(count - i) << 32);
+        }
+        if ((request & DAP_TRANSFER_RnW) != 0U) {
+            __builtin_memcpy(words, &data, sizeof data);
+        }
+        words += sizeof data;
+    }
+    return DAP_TRANSFER_OK;
+}
+
+static swd_gen_fn transfer_fn(uint32_t request) {
+    if (!swd_gen_ready()) {
+        return arm_words;
+    }
+    return ((request & DAP_TRANSFER_RnW) != 0U) ? swd_gen_read : swd_gen_write;
+}
+
+/** `count` transfers of `request`, each retried on WAIT as ARM's block loop retries it. Returns
+ * the last acknowledge, and in `done` how many transfers completed. */
+static uint32_t transfer_words(uint32_t request, uint8_t* words, uint32_t count, uint32_t* done) {
+    const swd_gen_fn fn = transfer_fn(request);
+    const uint32_t packet = swd_gen_packet(request);
+    uint32_t ack = DAP_TRANSFER_OK;
+    uint32_t n = 0U;
+    while (count != 0U) {
+        const uint64_t result = fn(packet, words, count);
+        const uint32_t ok = count - (uint32_t)(result >> 32);
+        ack = (uint32_t)result;
+        n += ok;
+        words += 4U * ok;
+        count -= ok;
+        if (ack == DAP_TRANSFER_OK) {
+            break;
+        }
+        uint32_t retry = DAP_Data.transfer.retry_count;
+        while ((ack == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort) {
+            ack = (uint32_t)fn(packet, words, 1U);
+        }
+        if (ack != DAP_TRANSFER_OK) {
+            break;
+        }
+        n++;
+        words += 4U;
+        count--;
+    }
+    *done = n;
+    return ack;
+}
+
+uint8_t SWD_Transfer(uint32_t request, uint32_t* data) {
+    const swd_gen_fn fn = transfer_fn(request);
+    uint32_t word = 0U;
+    if ((request & DAP_TRANSFER_RnW) == 0U) {
+        word = *data;
+    }
+    const uint32_t ack = (uint32_t)fn(swd_gen_packet(request), (uint8_t*)&word, 1U);
+    if (ack == DAP_TRANSFER_OK) {
+        if (((request & DAP_TRANSFER_RnW) != 0U) && (data != NULL)) {
+            *data = word;
+        }
+        if ((request & DAP_TRANSFER_TIMESTAMP) != 0U) {
+            DAP_Data.timestamp = TIMESTAMP_GET();
+        }
+    }
+    return (uint8_t)ack;
+}
+
+// clang-format off: this expands to a function definition.
+static uint32_t SWD_TransferCommandGen(const uint8_t* request, uint8_t* response);
+SWD_TRANSFER_FUNCTION(SWD_TransferCommandGen, SWD_Transfer)
+// clang-format on
+
+uint32_t SWD_TransferCommand(const uint8_t* request, uint8_t* response) {
+    return SWD_TransferCommandGen(request, response);
+}
+
+/** ARM's DAP_SWD_TransferBlock, a block at a time rather than a word at a time. */
+static uint32_t SWD_TransferBlockGen(const uint8_t* request, uint8_t* response) {
+    uint32_t response_count = 0U;
+    uint32_t response_value = 0U;
+    uint8_t* response_head = response;
+    uint32_t done;
+    uint32_t discard;
+
+    response += 3;
+    DAP_TransferAbort = 0U;
+    request++; /* Ignore DAP index */
+
+    const uint32_t request_count = (uint32_t)(*(request + 0) << 0) | (uint32_t)(*(request + 1) << 8);
+    request += 2;
+    if (request_count == 0U) {
+        goto end;
+    }
+
+    const uint32_t request_value = *request++;
+    if ((request_value & DAP_TRANSFER_RnW) != 0U) {
+        if ((request_value & DAP_TRANSFER_APnDP) != 0U) {
+            /* Post AP read */
+            response_value = transfer_words(request_value, (uint8_t*)&discard, 1U, &done);
+            if (response_value != DAP_TRANSFER_OK) {
+                goto read_done;
+            }
+        }
+        response_value = transfer_words(request_value, response, request_count - 1U, &done);
+        response += 4U * done;
+        if (response_value != DAP_TRANSFER_OK) {
+            goto read_done;
+        }
+        /* A block posted to an access port reads its last word out of RDBUFF. */
+        const uint32_t last =
+            ((request_value & DAP_TRANSFER_APnDP) != 0U) ? (DP_RDBUFF | DAP_TRANSFER_RnW) : request_value;
+        response_value = transfer_words(last, response, 1U, &done);
+        response += 4U * done;
+    read_done:
+        response_count = (uint32_t)(response - response_head - 3) / 4U;
+    } else {
+        // The generated write only reads from `words`.
+        response_value = transfer_words(request_value, (uint8_t*)(uintptr_t)request, request_count, &done);
+        response_count = done;
+        if (response_value != DAP_TRANSFER_OK) {
+            goto end;
+        }
+        /* Check last write */
+        response_value = transfer_words(DP_RDBUFF | DAP_TRANSFER_RnW, (uint8_t*)&discard, 1U, &done);
+    }
+
+end:
+    *(response_head + 0) = (uint8_t)(response_count >> 0);
+    *(response_head + 1) = (uint8_t)(response_count >> 8);
+    *(response_head + 2) = (uint8_t)response_value;
+
+    return ((uint32_t)(response - response_head));
+}
+
+/** The same return shape DAP.c's own DAP_TransferBlock produces. */
+uint32_t SWD_TransferBlock(const uint8_t* request, uint8_t* response) {
+    uint32_t num = SWD_TransferBlockGen(request, response);
+
+    if ((*(request + 3) & DAP_TRANSFER_RnW) != 0U) {
+        num |= 4U << 16;
+    } else {
+        num |= (4U + (((uint32_t)(*(request + 1)) | (uint32_t)(*(request + 2) << 8)) * 4)) << 16;
+    }
+    return num;
+}
+#endif
