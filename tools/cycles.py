@@ -212,16 +212,12 @@ class Target:
 
 # Acknowledge bits in the order each protocol reads them, then the data phase.
 SWD_OK = [1, 0, 0]  # ack bit0 first, DAP_TRANSFER_OK == 1
-JTAG_OK = [0, 1, 0]  # JTAG_Transfer reads ack bit1, bit0, bit2
 SWD_READ = SWD_OK + [0] * 33  # 32 data bits and parity
 SWD_WRITE = SWD_OK
-JTAG_READ = JTAG_OK + [0] * 32
-JTAG_WRITE = JTAG_OK
-# On the two-pin path every clock carries a TDO packet, not just the ones that want TDO, so the
-# three clocks that walk the TAP to Shift-DR consume pattern bits of their own.
-CJTAG_LEAD = [0, 0, 0]
-CJTAG_READ = CJTAG_LEAD + JTAG_READ
-CJTAG_WRITE = CJTAG_LEAD + JTAG_WRITE
+
+# The data register a modelled TAP shifts out: an OK acknowledge, then a word of zeros.
+# JTAG_Transfer reassembles the acknowledge as bit1, bit0, bit2, so OK puts the one in the middle.
+JTAG_DR_OK = 1 << 1
 
 
 class Machine:
@@ -474,44 +470,21 @@ ID_CJTAG_CONTROL = 0x83
 AP_DRW_READ, AP_DRW_WRITE = 0x0F, 0x0D
 
 
-# Where to restart the target's bit pattern. The firmware reads the wire in order within one
-# transfer, so re-synchronising at the entry of whichever transfer function survived the build is
-# enough. Which ones survive depends on inlining, hence the list.
-TRANSFER_MARKERS = {
-    "swd": ("SWD_Transfer", "SWD_TransferFast", "SWD_TransferSlow"),
-    "jtag": ("jtag4_Transfer", "jtag4_TransferFast", "jtag4_TransferSlow"),
-    "cjtag": (
-        "cjtag_Transfer",
-        "cjtag_TransferFast",
-        "cjtag_TransferSlow",
-        # The delay-free copy of the same path, which a request above the switch point takes.
-        "cjtagf_Transfer",
-        "cjtagf_TransferFast",
-        "cjtagf_TransferSlow",
-    ),
-}
-
-
 def build(elf: str, wire: str, read: bool, model: Model) -> Machine:
-    pattern = {
-        ("swd", True): SWD_READ,
-        ("swd", False): SWD_WRITE,
-        ("jtag", True): JTAG_READ,
-        ("jtag", False): JTAG_WRITE,
-        ("cjtag", True): CJTAG_READ,
-        ("cjtag", False): CJTAG_WRITE,
-    }[(wire, read)]
-    probe = Machine(elf, Target(pattern), restart_at=set(), model=model)
+    """A machine with a target model attached, found from the wire rather than from symbols.
+
+    SWD re-synchronises on the turnaround, the only place the probe lets go. JTAG and the two-pin
+    path drive a modelled TAP, which needs no marker at all. Keying any of it off a function entry
+    worked until the optimiser inlined that function, and then the run silently took an error path
+    and reported a much better number.
+    """
+    probe = Machine(elf, Target(SWD_READ if read else SWD_WRITE), restart_at=set(), model=model)
     if wire == "swd":
         probe.resync_on_release = True
-        return probe
-    found = {name for name in TRANSFER_MARKERS[wire] if name in probe.sym}
-    if not found:
-        raise SystemExit(
-            f"no transfer entry point survived inlining for {wire}, so the acknowledge bits cannot "
-            f"be lined up: looked for {', '.join(TRANSFER_MARKERS[wire])}"
-        )
-    probe.restart_at = {probe.sym[name] for name in found}
+    elif wire == "jtag":
+        probe.tap = JtagTap(JTAG_DR_OK, 35)
+    else:
+        probe.cjtag_tap = JtagTap(JTAG_DR_OK, 35)
     return probe
 
 
