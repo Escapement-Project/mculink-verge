@@ -28,7 +28,13 @@ here can do JTAG: the MSPM0L1306 is a Cortex-M0+ and SWD only. The SRAM move and
 hint are in and pass the emulator, and that is all anyone knows about them. The next section is
 the bench that fixes that.
 
-The onboard LED is done and checked by eye: see "The LED: a timer's job" below.
+The onboard LED is done and checked by eye: see "The LED: a timer's job" below. The probe also
+reads the target's supply and J6 pin 9's detect line now: `tools/dap.py target`, measured in all
+three states under "The probe can measure the target" below.
+
+**Physical state at the end of the session.** Our unit, `CJ6B19D4E7`, runs `cd56325`, and its
+10-pin cable is unplugged from its MSPM0L1306. The analyser is still on the SWD-era map: D0-D2 on
+our probe, D3 our J8 marker, D4-D6 stock's. The JTAG plan below moves it.
 
 ## Next session: the JTAG bench
 
@@ -122,6 +128,10 @@ channels. Stock never drives J8, so a stock capture has the clock and no marker.
   switches it.
 - Put the probe in every capture and CSV name. With the target moving, the filename is the only
   record of which probe produced it. Alternate the probes run by run (ABAB) so drift lands on both.
+
+**Check the target before every attach**, with the harness on whichever probe runs ours: `dap.py
+target` should say about 3.3 V with pin 9 grounded. 1 V or so means the U585 is unpowered, and
+3.3 V with pin 9 open means the harness is not plugged in.
 
 **Tooling to write first; none of it needs the bench.**
 1. `dap.py scan`: count the TAPs on four-wire JTAG and read their IDCODEs. Older STM32s put a
