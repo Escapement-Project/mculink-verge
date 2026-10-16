@@ -69,11 +69,13 @@ def timed(body: str, setup: str = "", pad: int = 0) -> str:
     r4 holds CYCCNT's address. r8 is GPIO's B block, r9 SET, r10 CLR, r11 the word registers, r5 a
     pin mask the caller passes in r0 (zero moves nothing and still makes the bus access), r6 and
     r7 the two timestamps. The body may use r0-r3, r12 and lr freely and must leave the rest; r3
-    starts as the caller's second argument. `pad` halfwords of `mov r12, r12` before the first
+    starts as the caller's second argument. [sp, #0] to [sp, #28] is scratch: anything above it
+    is the caller's saved registers, and a store there returns into a corrupted caller with
+    interrupts off. `pad` halfwords of `mov r12, r12` before the first
     timestamp move the body's alignment.
     """
     return (
-        "push {r4-r11, lr}\n    mov r5, r0\n    mov r3, r1\n"
+        "push {r4-r11, lr}\n    sub sp, #32\n    mov r5, r0\n    mov r3, r1\n"
         + const("r4", CYCCNT)
         + const("r8", GPIO_B0)
         + const("r9", GPIO_SET0)
@@ -84,7 +86,7 @@ def timed(body: str, setup: str = "", pad: int = 0) -> str:
         + "    mov r12, r12\n" * pad
         + "    ldr r6, [r4]\n"
         + body
-        + "\n    ldr r7, [r4]\n    subs r0, r7, r6\n    mov r1, r3\n    pop {r4-r11, pc}\n"
+        + "\n    ldr r7, [r4]\n    subs r0, r7, r6\n    mov r1, r3\n    add sp, #32\n    pop {r4-r11, pc}\n"
     )
 
 
@@ -127,8 +129,8 @@ class HardwareLab:
 class EmulatedLab(cy.Machine):
     """The same image on unicorn, with CYCCNT answering the model's cycle count."""
 
-    def __init__(self, elf: str, model: "cy.Model | None" = None):
-        super().__init__(elf, cy.Target([]), restart_at=set(), model=model)
+    def __init__(self, elf: str, model: "cy.Model | None" = None, engine=None):
+        super().__init__(elf, cy.Target([]), restart_at=set(), model=model, engine=engine)
         self.uc.mem_map(*SRAMX)
         self.uc.mem_unmap(DWT_BASE, 0x1000)
         self.uc.mmio_map(DWT_BASE, 0x1000, self._dwt_read, None, self._dwt_write, None)
@@ -142,6 +144,8 @@ class EmulatedLab(cy.Machine):
             self.arenas[i] = (base, size)
 
     def _dwt_read(self, uc, offset, size, user):
+        if self.engine is not None and self.counting:
+            self.cycle = self.engine.access(DWT_BASE + offset, False)
         return (self.cycle & 0xFFFFFFFF) if offset == 4 else 0
 
     def _dwt_write(self, uc, offset, size, value, user):
@@ -153,6 +157,7 @@ class EmulatedLab(cy.Machine):
         # unicorn keeps translated blocks across a write to the memory they came from.
         self.uc.ctl_remove_cache(base + offset, base + offset + len(data))
         self._decoded.clear()
+        self._insns.clear()
 
     def run(self, arena: int, entry: int, args: tuple[int, int, int, int]) -> tuple[int, int]:
         req = bytes([VENDOR_LAB, LAB_RUN, arena]) + entry.to_bytes(2, "little")
@@ -183,43 +188,90 @@ def rep(text: str, n: int) -> str:
 
 
 def corpus() -> list[Case]:
+    """Every case the model is fitted and checked against, grouped by what each group isolates."""
     cases = [Case("empty", "")]
-    for n in (1, 4, 16):
-        cases.append(Case(f"mov.w r12 x{n}", rep("mov.w r12, r12", n)))
-        cases.append(Case(f"mov r12 (16-bit) x{n}", rep("mov r12, r12", n)))
-        cases.append(Case(f"nop x{n}", rep("nop", n)))
-        cases.append(Case(f"adds r0,#1 x{n}", rep("adds r0, #1", n)))
-        cases.append(Case(f"str SET x{n}", rep("str r5, [r9]", n)))
-        cases.append(Case(f"str SET/CLR alternating x{n}", "\n".join(
-            ["    str r5, [r9]" if i % 2 == 0 else "    str r5, [r10]" for i in range(n)])))
-        cases.append(Case(f"strb B x{n}", rep("strb r5, [r8, #2]", n)))
-        cases.append(Case(f"ldrb B x{n}", rep("ldrb r0, [r8, #2]", n)))
-        cases.append(Case(f"ldr sram x{n}", rep("ldr r0, [sp]", n)))
-        cases.append(Case(f"str sram x{n}", rep("str r0, [sp, #-8]", n)))
-    for k in range(0, 5):
-        cases.append(Case(f"str SET; {k} mov.w; ldrb B", "    str r5, [r9]\n" + rep("mov.w r12, r12", k) + "\n    ldrb r0, [r8, #2]"))
-        cases.append(Case(f"ldrb B; {k} mov.w; str SET", "    ldrb r0, [r8, #2]\n" + rep("mov.w r12, r12", k) + "\n    str r5, [r9]"))
-        cases.append(Case(f"str SET; {k} mov.w; str CLR", "    str r5, [r9]\n" + rep("mov.w r12, r12", k) + "\n    str r5, [r10]"))
-        cases.append(Case(f"ldrb B; use; {k} mov.w", "    ldrb r0, [r8, #2]\n" + rep("mov.w r12, r12", k) + "\n    orr r1, r1, r0"))
-    for n in (1, 2, 3, 5):
-        cases.append(Case(f"delay loop {n}", f"    movs r0, #{n}\n1:  subs r0, #1\n    bne 1b"))
-    cases.append(Case("b to next (taken, aligned)", "    b 1f\n    .balign 4\n1:"))
-    cases.append(Case("b over 2 bytes", "    b 1f\n    mov r12, r12\n1:  mov.w r12, r12"))
-    cases.append(Case("b over 4 bytes", "    b 1f\n    mov.w r12, r12\n1:  mov.w r12, r12"))
-    cases.append(Case("bne not taken", "    cmp r0, r0\n    bne 1f\n1:"))
-    cases.append(Case("add pc skip 0", "    movs r0, #0\n    add pc, r0\n    nop\n" + rep("mov.w r12, r12", 4)))
-    cases.append(Case("add pc skip 4", "    movs r0, #4\n    add pc, r0\n    nop\n" + rep("mov.w r12, r12", 4)))
-    cases.append(Case("add pc skip 16", "    movs r0, #16\n    add pc, r0\n    nop\n" + rep("mov.w r12, r12", 4)))
+    forms = {
+        "mov.w r12": "mov.w r12, r12",
+        "mov r12 (16)": "mov r12, r12",
+        "nop": "nop",
+        "movs lo imm (16)": "movs r0, #1",
+        "adds r0 chain (16)": "adds r0, #1",
+        "add.w r0 chain": "add.w r0, r0, #1",
+        "lsls r0 chain (16)": "lsls r0, r0, #1",
+        "str.w GPIO SET": "str.w r5, [r9]",
+        "strb.w B": "strb.w r5, [r8, #2]",
+        "ldrb.w B": "ldrb.w r0, [r8, #2]",
+        "ldr sp (16)": "ldr r0, [sp]",
+        "ldr.w sp": "ldr.w r0, [sp, #4]",
+        "str sp (16)": "str r0, [sp]",
+        "str.w sp": "str.w r0, [sp, #8]",
+        "ldr PIN word": "ldr.w r0, [r9, #-0x100]",
+    }
+    for name, insn in forms.items():
+        for n in (1, 2, 3, 4, 8, 16):
+            cases.append(Case(f"G1 {name} x{n}", rep(insn, n)))
+    pairs = {
+        "adds r0/adds r1": ("adds r0, #1", "adds r1, #1"),
+        "movs r0/movs r1": ("movs r0, #1", "movs r1, #2"),
+        "lsls r0/lsls r1": ("lsls r0, r0, #1", "lsls r1, r1, #1"),
+        "mov r0,r1/mov r2,r3": ("mov r0, r1", "mov r2, r3"),
+        "ldr sp/adds r1": ("ldr r0, [sp]", "adds r1, #1"),
+        "adds r1/ldr sp": ("adds r1, #1", "ldr r0, [sp]"),
+        "str sp/adds r1": ("str r0, [sp]", "adds r1, #1"),
+        "nop/adds r1": ("nop", "adds r1, #1"),
+        "adds r1/nop": ("adds r1, #1", "nop"),
+        "mov r12/nop": ("mov r12, r12", "nop"),
+        "cmp/bne nt": ("cmp r0, r0", "bne 9f\n9:"),
+    }
+    for name, (a, b) in pairs.items():
+        for n in (1, 4, 8):
+            cases.append(Case(f"G6 {name} x{n}", "\n".join(f"    {a}\n    {b}" for _ in range(n))))
+    for k in (0, 1, 2, 3, 4, 6, 8, 12, 16):
+        for m in (1, 2, 3, 4, 6):
+            cases.append(Case(f"G2 {k} mov16 then {m} str.w", rep("mov r12, r12", k) + "\n" + rep("str.w r5, [r9]", m)))
+    for k in (0, 2, 4, 8):
+        for m in (1, 2, 4):
+            cases.append(Case(f"G2 {k} nop then {m} str.w", rep("nop", k) + "\n" + rep("str.w r5, [r9]", m)))
+    for k in range(0, 4):
+        filler = rep("mov.w r12, r12", k)
+        cases.append(Case(f"G3 ldrb B; {k}; use", f"    ldrb.w r0, [r8, #2]\n{filler}\n    orr.w r1, r1, r0"))
+        cases.append(Case(f"G3 ldr sp; {k}; use", f"    ldr r0, [sp]\n{filler}\n    orr.w r1, r1, r0"))
+        cases.append(Case(f"G3 ldr sp; {k}; base", f"    mov r0, sp\n    str r0, [sp]\n    ldr r0, [sp]\n{filler}\n    ldr r1, [r0]"))
+        cases.append(Case(f"G5 str SET; {k}; ldrb B", f"    str.w r5, [r9]\n{filler}\n    ldrb.w r0, [r8, #2]"))
+        cases.append(Case(f"G5 ldrb B; {k}; str SET", f"    ldrb.w r0, [r8, #2]\n{filler}\n    str.w r5, [r9]"))
+        cases.append(Case(f"G5 str SET; {k}; str CLR", f"    str.w r5, [r9]\n{filler}\n    str.w r5, [r10]"))
+    for skip in (0, 2, 4, 6, 8):
+        for target in ("mov.w r12, r12", "mov r12, r12"):
+            tsize = 32 if ".w" in target else 16
+            body = "    b.n 9f\n" + ("    mov r12, r12\n" * (skip // 2)) + f"9:  {target}"
+            cases.append(Case(f"G4 b.n skip {skip} to {tsize}-bit", body))
+            body = "    b.w 9f\n" + ("    mov r12, r12\n" * (skip // 2)) + f"9:  {target}"
+            cases.append(Case(f"G4 b.w skip {skip} to {tsize}-bit", body))
+            body = "    cmp r0, r0\n    beq 9f\n" + ("    mov r12, r12\n" * (skip // 2)) + f"9:  {target}"
+            cases.append(Case(f"G4 beq taken skip {skip} to {tsize}-bit", body))
+            body = "    movs r0, #0\n    cbz r0, 9f\n" + ("    mov r12, r12\n" * (skip // 2)) + f"9:  {target}"
+            cases.append(Case(f"G4 cbz taken skip {skip} to {tsize}-bit", body))
+    for n in (1, 2, 3, 4, 6):
+        cases.append(Case(f"G4 loop subs/bne x{n}", f"    movs r0, #{n}\n9:  subs r0, #1\n    bne 9b"))
+        cases.append(Case(f"G4 loop subs.w/bne.w x{n}", f"    mov.w r0, #{n}\n9:  subs.w r0, r0, #1\n    bne.w 9b"))
+        cases.append(Case(f"G4 loop aligned subs/bne x{n}", f"    movs r0, #{n}\n    .balign 4\n9:  subs r0, #1\n    bne 9b"))
+    for skip in (0, 4, 8, 16):
+        cases.append(Case(f"G4 add pc skip {skip}", f"    movs r0, #{skip}\n    add pc, r0\n    nop\n" + rep("mov.w r12, r12", 4)))
+    cases.append(Case("G4 bx to label", "    adr r0, 9f + 1\n    bx r0\n    .balign 4\n9:  mov.w r12, r12"))
+    for n in (1, 2, 4):
+        regs = ",".join(f"r{i}" for i in range(n))
+        cases.append(Case(f"G7 push/pop {n} regs", f"    push {{{regs}}}\n    pop {{{regs}}}"))
     return cases
 
 
-def run_corpus(labs: dict, arena: int, offset: int, pads: list[int], repeats: int) -> None:
-    cases = corpus()
+def run_corpus(labs: dict, arena: int, offset: int, pads: list[int], repeats: int, select: str = "") -> dict:
+    """Every case on every lab at every padding; returns {case: {"lab pad": "cycles[/other]"}}."""
+    results: dict[str, dict[str, str]] = {}
     names = list(labs)
-    header = f"  {'case':<36}" + "".join(f"{n + ' ' + str(p):>12}" for p in pads for n in names)
-    print(header)
+    cases = [c for c in corpus() if select in c.name]
+    print(f"  {'case':<44}" + "".join(f"{n + ' ' + str(p):>10}" for p in pads for n in names))
     for case in cases:
-        cells = []
+        row = {}
         for pad in pads:
             for name in names:
                 lab = labs[name]
@@ -227,8 +279,10 @@ def run_corpus(labs: dict, arena: int, offset: int, pads: list[int], repeats: in
                 code = assemble(timed(case.body, case.setup, pad), base + offset)
                 lab.write(arena, offset, code)
                 seen = sorted({lab.run(arena, offset, (case.mask, 0, 0, 0))[0] for _ in range(repeats)})
-                cells.append(f"{'/'.join(str(s) for s in seen):>12}")
-        print(f"  {case.name:<36}" + "".join(cells))
+                row[f"{name} {pad}"] = "/".join(str(v) for v in seen)
+        results[case.name] = row
+        print(f"  {case.name:<44}" + "".join(f"{row[f'{n} {p}']:>10}" for p in pads for n in names))
+    return results
 
 
 DPIDR_REQUEST = 0xA5  # start, DP, read, A2=0, A3=0, parity, stop, park
@@ -328,6 +382,8 @@ def main() -> int:
     c.add_argument("--repeats", type=int, default=3)
     c.add_argument("--emu-only", action="store_true")
     c.add_argument("--hw-only", action="store_true")
+    c.add_argument("--select", default="", help="only cases whose name contains this")
+    c.add_argument("--save", help="write the results as JSON, keyed by arena")
     args = ap.parse_args()
 
     labs = {}
@@ -337,7 +393,14 @@ def main() -> int:
         labs["hw"] = HardwareLab(args.serial)
     arena = ARENA_SRAM if args.arena == "sram" else ARENA_SRAMX
     pads = [int(p) for p in args.pads.split(",")]
-    run_corpus(labs, arena, args.offset, pads, args.repeats)
+    results = run_corpus(labs, arena, args.offset, pads, args.repeats, args.select)
+    if args.save:
+        import json
+
+        saved = json.load(open(args.save)) if os.path.exists(args.save) else {}
+        saved[args.arena] = results
+        with open(args.save, "w") as fh:
+            json.dump(saved, fh, indent=1)
     return 0
 
 

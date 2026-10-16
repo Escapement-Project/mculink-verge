@@ -28,12 +28,17 @@ from capstone import CS_ARCH_ARM, CS_MODE_THUMB, Cs
 from unicorn import (
     UC_ARCH_ARM,
     UC_HOOK_CODE,
+    UC_HOOK_MEM_READ,
+    UC_HOOK_MEM_WRITE,
     UC_MODE_MCLASS,
     UC_MODE_THUMB,
     Uc,
     UcError,
 )
 from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_SP
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from m33 import Engine, Insn  # noqa: E402
 
 # LPC55S69, non-secure aliases, which is what the image was built against.
 GPIO_BASE = 0x4008C000
@@ -231,6 +236,100 @@ class Target:
         return value
 
 
+@dataclass
+class Read:
+    """One SWDIO sample, placed against the window of the bit it was meant to read.
+
+    The bit a read wants is the one the target launched on the rising edge `want` edges after the
+    turnaround began, counting reads in order. It is on the probe's pin for loads from `latency`
+    cycles after that edge's store until `latency` cycles after the next one's. `early` is how far
+    into that window the read landed and `late` how far before its end, both in cycles; either
+    one negative means the read saw a neighbouring bit. `late` stays None while no later edge has
+    happened, which leaves the window open on that side.
+    """
+
+    cycle: int
+    want: int
+    early: int | None = None
+    late: int | None = None
+    got: int = 0
+    wanted: int = 0
+
+    @property
+    def margin(self) -> int | None:
+        sides = [m for m in (self.early, self.late) if m is not None]
+        return min(sides) if sides else None
+
+
+class TimedSwdTarget:
+    """A SWD target that answers by time rather than by the order of the probe's reads.
+
+    The target launches each bit on a rising SWCLK edge, and the probe sees it on SWDIO from
+    `latency` cycles after the store that raised the clock. A read before that sees the previous
+    bit; a read from `latency` cycles after the next edge sees the next. `latency` is a store to
+    load distance in issue cycles of tools/m33.py's engine: the probe's own path out and back in
+    plus the target's, so it depends on the target and the cable as well as on this probe.
+
+    `serve` picks what a read returns: "wire", what the timing puts on the pin, so the firmware
+    reacts as it would on hardware; or "intended", the bit the read was meant to get, so a run
+    keeps going and every read's margin is still recorded.
+    """
+
+    def __init__(self, pattern: list[int], latency: int, turnaround: int = 1, serve: str = "wire", idle: int = 1):
+        self.pattern = pattern
+        self.latency = latency
+        self.turnaround = turnaround
+        self.serve = serve
+        self.idle = idle
+        self.released = False
+        self.launches: list[tuple[int, int]] = []  # (store cycle, bit), in order
+        self.reads: list[Read] = []
+        self.transfer_reads: list[Read] = []
+        self.rises = 0
+
+    def restart(self) -> None:
+        self.released = True
+        self.launches = []
+        self.transfer_reads = []
+        self.rises = 0
+
+    def take_back(self) -> None:
+        self.released = False
+
+    def rise(self, cycle: int) -> None:
+        if not self.released:
+            return
+        self.rises += 1
+        k = self.rises - self.turnaround
+        if k < 0:
+            return
+        bit = self.pattern[k] if k < len(self.pattern) else self.idle
+        self.launches.append((cycle, bit))
+        # A read that came before this edge now knows where its window closed.
+        for read in self.transfer_reads:
+            if read.late is None and read.want + 1 == k:
+                read.late = cycle + self.latency - 1 - read.cycle
+
+    def read(self, cycle: int) -> int:
+        on_wire = self.idle
+        for at, bit in self.launches:
+            if at + self.latency <= cycle:
+                on_wire = bit
+        want = len(self.transfer_reads)
+        wanted = self.pattern[want] if want < len(self.pattern) else self.idle
+        r = Read(cycle, want, got=on_wire, wanted=wanted)
+        if want < len(self.launches):
+            r.early = cycle - (self.launches[want][0] + self.latency)
+        if want + 1 < len(self.launches):
+            r.late = self.launches[want + 1][0] + self.latency - 1 - cycle
+        self.transfer_reads.append(r)
+        self.reads.append(r)
+        return on_wire if self.serve == "wire" else wanted
+
+    def bit(self) -> int:
+        raise RuntimeError("a timed target answers read(cycle); this machine has no timing engine")
+
+
 # Acknowledge bits in the order each protocol reads them, then the data phase.
 SWD_OK = [1, 0, 0]  # ack bit0 first, DAP_TRANSFER_OK == 1
 SWD_READ = SWD_OK + [0] * 33  # 32 data bits and parity
@@ -241,10 +340,36 @@ SWD_WRITE = SWD_OK
 JTAG_DR_OK = 1 << 1
 
 
+UNCONDITIONAL = {"b", "b.w", "b.n", "bl"}
+CONDITIONAL_PREFIX = ("cbz", "cbnz")
+CONDITIONS = ("eq", "ne", "cs", "hs", "cc", "lo", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le")
+
+
+def branch_kind(mnemonic: str, writes_pc: bool) -> str:
+    base = mnemonic.split(".")[0]
+    if mnemonic in UNCONDITIONAL:
+        return "uncond"
+    if base.startswith(CONDITIONAL_PREFIX) or (base[:1] == "b" and base[1:] in CONDITIONS):
+        return "cond"
+    if writes_pc or base in ("bx", "blx", "tbb", "tbh"):
+        return "indirect"
+    return ""
+
+
 class Machine:
-    def __init__(self, elf: str, target: Target, restart_at: set[int], model: "Model | None" = None):
+    def __init__(
+        self,
+        elf: str,
+        target: Target,
+        restart_at: set[int],
+        model: "Model | None" = None,
+        engine: "Engine | None" = None,
+    ):
         self.sym = symbols(elf)
         self.model = model or Model()
+        # When set, issue and bus cycles come from tools/m33.py instead of the per-class model.
+        self.engine = engine
+        self._insns: dict[int, Insn] = {}
         self.cycle = 0
         self.target = target
         self.counting = False
@@ -265,7 +390,7 @@ class Machine:
         self.windows: list[tuple[int, list[int]]] = []
         self.counts = Counts()
         self.md = Cs(CS_ARCH_ARM, CS_MODE_THUMB)
-        self.md.detail = False
+        self.md.detail = True
         self._decoded: dict[int, tuple[str, int]] = {}
         self._prev_end: int | None = None
 
@@ -289,9 +414,34 @@ class Machine:
             self.uc.mem_write(vma, bytes(self.uc.mem_read(lma, size)))
 
         self.uc.hook_add(UC_HOOK_CODE, self._code)
+        if self.engine is not None:
+            self.uc.hook_add(UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE, self._mem)
+
+    def _mem(self, uc, access, address, size, value, user):
+        # GPIO and the PPB report their own accesses, from their callbacks.
+        if not self.counting or GPIO_BASE <= address < GPIO_BASE + GPIO_SIZE or address >= 0xE0000000:
+            return
+        self.engine.access(address, access == 17)  # UC_MEM_WRITE
+
+    def _insn(self, address: int, size: int) -> Insn:
+        hit = self._insns.get(address)
+        if hit is None:
+            code = bytes(self.uc.mem_read(address, size))
+            insn = next(self.md.disasm(code, address), None)
+            if insn is None:
+                hit = Insn(address, size, "?")
+            else:
+                read, written = insn.regs_access()
+                reads = frozenset(insn.reg_name(r) for r in read)
+                writes = frozenset(insn.reg_name(r) for r in written)
+                hit = Insn(address, size, insn.mnemonic, reads, writes, branch=branch_kind(insn.mnemonic, "pc" in writes))
+            self._insns[address] = hit
+        return hit
 
     # -- GPIO ----------------------------------------------------------------
     def _gpio_read(self, uc, offset, size, user):
+        if self.engine is not None and self.counting:
+            self.cycle = self.engine.access(GPIO_BASE + offset, False)
         # B[0][n] is one byte per pin at the start of the block: SWDIO is pin 2, TDO pin 3.
         if offset in (REG_B0 + PIN_SWDIO, REG_B0 + PIN_TDO):
             if self.counting:
@@ -300,6 +450,12 @@ class Machine:
                 return self.tap.tdo()
             if self.cjtag_tap is not None and offset == REG_B0 + PIN_SWDIO:
                 return self.cjtag_tap.tdo()
+            if isinstance(self.target, TimedSwdTarget):
+                # While the probe drives the wire, its pin reads back what it drives.
+                driven = self._driven()
+                if driven != "z":
+                    return int(driven)
+                return self.target.read(self.cycle)
             return self.target.bit()
         if offset == REG_PIN:
             return self.level & self.dir
@@ -318,6 +474,8 @@ class Machine:
         return "1" if (self.level >> PIN_SWDIO) & 1 else "0"
 
     def _gpio_write(self, uc, offset, size, value, user):
+        if self.engine is not None and self.counting:
+            self.cycle = self.engine.access(GPIO_BASE + offset, True)
         before_clock = (self.level >> PIN_TCK) & 1
         before_wire = self._driven()
         before_tdi = (self.level >> PIN_TDI) & 1
@@ -356,6 +514,11 @@ class Machine:
         # harness has driven the activation, and the activation's own clocks are not frames.
         if after_wire != before_wire and after_wire == "z" and self.resync_on_release:
             self.target.restart()
+        if isinstance(self.target, TimedSwdTarget):
+            if before_wire == "z" and after_wire != "z":
+                self.target.take_back()
+            if after_clock and not before_clock:
+                self.target.rise(self.cycle)
 
         if not self.counting:
             return
@@ -427,6 +590,17 @@ class Machine:
             self._prev_end = address + size
             return
 
+        if self.engine is not None:
+            taken = self._prev_end is not None and address != self._prev_end
+            self.cycle = self.engine.issue(self._insn(address, size), address if taken else None)
+            if taken:
+                self.counts.taken_branch += 1
+            self._prev_end = address + size
+            if self.explain:
+                self._window.append(address)
+            self.counts.instructions += 1
+            return
+
         if self._prev_was_branch and self._prev_end is not None and address == self._prev_end:
             # The branch before this one fell through. It was charged as an ordinary instruction
             # when it issued, because whether it was taken is only visible from where we land.
@@ -494,6 +668,8 @@ class Machine:
         self.counts = Counts()
         self.cycle = 0
         self.counting = True
+        if self.engine is not None:
+            self.engine.reset()
 
     def end(self) -> Counts:
         self.counting = False

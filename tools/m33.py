@@ -1,0 +1,210 @@
+"""When each instruction issues on this part's Cortex-M33, and when each bus access happens.
+
+cycles.py used to charge a fixed cost per instruction class. That cannot see the two things that
+decide where an edge lands on this part: instruction fetch from SRAM shares S-AHB with every GPIO
+access, and the core issues some 16-bit pairs together. This engine models both, from first
+principles where the core's documentation allows and from vendor 0x88 measurements where it does
+not (tools/lab.py records them).
+
+It is online: the emulator calls `issue()` from its code hook, before the instruction runs, and
+gets the cycle the instruction issues on. A load or store then reaches the bus at a cycle known
+before the access executes, which is what lets a modelled target answer by time rather than by
+order. Everything it needs about the future is the code itself, read from memory, so it is
+causal: no instruction's timing depends on one that issues after it.
+"""
+
+from dataclasses import dataclass, field
+
+
+# Buses, by the address being fetched or accessed.
+C_AHB, S_AHB, PPB = "c", "s", "p"
+
+
+def bus_of(address: int) -> str:
+    if address < 0x20000000:
+        return C_AHB
+    if address >= 0xE0000000:
+        return PPB
+    return S_AHB
+
+
+@dataclass
+class Params:
+    # From a fetch's bus slot to the cycle its word can issue an instruction, decode included.
+    fetch_to_issue: int = 2
+    # The same from SRAM over S-AHB, which a branch shows and straight-line code hides.
+    fetch_to_issue_sram: int = 2
+    # Words the prefetch buffer holds, and how many cycles after an instruction issues the words
+    # it came from are free for new fetches.
+    queue_words: int = 3
+    queue_release: int = 0
+    # Cycles after a branch issues that the fetch of its target takes the bus. Negative means
+    # the core redirects before the branch itself issues; it never redirects before it has the
+    # branch's own bytes.
+    redirect_uncond: int = -1
+    redirect_cond: int = 1
+    redirect_indirect: int = 0
+    # From SRAM the core does not redirect an unconditional branch early.
+    redirect_uncond_sram: int = 0
+    # A load's result is usable by an instruction issuing this many cycles after it.
+    load_use: int = 3
+    # An access through the PPB waits for an S-AHB access this many cycles after it issued.
+    ppb_after_sahb: int = 3
+    # Extra cycles a fetch from flash costs; flash has its own accelerator, modelled crudely.
+    flash_fetch: int = 0
+
+
+@dataclass
+class Insn:
+    address: int
+    size: int
+    mnemonic: str
+    reads: frozenset = frozenset()
+    writes: frozenset = frozenset()
+    loads: int = 0  # data reads
+    stores: int = 0  # data writes
+    branch: str = ""  # "", "uncond", "cond", "indirect"
+    occupancy: int = 1
+
+
+@dataclass
+class Engine:
+    params: Params = field(default_factory=Params)
+
+    def __post_init__(self):
+        self.reset()
+
+    def reset(self) -> None:
+        self.claims: dict[str, set[int]] = {C_AHB: set(), S_AHB: set()}
+        self.fetch_word = None  # next word address the fetch unit will ask for
+        self.fetch_free = 0  # earliest cycle that fetch may take the bus
+        self.arrived: dict[int, int] = {}  # word address -> earliest issue cycle it allows
+        self.order: list[int] = []  # words in the order they were fetched, for capacity
+        self.consumed: dict[int, int] = {}  # word address -> cycle the last of it issued
+        self.last_issue = -1
+        self.last_occupancy = 1
+        self.pending_pair = False  # the previous instruction may still take a partner
+        self.ready: dict[str, int] = {}
+        self.last_sahb = -100
+        self.current: Insn | None = None
+        self.current_issue = 0
+        self.accesses = 0
+        self.loaded_now = False
+        self.log: list[str] | None = None
+
+    # -- fetch -------------------------------------------------------------
+    def _claim_fetch(self, word: int, earliest: int) -> int:
+        bus = bus_of(word)
+        cycle = max(earliest, self.fetch_free)
+        # The buffer holds queue_words words: the one that many back has to be gone first.
+        if len(self.order) >= self.params.queue_words:
+            gone = self.consumed.get(self.order[-self.params.queue_words])
+            if gone is not None:
+                cycle = max(cycle, gone + self.params.queue_release)
+        while cycle in self.claims.get(bus, ()):
+            cycle += 1
+        self.fetch_free = cycle + 1
+        return cycle
+
+    def _word_ready(self, word: int) -> int:
+        """The earliest cycle an instruction in `word` can issue, fetching up to it if needed."""
+        if word in self.arrived:
+            return self.arrived[word]
+        if self.fetch_word is None or word < self.fetch_word or word - self.fetch_word > 64:
+            self.redirect(word, self.last_issue + 1)
+        while self.fetch_word <= word:
+            w = self.fetch_word
+            slot = self._claim_fetch(w, 0)
+            if bus_of(w) == S_AHB:
+                latency = self.params.fetch_to_issue_sram
+            else:
+                latency = self.params.fetch_to_issue + (self.params.flash_fetch if w < 0x04000000 else 0)
+            self.arrived[w] = slot + latency
+            self.order.append(w)
+            self.fetch_word = w + 4
+        return self.arrived[word]
+
+    def redirect(self, target: int, at: int) -> None:
+        """Start fetching at `target` from cycle `at`, dropping whatever was buffered."""
+        self.fetch_word = target & ~3
+        self.fetch_free = max(at, 0)
+        self.arrived = {}
+        self.order = []
+
+    # -- issue -------------------------------------------------------------
+    def issue(self, insn: Insn, prev_taken_to: int | None = None) -> int:
+        p = self.params
+        prev = self.current
+        if prev is not None and self.loaded_now:
+            for reg in prev.writes:
+                self.ready[reg] = self.current_issue + p.load_use
+        self.loaded_now = False
+        if prev is not None and prev_taken_to is not None:
+            kind = prev.branch or "indirect"
+            delta = {"uncond": p.redirect_uncond, "cond": p.redirect_cond}.get(kind, p.redirect_indirect)
+            latency = p.fetch_to_issue_sram if bus_of(prev.address) == S_AHB else p.fetch_to_issue
+            ready_self = self.arrived.get((prev.address + prev.size - 2) & ~3, self.current_issue)
+            at = max(self.current_issue + delta, ready_self - latency + 1)
+            if kind == "uncond" and bus_of(prev.address) == S_AHB:
+                at = max(self.current_issue + p.redirect_uncond_sram, ready_self - latency + 1)
+            self.redirect(prev_taken_to, at)
+
+        first = self._word_ready(insn.address & ~3)
+        last = self._word_ready((insn.address + insn.size - 2) & ~3)
+        at = max(first, last)
+        at = max(at, self.last_issue + self.last_occupancy)
+        for reg in insn.reads:
+            at = max(at, self.ready.get(reg, 0))
+
+        # Two instructions can issue together when the second is a NOP or a conditional branch,
+        # which the core issues predicted not taken.
+        pairs = (insn.size == 2 and insn.mnemonic == "nop") or insn.branch == "cond"
+        if (
+            prev is not None
+            and self.pending_pair
+            and pairs
+            and max(first, last) <= self.current_issue
+        ):
+            at = self.current_issue
+            self.pending_pair = False
+        else:
+            self.pending_pair = insn.size == 2 or insn.branch == ""
+            self.last_issue = at
+            self.last_occupancy = insn.occupancy
+
+        for word in {insn.address & ~3, (insn.address + insn.size - 2) & ~3}:
+            self.consumed[word] = at
+        self.current = insn
+        self.current_issue = at
+        self.accesses = 0
+        if self.log is not None:
+            self.log.append(f"{insn.address:08x} {insn.mnemonic:<8} issue {at:4d}  words {first}/{last}")
+        return at
+
+    def access(self, address: int, write: bool) -> int:
+        """The cycle the current instruction's next data access takes its bus."""
+        p = self.params
+        bus = bus_of(address)
+        at = self.current_issue + self.accesses
+        if bus == PPB:
+            at = max(at, self.last_sahb + p.ppb_after_sahb)
+            if at > self.current_issue + self.accesses:
+                # The wait stalls the instruction itself and everything behind it.
+                self.last_issue = at
+                self.current_issue = at
+        else:
+            claims = self.claims[bus]
+            while at in claims:
+                at += 1
+            claims.add(at)
+            if bus == S_AHB:
+                self.last_sahb = at
+        if self.log is not None:
+            self.log.append(f"           {'W' if write else 'R'} {address:08x} bus {bus} at {at}")
+        self.accesses += 1
+        if not write:
+            self.loaded_now = True
+        if self.accesses > 1:
+            self.last_occupancy = max(self.last_occupancy, self.accesses)
+        return at
+
