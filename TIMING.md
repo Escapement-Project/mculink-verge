@@ -41,9 +41,9 @@ and none waits for the one before it.
 
 Use `mov.w rN, rN` as filler. It costs one cycle at every alignment. A NOP does not.
 
-Load constants with `movw` and `movt`, never from a literal pool. A literal is a data access on
-the bus the code is fetched over. On the bench each one costs a cycle unless a taken branch follows
-it, and the model, whose fetch runs further ahead, is up to two cycles light on a run of them. A counted loop of `subs.w` and `bne.w` costs 3 cycles an iteration plus
+Prefer `movw` and `movt` for constants. A literal-pool load is a data access on the bus the code
+is fetched over, so it holds back the instruction behind it by a cycle unless a taken branch
+follows. The model has that, but it is a cost a generator need not pay. A counted loop of `subs.w` and `bne.w` costs 3 cycles an iteration plus
 its body when its first instruction is word-aligned, and 4 when it straddles a word.
 
 The PPB is the bus the cycle counter sits on. No bit path reads it, but every timing measurement
@@ -130,14 +130,13 @@ it, and from the bus slots data has already taken. `tools/cycles.py --engine` ru
 `--latency 7` adds a SWD target that answers by time and reports every read's distance from both
 ends of its window.
 
-From SRAMX it matches 692 instruction sequences timed in isolation at four alignments, plus 134 of
-144 covering calls, stack, masking, multiplies, divides and IT blocks; the 10 it misses are runs of
-literal loads, which a generator has no use for. It matches 29 pulse trains, every generated read, and every scheduled sequence. It
+From SRAMX it matches 692 instruction sequences timed in isolation at four alignments, plus all 144
+covering calls, stack, masking, multiplies, divides, IT blocks and literal loads. It matches 29 pulse trains, every generated read, and every scheduled sequence. It
 is a cycle slow on an unconditional branch straight after a read of the cycle counter, which no
 bit path does.
 
-From SRAM it is a cycle out on some straight-line sequences at one alignment, and loops drift by
-up to a cycle an iteration. It still reproduces every SWD result the bench has for the current
+From SRAM it is a cycle fast at the alignment where 32-bit instructions straddle words, from the
+cycle-counter read onwards. It still reproduces every SWD result the bench has for the current
 firmware. Flash is not modelled, and the command layer and the JTAG paths still run from there.
 JTAG and the two-pin path have no timed target yet.
 
