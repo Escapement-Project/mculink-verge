@@ -1105,9 +1105,10 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
 
     # An image that generates its SWD paths runs them from SRAMX, which only the timing engine
     # prices correctly, and its samples trail the clock, so its traces are its own until it is the
-    # default build.
+    # default build. Recognised by a variable: a function can be inlined out of the symbol table,
+    # and clang did that to swd_gen_ready once its callers shrank to one.
     baseline_dir = BASELINE_DIR
-    if "swd_gen_ready" in symbols(elf):
+    if "swd_gen_read" in symbols(elf):
         baseline_dir = BASELINE_DIR + "-codegen"
         if not model.engine:
             model = replace(model, engine=True)
