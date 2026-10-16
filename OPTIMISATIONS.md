@@ -58,12 +58,14 @@ block, before and after tonight:
 | JTAG write | 10 MHz | 621 | 759 | +22% |
 | JTAG read | 50 MHz | 1355 | 1799 | +33% |
 | JTAG write | 50 MHz | 1630 | 2462 | +51% |
-| two-pin read | 10 MHz | 166 | 213 | +28% |
-| two-pin write | 10 MHz | 177 | 218 | +23% |
-| two-pin read | 50 MHz | 283 | 647 | +129% |
-| two-pin write | 50 MHz | 290 | 616 | +112% |
+| two-pin read | 10 MHz | 166 | 217 | +31% |
+| two-pin write | 10 MHz | 177 | 223 | +26% |
+| two-pin read | 50 MHz | 283 | 648 | +129% |
+| two-pin write | 50 MHz | 290 | 640 | +121% |
 
-Text grows from 46,980 bytes to 108,736, which is 17% of the part's flash.
+Text grows from 46,980 bytes to 229,024, which is 36% of the part's flash. Two thirds of that
+growth is deliberate: the flash was traded for speed on the two commands below, and the ceiling is
+nowhere near.
 
 The bar is cleared on wire time at every setting, by 4.3x at the top. **Wire time is not the same
 as throughput**: the stock capture put the USB gap at about 10% of a transfer at 14 MHz, and a
@@ -82,14 +84,14 @@ requests land on a step below them. KiB/s of wire time, 64-word block, from
 | 3 MHz | 219 | 224 | 245 | 254 | 80 | 80 |
 | 5 MHz | 326 | 338 | 361 | 381 | 116 | 117 |
 | 8 MHz | 483 | 509 | 527 | 570 | 166 | 169 |
-| 10 MHz | 635 | 682 | 685 | 759 | 213 | 218 |
+| 10 MHz | 635 | 682 | 684 | 757 | 217 | 223 |
 | 12 MHz | 635 | 682 | 685 | 759 | 213 | 218 |
 | 14 MHz | 635 | 682 | 685 | 759 | 213 | 218 |
 | 16 MHz | 930 | 1033 | 977 | 1135 | 295 | 304 |
 | 20 MHz | 930 | 1033 | 977 | 1135 | 295 | 304 |
 | 25 MHz | 930 | 1033 | 977 | 1135 | 295 | 304 |
 | 30 MHz | 930 | 1033 | 977 | 1135 | 295 | 304 |
-| 40 MHz | 1776 | 2152 | 1799 | 2462 | 647 | 616 |
+| 40 MHz | 1776 | 2152 | 1800 | 2464 | 648 | 640 |
 | 50 MHz | 1776 | 2152 | 1799 | 2462 | 647 | 616 |
 
 Above 8 MHz there are three settings and nothing in between, which `PACING.md` explains and
@@ -231,6 +233,52 @@ is already holding. SWD gains 0.6% on reads and 0.3% on writes at 50 MHz, for 36
 The differential suite could not have caught this being wrong. Its 300 cases used two request
 values, `0x0F` and `0x0D`, and the parity depends on exactly the four bits those two fix. A
 sixth case now sends all sixteen address patterns in one command, and an inverted parity fails it.
+
+### Trade flash for the two commands that were still calling their transfer
+
+Both were built, measured and shelved on flash alone. The flash was then judged worth spending,
+and both are in.
+
+**The two-pin block loop.** Its transfer is larger than the SWD and four-wire ones, so the
+compiler declined to inline it into the block loop and the loop called it once a word: a
+nine-register prologue and epilogue, which is the exact cost `src/jtag_block.h` exists to remove.
+`__attribute__((flatten))` on the block function reaches it, and one define covers both copies
+because `cjtag_jtag_dp_fast.c` is an include of the paced file.
+
+| | before | after | |
+| --- | --- | --- | --- |
+| two-pin read, 10 MHz | 213 | 217 | +1.9% |
+| two-pin write, 10 MHz | 218 | 223 | +2.3% |
+| two-pin read, 50 MHz | 647 | 648 | +0.2% |
+| two-pin write, 50 MHz | 616 | 640 | +3.9% |
+
+64,564 bytes. A per-file `-finline-limit` cannot do this at all: link-time optimisation decides
+inlining at link time and never sees a compile flag.
+
+**`DAP_Transfer`.** ARM's `DAP_SWD_Transfer` calls `SWD_Transfer` once per transfer, and that
+picks between the two clock copies on every call. Expanding the command next to each copy lets the
+transfer inline into it. Measured over sixteen single-register transfers:
+
+| | before | after | |
+| --- | --- | --- | --- |
+| read, 10 MHz | 559 | 569 | +1.8% |
+| write, 10 MHz | 596 | 613 | +2.9% |
+| read, 50 MHz | 1351 | 1439 | +6.5% |
+| write, 50 MHz | 1592 | 1705 | +7.1% |
+
+55,724 bytes. Block throughput does not move, which is the check: the block path was not touched.
+
+This is not the throughput path, because a host reads memory in blocks. It is most of what an
+attach is made of, and of anything touching one register at a time.
+
+`tools/extract_swd_transfer.py` generates `src/swd_transfer.h` from ARM's `DAP.c` rather than
+transcribing it, so bumping the submodule is a re-run and a diff. Four things have to change on
+the way through and the generator's docstring lists them; the one that is not obvious is that
+`data` needs an initialiser, because once the transfer inlines GCC can no longer prove the
+variable is written on every path and a build without link-time optimisation fails.
+
+**Measure DAP_Transfer with `uv run tools/cycles.py --transfer`.** It is a different command from
+the block and moves independently.
 
 ## Tried and rejected
 
@@ -420,49 +468,11 @@ loop overhead and the rotate cost more than the freed registers return.
 So the gap stays. Seven attempts, all recorded, and the thing they have in common is that none of
 them made the wire shorter.
 
-### 2. DAP_Transfer spends a quarter of its time not clocking
+### 2. DAP_Transfer, now done
 
-The block command is now the fast one and the single-register command is not. Measured at the
-delay-free setting, 16 reads through `DAP_Transfer`: **121 cycles between one transfer and the
-next, 26% of the command**, against 65 cycles and 19% for the same reads through a block. At
-10 MHz it is 133 cycles and 11%.
-
-This is not the throughput path -- a host reads and writes memory in blocks -- but it is most of
-what an attach is made of, and of anything that touches one register at a time.
-
-**Built, measured and reverted.** ARM's `DAP_SWD_Transfer` extracted the same way the block was,
-with the transfer inlined into its loop:
-
-| | asked | before | after | |
-| --- | --- | --- | --- | --- |
-| read | 10 MHz | 561 | 577 | +3% |
-| write | 10 MHz | 599 | 616 | +3% |
-| read | 50 MHz | 1365 | 1482 | +9% |
-| write | 50 MHz | 1611 | 1759 | +9% |
-
-**It is correct**, and that is not a guess: `uv run tools/equiv.py --command transfer` drives it
-against ARM's over 300 cases -- every acknowledge, both turnaround lengths, with and without idle
-cycles, and the paths a block never reaches: a match value that hits, one that misses and burns
-its retries, and a timestamped transfer. All 300 are identical on the wire and in the reply, as
-are the gate's nine traces and the 828 block cases.
-
-What it costs is flash, and that is the only reason it is not here. Two versions were built:
-
-| inlined | text | 10 MHz read / write | 50 MHz read / write |
-| --- | --- | --- | --- |
-| none, as it ships | 108,772 | 561 / 599 | 1365 / 1611 |
-| the five per-word calls | 146,528 | +1% / +2% | +5% / +8% |
-| all ten calls | 164,468 | +3% / +3% | +9% / +9% |
-
-Half as much flash again for 9% at a clock the bench has never reached, or a third as much again
-for 5%. Neither is worth taking for the 1% to 3% available at the clocks it has.
-
-The recipe, because it is mechanical and worth redoing rather than rewriting. Extract
-`DAP_SWD_Transfer` from DAP.c, rename it, and change the one call it makes to the speed-specific
-transfer. Two things do not survive being put in a macro: its five `#if (TIMESTAMP_CLOCK != 0U)`
-blocks, which have to be resolved and then guarded by a `_Static_assert`, and its `//` comments,
-which swallow the line continuation and have to become `/* */`. Then route `ID_DAP_Transfer` for
-the SWD port in `src/dap_dispatch.c` the way the block is routed.
+It used to spend a quarter of its time not clocking: 121 cycles between one transfer and the
+next at the delay-free setting, against 65 for the same reads through a block. It now has a copy
+per clock path, like the block command. See "Trade flash for the two commands" above.
 
 ### 3. The read bit is two cycles above the floor
 
@@ -481,39 +491,11 @@ The firmware is already as fast as the request allows on its fastest bit.
 The gap between that and what a transfer actually averages is entirely items 1 and 2 -- the slow
 classes costing more than the fast one. There is no third thing.
 
-### 5. The two-pin transfer is not inlined into its block loop
+### 5. The two-pin transfer, now done
 
-**The best unclaimed item here, and it was invisible until `tools/window.py` existed.** The two-pin
-per-word gap is 73 cycles against SWD's 46, and the middle of it is this:
-
-```
-uxtb   r0, r0
-add    sp, #0x1c
-pop.w  {r4, r5, r6, r7, r8, sb, sl, fp, pc}
-```
-
-A nine-register epilogue and a return, once a word. `src/jtag_block.h` exists to pay that once a
-block, and it does for SWD and four-wire JTAG -- neither of their gaps contains a `pop`. The
-two-pin transfer is bigger, so the compiler declined to inline it and the block loop calls it
-instead.
-
-Predicts most of the difference between a 73-cycle gap and a 46-cycle one, which is around 15% of
-a two-pin block.
-
-Two attempts, and the flash is why neither landed.
-
-`-finline-limit=2000` on the two cJTAG translation units produces a **byte-identical image**:
-link-time optimisation decides inlining at link time and never sees a per-file compile flag.
-
-`__attribute__((flatten))` on the block function does work, and covers both copies at once --
-`cjtag_jtag_dp_fast.c` is an include of the paced file with different defines, so one define
-reaches both: **+1.9% and +2.3% at 10 MHz, +0.2% and +3.9% at 50, for 64,564 more bytes.** That is 59%
-more image for at most 4% of the slowest wire, and `flatten` is why -- it inlines transitively,
-not just the transfer. The surgical version would be `always_inline` on the transfer only, and
-that transfer is ARM's `JTAG_DP.c`, compiled unchanged three times.
-
-So the 27 cycles are real and reachable, and nothing cheap reaches them. Same shape as the
-`DAP_Transfer` rewrite above: correct, measured, and rejected on flash.
+Its block loop used to call the transfer once a word, paying a nine-register prologue and
+epilogue each time, because the transfer is large enough that the compiler declined to inline
+it. `flatten` on the block function fixed it. See "Trade flash for the two commands" above.
 
 ### 6. The buffer direction pin toggles every cJTAG frame
 
