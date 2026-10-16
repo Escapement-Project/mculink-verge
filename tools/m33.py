@@ -49,8 +49,14 @@ class Params:
     # A conditional branch that issued as the second of a pair redirects this much later when
     # taken: pairing saves its slot only when it falls through.
     redirect_paired: int = 1
-    # A load's result is usable by an instruction issuing this many cycles after it.
+    # A load's result is usable by an instruction issuing this many cycles after it. A multiply's
+    # likewise.
     load_use: int = 2
+    multiply_use: int = 2
+    # A divide, measured at 100 / 7. The core stops early by operand size, so this is one point.
+    divide: int = 5
+    # Bus slots a data access to the code region holds, which fetch from there then cannot use.
+    cahb_data_slots: int = 1
     # An access through the PPB waits for an S-AHB access this many cycles after it issued, and
     # an S-AHB access for a PPB one the same: the core keeps the two buses in order.
     ppb_after_sahb: int = 2
@@ -186,6 +192,15 @@ class Engine:
             self.last_issue = at
             self.last_occupancy = insn.occupancy
 
+        base = insn.mnemonic.split(".")[0]
+        if base.startswith("it") and base[2:] and set(base[2:]) <= {"t", "e"} or base == "it":
+            # IT folds into the instruction after it.
+            self.last_occupancy = 0
+        elif base in ("udiv", "sdiv"):
+            self.last_occupancy = p.divide
+        if base in ("mul", "muls", "mla", "mls", "smull", "umull", "smlal", "umlal"):
+            for reg in insn.writes:
+                self.ready[reg] = at + p.multiply_use
         for word in {insn.address & ~3, (insn.address + insn.size - 2) & ~3}:
             self.consumed[word] = at
         self.current = insn
@@ -214,6 +229,9 @@ class Engine:
             while at in claims:
                 at += 1
             claims.add(at)
+            if bus == C_AHB:
+                for extra in range(1, p.cahb_data_slots):
+                    claims.add(at + extra)
             if bus == S_AHB:
                 self.last_sahb = at
         if self.log is not None:

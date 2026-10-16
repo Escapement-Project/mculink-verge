@@ -482,6 +482,11 @@ class Machine:
 
         return condition_holds(cc, self.uc.reg_read(UC_ARM_REG_APSR))
 
+    def _insn_at(self, address: int) -> Insn:
+        code = bytes(self.uc.mem_read(address, 4))
+        insn = next(self.md.disasm(code, address), None)
+        return self._insn(address, insn.size if insn else 2)
+
     def _insn(self, address: int, size: int) -> Insn:
         hit = self._insns.get(address)
         if hit is None:
@@ -667,8 +672,16 @@ class Machine:
             return
 
         if self.engine is not None:
-            # A branch to the next instruction is taken all the same, and costs as much.
-            taken = self._prev_end is not None and (address != self._prev_end or self._branch_taken)
+            # A branch to the next instruction is taken all the same, and costs as much. Any
+            # other jump past the next instruction is an IT block skipping one, which unicorn
+            # does not run but the core still issues.
+            taken = self._prev_end is not None and self._branch_taken
+            if self._prev_end is not None and not taken and address != self._prev_end:
+                skipped = self._prev_end
+                while skipped < address and skipped - self._prev_end < 8:
+                    insn = self._insn_at(skipped)
+                    self.engine.issue(insn, None)
+                    skipped += insn.size
             insn = self._insn(address, size)
             self.cycle = self.engine.issue(insn, address if taken else None)
             self._branch_taken = self._decide(insn)
