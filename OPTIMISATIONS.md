@@ -373,22 +373,26 @@ model serving paths that do not cost the same.
 
 ### 1. What is left between transfers
 
-About 48 cycles on a SWD read at the delay-free setting, 15% of the time, down from 65.
+About 46 cycles on a SWD read at the delay-free setting, 15% of the time, down from 65.
 
-What is in those 48, counted off the instruction trace: fourteen rebuilding the packet request and
-spilling it, five on the loop counter, three storing the response pointer, which lives on the
-stack, three loading and testing the idle-cycle count, and the rest the tail of one transfer and
-the head of the next. The two biggest
-are both register pressure -- the unrolled data phase wants every register, so the loop's own
-state is spilled and the invariant parts of the packet are recomputed rather than kept.
+What is in those 46, counted off `tools/window.py`: seven shifting the packet's address bits out
+of the request and spilling them, five on the loop counter, three storing the response pointer,
+which lives on the stack, three loading and testing the idle-cycle count, and the rest the tail of
+one transfer and the head of the next.
 
-Hoisting the packet out of the loop was tried and is slower; see above. What has not been tried is
-dropping `response_count`, which for a read is the response pointer divided by four.
+**All of it is one problem.** The unrolled data phase wants every register, so the loop's own state
+is spilled and its invariant parts are rematerialised rather than kept. Six attempts have now
+landed on that wall from different directions, and every one is recorded above: hoisting the packet
+(slower, and 5 KB larger), `restrict` on the block pointers (no change), hoisting the retry count
+(no change), hoisting the idle cycles (no change), a serial shift chain that cannot be hoisted
+(byte-identical image), and before tonight the inlining parameters (33 KB for one cycle) and the
+allocator's own knobs (`-fsched-pressure` and `-fno-schedule-insns2` change nothing,
+`-fira-algorithm=priority` costs 2%).
 
-Letting the optimiser inline more does not help: raising GCC's inlining parameters cost 33 KB and
-moved the gap by one cycle. Nor do the register allocator's knobs -- `-fsched-pressure` and
-`-fno-schedule-insns2` change nothing and `-fira-algorithm=priority` costs 2%. Nothing cheap is
-left here.
+**Anything that does not reduce register pressure will land here too.** What would reduce it is
+shortening the unrolled data phase, and that trades against the wire: a loop costs a compare and a
+branch per bit, which is a third of a read bit. Measure that trade before trying anything else in
+this section.
 
 ### 2. DAP_Transfer spends a quarter of its time not clocking
 
