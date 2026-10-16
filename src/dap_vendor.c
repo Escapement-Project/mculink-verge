@@ -16,6 +16,9 @@
 #include "marker.h"
 #include "reboot.h"
 #include "sample_probe.h"
+#ifdef CODE_LAB
+#include "code_lab.h"
+#endif
 #include "target_sense.h"
 
 /// Identifies this firmware and says what it can do. Read-only, so a host may send it blindly.
@@ -30,6 +33,8 @@
 #define ID_VENDOR_TARGET ID_DAP_Vendor6
 /// DPIDR reads with the SWDIO sample placed by the host. An instrument; see sample_probe.c.
 #define ID_VENDOR_SAMPLE ID_DAP_Vendor7
+/// Runs host-supplied code from RAM, masked. An instrument, built only with CODE_LAB; see code_lab.c.
+#define ID_VENDOR_LAB ID_DAP_Vendor8
 
 /** Answered by ID_VENDOR_CJTAG_INFO, so a host can recognise this firmware rather than assume it.
  *
@@ -168,6 +173,11 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
 
     case ID_VENDOR_SAMPLE:
         return sample_probe_command(request, response);
+
+#ifdef CODE_LAB
+    case ID_VENDOR_LAB:
+        return code_lab_command(request, response);
+#endif
 
     default:
         // DAP_ProcessCommand hands this return value straight back to the host, so an id we

@@ -41,6 +41,9 @@ option(MARKER "Mark command processing on the J8 header" ON)
 # Sample SWDIO just after the rising edge on the delayed SWD path, with each transfer masked. Off
 # until the bench has settled it; BENCH.md has the measurements behind it.
 option(SWD_SAMPLE_AFTER_EDGE "Sample SWDIO after the rising edge on the delayed SWD path" OFF)
+# Vendor 0x88, which runs code the host sends. A bench instrument for the emulator's cost model;
+# src/code_lab.c says what it measures.
+option(CODE_LAB "Build the vendor 0x88 code lab" OFF)
 if(RAMFUNC AND CMAKE_BUILD_TYPE STREQUAL "Debug")
   message(FATAL_ERROR
     "RAMFUNC does not fit a Debug build: the unrolled bit paths are about 300 KB at -O0 and SRAM "
@@ -59,6 +62,9 @@ set(FW_VERSION_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/fw_version.h)
 set(FW_VARIANT "")
 if(SWD_SAMPLE_AFTER_EDGE)
   string(APPEND FW_VARIANT "+after-edge")
+endif()
+if(CODE_LAB)
+  string(APPEND FW_VARIANT "+lab")
 endif()
 add_custom_target(fw_version ALL
   BYPRODUCTS ${FW_VERSION_HEADER}
@@ -188,6 +194,11 @@ endif()
 
 if(SWD_SAMPLE_AFTER_EDGE)
   target_compile_definitions(${PROJECT_NAME} PRIVATE SWD_SAMPLE_AFTER_EDGE=1)
+endif()
+
+if(CODE_LAB)
+  target_sources(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/code_lab.c)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE CODE_LAB=1)
 endif()
 
 
