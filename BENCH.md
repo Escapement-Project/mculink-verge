@@ -608,15 +608,26 @@ and below read 3,200 DPIDRs each with no bad word. Delay 1 (16.67 MHz) fails, an
 delay-free path at 30 MHz. There is nothing between 10 and 16.67 on the ladder. The U575 does
 better than the MSPM0, which failed at 9.375 MHz under stock, but nowhere near its datasheet.
 
-**The failure looks like a late sample.** At 16.67 MHz the DPIDR read in the reset succeeds and a
-16-word block returns 15 good words, then acknowledge 3 where OK is 1. Read one bit position
-late, an OK acknowledge (1,0,0) arrives as the turnaround's high level followed by its first two
-bits: (1,1,0), which is 3. The read path samples just before the rising edge, as ARM's does, and
-the target drives on the rising edge (ADIv5 B4.3.1), so the target's bit has almost a full period
-to come back: 60 ns at 16.67 MHz. The probe's own buffers are 74LVC1T45/2T45 with 10R in series,
-a few ns each way, and the U575's output valid time is at most 15 ns. That leaves most of 60 ns
-unaccounted for. Unmeasured: it needs SWDIO and SWCLK on the analyser, and stock on the same target
-says whether the shared hardware or our timing sets it.
+**The wire is clean; the probe misreads it.** Captured at our J6 (SWDIO and SWCLK, 100 MS/s,
+`mculink-ours-u575-swd-10-vs-16mhz.sal`) and decoded by sampling at each
+rising edge, as the target does. Every read at both settings carries OK and `0x0BE12477`,
+including the one the probe reported as acknowledge 3. At the connector the target's bit
+arrives 15 ns after the rising edge that launched it (10 or 20 ns at this resolution, mean 15.3
+at 10 MHz and 14.9 at the faster setting), so the cable and the U575 together spend 15 ns.
+
+The faster setting is not 16.67 MHz on the wire for a block: data bits run at 60 and 70 ns
+(mean 67.5), acknowledge bits at 60 and 80, and the period at 10 MHz is 100 ns throughout.
+
+Acknowledge 3 is an OK (1,0,0) seen one bit behind: the turnaround's high level, then 1 and 0.
+The probe samples with `ldrb` two instructions before its own rising-edge store, as ARM's code
+does. The bit it needs was launched by the previous rising-edge store, so it has about one period
+to travel out through the pin and U3, through the target and back (15 ns), and in through U4 and
+the GPIO input. It is still in flight at ~60 ns and arrives in time at 100 ns, so **the probe's
+own output and input paths take roughly 45 ns between them**: three times what the wire takes.
+The datasheet ceiling on the target was never the limit.
+
+The same arithmetic caps four-wire JTAG harder. TDO changes on the falling edge and is sampled
+before the rising one, so it gets half a period, not a whole one.
 
 A failed connect still clocks the wire for five seconds while probe-rs retries, and those groups
 are not worth reading: the retry changes the requested rate, so the period in them is not the one
