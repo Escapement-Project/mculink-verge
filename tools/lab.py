@@ -432,6 +432,76 @@ def swd_read_asm(period: int, low: int, sample: int) -> str:
     )
 
 
+def swd_read_pipelined(period: int, low: int, delay: int) -> str:
+    """A DPIDR read whose samples are placed by their distance from the edge that launched them.
+
+    The clock runs at `period` cycles, falling at 0 and rising at `low` in each. Every target bit
+    is sampled `delay` cycles after the rising-edge store that launched it, which at a short
+    period is several clocks later: the sample is pipelined behind the clock rather than tied to
+    it. Each sample is stored to the buffer the caller passes in r1, one byte a bit, by the next
+    free slot; a store of a just-loaded value does not wait for it. Every instruction is a 32-bit
+    encoding costing one cycle from SRAMX, so a slot is a cycle there.
+
+    Returns the cycles the read took in r0. A placement that collides with a clock edge raises.
+    """
+    if not (2 <= low <= period - 2) or period < 4:
+        raise ValueError("need period >= 4 and 2 <= low <= period - 2")
+    fixed: dict[int, str] = {}
+
+    def put(at: int, insn: str) -> None:
+        if at in fixed:
+            raise ValueError(f"cycle {at} is taken by {fixed[at]!r}; cannot place {insn!r}")
+        fixed[at] = insn
+
+    def edges(clock: int) -> None:
+        put(clock * period, "str.w r5, [r10]")
+        put(clock * period + low, "str.w r5, [r9]")
+
+    for i in range(8):
+        edges(i)
+        put(i * period + 1, "strb.w r0, [r8, #2]")
+        put(i * period - 1, f"mov.w r0, #{(DPIDR_REQUEST >> i) & 1}")
+    put(7 * period + low + 1, "str.w r3, [r10]")  # TXEN off, after the park bit's rising edge
+    turnaround = 8
+    edges(turnaround)
+    put(turnaround * period + 1, "str.w r2, [r11, #0x80]")  # SWDIO input
+    for k in range(37):  # 36 target bits, then the edge that hands the wire back
+        edges(turnaround + 1 + k)
+    regs = ("r0", "r12", "lr")
+    last = 0
+    for k in range(36):
+        at = (turnaround + k) * period + low + delay
+        put(at, f"ldrb.w {regs[k % 3]}, [r8, #2]")
+        st = at + 1
+        while st in fixed:
+            st += 1
+        nxt = (turnaround + k + 3) * period + low + delay  # the next load into this register
+        if st >= nxt:
+            raise ValueError(f"no slot to store sample {k} before its register is reused")
+        put(st, f"strb.w {regs[k % 3]}, [r1, #{k}]")
+        last = max(last, st)
+    end = max(last, (turnaround + 38) * period) + 1
+    for insn in ("str.w r2, [r11]", "str.w r3, [r9]", "mov.w r0, #1", "strb.w r0, [r8, #2]"):
+        while end in fixed:
+            end += 1
+        put(end, insn)
+    first = min(fixed)
+    lines = [fixed.get(c, "mov.w r7, r7") for c in range(first, max(fixed) + 1)]
+    return (
+        "push {r4-r11, lr}\n    mov r5, r0\n"
+        + const("r4", CYCCNT)
+        + const("r8", GPIO_B0)
+        + const("r9", GPIO_SET0)
+        + const("r10", GPIO_CLR0)
+        + const("r11", GPIO_DIRSET0)
+        + f"    mov.w r2, #{1 << PIN_SWDIO}\n    mov.w r3, #{1 << PIN_TXEN}\n"
+        + "    .balign 4\n    mov r12, r12\n"
+        + "    ldr r6, [r4]\n"
+        + "\n".join("    " + line for line in lines)
+        + "\n    ldr r7, [r4]\n    subs r0, r7, r6\n    movs r1, #0\n    pop {r4-r11, pc}\n"
+    )
+
+
 def swd_stream(value: int) -> int:
     """The 36 bits a correct DPIDR read samples: OK, the word, its parity."""
     parity = bin(value).count("1") & 1
