@@ -36,20 +36,20 @@ block, before and after tonight:
 
 | | asked | before | after | |
 | --- | --- | --- | --- | --- |
-| SWD read | 10 MHz | 538 | 624 | +16% |
+| SWD read | 10 MHz | 538 | 631 | +17% |
 | SWD write | 10 MHz | 547 | 681 | +24% |
-| SWD read | 50 MHz | 1161 | 1693 | +46% |
-| SWD write | 50 MHz | 1387 | 2148 | +55% |
-| JTAG read | 10 MHz | 616 | 687 | +12% |
-| JTAG write | 10 MHz | 621 | 759 | +22% |
-| JTAG read | 50 MHz | 1355 | 1812 | +34% |
-| JTAG write | 50 MHz | 1630 | 2433 | +49% |
+| SWD read | 50 MHz | 1161 | 1743 | +50% |
+| SWD write | 50 MHz | 1387 | 2145 | +55% |
+| JTAG read | 10 MHz | 616 | 684 | +11% |
+| JTAG write | 10 MHz | 621 | 756 | +22% |
+| JTAG read | 50 MHz | 1355 | 1804 | +33% |
+| JTAG write | 50 MHz | 1630 | 2431 | +49% |
 | two-pin read | 10 MHz | 166 | 213 | +28% |
 | two-pin write | 10 MHz | 177 | 218 | +23% |
 | two-pin read | 50 MHz | 283 | 646 | +128% |
-| two-pin write | 50 MHz | 290 | 617 | +113% |
+| two-pin write | 50 MHz | 290 | 616 | +112% |
 
-Text grows from 46,980 bytes to 108,772, which is 17% of the part's flash.
+Text grows from 46,980 bytes to 109,104, which is 17% of the part's flash.
 
 The bar is cleared on wire time at every setting, by 4.3x at the top. **Wire time is not the same
 as throughput**: the stock capture put the USB gap at about 10% of a transfer at 14 MHz, and a
@@ -120,9 +120,36 @@ a block command to the right one, sending everything else to ARM's processing un
 SWD gains 4% on reads and 15% on writes at the top end, four-wire JTAG 11% and 19%, two-pin 2%.
 The dead stretch between SWD writes halves, from 62 cycles to 34. Text grows 42 KB.
 
+### Store a read word in one go
+
+ARM writes the four bytes of a read word separately. GCC merges them back into a single word store
+-- and rebuilds the word from its own bytes first, four extracts and four `bfi`s, ten instructions
+to copy a register, once per word. `__builtin_memcpy` of the whole word takes one store.
+
+SWD reads gain 3% at 50 MHz and 1% at 10, and the per-word gap drops from 65 cycles to 52. Writes
+do not move, which is the check: a write puts nothing in the response. Four-wire JTAG loses 0.4%,
+which is register allocation shifting elsewhere, and is taken for the SWD gain. Text falls 184
+bytes.
+
 ## Tried and rejected
 
 Recorded because each one is the obvious next thing to try.
+
+### Hoisting the packet request out of the block loop
+
+The eight packet bits are the same for every word of a block, and the compiler was recomputing the
+four shifts and the parity once a word and spilling them. Building the byte once and shifting bits
+out of it inside the transfer is **1.9% slower on reads, 0.8% on writes, and 5,332 bytes larger**:
+1743 to 1710 KiB/s and 2145 to 2127 at 50 MHz. The built packet has to stay live across the whole
+transfer, where a shift of the request was free wherever the register already was.
+
+### `restrict` on the block pointers
+
+The response is a `uint8_t*`, so a store through it could in principle be a store to `DAP_Data`,
+and the loop reloads the retry count and the idle cycles every word. Marking both pointers
+`restrict` -- which is true, they are separate buffers -- **changes not one instruction**, on any
+of the three wires. The reloads have another cause. Dropped rather than kept as documentation,
+since it buys nothing and reads like it does.
 
 ### Fusing the data bit into the falling clock edge
 
@@ -238,10 +265,17 @@ model serving paths that do not cost the same.
 
 ### 1. What is left between transfers
 
-About 65 cycles on a SWD read at the delay-free setting, 19% of the time. The prologue, the
-epilogue and the address reloads are gone; what remains is the loop's own work and the transfer's
-head and tail, and the read loop spills because the inlined transfer and the loop state compete
-for registers. The write loop, which carries less, is down to 34.
+About 52 cycles on a SWD read at the delay-free setting, 16% of the time, down from 65. The
+write loop, which carries less, is at 34.
+
+What is in those 52, counted off the instruction trace: about ten rebuilding the packet request,
+six loading and storing the response pointer and the word count, which live on the stack, five on
+the loop counter, and the rest the tail of one transfer and the head of the next. The two biggest
+are both register pressure -- the unrolled data phase wants every register, so the loop's own
+state is spilled and the invariant parts of the packet are recomputed rather than kept.
+
+Hoisting the packet out of the loop was tried and is slower; see above. What has not been tried is
+dropping `response_count`, which for a read is the response pointer divided by four.
 
 Letting the optimiser inline more does not help: raising GCC's inlining parameters cost 33 KB and
 moved the gap by one cycle. Nor do the register allocator's knobs -- `-fsched-pressure` and
