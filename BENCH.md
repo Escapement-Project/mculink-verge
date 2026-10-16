@@ -57,9 +57,14 @@ the MCU's pull-up. A target connector that grounds pin 9 pulls it low. Together:
 
 | state | J6 pin 1 | pin 9 | measured on the MSPM0 bench board |
 | --- | --- | --- | --- |
-| nothing connected | ~3.3 V, through R16 | open | not yet |
+| nothing connected | ~3.3 V, through R16 | open | 3.276 V, open |
 | target connected and powered | the target's VDD | grounded | 3.268 V, grounded |
 | target connected and unpowered | wherever the dead board pulls R16 | grounded | 1.084 V, grounded |
+
+**Empty and powered differ by 8 mV here**, so pin 9 is what separates them, as predicted. The
+empty reading is also the chain's own error: pin 1 then sits at the probe's 3V3 through an unloaded
+R16, and the ADC's reference is that same rail, so it should read exactly full-rail. It reads 0.7%
+low, which is divider, buffer and converter together. Take readings as good to about 1%.
 
 **An unpowered target does not read zero.** This MSPM0 board, dead, loads R16 like roughly 16K,
 so pin 1 sits at 1.08 V. That is unmistakable against a 3.3 V supply, but the level depends on the
