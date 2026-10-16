@@ -29,20 +29,34 @@ uv run tools/equiv.py <ref.elf> <new.elf> # hold a rewrite to a reference build,
 uv run tools/image.py               # the USB descriptors and the serial number
 ```
 
-`ninja check` runs the descriptor check too. It reads the descriptors out of the image and holds
-them to each other: a configuration descriptor states a total that has to match the bytes after
-it, an interface states how many endpoints follow, the BOS states the size of a descriptor stored
-elsewhere, and nothing in the build checks any of them. A malformed one is the failure with the
-least to go on, because the device simply does not appear. It also runs `GetSerialNum` against a
-programmed unique id and against an unprogrammed one, which is the other thing that can stop the
-device enumerating.
+`ninja check` runs `tools/image.py` as well, which asks what the built image says about itself:
 
-The wire gate requires six things of a build: every transfer answers with the right data, the wire
-event stream matches `tools/baseline/` at both clock paths, the two-pin path emits no transition
-while the clock is high, and no wire clocks faster than the host asked for beyond what
-`tools/baseline/known-overshoot.txt` already records, and the cJTAG activation sequence puts the
-same edges on the wire it always has, and the sequence commands a host uses to reset a line or
-walk a TAP by hand put out what they always have. `--bless` rewrites the baseline.
+- the USB descriptors, held to each other, because a configuration descriptor states a total that
+  has to match the bytes after it and nothing in the build checks that;
+- the clocks the board support leaves off, by running the boot-time setup against the register
+  model and asking the clock driver what came out;
+- the cycle counter behind `TIMESTAMP_GET`, which stays dormant until two bits are set;
+- every command in the parity table, which has to answer rather than reject;
+- what `DAP_Info` reports, since probe-rs sizes its buffers from it;
+- the baud rates SWO and the console can actually reach, against a bound tighter than the
+  driver's, because a rate it merely accepts can still be too far out for a link;
+- and the serial number, against a programmed unique id and an unprogrammed one.
+
+Each of those is a bench failure that looks like something else: a device that does not appear, a
+console that stays silent, a probe that stops answering for ninety seconds.
+
+The wire gate requires six things of a build:
+
+- every transfer answers with the right data;
+- the wire event stream matches `tools/baseline/` at both clock paths;
+- the cJTAG activation puts the same edges on the wire it always has;
+- so do the sequence commands a host uses to reset a line or walk a TAP by hand;
+- the two-pin path emits no transition while the clock is high, which on a 1149.7 wire is an
+  escape edge and the reason this firmware exists;
+- and no wire clocks faster than the host asked for, beyond what
+  `tools/baseline/known-overshoot.txt` already records.
+
+`--bless` rewrites the baseline.
 
 The escape hatches are not exercised by any of that, and they do break: inlining a transfer once
 hid an uninitialised-variable warning that only the non-LTO builds could see. Build all four
