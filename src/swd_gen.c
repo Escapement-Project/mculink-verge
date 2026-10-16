@@ -78,8 +78,13 @@ _Static_assert(SWDIO < 256U, "R_FOUR is loaded as an 8-bit immediate");
 #define FILLER t_mov(R_ZERO, R_ZERO)
 
 struct gen_cfg {
+    // Clocks the target drives, and the turnarounds and idle clocks: a read clock is four
+    // instructions, so never shorter than SWD_GEN_PERIOD_MIN.
     uint32_t period;
     uint32_t low; // cycles from a falling edge to the rising edge
+    // Clocks the probe drives: an edge store each and the next bit's extraction, so three.
+    uint32_t wperiod;
+    uint32_t wlow;
     uint32_t latency;
     uint32_t turnaround;
     uint32_t data_phase;
@@ -108,6 +113,9 @@ struct sched {
     uint32_t t; // the earliest cycle the next clock may fall on
     uint32_t last_fall;
     uint32_t last_rise;
+    // The last clock's period and low phase, which the clocks still to come are assumed to share.
+    uint32_t grid_period;
+    uint32_t grid_low;
     uint32_t last_load;
     bool failed;
     struct event ev[GEN_EVENTS];
@@ -123,6 +131,8 @@ static void sched_reset(struct sched* s, const struct gen_cfg* cfg) {
     s->last_fall = 0U;
     s->last_rise = 0U;
     s->last_load = 0U;
+    s->grid_period = cfg->wperiod;
+    s->grid_low = cfg->wlow;
     s->failed = false;
 }
 
@@ -156,13 +166,14 @@ static void put(struct sched* s, uint32_t cycle, uint32_t insn) {
     s->n++;
 }
 
-/** Whether a clock not laid yet puts an edge on `cycle`, if the clocks from s->t on are uniform. */
+/** Whether a clock not laid yet puts an edge on `cycle`, if the clocks from s->t on are like the
+ * last one. Where they are not, a clock that finds its cycle taken waits a cycle. */
 static bool on_grid(const struct sched* s, uint32_t cycle) {
     if (cycle < s->t) {
         return false;
     }
-    const uint32_t phase = (cycle - s->t) % s->cfg->period;
-    return (phase == 0U) || (phase == s->cfg->low);
+    const uint32_t phase = (cycle - s->t) % s->grid_period;
+    return (phase == 0U) || (phase == s->grid_low);
 }
 
 /** An instruction the next clock has to wait for: the first free cycle from `earliest`. */
@@ -191,25 +202,30 @@ static uint32_t side(struct sched* s, uint32_t earliest, uint32_t insn) {
 
 /** One clock, falling on `fall` at the first cycle from s->t where both of its edges fit.
  * Returns the cycle of its rising edge. */
-static uint32_t clock(struct sched* s, uint32_t fall) {
-    const uint32_t low = s->cfg->low;
+static uint32_t clock(struct sched* s, uint32_t fall, uint32_t period, uint32_t low) {
     uint32_t cycle = s->t;
     while (taken(s, cycle) || taken(s, cycle + low)) {
         cycle++;
     }
     put(s, cycle, fall);
     put(s, cycle + low, t_str(R_ONE, R_PORT, OFF_SET));
-    s->t = cycle + s->cfg->period;
+    s->t = cycle + period;
     s->last_fall = cycle;
     s->last_rise = cycle + low;
+    s->grid_period = period;
+    s->grid_low = low;
     return cycle + low;
 }
 
 /** A clock with the probe driving `bit`, a register holding SWDIO's mask or zero. */
-static uint32_t drive(struct sched* s, uint32_t bit) { return clock(s, t_str(bit, R_PORT, OFF_MPIN)); }
+static uint32_t drive(struct sched* s, uint32_t bit) {
+    return clock(s, t_str(bit, R_PORT, OFF_MPIN), s->cfg->wperiod, s->cfg->wlow);
+}
 
 /** A clock with the wire left as it is. */
-static uint32_t idle_clock(struct sched* s) { return clock(s, t_str(R_ONE, R_PORT, OFF_CLR)); }
+static uint32_t idle_clock(struct sched* s) {
+    return clock(s, t_str(R_ONE, R_PORT, OFF_CLR), s->cfg->period, s->cfg->low);
+}
 
 /** Bit `bit` of `rm` into SWDIO's position in `rd`, everything else clear. */
 static uint32_t extract(uint32_t rd, uint32_t rm, uint32_t bit) {
@@ -665,7 +681,11 @@ static bool emit_function(struct emitter* e, const struct gen_cfg* c, bool read)
             break;
         }
     }
-    const uint32_t high = c->period - c->low;
+    // The body starts on a packet clock and ends on whatever clock it ends on: the high phase
+    // between them is the longer of the two kinds, which covers both.
+    const uint32_t read_high = c->period - c->low;
+    const uint32_t write_high = c->wperiod - c->wlow;
+    const uint32_t high = read_high > write_high ? read_high : write_high;
 
     emit(e, t_push(0x4FF0U)); // r4-r11, lr
     emit(e, t_mov(R_COUNT, 2U));
@@ -727,14 +747,19 @@ bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_ge
         (config->idle_cycles > 255U)) {
         return false;
     }
+    const uint32_t period = config->period < SWD_GEN_READ_PERIOD_MIN ? SWD_GEN_READ_PERIOD_MIN : config->period;
     const struct gen_cfg c = {
-        .period = config->period,
-        .low = config->period / 2U,
+        .period = period,
+        .low = period / 2U,
+        .wperiod = config->period,
+        // At three cycles the edge rises two after the fall: the data has two cycles to settle
+        // and holds for one, the shape the bench measured writes landing with.
+        .wlow = config->period == 3U ? 2U : config->period / 2U,
         .latency = config->latency,
         .turnaround = config->turnaround,
         .data_phase = config->data_phase != 0U,
         .idle = config->idle_cycles,
-        .masked = config->period < config->latency + 1U + SAFE_MARGIN,
+        .masked = period < config->latency + 1U + SAFE_MARGIN,
     };
     struct emitter e = {.code = (uint32_t*)SWD_GEN_BASE, .cap = SWD_GEN_SIZE / 4U};
 

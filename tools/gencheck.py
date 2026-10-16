@@ -8,8 +8,8 @@ For each clock asked for, configure the image, then run a block read and a block
 target that answers by time (tools/cycles.py's TimedSwdTarget, serving what the timing puts on
 the pin). Check that no clock and no clock phase is shorter than the period, that every sample
 read the bit it was placed for, and that the replies carry what the target sent. Report the
-smallest sample margin, and the cycles a transfer takes in a running block against the floor of 46
-periods.
+smallest sample margin, and the cycles a transfer takes in a running block against its floor: 46
+clocks, those the probe drives at the write period and the rest at the read period.
 
     uv run tools/gencheck.py build-gen/mculink_cjtag.elf
     uv run tools/gencheck.py build-gen/mculink_cjtag.elf --mhz 37.5 30 25 --latency 7
@@ -59,9 +59,12 @@ def run(elf: str, hz: int, read: bool, words: int, latency: int, target_latency:
     if reply != want:
         problems.append(f"reply {reply[:12].hex()}..., wanted {want[:12].hex()}...")
 
-    period = -(-cpu_hz // hz)
-    period = max(period, 4)
-    low, high = period // 2, period - period // 2
+    # The clock asked for is a ceiling on every period; the probe's own clocks run at it down to
+    # three cycles and the target's down to four.
+    period = max(-(-cpu_hz // hz), 3)
+    read_period = max(period, 4)
+    low = min(read_period // 2, 2 if period == 3 else period // 2)
+    high = min(read_period - read_period // 2, period - (2 if period == 3 else period // 2))
     rises, falls = counts.edge_cycles, counts.fall_cycles
     shortest = {}
     for name, seq in (("rise-to-rise", rises), ("fall-to-fall", falls)):
@@ -83,8 +86,11 @@ def run(elf: str, hz: int, read: bool, words: int, latency: int, target_latency:
     # edges that far apart is the transfer period in a running block, overheads between commands
     # left out.
     per = sorted(b - a for a, b in zip(rises, rises[46:]))
+    # Packet bits at the write period, the rest at the read period; a write's data too.
+    driven = 8 + (0 if read else 33)
     return {
         "period": period,
+        "floor": driven * period + (46 - driven) * read_period,
         "margin": min(margins) if margins else None,
         "cycles": per[len(per) // 2] if per else 0,
         "problems": problems,
@@ -101,11 +107,11 @@ def main() -> int:
     ap.add_argument("--cpu", type=int, default=150)
     args = ap.parse_args()
     cpu_hz = args.cpu * 1_000_000
-    mhz = args.mhz or [cpu_hz / p / 1e6 for p in list(range(4, 41)) + [75, 150, 1500]]
+    mhz = args.mhz or [cpu_hz / p / 1e6 for p in list(range(3, 41)) + [75, 150, 1500]]
     target_latency = args.target_latency if args.target_latency is not None else args.latency
 
     failures = 0
-    print(f"{'MHz':>8} {'P':>5} {'read':>7} {'write':>7} {'floor':>7} {'margin':>7}  problems")
+    print(f"{'MHz':>8} {'P':>5} {'read':>7} {'floor':>7} {'write':>7} {'floor':>7} {'margin':>7}  problems")
     for m in mhz:
         hz = int(round(m * 1e6))
         r = run(args.elf, hz, True, args.words, args.latency, target_latency, cpu_hz)
@@ -114,7 +120,7 @@ def main() -> int:
         failures += bool(problems)
         margin = min(x for x in (r["margin"], w["margin"]) if x is not None)
         print(
-            f"{hz / 1e6:8.3f} {r['period']:5d} {r['cycles']:7d} {w['cycles']:7d} {46 * r['period']:7d} {margin:7d}  "
+            f"{hz / 1e6:8.3f} {r['period']:5d} {r['cycles']:7d} {r['floor']:7d} {w['cycles']:7d} {w['floor']:7d} {margin:7d}  "
             + ("; ".join(problems) if problems else "ok")
         )
     print(f"\n{len(mhz) - failures}/{len(mhz)} clocks clean")

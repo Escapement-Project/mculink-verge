@@ -13,8 +13,11 @@
 #define SWD_GEN_BASE 0x04000000U
 #define SWD_GEN_SIZE 0x4000U
 
-/** A read clock is four instructions: two edges, a sample and the sample's use. */
-#define SWD_GEN_PERIOD_MIN 4U
+/** A write clock is three instructions: two edges and the next bit's extraction. */
+#define SWD_GEN_PERIOD_MIN 3U
+/** A read clock is four: two edges, a sample and the sample's use. Clocks the target drives run
+ * at no less than this whatever the period. */
+#define SWD_GEN_READ_PERIOD_MIN 4U
 /** Longer periods leave the cycle counts of one transfer near 32 bits; ARM's path runs them. */
 #define SWD_GEN_PERIOD_MAX (1U << 24)
 /** Cycles from a rising-edge store to the first load that sees the bit it launched. The bench
@@ -22,7 +25,7 @@
 #define SWD_GEN_LATENCY_DEFAULT 7U
 
 struct swd_gen_config {
-    uint32_t period;      // core cycles per SWCLK period
+    uint32_t period;      // core cycles per SWCLK period, for the clocks the probe drives
     uint32_t latency;     // see SWD_GEN_LATENCY_DEFAULT
     uint32_t turnaround;  // 1 to 4 clocks
     uint32_t data_phase;  // clock a data phase after WAIT and FAULT
