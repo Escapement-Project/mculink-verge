@@ -23,6 +23,13 @@
 #include "cjtag.h"
 #include "jtag_dp.h"
 
+// Which frame this copy drives, and what its entry points are called. src/cjtag_jtag_dp_fast.c
+// includes this file with both overridden, so the paced and delay-free copies share one source.
+#ifndef CJTAG_FRAME
+#define CJTAG_FRAME cJTAG_FrameSlow
+#define CJTAG_NAME(name) cjtag_##name
+#endif
+
 static uint32_t staged_tms;
 static uint32_t staged_tdi;
 static uint32_t captured_tdo;
@@ -30,7 +37,7 @@ static bool frame_open;
 
 static inline void cjtag_emit(void) {
     if (frame_open) {
-        captured_tdo = cJTAG_Frame(staged_tms, staged_tdi);
+        captured_tdo = CJTAG_FRAME(staged_tms, staged_tdi);
         frame_open = false;
     }
 }
@@ -43,15 +50,15 @@ static inline uint32_t cjtag_capture(void) {
 // The names JTAG_DP.c's five entry points take in this copy. jtag_dp.h, included above, has
 // already declared them, which is what satisfies -Wmissing-prototypes. The four static helpers
 // are renamed too, so a map file and a debugger can tell the two copies apart.
-#define JTAG_Sequence cjtag_Sequence
-#define JTAG_IR cjtag_IR
-#define JTAG_ReadIDCode cjtag_ReadIDCode
-#define JTAG_WriteAbort cjtag_WriteAbort
-#define JTAG_Transfer cjtag_Transfer
-#define JTAG_TransferFast cjtag_TransferFast
-#define JTAG_TransferSlow cjtag_TransferSlow
-#define JTAG_IR_Fast cjtag_IR_Fast
-#define JTAG_IR_Slow cjtag_IR_Slow
+#define JTAG_Sequence CJTAG_NAME(Sequence)
+#define JTAG_IR CJTAG_NAME(IR)
+#define JTAG_ReadIDCode CJTAG_NAME(ReadIDCode)
+#define JTAG_WriteAbort CJTAG_NAME(WriteAbort)
+#define JTAG_Transfer CJTAG_NAME(Transfer)
+#define JTAG_TransferFast CJTAG_NAME(TransferFast)
+#define JTAG_TransferSlow CJTAG_NAME(TransferSlow)
+#define JTAG_IR_Fast CJTAG_NAME(IR_Fast)
+#define JTAG_IR_Slow CJTAG_NAME(IR_Slow)
 
 // The wire layer. These shadow the inline functions from DAP_config.h for this file only.
 #undef PIN_SWDIO_TMS_SET

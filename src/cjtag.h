@@ -34,7 +34,11 @@ void cJTAG_Deactivate(void);
  * nTDI then TMS driven by us, then TDO with the wire released. Returns the TDO bit.
  *
  * Entered and left with TCKC low and the wire driven, which is what cJTAG_Activate leaves behind.
+ *
+ * Two copies, paced and not. The caller picks once per transfer; see the note in cjtag.c for why
+ * it cannot be picked per frame.
  */
-uint32_t cJTAG_Frame(uint32_t tms, uint32_t tdi);
+uint32_t cJTAG_FrameSlow(uint32_t tms, uint32_t tdi);
+uint32_t cJTAG_FrameFast(uint32_t tms, uint32_t tdi);
 
 #endif

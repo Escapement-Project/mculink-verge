@@ -41,6 +41,7 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_dp.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp_fast.c
   ${DAP_SRC}/SW_DP.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_dp.c
   ${DAP_SRC}/SWO.c
@@ -96,6 +97,7 @@ set_source_files_properties(
   )
 set_source_files_properties(
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp_fast.c
   PROPERTIES COMPILE_OPTIONS "-funroll-loops"
   )
 

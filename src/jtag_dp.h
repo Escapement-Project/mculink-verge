@@ -1,8 +1,8 @@
 /** The two compiled copies of ARM's JTAG_DP entry points.
  *
- * JTAG_DP.c is built twice with its five entry points renamed each time: jtag4_* drives four
- * wires, cjtag_* drives OScan1 frames. cjtag_dp.c owns the names ARM's DAP.c calls and picks a
- * copy per call.
+ * JTAG_DP.c is built three times with its five entry points renamed each time: jtag4_* drives four
+ * wires, cjtag_* drives paced OScan1 frames and cjtagf_* drives them without pacing. cjtag_dp.c
+ * owns the names ARM's DAP.c calls and picks a copy per call.
  *
  * Both sets are declared here so the dispatcher and the copies cannot drift: a prototype that
  * disagreed with the definition would link and then pass arguments wrongly.
@@ -23,5 +23,12 @@ void cjtag_IR(uint32_t ir);
 uint32_t cjtag_ReadIDCode(void);
 void cjtag_WriteAbort(uint32_t data);
 uint8_t cjtag_Transfer(uint32_t request, uint32_t* data);
+
+// The same copy again without the pacing, for requests above the switch point.
+void cjtagf_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo);
+void cjtagf_IR(uint32_t ir);
+uint32_t cjtagf_ReadIDCode(void);
+void cjtagf_WriteAbort(uint32_t data);
+uint8_t cjtagf_Transfer(uint32_t request, uint32_t* data);
 
 #endif

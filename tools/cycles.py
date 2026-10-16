@@ -463,7 +463,15 @@ AP_DRW_READ, AP_DRW_WRITE = 0x0F, 0x0D
 TRANSFER_MARKERS = {
     "swd": ("SWD_Transfer", "SWD_TransferFast", "SWD_TransferSlow"),
     "jtag": ("jtag4_Transfer", "jtag4_TransferFast", "jtag4_TransferSlow"),
-    "cjtag": ("cjtag_Transfer", "cjtag_TransferFast", "cjtag_TransferSlow"),
+    "cjtag": (
+        "cjtag_Transfer",
+        "cjtag_TransferFast",
+        "cjtag_TransferSlow",
+        # The delay-free copy of the same path, which a request above the switch point takes.
+        "cjtagf_Transfer",
+        "cjtagf_TransferFast",
+        "cjtagf_TransferSlow",
+    ),
 }
 
 
