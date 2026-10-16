@@ -776,12 +776,44 @@ was tried and made it worse: the host times out from three in flight upward and 
 as 1/N. A buffer of exactly one packet is what keeps CMSIS-DAP's one-command-per-packet framing
 true, so `CFG_TUD_VENDOR_RX_BUFSIZE` and `TX_BUFSIZE` must stay at 512.
 
-Going deeper than two needs the replies to leave as framed transfers, which means driving the bulk
-endpoints directly instead of through the class FIFO. That is the remaining USB work.
+### Taken: TinyUSB's non-FIFO vendor mode, which keeps packet boundaries
 
-The command loop also waits for the transmit side to drain before starting the next command.
-`tud_vendor_write` writes what fits and returns the count, and nothing was reading it, so a full
-buffer truncated a reply silently.
+A buffer size of zero selects it. A received packet arrives at `tud_vendor_rx_cb` with its own
+length, and `tud_vendor_write` becomes one `usbd_edpt_xfer`. The command loop holds two request
+slots and arms the receive endpoint only while one is free, so a command it cannot place is
+refused by NAK rather than dropped.
+
+| | FIFO mode | non-FIFO, two slots |
+| --- | --- | --- |
+| 1 command in flight | 581 KiB/s | 608 |
+| 2 in flight | 646 | 669 |
+| 4 in flight | times out | 568, no data lost |
+
+### Pipelining costs wire time, and it is still worth it
+
+The same image measured at both depths, so only the host's behaviour differs:
+
+| | 1 in flight | 2 in flight |
+| --- | --- | --- |
+| data bit | 15.120 cycles | 15.763 |
+| wire a block | 330.03 us | 342.13 us |
+| USB and the host | 61.01 us, 15.5% | 26.55 us, 7.1% |
+| end to end | 632 KiB/s | 669 |
+
+**A command in flight makes every data bit longer.** The pacing is a counted loop, so anything
+that interrupts one simply makes the bit longer, and 0.64 cycles a bit is 12 us on a 64-word
+block. It buys 34 us of idle, so it wins by a wide margin, but it is not free and the emulator
+cannot see it.
+
+**Masking the USB interrupt around a block was tried and reverted.** It recovered a third of the
+interference -- 15.763 to 15.557 cycles, 342.13 to 338.95 us -- and moved the end-to-end figure
+from 669.0 to 670.3, which is inside the noise. The other two thirds are not the interrupt, most
+likely the USB controller's DMA competing with instruction fetch for the same SRAM. Against that
+it would have left USB unserviced for the length of a block, which at 1 MHz and 127 words is
+5.8 ms. Not worth it for 1% of wire time and nothing measurable.
+
+The command loop also never truncates a reply now. `tud_vendor_write` writes what fits and
+returns the count, and nothing was reading it.
 
 ## What the bench has sized, and what is left
 
