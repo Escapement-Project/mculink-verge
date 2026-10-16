@@ -201,7 +201,14 @@ ID_DAP_INVALID = 0xFF
 
 
 def check_commands(c: Checker, elf: str) -> None:
-    """Every command in the parity table has to answer. The claim is that none is a downgrade."""
+    """Every command in COMMANDS has to answer. The claim is that none is a downgrade.
+
+    One caveat worth keeping honest. This runs before the clock setup, so the four SWO commands
+    reach a Flexcomm with no clock and NXP's driver returns early rather than configuring
+    anything. They answer, which is what is being checked, but nothing here says SWO works. With
+    a real clock the driver waits on a status bit the register model never sets, so the emulator
+    cannot take that path at all: SWO is a bench item.
+    """
     probe = Machine(elf, Target([0] * 64), restart_at=set(), model=Model())
     answered = 0
     for cmd, operands in DAP_COMMANDS.items():
@@ -221,7 +228,10 @@ def check_commands(c: Checker, elf: str) -> None:
             continue  # TransferAbort is handled out of band and answers nothing
         if not reply or reply[0] != ID_DAP_INVALID:
             c.problems.append(f"command {cmd:#04x} should answer ID_DAP_Invalid")
-    c.note(f"{answered} of {len(DAP_COMMANDS)} commands answered, unimplemented ids rejected")
+    c.note(
+        f"{answered} of {len(DAP_COMMANDS)} commands answered, unimplemented ids rejected"
+        " (the SWO four with the clock still off; see the note above)"
+    )
 
 
 # What DAP_Info tells a host about the probe. probe-rs sizes its buffers from the packet size and
@@ -324,8 +334,8 @@ def main() -> int:
         check_bos(c, _read_at(args.elf, *sym["desc_bos"]), ms_os[1])
     else:
         c.note("the MS OS 2.0 descriptor was folded away; its length not cross-checked")
-    check_clocks(c, args.elf)
     check_commands(c, args.elf)
+    check_clocks(c, args.elf)
     check_info(c, args.elf, args.packet_size, args.packet_count)
     check_serial(c, args.elf, bytes(range(1, 17)), args.prefix)
     check_serial(c, args.elf, b"\xff" * 16, args.prefix, uniform=True)

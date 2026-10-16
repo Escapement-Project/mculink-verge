@@ -315,6 +315,10 @@ Captures: `mculink-swd-clock-*.sal`.
    CC13xx with the analyser watching.
 3. Settle the two bench questions parity depends on: whether stock answers DAP over HID, and
    whether stock maps CDC line state to anything.
+   **SWO is a bench item too**: its four commands answer in emulation only because the Flexcomm
+   has no clock and NXP's driver returns early, and with a clock the driver waits on a status bit
+   no register model sets. Nothing here says SWO works, and the 9 MHz in `SWO_UART_MAX_BAUDRATE`
+   has never been checked against what a 96 MHz Flexcomm can divide to.
 4. Then, and only then, throughput, starting with the clock calibration.
 
 ### Open questions
