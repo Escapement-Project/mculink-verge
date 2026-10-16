@@ -1341,17 +1341,38 @@ alignment and does not wait. Its falling edge comes a cycle sooner, the sample l
 after the edge, and it reads the bit before. The loop's own reads sit exactly at the window's
 edge, so the loop passes by no margin at all.
 
-**Predictions not yet tested:**
+**Two predictions, tested on the bench:**
 
 - On the default build at 16.67 MHz, every write through `DAP_Transfer` misreads its acknowledge
-  as 3. Reads pass. One DP write at that rate settles it.
-- `DAP_Transfer` reads at that rate sample data bits 1 and 2 a cycle early. DPIDR hides this,
-  because its bits 0 to 2 are all ones.
+  as 3, and reads pass. Confirmed, 50 of 50 in each of five orderings of reads and writes.
+- `DAP_Transfer` reads at that rate sample data bits 1 and 2 a cycle early, which DPIDR's bits
+  would hide. Wrong: the access port's TAR, written with values that would expose it, read back
+  clean. So the model is a cycle out in that stretch of compiled code from SRAM.
 
-**Open in the model:** a load whose result is used after two or more other instructions costs a
-cycle the model misses. A two-word `subs`/`bne` loop costs 3 cycles an iteration where the model
-says 4. Straight-line 32-bit code in SRAM is a cycle out at one alignment. The lab corpus that
-pins these down was cut short by a lab case that hung the probe.
+**Refitted on code timed in isolation.** Timing each case between filler, so the closing
+cycle-counter read waits on nothing in the body, removed most of what the first fit had got
+wrong. From SRAMX the model now matches all 692 such cases at four alignments: every instruction a
+cycle, loads and stores back to back, a computed value ready two cycles after its load, every
+taken branch two cycles plus one for a straddling target. One more rule came out of it: an access
+through the core's private bus, where the cycle counter is, waits two cycles behind an access over
+S-AHB, and the reverse. From SRAM, straight-line code is still a cycle out at one alignment and
+loops drift by up to a cycle an iteration.
+
+**The wire agrees.** SWCLK trains from SRAMX, built from every GPIO store form (SET and CLR, NOT,
+byte, word, and SET with a byte), span exactly their issue cycles. Every form reaches the pin at
+the same delay, to a tenth of a cycle. The analyser cannot resolve pulses of one or two cycles.
+
+**Generated reads run at 37.5 MHz, and the model predicts every one.** A read generated with each
+sample placed a set number of cycles after the edge that launched its bit, and stored to a buffer
+by the next free cycle, needs four instructions a clock. At every period from 4 to 8 cycles,
+37.5 to 18.75 MHz, and every sample position, 45 configurations, the bench and the model agree on
+the verdict and on the cycle count. The window's edges are included.
+
+**Generated writes run at 50 MHz.** With the SWDIO store anywhere from one cycle before its rising
+edge to one cycle after the previous one, every write landed, at every period from 3 to 10
+cycles. Setup and hold at the target are each under a cycle.
+
+TIMING.md has the rules these give a generator. CODEGEN.md is the context for implementing it.
 
 ## What the bench has sized, and what is left
 

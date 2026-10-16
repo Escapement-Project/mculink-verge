@@ -502,6 +502,61 @@ def swd_read_pipelined(period: int, low: int, delay: int) -> str:
     )
 
 
+def swd_write_asm(period: int, lead: int, value: int, request: int = 0x05) -> str:
+    """A SWD write as straight-line code, every probe-driven bit set `lead` cycles before its edge.
+
+    Each probe-driven clock is `period` cycles with the rising-edge store last; the SWDIO store
+    sits `lead` cycles before it, and the falling-edge store takes the first free cycle. A lead of
+    period - 1 changes SWDIO one cycle after the previous rising edge, which is how close to an
+    edge the target holds its sample. The acknowledge is clocked but not sampled: a request the
+    target misread shows up as a write that did not land. The default request writes AP TAR.
+    One instruction a cycle from SRAMX; registers r6 and r7 hold 0 and 1.
+    """
+    if not 1 <= lead <= period - 1 or period < 3:
+        raise ValueError("need period >= 3 and 1 <= lead <= period - 1")
+    lines: list[str] = []
+
+    def clock(data_reg: str | None) -> None:
+        slots = ["mov.w r12, r12"] * period
+        slots[period - 1] = "str.w r5, [r9]"  # rise
+        if data_reg is not None:
+            slots[period - 1 - lead] = f"strb.w {data_reg}, [r8, #2]"
+        fall = next(i for i in range(period - 1) if slots[i] == "mov.w r12, r12")
+        slots[fall] = "str.w r5, [r10]"
+        lines.extend(slots)
+
+    parity = bin(request & 0x0F).count("1") & 1
+    packet = [1, request & 1, (request >> 1) & 1, (request >> 2) & 1, (request >> 3) & 1, parity, 0, 1]
+    for bit in packet:
+        clock("r7" if bit else "r6")
+    lines += ["str.w r3, [r10]", "str.w r2, [r11, #0x80]"]  # let go: TXEN off, SWDIO input
+    for _ in range(1 + 3 + 1):  # turnaround, acknowledge, turnaround
+        clock(None)
+    lines += ["str.w r2, [r11]", "str.w r3, [r9]"]  # take it back: SWDIO output, TXEN on
+    data = [(value >> i) & 1 for i in range(32)] + [bin(value).count("1") & 1]
+    for bit in data:
+        clock("r7" if bit else "r6")
+    # Idle clocks with SWDIO low, so the write completes; high would be a start bit. Then high.
+    lines += ["strb.w r6, [r8, #2]"]
+    for _ in range(8):
+        clock(None)
+    lines += ["strb.w r7, [r8, #2]"]
+    return (
+        "push {r4-r11, lr}\n    mov r5, r0\n"
+        + const("r4", CYCCNT)
+        + const("r8", GPIO_B0)
+        + const("r9", GPIO_SET0)
+        + const("r10", GPIO_CLR0)
+        + const("r11", GPIO_DIRSET0)
+        + f"    mov.w r2, #{1 << PIN_SWDIO}\n    mov.w r3, #{1 << PIN_TXEN}\n"
+        + "    mov.w r6, #0\n    mov.w r7, #1\n"
+        + "    .balign 4\n    mov r12, r12\n"
+        + "    ldr r1, [r4]\n"
+        + "\n".join("    " + line for line in lines)
+        + "\n    ldr r0, [r4]\n    subs r0, r0, r1\n    movs r1, #0\n    pop {r4-r11, pc}\n"
+    )
+
+
 def swd_stream(value: int) -> int:
     """The 36 bits a correct DPIDR read samples: OK, the word, its parity."""
     parity = bin(value).count("1") & 1

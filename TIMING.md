@@ -81,8 +81,10 @@ cycles after its edge, which is two clocks later. Generated DPIDR reads at every
 8 cycles matched the model at every sample position on the bench, the window's edges included.
 DPIDR reads clean at 37.5 MHz.
 
-A write clock needs three instructions, with the data bits held in registers, so writes could run
-at P = 3. That has not been measured.
+A write clock needs three instructions, with the data bits held in registers, so writes run at
+P = 3, 50 MHz. The target took every write at every placement of the SWDIO store, from one cycle
+before its rising edge to one cycle after the previous one, at every period from 3 to 10 cycles.
+On this target a write needs nothing more than its SWDIO store kept off the cycles of the edges.
 
 ## Rules for placing a sample
 

@@ -65,8 +65,14 @@ the U575. DPIDR reads clean at 37.5 MHz.
   accumulate) = 4 instructions -> P >= 4 (37.5 MHz) at 150 MHz.
 - Write clock: fall store, data store (`strb` of a register holding 0/1 to B[SWDIO]), rise
   store = 3 if the data bit is already in a register -> P >= 3 (50 MHz). Extracting bits from a
-  word costs an extra instruction per bit (`lsr`/`ubfx`) unless precomputed. **P = 3 untested.**
-  U575 datasheet SWD max 66.5 MHz; signal integrity at 50 MHz on this harness unknown.
+  word costs an extra instruction per bit (`lsr`/`ubfx`) unless precomputed.
+- **Write window (measured with `tools/lab.py swd_write_asm`):** AP TAR writes with the SWDIO
+  store `lead` cycles before the rising
+  edge, lead 1..P-1, P = 3,4,5,6,8,10, 10 writes each, read back at 1 MHz: all land. So setup
+  and hold at the target are each under one cycle; any placement off the edge cycles works.
+  50 MHz writes (P = 3) work on this harness, request phase included.
+- Idle clocks after a transfer must drive SWDIO low: high on a rising edge is a start bit, the
+  target reads a malformed packet and needs a line reset.
 - Packet request bits are constant per request byte: emit them as stores of two constant
   registers (0 and 1), or specialise per request.
 - Sample consume options: `strb.w rS, [rBuf, #k]` (no stall after the load; unpack and check
@@ -188,5 +194,7 @@ the U575. DPIDR reads clean at 37.5 MHz.
   cycles and stretches a clock; place it where a stretch is harmless (low phase before a fall).
 - A calibration at connect (A sweep) vs a fixed A with margin. Margin at P=4 is only 1 either
   side even when centred.
-- P = 3 writes and anything above 37.5 MHz: untested on hardware.
+- Reads above 37.5 MHz need fewer than four instructions a read clock (not possible with one
+  load and one consume per bit at 150 MHz). Clocks can differ in length within a transfer, so
+  writes at P = 3 and reads at P = 4 can share one transfer.
 - Timed TAP model for JTAG/two-pin (TDO window after the falling edge) not built.
