@@ -223,12 +223,20 @@ sixth case now sends all sixteen address patterns in one command, and an inverte
 
 Recorded because each one is the obvious next thing to try.
 
-### Loading the retry count once a block
+### Hoisting the per-word loads out of DAP_Data
 
-`DAP_Data.transfer.retry_count` is reloaded for every word, and only `DAP_TransferConfigure`
-changes it, so it cannot move during a block. Hoisting the load leaves SWD unchanged, gains 0.6%
-on JTAG reads, loses 1.3% on JTAG writes and does not change the image size at all. Nothing is
-being bought; the load was not what cost.
+The transfer reloads `DAP_Data.transfer.retry_count` and `DAP_Data.transfer.idle_cycles` for every
+word, and only `DAP_TransferConfigure` changes either, so neither can move during a block. Both
+were hoisted and both bought nothing.
+
+The retry count, loaded once a block: SWD unchanged, JTAG reads up 0.6%, JTAG writes down 1.3%,
+image size identical. The idle cycles, passed into the transfer so the block loads them once:
+SWD reads unchanged at 1776, writes 2152 to 2151, image 12 bytes smaller.
+
+Two experiments, one conclusion. **The per-word loads are not what the gap is made of.** What
+costs is the spilling, and these values were being rematerialised or reloaded because the unrolled
+data phase wants every register, not because the compiler could not prove them invariant. Anything
+that does not reduce register pressure will keep landing here.
 
 ### Hoisting the packet request out of the block loop
 
