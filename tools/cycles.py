@@ -468,7 +468,7 @@ def u32(v: int) -> bytes:
 # DAP command ids used below.
 ID_CONNECT, ID_TRANSFER_CONFIG, ID_TRANSFER_BLOCK = 0x02, 0x04, 0x06
 ID_SWJ_CLOCK, ID_SWJ_SEQUENCE, ID_SWD_CONFIGURE = 0x11, 0x12, 0x13
-ID_JTAG_CONFIGURE = 0x15
+ID_JTAG_SEQUENCE, ID_JTAG_CONFIGURE, ID_SWD_SEQUENCE = 0x14, 0x15, 0x1D
 ID_CJTAG_CONTROL = 0x83
 
 AP_DRW_READ, AP_DRW_WRITE = 0x0F, 0x0D
@@ -726,6 +726,38 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
         failures.append("cjtag-activation.trace: no baseline recorded")
     elif open(path).read() != body:
         failures.append("cjtag-activation.trace: the activation sequence changed on the wire")
+
+    # The sequence commands are how a host resets a line, switches protocol and walks a TAP by
+    # hand, so they run on every attach -- and no transfer reaches the code that serves them. In
+    # particular the two-pin JTAG_Sequence entry point has nothing else exercising it.
+    for wire, name, payload in (
+        (
+            "swd",
+            "swj-sequence",
+            bytes([ID_SWJ_SEQUENCE, 56]) + bytes([0xA5, 0x3C, 0xFF, 0x00, 0x5A, 0xC3, 0x69]),
+        ),
+        ("swd", "swd-sequence", bytes([ID_SWD_SEQUENCE, 2, 16, 0xA5, 0x3C, 0x80 | 16])),
+        ("jtag", "jtag-sequence", bytes([ID_JTAG_SEQUENCE, 2, 0x08, 0xA5, 0x80 | 0x40 | 0x08, 0x3C])),
+        ("cjtag", "jtag-sequence", bytes([ID_JTAG_SEQUENCE, 2, 0x08, 0xA5, 0x80 | 0x40 | 0x08, 0x3C])),
+    ):
+        probe = Machine(elf, Target([0, 1] * 64), restart_at=set(), model=model)
+        probe.command(bytes([ID_CONNECT, 1 if wire == "swd" else 2]))
+        probe.command(bytes([ID_SWJ_CLOCK]) + u32(10_000_000))
+        if wire == "cjtag":
+            probe.command(bytes([ID_CJTAG_CONTROL, 1]))
+        probe.begin()
+        reply = probe.command(payload)
+        counts = probe.end()
+        if reply[1] != 0:
+            failures.append(f"{wire} {name}: answered 0x{reply[1]:02x}, wanted DAP_OK")
+        path = os.path.join(BASELINE_DIR, f"{wire}-{name}.trace")
+        body = "\n".join(counts.trace) + "\n"
+        if bless:
+            open(path, "w").write(body)
+        elif not os.path.exists(path):
+            failures.append(f"{wire}-{name}.trace: no baseline recorded")
+        elif open(path).read() != body:
+            failures.append(f"{wire}-{name}.trace: wire events differ from the baseline")
 
     known_path = os.path.join(BASELINE_DIR, "known-overshoot.txt")
     known = set()

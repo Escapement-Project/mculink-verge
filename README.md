@@ -28,11 +28,12 @@ uv run tools/cycles.py --explain          # name the code in the longest gap bet
 uv run tools/equiv.py <ref.elf> <new.elf> # hold a rewrite to a reference build, case by case
 ```
 
-The gate requires five things of a build: every transfer answers with the right data, the wire
+The gate requires six things of a build: every transfer answers with the right data, the wire
 event stream matches `tools/baseline/` at both clock paths, the two-pin path emits no transition
 while the clock is high, and no wire clocks faster than the host asked for beyond what
 `tools/baseline/known-overshoot.txt` already records, and the cJTAG activation sequence puts the
-same edges on the wire it always has. `--bless` rewrites the baseline.
+same edges on the wire it always has, and the sequence commands a host uses to reset a line or
+walk a TAP by hand put out what they always have. `--bless` rewrites the baseline.
 
 `tools/equiv.py` is the heavier check, for replacing code rather than tuning it: it drives two
 builds over 528 SWD cases, 180 four-wire JTAG cases and 120 two-pin cases -- every acknowledge a
