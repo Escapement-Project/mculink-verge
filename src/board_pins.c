@@ -96,6 +96,10 @@ void board_debug_pins_init(void) {
     for (size_t i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) {
         IOCON_PinMuxSet(IOCON, DBGIF_PORT, pins[i], DEBUG_PIN_MODE);
     }
+    // PIO0_13 is one of the two I2C pins, and its IOCON word has an EGP bit that the others lack:
+    // clear, the pin is an open-drain I2C cell that cannot drive high. RESET_TXEN would then never
+    // turn the reset buffer round, and nRESET would never reach the target.
+    IOCON_PinMuxSet(IOCON, DBGIF_PORT, DBGIF_RESET_TXEN_PIN, DEBUG_PIN_MODE | IOCON_GPIO_MODE);
 
     // Buffers off first, then the pins they gate. Doing it the other way round drives the target
     // for however long the two writes are apart.
