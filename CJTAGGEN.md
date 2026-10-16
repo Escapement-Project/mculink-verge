@@ -7,12 +7,13 @@ JTAG, and the wire facts the two-pin generator has to respect.
 
 ## Open decisions
 
-1. **Where the activation lives.** Today the host drives it with standard commands (629
-   `DAP_SWJ_Pins` writes in `DAP_ExecuteCommands` bundles, then vendor `0x83 0x02`, then 26
-   frames through `DAP_JTAG_Sequence`). That is the J-Link's split: its firmware frames, its host
-   activates. The 2026-10-14 plan wanted the activation inside the probe, so probe-rs sends one
-   vendor command. The activation is TI-specific and partly unexplained (see "The activation"),
-   which argues for the host, next to `icepick.rs`. Recommendation: host.
+1. **Where the activation lives.** It is now TI's documented sequence (below), fully understood,
+   and needs raw clocks between frames, which standard commands can carry (`DAP_SWJ_Pins` in
+   `DAP_ExecuteCommands`, then vendor `0x83 0x02` and `DAP_JTAG_Sequence`). The J-Link splits it
+   the same way: its firmware frames, its host activates. The 2026-10-14 plan wanted it inside
+   the probe so probe-rs sends one vendor command; the sequence is TI-specific (ICEMelter,
+   controller selection), which still argues for the host, next to `icepick.rs`.
+   Recommendation: host.
 2. **Generate four-wire JTAG in the same step.** Same scheduler, same transfer logic, a different
    clock emitter. Recommendation: yes; it also retires the four-wire path's overshoot (44% at
    50 MHz, DESIGN.md) and the clang layout failure.
@@ -46,31 +47,56 @@ JTAG, and the wire facts the two-pin generator has to respect.
   at "37.5 MHz" every transfer fails (TDO sampled too early, below).
 - **Throughput today**: ~230 KiB/s through `dap.py`, 64-word blocks, USB included, flat from
   15 MHz up because the fast path is unpaced C.
-- **Never enter Test-Logic-Reset after activating.** Five TMS-high frames kill the link (reads
-  then show 0x81010101), with or without ICEPick SYSCTRL KEEPPOWEREDINTLR, and nothing short of a
-  full activation recovers it. The generator's tails must reach Run-Test/Idle without ever
-  passing through it, and the host must not ask for it (probe-rs line resets, chain scans and
-  `tap_reset` all do).
+- **Never enter Test-Logic-Reset after activating.** Any entry, even three frames from
+  Run-Test/Idle, drops OScan1 (reads then show 0x81010101, the signature of an adapter in JScan).
+  With ICEPick SYSCTRL KeepPoweredinTLR clear (its reset value), the reset also powers the JTAG
+  domain down, and a full activation recovers it. With it set, the adapter is left in a state
+  that re-sending the activation does not fix; a pin reset does. probe-rs's `icepick.rs` sets
+  that bit, so in two-pin mode it must not, or must never reset the TAP afterwards. The
+  generator's tails must reach Run-Test/Idle without passing through Test-Logic-Reset, and the
+  host must not ask for it (probe-rs line resets, chain scans and `tap_reset` all do).
 - **Chain after the ICEPick switches the Cortex-M TAP in**: `DAP_JTAG_Configure` two devices,
   IR lengths (4, 6), the DAP is index 0 (nearest TDO). The switched-in TAP answers only after
   >= 4 Run-Test/Idle clocks.
-- **Pin reset does not reset the adapter** to its power-up state; it leaves the 0x81010101 state.
-  A true power-up state needs a power cycle (not yet done).
+- **Power (TRM 6.4 ICEMelter, measured).** The JTAG power domain holds the ICEPick and the cJTAG
+  adapter. POR and pin reset leave it off; ICEMelter powers it up after 8 rising and 8 falling
+  TCK edges (7 never does, 8 always does, with or without a reset among them), and TI requires
+  200 us before further commands (40 us measured enough here; 10-20 us is flaky). A fresh
+  domain has the adapter in two-pin JScan (TMSC is TMS on every clock) and the TAP reset. A pin
+  reset therefore gives the same debug-side state as a power cycle.
 
-## The activation (host side, `dap.py cjtag --synth`)
+## The activation (TI's XDS110 sequence; `dap.py cjtag --ti`)
 
-From the state after `DAP_Connect` (both pins high): 10-edge escape; 200 TMS-high clocks, 2 low;
-7-edge escape; 36 low; then the command group as JScan TMS from Run-Test/Idle: ZBS, ZBS, DR1
-(lock), DR1 DR1 (STC1 1: SEDGE=1), DR3 DR9 (STFMT 9: OScan1). OScan1 packet 1 is the clock right
-after the operand's Update-DR, so two more raw TMSC-low packets complete frame 1. Then framing
-on (`0x83 0x02`) and the J-Link's 26 tail frames, TMS `01110000001111111110110110`, TDI
-`10111111110010100111000000`. Every clock count in the command group is a command: one short
-turns STFMT into STC2, and STC2 9 switches the part to four-pin.
+Source: a TI engineer's post of the XDS110 firmware routine, TI E2E thread 766675 ("CC1352P: How
+to enable cJTAG OSCAN1 mode on CC13xx and CC26xx device").
+`WriteTmsPattern(p, n)` is n TMS bits of p, least significant first.
+Verified on the CC1312R1 from a pin reset: IDCODE, then ICEPick routing and CPUID, 3/3.
 
-Unexplained, measured: the tail's TDI matters in frames 2-19 and 21, not in 20 or 22-27, and
-every model tried (Test-Logic-Reset as JScan, three resume phases) contradicts the pad sweep.
-The tail is used verbatim. Not needed from the post-pin-reset state: both escapes, 195 of the
-200 reset clocks. The idle before the commands has a soft threshold near 9-12 clocks.
+1. **Power up the JTAG domain**: >= 8 TCK clocks (TI's 8-clock Test-Logic-Reset and one idle clock
+   are 9), then wait 200 us. TI's routine omits the wait; without it the commands are lost.
+2. **JScan, one TMS bit a clock, from Run-Test/Idle**: BYPASS IR scan (64 shift clocks; an inert
+   opcode for the command window), two zero-bit scans and a 1-bit DR scan (control level 2: the
+   command window opens and the device TAP is decoupled from the scan path), STC1 1 (SEDGE=1:
+   TMSC sampled on the rising edge), STFMT 9 (OScan1). Every DR scan's Shift-DR clock count is
+   the command, so one clock too few is a different command (STFMT short by one is STC2, and
+   STC2 9 switches the part to four-pin). TI ends the STFMT operand scan in Select-DR.
+3. **4 clocks "in the CSM"**: raw TCK clocks with TMS low that the adapter's control state machine
+   consumes and the TAP controller never sees. OScan1 frames start after them.
+4. **In OScan1 frames**: finish the scan to Pause-DR; STMC 4 (zero-bit scan, then a 4-clock scan:
+   deselect all controllers), 7 CSM clocks; CCE 0 (a 7-clock scan, then a zero-bit scan: select
+   controller 0), 7 CSM clocks; ECL (zero-bit scan, then a 1-clock scan: close the command window,
+   which re-couples the device TAP), 7 CSM clocks. CSM clocks follow every command that selects,
+   deselects or closes. Skipping deselect-and-select reads all ones (TAP not coupled).
+5. IR now holds BYPASS from step 2; load IDCODE or route the ICEPick next.
+
+The J-Link's activation is the same protocol: its two 4-clock bursts at a different clock rate
+are CSM clocks, its 54-clock burst is CCE 0, and its final `110110` IR scan closes the window
+(consumed by the adapter, so IR keeps IDCODE). Rebuilt that way it reads IDCODE with TDI held at
+0 or 1, 6/6. The TDI sensitivity seen
+when replaying its tail came from a 2-clock pad: the CSM swallowed two packets of our first
+frame, the target's framing ran two packets off ours, and our TDI bits fell in its TMS slots.
+Escapes are not needed from a fresh domain; a selection escape followed by fewer idle clocks
+than the adapter wants swallows the next command scans.
 
 ## Architecture
 
@@ -123,6 +149,10 @@ The tail is used verbatim. Not needed from the post-pin-reset state: both escape
 
 ## Tools
 
-- `dap.py cjtag --synth --pad 2 --pre-tms <tail TMS> --pre-tdi <tail TDI> --reset-clocks 0 --mem
-  --sweep 1,5,10,25` activates, routes the ICEPick, reads CPUID and sweeps block reads.
-- `--replay CSV --window a:b`, `--nreset-first`, `--pad` bisect a captured activation.
+- `dap.py --serial CJ3E7A91C2 cjtag --ti --ti-from 1 --ti-prefix h8,l1,p200 --nreset-first
+  --reset-clocks 0 --mem --sweep 1,5,10,25` runs TI's sequence with the 200 us power-up wait,
+  routes the ICEPick, reads CPUID and sweeps block reads. `--ti-prefix` tokens: `eN` escape, `hN`
+  / `lN` TMS-high / low clocks, `pN` an in-packet pause of N us, `wN` a DAP_Delay of its own.
+  `--ti-from 2` starts at the zero-bit scans (skips TI's reset and BYPASS; IR keeps IDCODE).
+- Older paths, kept for bisecting: `--synth` (the J-Link's pass decoded, with its tail as
+  `--pre-tms`/`--pre-tdi`), `--replay CSV --window a:b`, `--pad`.
