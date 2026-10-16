@@ -91,9 +91,16 @@ The steps are where the bench should look. A target that stops at 14 MHz gets 63
 good for 16 gets 930, a 46% difference for 2 MHz of margin, and 30 to 40 is another 91%. Which
 step a target tolerates decides more than anything left in this file.
 
-One oddity to settle at the bench: on the two-pin path the delay-free setting makes writes slower
-than reads, 616 against 647, where every other setting and every other wire has writes ahead. It
-is the setting with no pacing margin to begin with.
+One oddity, and it is not the one it looks like. On the two-pin path the delay-free setting makes
+writes slower than reads, 616 against 647, where every other setting and every other wire has
+writes ahead. It is not that the write clocks more slowly: both put 7860 clocks on the wire, and
+the write holds a 3-cycle period for most of a transfer against the read's 7. The write runs 2,619
+more instructions for the same clocks, so the extra is between the edges rather than on them, and
+its bit cost is lopsided -- 1,344 bits at 9 cycles where the read has 2,866 at 7.
+
+That is a frame-construction cost on a driven bit, and it is the first thing to look at if the
+two-pin path is worth more work. It is also the setting with no pacing margin to begin with, so
+measure the period distribution before changing anything there.
 
 ## Done
 
