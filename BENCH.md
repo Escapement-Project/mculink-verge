@@ -789,7 +789,32 @@ refused by NAK rather than dropped.
 | 2 in flight | 646 | 669 |
 | 4 in flight | times out | 568, no data lost |
 
-### What limits the pipeline, and why two is the number
+### Through probe-rs, which is the host that matters
+
+Everything above is `tools/dap.py`, which reads a DP register and touches no access port. The
+numbers a user sees come through probe-rs, and `swd-throughput` measures those. At 10 MHz
+asked, fitted ceiling over 64 to 4096 byte transfers:
+
+| | stock | ours |
+| --- | --- | --- |
+| read32 | 469 KiB/s | 593 |
+| write32 | 503 | 612 |
+
+1.26x on reads and 1.22x on writes, against the same target through the same harness.
+
+**probe-rs already pipelines, and it sizes the pipeline from what the probe reports minus one.**
+The spare packet is where `DAP_TransferAbort` has to land: an abort exists to stop a transfer that
+is running now, so it has to overtake the queue rather than join it. A probe advertising two
+therefore gets a pipeline of one and no overlap at all, which is why `DAP_PACKET_COUNT` is three.
+Measured, three runs each: reads 568 to 593 KiB/s and writes 584 to 612, every run of the deeper
+pipeline ahead of every run of the shallower one.
+
+**Our firmware was not honouring that contract.** The abort was queued like any other command, so
+the flag was set only once the transfer it was meant to abort had finished. ARM's own MCU-Link
+example sets it in the endpoint callback and never queues it; `tud_vendor_rx_cb` now does the
+same.
+
+### What limits the pipeline, and why two in flight is the number
 
 The depth a host can use is the number of request slots in `src/main.c`, set by `-DREQUEST_SLOTS`
 and reported to the host as `DAP_PACKET_COUNT`. Built with 2, 4 and 8 slots and swept:
@@ -802,7 +827,7 @@ and reported to the host as `DAP_PACKET_COUNT`. Built with 2, 4 and 8 slots and 
 | 8 | host times out | host times out | 667 |
 | 12 | | | host times out |
 
-**Throughput saturates at two and stays there.** Four and eight slots measure the same 669 KiB/s
+**Throughput saturates at two in flight and stays there.** Four and eight slots measure the same 669 KiB/s
 as two. The wire is 92% of a block read, so the link only has to stay a little ahead of it, and
 two commands is enough for that.
 
