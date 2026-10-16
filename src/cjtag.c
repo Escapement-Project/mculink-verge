@@ -19,12 +19,16 @@ bool cJTAG_Active(void) { return active; }
 void cJTAG_Activate(void) {
     PIN_SWDIO_OUT_ENABLE();
 
+    // OpenOCD sets both pins of a row in one write. Here they are two, so the order decides what
+    // the target sees: TMSC moves after a falling edge and before a rising one. Only the escape
+    // rows, where the clock is already high and stays high, move it with the clock high.
     for (uint32_t i = 0U; i < sizeof(activation) / sizeof(activation[0]); i++) {
-        PIN_SWDIO_OUT(activation[i].tmsc);
         if (activation[i].tck != 0U) {
+            PIN_SWDIO_OUT(activation[i].tmsc);
             PIN_SWCLK_TCK_SET();
         } else {
             PIN_SWCLK_TCK_CLR();
+            PIN_SWDIO_OUT(activation[i].tmsc);
         }
         CJTAG_DELAY();
     }

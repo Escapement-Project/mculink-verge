@@ -1092,6 +1092,29 @@ def table(elf: str, model: Model, cpu_hz: int, words: int) -> int:
     return 0
 
 
+def activation_escapes(trace: list[str]) -> list[int]:
+    """Wire moves in each span the clock spends high, leaving out the spans with none.
+
+    The trace marks a rising edge `^..` and a falling one `v`. A span still high when the trace
+    starts counts, which is the state DAP_Connect leaves the clock in.
+    """
+    clocks = [token for token in trace if token[0] in "^v"]
+    high = bool(clocks) and clocks[0] == "v"
+    spans, moves = [], 0
+    for token in trace:
+        if token[0] == "^":
+            high, moves = True, 0
+        elif token == "v":
+            if high and moves:
+                spans.append(moves)
+            high = False
+        elif token[0] == "W" and high:
+            moves += 1
+    if high and moves:
+        spans.append(moves)
+    return spans
+
+
 def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
     """The gate: an optimisation may change the timing and must not change anything else.
 
@@ -1125,6 +1148,12 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
     probe.begin()
     probe.command(bytes([ID_CJTAG_CONTROL, 1]))
     activation = probe.end()
+    # The wire may move with the clock high only in the two escapes the activation is built from:
+    # eight edges to reset the adapter, then six to select it. One anywhere else is a stray escape
+    # in the middle of the activation packet.
+    escapes = activation_escapes(activation.trace)
+    if escapes != [8, 6]:
+        failures.append(f"cjtag activation: escape edges per clock-high span {escapes}, not [8, 6]")
     path = os.path.join(baseline_dir, "cjtag-activation.trace")
     body = "\n".join(activation.trace) + "\n"
     if bless:
