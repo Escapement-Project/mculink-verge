@@ -44,6 +44,7 @@ DAP_VENDOR_J8 = 0x84
 DAP_VENDOR_REBOOT = 0x85
 DAP_VENDOR_TARGET = 0x86
 DAP_VENDOR_SAMPLE = 0x87
+DAP_VENDOR_SWD_GEN = 0x89
 
 INFO_FIELDS = {
     0x01: ("vendor", "str"),
@@ -746,6 +747,72 @@ def sample_run(probe: "Probe", low: int, fill: int, at: int, count: int, expecte
     }
 
 
+def swd_gen(probe: "Probe", latency: int = 0) -> dict:
+    """Vendor 0x89: the generated SWD paths' state, setting the read latency first unless 0."""
+    reply = probe.command(bytes([DAP_VENDOR_SWD_GEN, latency]))
+    if reply[0] != DAP_VENDOR_SWD_GEN:
+        raise RuntimeError("this image does not generate its SWD paths (no vendor 0x89)")
+    fields = [int.from_bytes(reply[5 + 4 * i : 9 + 4 * i], "little") for i in range(6)]
+    names = ("hz", "write_period", "read_period", "code_bytes", "builds", "failures")
+    return {"status": reply[1], "latency": reply[2], "masked": bool(reply[3]), "ok": bool(reply[4])} | dict(
+        zip(names, fields)
+    )
+
+
+def cmd_gen(args) -> int:
+    """The generated SWD paths: what they were built for, and the read latency to build them for.
+
+    `--calibrate` finds the latency rather than trusting the default. At the shortest read period
+    a sample is placed one or two cycles into a four-cycle window, so DPIDR reads come back right
+    only while the latency the generator assumes is within a cycle of the real one. Sweeping it
+    gives a band of passing values whose middle is the target's latency, which is then set.
+    """
+    probe = one(args)
+    print(f"{probe.serial}  {probe.product}")
+    if args.calibrate:
+        probe.connect(1)
+        probe.swj_clock(args.calibrate_hz)
+        passing = []
+        for latency in range(1, 25):
+            swd_gen(probe, latency)
+            good = 0
+            try:
+                reference = swd_reset(probe)
+                for _ in range(args.blocks):
+                    reply = probe.command(bytes([DAP_TRANSFER_BLOCK, 0]) + (32).to_bytes(2, "little") + bytes([0x02]))
+                    count = int.from_bytes(reply[1:3], "little")
+                    good += sum(
+                        int.from_bytes(reply[4 + 4 * i : 8 + 4 * i], "little") == reference for i in range(count)
+                    )
+            except RuntimeError:
+                pass
+            ok = good == 32 * args.blocks
+            print(f"  latency {latency:2d}: {good:5d}/{32 * args.blocks} DPIDR reads right  {'ok' if ok else ''}")
+            if ok:
+                passing.append(latency)
+        if not passing:
+            print("  no latency read DPIDR correctly; leaving the default")
+            swd_gen(probe, 7)
+            return 1
+        if passing != list(range(passing[0], passing[-1] + 1)):
+            print(f"  the passing latencies are not one band: {passing}")
+        # Where two cycles have equal margin the generator takes the earlier, so samples lean
+        # early: of two middle values the higher one centres them.
+        chosen = (passing[0] + passing[-1] + 1) // 2
+        print(f"  passing {passing[0]}..{passing[-1]}: latency {chosen}")
+        args.latency = chosen
+    state = swd_gen(probe, args.latency)
+    if state["status"] != 0:
+        print(f"  latency {args.latency} refused")
+    print(
+        f"  clock asked {state['hz'] / 1e6:.3f} MHz: write period {state['write_period']}, "
+        f"read period {state['read_period']} cycles; latency {state['latency']}; "
+        f"{'masked' if state['masked'] else 'unmasked'}; {'generated' if state['ok'] else 'NOT generated'}, "
+        f"{state['code_bytes']} bytes; {state['builds']} builds, {state['failures']} failures"
+    )
+    return 0 if state["ok"] else 1
+
+
 def cmd_sample(args) -> int:
     """Where a read has to sample SWDIO: the instrument behind vendor 0x87.
 
@@ -886,6 +953,13 @@ def main() -> int:
     sample.add_argument("--count", type=int, default=1000, help="reads at each position")
     sample.add_argument("--calibrate", action="store_true", help="time the filler instead of reading")
     sample.set_defaults(run=cmd_sample)
+
+    gen = sub.add_parser("gen", help="the generated SWD paths: state, latency, calibration")
+    gen.add_argument("--latency", type=int, default=0, help="set the read latency, in core cycles")
+    gen.add_argument("--calibrate", action="store_true", help="find the latency with DPIDR reads")
+    gen.add_argument("--calibrate-hz", type=int, default=37_500_000, help="clock to calibrate at")
+    gen.add_argument("--blocks", type=int, default=8, help="32-word DPIDR blocks per latency")
+    gen.set_defaults(run=cmd_gen)
 
     args = parser.parse_args()
     return args.run(args)

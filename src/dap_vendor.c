@@ -19,6 +19,9 @@
 #ifdef CODE_LAB
 #include "code_lab.h"
 #endif
+#ifdef SWD_CODEGEN
+#include "swd_gen.h"
+#endif
 #include "target_sense.h"
 
 /// Identifies this firmware and says what it can do. Read-only, so a host may send it blindly.
@@ -35,6 +38,8 @@
 #define ID_VENDOR_SAMPLE ID_DAP_Vendor7
 /// Runs host-supplied code from RAM, masked. An instrument, built only with CODE_LAB; see code_lab.c.
 #define ID_VENDOR_LAB ID_DAP_Vendor8
+/// Reports the generated SWD paths and sets the read latency they are generated for. See below.
+#define ID_VENDOR_SWD_GEN ID_DAP_Vendor9
 
 /** Answered by ID_VENDOR_CJTAG_INFO, so a host can recognise this firmware rather than assume it.
  *
@@ -62,6 +67,24 @@
 #define CJTAG_CAP_OSCAN1_ACTIVE (1U << 1)
 /// ID_VENDOR_TARGET is implemented.
 #define CJTAG_CAP_TARGET_SENSE (1U << 2)
+/// The SWD paths are generated at run time, and ID_VENDOR_SWD_GEN is implemented.
+#define CJTAG_CAP_SWD_CODEGEN (1U << 3)
+#ifdef SWD_CODEGEN
+#define CJTAG_CAPS_BUILT CJTAG_CAP_SWD_CODEGEN
+#else
+#define CJTAG_CAPS_BUILT 0U
+#endif
+
+/** ID_VENDOR_SWD_GEN takes `latency`: the cycles from a rising-edge store to the first load that
+ * sees the bit it launched, 1 to 64, or 0 to leave it as it is. Setting it regenerates.
+ *
+ * It answers `status, latency, masked, ok`, then little-endian u32s: the clock asked for in Hz,
+ * the write period and the read period in core cycles, the generated code's size in bytes, and
+ * how many configurations were generated and how many could not be. Status is DAP_ERROR for a
+ * latency out of range, which is then left unchanged. `ok` is 0 when the current configuration
+ * could not be generated and transfers run ARM's own code.
+ */
+#define SWD_GEN_LATENCY_MAX 64U
 
 /** ID_VENDOR_TARGET takes `mode, channel` and answers `status, code, millivolts, detect`, the two
  * middle fields little-endian u16.
@@ -101,7 +124,8 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         memcpy(out, CJTAG_INFO_MAGIC, sizeof(CJTAG_INFO_MAGIC) - 1U);
         out += sizeof(CJTAG_INFO_MAGIC) - 1U;
         *out++ = (uint8_t)CJTAG_INFO_VERSION;
-        *out++ = (uint8_t)(CJTAG_CAP_OSCAN1 | CJTAG_CAP_TARGET_SENSE | (cJTAG_Active() ? CJTAG_CAP_OSCAN1_ACTIVE : 0U));
+        *out++ = (uint8_t)(CJTAG_CAP_OSCAN1 | CJTAG_CAP_TARGET_SENSE | CJTAG_CAPS_BUILT |
+                           (cJTAG_Active() ? CJTAG_CAP_OSCAN1_ACTIVE : 0U));
         // The same string DAP_Info's product firmware version reports, so a host that knows
         // nothing about this command can still tell two builds apart.
         *out++ = (uint8_t)(sizeof(FIRMWARE_VERSION) - 1U);
@@ -177,6 +201,33 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
 #ifdef CODE_LAB
     case ID_VENDOR_LAB:
         return code_lab_command(request, response);
+#endif
+
+#ifdef SWD_CODEGEN
+    case ID_VENDOR_SWD_GEN: {
+        const uint32_t latency = request[1];
+        response[1] = DAP_OK;
+        if (latency > SWD_GEN_LATENCY_MAX) {
+            response[1] = DAP_ERROR;
+        } else if (latency != 0U) {
+            swd_gen_latency = latency;
+        }
+        (void)swd_gen_ready();
+        response[2] = (uint8_t)swd_gen_latency;
+        response[3] = swd_gen_info.masked ? 1U : 0U;
+        response[4] = swd_gen_info.ok ? 1U : 0U;
+        const uint32_t fields[] = {swd_gen_clock_hz,         swd_gen_info.write_period, swd_gen_info.read_period,
+                                   swd_gen_info.code_bytes, swd_gen_builds,            swd_gen_failures};
+        uint8_t* out = response + 5;
+        for (uint32_t i = 0U; i < sizeof fields / sizeof fields[0]; i++) {
+            out[0] = (uint8_t)fields[i];
+            out[1] = (uint8_t)(fields[i] >> 8);
+            out[2] = (uint8_t)(fields[i] >> 16);
+            out[3] = (uint8_t)(fields[i] >> 24);
+            out += 4;
+        }
+        return (2U << 16) | (uint32_t)(out - response);
+    }
 #endif
 
     default:

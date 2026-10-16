@@ -65,4 +65,15 @@ extern uint32_t swd_gen_failures;
  * last call. False when they cannot be generated: the caller runs ARM's transfer instead. */
 bool swd_gen_ready(void);
 
+/** What the last build produced, for a host to read back. */
+struct swd_gen_info {
+    uint32_t write_period; // cycles a clock the probe drives
+    uint32_t read_period;  // cycles a clock the target drives
+    uint32_t code_bytes;   // both functions, out of SWD_GEN_SIZE
+    bool masked;           // transfers run with interrupts masked
+    bool ok;               // the last configuration generated
+};
+
+extern struct swd_gen_info swd_gen_info;
+
 #endif

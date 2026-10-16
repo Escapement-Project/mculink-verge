@@ -772,6 +772,13 @@ bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_ge
         return false;
     }
 
+    swd_gen_info = (struct swd_gen_info){
+        .write_period = c.wperiod,
+        .read_period = c.period,
+        .code_bytes = 4U * e.pos,
+        .masked = c.masked,
+        .ok = true,
+    };
     // Only SWCLK and SWDIO answer a masked-port store. Nothing else in the image uses MPIN.
     GPIO->MASK[0] = ~(SWCLK | SWDIO);
     // The code was written as data; the core has to fetch what is there now.
@@ -785,6 +792,7 @@ bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_ge
 /* -- when to generate ------------------------------------------------------------------------- */
 
 uint32_t swd_gen_clock_hz = DAP_DEFAULT_SWJ_CLOCK;
+struct swd_gen_info swd_gen_info;
 uint32_t swd_gen_latency = SWD_GEN_LATENCY_DEFAULT;
 swd_gen_fn swd_gen_read;
 swd_gen_fn swd_gen_write;
@@ -814,6 +822,7 @@ bool swd_gen_ready(void) {
     }
     built = want;
     built_once = true;
+    swd_gen_info.ok = false;
     built_ok = swd_gen_build(&want, &swd_gen_read, &swd_gen_write);
     if (built_ok) {
         swd_gen_builds++;
