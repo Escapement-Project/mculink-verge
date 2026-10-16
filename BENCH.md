@@ -22,12 +22,31 @@ list of what to test and what each result unlocks.
   `tools/baseline/known-overshoot.txt`. Two of the four build configurations fail it, so the one
   you flash matters.
 
-## Resolve this before plugging anything in
+## Flashing, ISP mode and getting back to stock
 
-**How does an MCU-Link enter ISP mode?** A recovery script flashes stock firmware to
-any MCU-Link already in ISP mode, but nothing in this repository records how to get it there. That
-script is the only recovery path from a bad image, so confirm it works end to end on a spare unit
-before writing our firmware to anything you care about.
+A unit enters ISP mode with the **ISP jumper fitted** before it is plugged in. The ROM bootloader
+samples the ISP pins at reset, so the jumper decides what comes up: bootloader with it, firmware
+without it.
+
+| state | VID:PID |
+| --- | --- |
+| ISP mode, bootloader | `1fc9:0021` |
+| ISP mode, MCU-Link mini | `1fc9:0022` |
+| running as a probe | `1fc9:0143` |
+
+A recovery script watches for anything arriving as `1fc9:0021` and flashes it with
+LinkServer's stock image, using `rblhost` from `/opt/linkserver/MCU-LINK/bin/` and the newest
+`probe_firmware/MCU-LINK_CMSIS-DAP_V*.s19`. Read its docstring before using it: it deliberately
+does **not** reset a flashed unit, because with the jumper still fitted a reset would return it to
+the bootloader and flash it again. The unit stays in the bootloader until unplugged. `rblhost`
+addresses a probe by VID:PID alone, so **only one unit may be in ISP mode at a time**.
+
+That script is also the recovery path from a bad image of ours, so the sequence is: fit the jumper,
+plug in, flash, unplug, remove the jumper, plug in.
+
+**`P0_5` is both LED1 and ISP1.** A unit that keeps coming up as `1fc9:0021` and never runs our
+firmware has the jumper still on. That is the first thing to check when a freshly flashed probe
+does not appear, and it is more likely than anything in the failure table below.
 
 ## Build and flash
 
@@ -108,7 +127,7 @@ image. A flag is how a later feature arrives without every host learning a new v
 | RESET_TXEN | P0_13 | buffer direction |
 | TMS_SWDIO_TXEN | P0_28 | buffer direction, **load-bearing for OScan1** |
 | target console RXD / TXD | P0_24 / P0_25 | Flexcomm 0 |
-| LED1 | P0_5 | |
+| LED1 | P0_5 | also `ISP1`: the pin the ROM bootloader samples at reset, and what the jumper pulls |
 
 Releasing SWDIO means clearing `TMS_SWDIO_TXEN` as well as making the pin an input. The buffer
 keeps driving the wire otherwise, and releasing the wire is the whole of OScan1.
@@ -117,6 +136,7 @@ keeps driving the wire otherwise, and releasing the wire is the whole of OScan1.
 
 | symptom | first suspect |
 | --- | --- |
+| comes up as `1fc9:0021`, not as a probe | the ISP jumper is still fitted. Check this first |
 | device does not enumerate at all | the unique-id read at `0x0009_FC70` in `src/ser_num.c`, which is untested on hardware. If that region faults it faults inside `GetSerialNum`, before USB comes up |
 | enumerates, console silent | `FRO_HF` or its divider not running. `board_clocks_init` starts both; a Flexcomm with no clock reports no error and never reaches a baud rate |
 | enumerates, SWO silent | same clock, and NXP's driver also waits on a status bit |
