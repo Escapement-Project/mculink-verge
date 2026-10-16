@@ -244,15 +244,34 @@ head and tail, and the read loop spills because the inlined transfer and the loo
 for registers. The write loop, which carries less, is down to 34.
 
 Letting the optimiser inline more does not help: raising GCC's inlining parameters cost 33 KB and
-moved the gap by one cycle. Nothing cheap is left here.
+moved the gap by one cycle. Nor do the register allocator's knobs -- `-fsched-pressure` and
+`-fno-schedule-insns2` change nothing and `-fira-algorithm=priority` costs 2%. Nothing cheap is
+left here.
 
-### 2. The read bit is two cycles above the floor
+### 2. DAP_Transfer spends a quarter of its time not clocking
+
+The block command is now the fast one and the single-register command is not. Measured at the
+delay-free setting, 16 reads through `DAP_Transfer`: **121 cycles between one transfer and the
+next, 26% of the command**, against 65 cycles and 19% for the same reads through a block. At
+10 MHz it is 133 cycles and 11%.
+
+This is not the throughput path -- a host reads and writes memory in blocks -- but it is most of
+what an attach is made of, and of anything that touches one register at a time.
+
+The same treatment would work: expand the loop next to the transfer so the registers and the GPIO
+addresses are paid for once. It was **not attempted**, and the reason is size rather than doubt.
+`DAP_SWD_Transfer` is 353 lines against the block's 90, carrying match values, match masks, match
+retries, timestamps and a post-read protocol, and transcribing that on a probe that has never run
+is not a thing to do in a hurry. The nine `DAP_Transfer` traces the gate now records are the
+groundwork; `tools/equiv.py` would need match-value and timestamp cases before anyone starts.
+
+### 3. The read bit is two cycles above the floor
 
 A packet bit is 3 cycles, a data read bit is now 5. The two are a byte load from the GPIO, which
 cannot be avoided, and the or that places the bit. There is nothing obvious left; recorded so the
 floor is written down.
 
-### 3. Nothing is left in the pacing itself
+### 4. Nothing is left in the pacing itself
 
 Recorded so it is not tried again. `DELAY_SLOW_CYCLES` is 3 and the measurement agrees to two
 decimal places, so the delay moves in 3-cycle steps and a finer quantum looks like free speed. It
@@ -263,7 +282,7 @@ The firmware is already as fast as the request allows on its fastest bit.
 The gap between that and what a transfer actually averages is entirely items 1 and 2 -- the slow
 classes costing more than the fast one. There is no third thing.
 
-### 4. The buffer direction pin toggles every cJTAG frame
+### 5. The buffer direction pin toggles every cJTAG frame
 
 `cJTAG_Frame` releases TMSC for the TDO packet and takes it back afterwards: four of the thirteen
 GPIO writes a frame makes. Both are needed for correctness, but a sequence that captures no TDO
@@ -275,7 +294,7 @@ Predicts: four writes a frame down to two on TDO-less sequences, most of a TAP w
 **Unproven and the riskiest item here.** If the target drives TDO regardless, not releasing means
 contention. Measure before keeping.
 
-### 5. DAP packet size above 512
+### 6. DAP packet size above 512
 
 512 is the USB 2.0 ceiling for a high-speed **bulk endpoint**, and it is not tunable. It is not the
 ceiling for a DAP packet: `DAP_Info` reports packet size as a 16-bit value, a bulk transfer spans as
@@ -292,7 +311,7 @@ Worth more once the wire is faster, since the same gap is a larger share of a sh
 Two caveats. It deviates from stock, which reports 512, so a host that hardcodes rather than reading
 `DAP_Info` would break: check pyOCD and OpenOCD first. And it costs RAM.
 
-### 6. Run the bit paths from SRAM
+### 7. Run the bit paths from SRAM
 
 Unrolling put another 10.7 KB into the straight-line bit paths, and they run from flash behind a
 144 MHz wait-state setting. The emulator has no flash model, so this is the one item here it cannot
