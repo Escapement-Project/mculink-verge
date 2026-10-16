@@ -99,9 +99,13 @@ the write holds a 3-cycle period for most of a transfer against the read's 7. Th
 more instructions for the same clocks, so the extra is between the edges rather than on them, and
 its bit cost is lopsided -- 1,344 bits at 9 cycles where the read has 2,866 at 7.
 
-That is a frame-construction cost on a driven bit, and it is the first thing to look at if the
-two-pin path is worth more work. It is also the setting with no pacing margin to begin with, so
-measure the period distribution before changing anything there.
+The driven bit is nine instructions against the sampled bit's six. Three clock stores and the
+buffer-direction store are common to both. What the write adds is masking the data bit out of the
+word, inverting it, and two stores rather than one -- the inversion is the OScan1 nTDI packet and
+is not avoidable, but the second store is worth reading before assuming it is.
+
+That is where to start if the two-pin path is worth more work. It is also the setting with no
+pacing margin to begin with, so measure the period distribution before changing anything there.
 
 ## Done
 
