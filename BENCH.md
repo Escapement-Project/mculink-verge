@@ -789,6 +789,33 @@ refused by NAK rather than dropped.
 | 2 in flight | 646 | 669 |
 | 4 in flight | times out | 568, no data lost |
 
+### What limits the pipeline, and why two is the number
+
+The depth a host can use is the number of request slots in `src/main.c`, set by `-DREQUEST_SLOTS`
+and reported to the host as `DAP_PACKET_COUNT`. Built with 2, 4 and 8 slots and swept:
+
+| host depth | 2 slots | 4 slots | 8 slots |
+| --- | --- | --- | --- |
+| 1 | 608 KiB/s | 612 | 632 |
+| 2 | 669 | 669 | 669 |
+| 4 | 568 | 669 | 669 |
+| 8 | host times out | host times out | 667 |
+| 12 | | | host times out |
+
+**Throughput saturates at two and stays there.** Four and eight slots measure the same 669 KiB/s
+as two. The wire is 92% of a block read, so the link only has to stay a little ahead of it, and
+two commands is enough for that.
+
+**Nothing above the slot count is the probe misbehaving.** With no free slot it NAKs, which is the
+correct thing to do and loses nothing. What fails is a host that blocks on a write while refusing
+to read replies, which deadlocks against its own backpressure -- `tools/dap.py` does exactly that,
+and so would anything using synchronous bulk transfers. The probe recovers the moment the host
+drains: a depth-8 run against two slots times out, and the next depth-2 run measures 669.5.
+
+So the knob stays at two, which is honest and saturating. It is worth re-measuring against a
+target that answers far above 10 MHz, where the wire would stop being 92% of a block read and the
+link could become the limit again.
+
 ### Pipelining costs wire time, and it is still worth it
 
 The same image measured at both depths, so only the host's behaviour differs:

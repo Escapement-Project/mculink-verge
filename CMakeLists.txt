@@ -153,6 +153,20 @@ if(CMAKE_C_COMPILER_ID MATCHES "Clang")
   target_link_libraries(${PROJECT_NAME} PRIVATE -Wl,--start-group c_nano nosys gcc -Wl,--end-group)
 endif()
 
+# How many host commands the firmware will hold. DAP_PACKET_COUNT in src/DAP_config.h has to
+# match, because it is what the host is told.
+# Two is what saturates: measured 669 KiB/s at depths 2, 4 and 8 with the slots to match, so
+# anything past two keeps the link busier without the wire going faster. The knob exists because
+# the limit is worth re-measuring against a target that answers far above 10 MHz, where the wire
+# would stop being 92% of a block read.
+set(REQUEST_SLOTS 2 CACHE STRING "How many host commands the firmware will hold")
+if(NOT REQUEST_SLOTS)
+  set(REQUEST_SLOTS 2 CACHE STRING "How many host commands the firmware will hold" FORCE)
+endif()
+target_compile_definitions(${PROJECT_NAME} PRIVATE REQUEST_SLOTS=${REQUEST_SLOTS}U
+                                                   DAP_PACKET_COUNT_OVERRIDE=${REQUEST_SLOTS}U)
+set(DAP_PACKET_COUNT ${REQUEST_SLOTS})
+
 if(MARKER)
   target_compile_definitions(${PROJECT_NAME} PRIVATE MARKER_PINS=1)
 endif()
@@ -226,7 +240,7 @@ if(UV_EXECUTABLE)
     DEPENDS ${PROJECT_NAME}
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMAND ${UV_EXECUTABLE} run ${CMAKE_CURRENT_SOURCE_DIR}/tools/image.py
-            $<TARGET_FILE:${PROJECT_NAME}>
+            $<TARGET_FILE:${PROJECT_NAME}> --packet-count ${DAP_PACKET_COUNT}
     COMMENT "Checking the wire against tools/baseline, and the descriptors against themselves"
     USES_TERMINAL
     )

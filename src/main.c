@@ -32,7 +32,9 @@
  * The receive endpoint is armed only while a slot is free, which is what refuses a command there
  * is nowhere to put: the host sees NAK and retries, rather than the firmware dropping a packet.
  */
+#ifndef REQUEST_SLOTS
 #define REQUEST_SLOTS 2U
+#endif
 
 static uint8_t request[REQUEST_SLOTS][DAP_PACKET_SIZE];
 static volatile uint16_t request_len[REQUEST_SLOTS];

@@ -107,7 +107,11 @@ This information includes:
 /// than the firmware can answer; measured, it times out from three in flight upward. Two is worth
 /// having rather than one -- a host that keeps a second command in flight gets about 15% end to
 /// end, because the wire stops waiting for the next request to arrive.
+#ifdef DAP_PACKET_COUNT_OVERRIDE
+#define DAP_PACKET_COUNT        DAP_PACKET_COUNT_OVERRIDE
+#else
 #define DAP_PACKET_COUNT        2U
+#endif
 
 /// Indicate that UART Serial Wire Output (SWO) trace is available.
 /// This information is returned by the command \ref DAP_Info as part of <b>Capabilities</b>.
