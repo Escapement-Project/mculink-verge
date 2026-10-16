@@ -107,13 +107,14 @@ def main() -> int:
     ap.add_argument("--cpu", type=int, default=150)
     args = ap.parse_args()
     cpu_hz = args.cpu * 1_000_000
-    mhz = args.mhz or [cpu_hz / p / 1e6 for p in list(range(3, 41)) + [75, 150, 1500]]
+    # The lowest clock that gives each period, so every period is tried once.
+    mhz = args.mhz or [-(-cpu_hz // p) / 1e6 for p in list(range(3, 41)) + [75, 150, 1500]]
     target_latency = args.target_latency if args.target_latency is not None else args.latency
 
     failures = 0
     print(f"{'MHz':>8} {'P':>5} {'read':>7} {'floor':>7} {'write':>7} {'floor':>7} {'margin':>7}  problems")
     for m in mhz:
-        hz = int(round(m * 1e6))
+        hz = int(m * 1e6 + 0.5)
         r = run(args.elf, hz, True, args.words, args.latency, target_latency, cpu_hz)
         w = run(args.elf, hz, False, args.words, args.latency, target_latency, cpu_hz)
         problems = r["problems"] + [f"write: {p}" for p in w["problems"]]
