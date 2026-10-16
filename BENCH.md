@@ -61,8 +61,14 @@ the MCU's pull-up. A target connector that grounds pin 9 pulls it low. Together:
 | target connected and powered | the target's VDD | low |
 | target connected and unpowered | ~0 V: R16 cannot lift a dead rail | low |
 
-A 3.3 V target and an empty connector read the same voltage, so presence comes from pin 9 alone.
-**Ground pin 9 in the harness**, or the detect pin says nothing. Our firmware reads neither pin.
+A 3.3 V target and an empty connector read the same voltage. Nothing loads the sense node but the
+buffer's input, so the pull-up delivers the probe's own 3V3 almost exactly, within the divider's
+tolerance of any real regulator. What differs is source impedance, 33 kOhm against well under an
+ohm, and the board has no switchable load to measure it with. SJ1 in its 2-3 position would put
+the divider straight on pin 1, and then an empty connector would read ~0.36 V. That is a solder
+change, and it loads every target with ~0.8 mA. So presence comes from pin 9, or from the target
+answering an IDCODE or DPIDR read. **Ground pin 9 in the harness**, or the detect pin says
+nothing. Our firmware reads neither pin.
 
 **Make the swap one connector.** One harness stays on the target and only its J6 end moves
 between probes, so both are measured through the same wires.
