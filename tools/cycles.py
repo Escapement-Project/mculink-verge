@@ -134,6 +134,57 @@ class Counts:
     edge_cycles: list[int] = field(default_factory=list)
 
 
+# The 16 TAP states, and where TMS takes each one. Named as IEEE 1149.1 names them.
+TAP_NEXT = {
+    "tlr": ("rti", "tlr"),
+    "rti": ("rti", "seldr"),
+    "seldr": ("capdr", "selir"),
+    "capdr": ("shdr", "ex1dr"),
+    "shdr": ("shdr", "ex1dr"),
+    "ex1dr": ("paudr", "upddr"),
+    "paudr": ("paudr", "ex2dr"),
+    "ex2dr": ("shdr", "upddr"),
+    "upddr": ("rti", "seldr"),
+    "selir": ("capir", "tlr"),
+    "capir": ("shir", "ex1ir"),
+    "shir": ("shir", "ex1ir"),
+    "ex1ir": ("pauir", "updir"),
+    "pauir": ("pauir", "ex2ir"),
+    "ex2ir": ("shir", "updir"),
+    "updir": ("rti", "seldr"),
+}
+
+
+class JtagTap:
+    """A JTAG target that walks the TAP with the probe and shifts a chosen word out of TDO.
+
+    A flat list of bits cannot model this: which bit the probe reads depends on where the TAP is,
+    and that is exactly what a rewritten transfer could get wrong. Tracking the state machine from
+    TMS means the model notices a wrong TAP walk as well as a wrong bit.
+    """
+
+    def __init__(self, dr: int, dr_bits: int):
+        # ARM's transfer starts its walk from Run-Test/Idle, which the host is expected to have
+        # reached with a JTAG sequence before any transfer. Starting in Test-Logic-Reset instead
+        # leaves TMS=1 looping in place and the walk never reaches a shift state.
+        self.state = "rti"
+        self.initial = (dr, dr_bits)
+        self.dr = dr
+        self.left = dr_bits
+
+    def tdo(self) -> int:
+        # Only the data register is modelled; the probe does not read TDO while shifting IR.
+        return self.dr & 1 if self.state == "shdr" else 0
+
+    def clock(self, tms: int) -> None:
+        # Every rising edge in a shift state shifts, including the one that leaves it.
+        if self.state == "shdr":
+            self.dr >>= 1
+        self.state = TAP_NEXT[self.state][1 if tms else 0]
+        if self.state == "capdr":
+            self.dr = self.initial[0]
+
+
 class Target:
     """A SWD or JTAG target that always acknowledges OK and shifts out zeros.
 
@@ -181,6 +232,7 @@ class Machine:
         self.counting = False
         self.restart_at = restart_at
         self.resync_on_release = False
+        self.tap: "JtagTap | None" = None
         self.explain = False
         self._window: list[int] = []
         self._window_start = 0
@@ -218,6 +270,8 @@ class Machine:
         if offset in (REG_B0 + PIN_SWDIO, REG_B0 + PIN_TDO):
             if self.counting:
                 self.counts.trace.append("S" if offset == REG_B0 + PIN_SWDIO else "T")
+            if self.tap is not None and offset == REG_B0 + PIN_TDO:
+                return self.tap.tdo()
             return self.target.bit()
         if offset == REG_PIN:
             return self.level & self.dir
@@ -289,6 +343,8 @@ class Machine:
         if after_clock and not before_clock:
             self.counts.tck_rise += 1
             self.counts.edge_cycles.append(self.cycle)
+            if self.tap is not None:
+                self.tap.clock((self.level >> PIN_SWDIO) & 1)
             if self.explain:
                 span = self.cycle - self._window_start
                 if span > self.longest[0]:

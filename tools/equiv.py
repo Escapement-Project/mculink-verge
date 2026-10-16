@@ -22,6 +22,8 @@ sys.path.insert(0, __file__.rsplit("/", 1)[0])
 
 from cycles import (  # noqa: E402
     ID_CONNECT,
+    ID_JTAG_CONFIGURE,
+    JtagTap,
     ID_SWD_CONFIGURE,
     ID_SWJ_CLOCK,
     ID_TRANSFER_BLOCK,
@@ -80,12 +82,69 @@ def run(
     return probe.end().trace, reply
 
 
+def run_jtag(elf: str, ack: int, read: bool, idle: int, word: int) -> tuple[list[str], bytes]:
+    """The same comparison on four wires, with a TAP that walks the state machine.
+
+    A flat bit list cannot check a JTAG transfer: which bit the probe reads depends on where the
+    TAP is, so a wrong walk and a wrong bit look the same. The model here tracks the state machine
+    from TMS, which means it fails a transfer that takes the wrong route as well as one that reads
+    the wrong bit.
+    """
+    # The acknowledge leaves the TAP in the order JTAG_Transfer reassembles it: first bit out is
+    # ack[1], then ack[0], then ack[2]. Then the data word.
+    dr = ((ack >> 1) & 1) | ((ack & 1) << 1) | (((ack >> 2) & 1) << 2) | (word << 3)
+    probe = Machine(elf, Target([]), restart_at=set(), model=Model())
+    probe.tap = JtagTap(dr, 35)
+    probe.command(bytes([ID_CONNECT, 2]))
+    probe.command(bytes([ID_SWJ_CLOCK]) + u32(10_000_000))
+    probe.command(bytes([ID_TRANSFER_CONFIG, idle]) + u16(2) + u16(0))
+    probe.command(bytes([ID_JTAG_CONFIGURE, 1, 4]))
+
+    payload = bytes([ID_TRANSFER_BLOCK, 0]) + u16(2) + bytes([AP_DRW_READ if read else AP_DRW_WRITE])
+    if not read:
+        payload += u32(word) * 2
+    probe.begin()
+    reply = probe.command(payload)
+    return probe.end().trace, reply
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("reference")
     ap.add_argument("candidate")
+    ap.add_argument("--wire", choices=["swd", "jtag"], default="swd")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
+
+    if args.wire == "jtag":
+        failures = 0
+        total = 0
+        for ack in (0, 1, 2, 4, 7):
+            for read in (True, False):
+                for idle in (0, 3):
+                    for word in (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF):
+                        total += 1
+                        name = f"ack={ack} {'read' if read else 'write'} idle={idle} word=0x{word:08x}"
+                        a = run_jtag(args.reference, ack, read, idle, word)
+                        b = run_jtag(args.candidate, ack, read, idle, word)
+                        if a[0] != b[0]:
+                            first = next(
+                                (i for i, (x, y) in enumerate(zip(a[0], b[0])) if x != y),
+                                min(len(a[0]), len(b[0])),
+                            )
+                            print(f"  WIRE   {name}")
+                            print(
+                                f"         diverges at event {first} of {len(a[0])}/{len(b[0])}:"
+                                f" {a[0][first : first + 6]} against {b[0][first : first + 6]}"
+                            )
+                            failures += 1
+                        elif a[1] != b[1]:
+                            print(f"  REPLY  {name}\n         {a[1].hex()} against {b[1].hex()}")
+                            failures += 1
+                        elif args.verbose:
+                            print(f"  ok     {name}  ({len(a[0])} events, {len(a[1])} byte reply)")
+        print(f"\n{total - failures}/{total} JTAG cases identical on the wire and in the reply")
+        return 1 if failures else 0
 
     cases = itertools.product(
         ACKS, (True, False), (1, 2, 3, 4), (True, False), (0, 3), (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF)
