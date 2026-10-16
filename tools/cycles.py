@@ -234,6 +234,10 @@ class Machine:
         self.restart_at = restart_at
         self.resync_on_release = False
         self.tap: "JtagTap | None" = None
+        # The same TAP reached through OScan1 framing instead of four wires.
+        self.cjtag_tap: "JtagTap | None" = None
+        self._packet = 0
+        self._frame_tms = 0
         self.explain = False
         self._window: list[int] = []
         self._window_start = 0
@@ -273,6 +277,8 @@ class Machine:
                 self.counts.trace.append("S" if offset == REG_B0 + PIN_SWDIO else "T")
             if self.tap is not None and offset == REG_B0 + PIN_TDO:
                 return self.tap.tdo()
+            if self.cjtag_tap is not None and offset == REG_B0 + PIN_SWDIO:
+                return self.cjtag_tap.tdo()
             return self.target.bit()
         if offset == REG_PIN:
             return self.level & self.dir
@@ -334,6 +340,10 @@ class Machine:
             self.counts.trace.append(f"W{after_wire}")
             if after_wire == "z":
                 self.counts.swdio_release += 1
+                # A frame releases the wire exactly once, immediately before its third packet.
+                # That is a marker on the wire, so the framing stays in step with the probe
+                # whatever the optimiser does to the code that produces it.
+                self._packet = 2
                 # On SWD the turnaround is the only place the probe lets go, and it sits
                 # immediately before the acknowledge. Re-synchronising the target there needs no
                 # symbol to survive inlining, unlike the entry of a transfer function.
@@ -346,6 +356,13 @@ class Machine:
             self.counts.edge_cycles.append(self.cycle)
             if self.tap is not None:
                 self.tap.clock((self.level >> PIN_SWDIO) & 1)
+            if self.cjtag_tap is not None:
+                # Packet 1 carries nTDI, packet 2 carries TMS, packet 3 is the target's.
+                if self._packet == 1:
+                    self._frame_tms = (self.level >> PIN_SWDIO) & 1
+                elif self._packet == 2:
+                    self.cjtag_tap.clock(self._frame_tms)
+                self._packet = (self._packet + 1) % 3
             if self.explain:
                 span = self.cycle - self._window_start
                 if span > self.longest[0]:

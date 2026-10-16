@@ -21,6 +21,7 @@ import sys
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 
 from cycles import (  # noqa: E402
+    ID_CJTAG_CONTROL,
     ID_CONNECT,
     ID_JTAG_CONFIGURE,
     JtagTap,
@@ -110,13 +111,74 @@ def run_jtag(
     return probe.end().trace, reply
 
 
+def run_cjtag(elf: str, ack: int, read: bool, idle: int, word: int, fast: bool) -> tuple[list[str], bytes]:
+    """The same comparison again, through OScan1 framing.
+
+    Three TMSC packets carry one JTAG clock, so the TAP underneath is the same one the four-wire
+    comparison drives; only the way TMS and TDO reach it differs. The model finds the framing from
+    the wire -- a frame releases the line exactly once, before its third packet -- rather than from
+    anything in the firmware, so it stays in step with either compiled copy.
+    """
+    dr = ((ack >> 1) & 1) | ((ack & 1) << 1) | (((ack >> 2) & 1) << 2) | (word << 3)
+    probe = Machine(elf, Target([]), restart_at=set(), model=Model())
+    probe.command(bytes([ID_CONNECT, 2]))
+    probe.command(bytes([ID_SWJ_CLOCK]) + u32(50_000_000 if fast else 10_000_000))
+    probe.command(bytes([ID_TRANSFER_CONFIG, idle]) + u16(2) + u16(0))
+    probe.command(bytes([ID_JTAG_CONFIGURE, 1, 4]))
+    probe.command(bytes([ID_CJTAG_CONTROL, 1]))
+
+    # The activation sequence ends in a TAP reset on a real target; start the model where the
+    # firmware's first transfer expects to find it.
+    probe.cjtag_tap = JtagTap(dr, 35)
+
+    payload = bytes([ID_TRANSFER_BLOCK, 0]) + u16(2) + bytes([AP_DRW_READ if read else AP_DRW_WRITE])
+    if not read:
+        payload += u32(word) * 2
+    probe.begin()
+    reply = probe.command(payload)
+    return probe.end().trace, reply
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("reference")
     ap.add_argument("candidate")
-    ap.add_argument("--wire", choices=["swd", "jtag"], default="swd")
+    ap.add_argument("--wire", choices=["swd", "jtag", "cjtag"], default="swd")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
+
+    if args.wire == "cjtag":
+        failures = 0
+        total = 0
+        cases = itertools.product(
+            (0, 1, 2, 4, 7), (True, False), (0, 3), (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF), (False, True)
+        )
+        for ack, read, idle, word, fast in cases:
+            total += 1
+            name = (
+                f"ack={ack} {'read' if read else 'write'} idle={idle} word=0x{word:08x}"
+                f" {'delay-free' if fast else 'paced'}"
+            )
+            a = run_cjtag(args.reference, ack, read, idle, word, fast)
+            b = run_cjtag(args.candidate, ack, read, idle, word, fast)
+            if a[0] != b[0]:
+                first = next(
+                    (i for i, (x, y) in enumerate(zip(a[0], b[0])) if x != y),
+                    min(len(a[0]), len(b[0])),
+                )
+                print(f"  WIRE   {name}")
+                print(
+                    f"         diverges at event {first} of {len(a[0])}/{len(b[0])}:"
+                    f" {a[0][first : first + 6]} against {b[0][first : first + 6]}"
+                )
+                failures += 1
+            elif a[1] != b[1]:
+                print(f"  REPLY  {name}\n         {a[1].hex()} against {b[1].hex()}")
+                failures += 1
+            elif args.verbose:
+                print(f"  ok     {name}  ({len(a[0])} events, {len(a[1])}B reply)")
+        print(f"\n{total - failures}/{total} two-pin cases identical on the wire and in the reply")
+        return 1 if failures else 0
 
     if args.wire == "jtag":
         failures = 0
