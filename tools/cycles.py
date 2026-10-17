@@ -28,7 +28,6 @@ from capstone import CS_ARCH_ARM, CS_MODE_THUMB, Cs
 from unicorn import (
     UC_ARCH_ARM,
     UC_HOOK_CODE,
-    UC_HOOK_MEM_WRITE,
     UC_MODE_MCLASS,
     UC_MODE_THUMB,
     Uc,
@@ -559,25 +558,29 @@ def condition_holds(cc: int, flags: int) -> bool:
     }.get(cc, True)
 
 
-def load_reads(insn) -> tuple[int, str] | None:
-    """How many data reads a capstone instruction makes, and the register its address is based
-    on; None when it reads no memory. pc as the base means the instruction's own region."""
+def data_accesses(insn) -> tuple[int, str, bool] | None:
+    """How many data accesses a capstone instruction makes, the register its address is based on,
+    and whether they are writes; None when it touches no memory. pc as the base means the
+    instruction's own region."""
     from capstone.arm import ARM_OP_MEM, ARM_OP_REG
 
     m = insn.mnemonic.split(".")[0]
-    if m.startswith(("pop", "vpop")):
+    write = m.startswith(("push", "vpush", "stm", "vstm", "str", "vstr"))
+    if m.startswith(("pop", "vpop", "push", "vpush")):
         words = sum(2 if insn.reg_name(op.reg).startswith("d") else 1 for op in insn.operands if op.type == ARM_OP_REG)
-        return words, "sp"
-    if m.startswith(("ldm", "vldm")):
+        return words, "sp", write
+    if m.startswith(("ldm", "vldm", "stm", "vstm")):
         regs = [op for op in insn.operands[1:] if op.type == ARM_OP_REG]
         words = sum(2 if insn.reg_name(op.reg).startswith("d") else 1 for op in regs)
-        return words, insn.reg_name(insn.operands[0].reg)
-    if m.startswith(("ldr", "tbb", "tbh", "vldr")):
+        return words, insn.reg_name(insn.operands[0].reg), write
+    if m.startswith(("ldr", "tbb", "tbh", "vldr", "str", "vstr")):
         mem = next((op for op in insn.operands if op.type == ARM_OP_MEM), None)
         if mem is None:
             return None
-        words = 2 if m.startswith("ldrd") or (m.startswith("vldr") and insn.reg_name(insn.operands[0].reg).startswith("d")) else 1
-        return words, insn.reg_name(mem.mem.base)
+        double = m.startswith(("ldrd", "strd")) or (
+            m.startswith(("vldr", "vstr")) and insn.reg_name(insn.operands[0].reg).startswith("d")
+        )
+        return 2 if double else 1, insn.reg_name(mem.mem.base), write
     return None
 
 
@@ -610,9 +613,13 @@ class Machine:
         self._insns: dict[int, Insn] = {}
         # How each branch decides, by address: a condition code, or the register cbz/cbnz tests.
         self._branch_test: dict[int, tuple[int, str | None]] = {}
-        # Each load's data reads, by address: how many, and the register whose value says which
-        # bus they take. See _code for why these are not counted from a memory hook.
-        self._loads: dict[int, tuple[int, str]] = {}
+        # Each load's or store's data accesses, by address: how many, the register whose value
+        # says which bus they take, and whether they write. See _code for why these are not
+        # counted from a memory hook.
+        self._accesses: dict[int, tuple[int, str, bool]] = {}
+        # The bytes each SRAMX instruction was decoded from: the firmware writes code there at run
+        # time, and rewrites it when the clock changes.
+        self._code_bytes: dict[int, bytes] = {}
         self._branch_taken = False
         self.cycle = 0
         self.target = target
@@ -662,23 +669,22 @@ class Machine:
         if size:
             self.uc.mem_write(vma, bytes(self.uc.mem_read(lma, size)))
 
+        # The only hook. unicorn 2.1.4 runs an IT block wrongly when a memory hook fires on a load
+        # or store inside it, and has the next branch's target skip its first instruction, so
+        # nothing here hooks memory: see _code and _fresh.
         self.uc.hook_add(UC_HOOK_CODE, self._code)
-        # The firmware writes code into SRAMX at run time, and rewrites it when the clock changes.
-        self.uc.hook_add(UC_HOOK_MEM_WRITE, self._code_written, None, SRAMX[0], SRAMX[0] + SRAMX[1] - 1)
-        self._mem_hooks = []
 
-    def _code_written(self, uc, access, address, size, value, user):
-        for at in range(address - 2, address + size):
-            self._insns.pop(at, None)
-            self._decoded.pop(at, None)
-            self._branch_test.pop(at, None)
-            self._loads.pop(at, None)
-
-    def _mem(self, uc, access, address, size, value, user):
-        # GPIO and the PPB report their own accesses, from their callbacks.
-        if not self.counting or GPIO_BASE <= address < GPIO_BASE + GPIO_SIZE or address >= 0xE0000000:
+    def _fresh(self, address: int, size: int) -> None:
+        """Forgets an SRAMX instruction decoded from bytes that have since been rewritten."""
+        if not SRAMX[0] <= address < SRAMX[0] + SRAMX[1]:
             return
-        self.engine.access(address, access == 17)  # UC_MEM_WRITE
+        code = bytes(self.uc.mem_read(address, size))
+        if self._code_bytes.get(address) != code:
+            self._code_bytes[address] = code
+            self._insns.pop(address, None)
+            self._decoded.pop(address, None)
+            self._branch_test.pop(address, None)
+            self._accesses.pop(address, None)
 
     @staticmethod
     def _reg_id(name: str) -> int:
@@ -708,6 +714,7 @@ class Machine:
         return self._insn(address, insn.size if insn else 2)
 
     def _insn(self, address: int, size: int) -> Insn:
+        self._fresh(address, size)
         hit = self._insns.get(address)
         if hit is None:
             code = bytes(self.uc.mem_read(address, size))
@@ -736,9 +743,9 @@ class Machine:
                 if hit.branch == "cond":
                     reg = insn.reg_name(insn.operands[0].reg) if insn.mnemonic.startswith("cb") else None
                     self._branch_test[address] = (insn.cc, reg)
-                loads = load_reads(insn)
-                if loads is not None:
-                    self._loads[address] = loads
+                accesses = data_accesses(insn)
+                if accesses is not None:
+                    self._accesses[address] = accesses
             self._insns[address] = hit
         return hit
 
@@ -895,6 +902,7 @@ class Machine:
 
     # -- instruction accounting ---------------------------------------------
     def _classify(self, address: int, size: int) -> tuple[str, int]:
+        self._fresh(address, size)
         hit = self._decoded.get(address)
         if hit is None:
             code = bytes(self.uc.mem_read(address, size))
@@ -934,17 +942,15 @@ class Machine:
                     skipped += insn.size
             insn = self._insn(address, size)
             self.cycle = self.engine.issue(insn, address if taken else None)
-            # A load's reads, from the address its base register gives, which is the bus they
-            # take. unicorn 2.1.4 runs an IT block wrongly when a read hook fires on a load inside
-            # it, and has the next branch's target skip its first instruction, so reads are
-            # counted here rather than hooked. GPIO and the PPB report their own accesses.
-            spec = self._loads.get(address)
+            # A load's or store's accesses, from the address its base register gives, which is
+            # the bus they take. GPIO and the PPB report their own, from their callbacks.
+            spec = self._accesses.get(address)
             if spec is not None:
-                count, base = spec
+                count, base, write = spec
                 where = address if base == "pc" else self.uc.reg_read(self._reg_id(base))
                 if not (GPIO_BASE <= where < GPIO_BASE + GPIO_SIZE or where >= 0xE0000000):
                     for _ in range(count):
-                        self.engine.access(where, False)
+                        self.engine.access(where, write)
             self._branch_taken = self._decide(insn)
             if taken:
                 self.counts.taken_branch += 1
@@ -1025,21 +1031,9 @@ class Machine:
         self.counting = True
         if self.engine is not None:
             self.engine.reset()
-            # Writes only: reads are counted from the code hook (see _code). Only over plain memory.
-            # A memory hook that also covers the MMIO-mapped GPIO block changes what unicorn does
-            # there, and the JTAG path then takes a different branch; GPIO and the PPB report
-            # their own accesses to the engine anyway.
-            #
-            # And only while counting: unicorn 2.1.4 with a write hook over SRAM skips an
-            # instruction in a clang build's generator, which then never returns.
-            for base, size in (FLASH, SRAMX, SRAM, USB_RAM):
-                self._mem_hooks.append(self.uc.hook_add(UC_HOOK_MEM_WRITE, self._mem, None, base, base + size - 1))
 
     def end(self) -> Counts:
         self.counting = False
-        for hook in self._mem_hooks:
-            self.uc.hook_del(hook)
-        self._mem_hooks = []
         if self.engine is not None:
             self.counts.span = self.cycle
         if isinstance(self.target, TimedSwdTarget):
