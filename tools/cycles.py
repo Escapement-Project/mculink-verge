@@ -28,7 +28,6 @@ from capstone import CS_ARCH_ARM, CS_MODE_THUMB, Cs
 from unicorn import (
     UC_ARCH_ARM,
     UC_HOOK_CODE,
-    UC_HOOK_MEM_READ,
     UC_HOOK_MEM_WRITE,
     UC_MODE_MCLASS,
     UC_MODE_THUMB,
@@ -509,6 +508,28 @@ def condition_holds(cc: int, flags: int) -> bool:
     }.get(cc, True)
 
 
+def load_reads(insn) -> tuple[int, str] | None:
+    """How many data reads a capstone instruction makes, and the register its address is based
+    on; None when it reads no memory. pc as the base means the instruction's own region."""
+    from capstone.arm import ARM_OP_MEM, ARM_OP_REG
+
+    m = insn.mnemonic.split(".")[0]
+    if m.startswith(("pop", "vpop")):
+        words = sum(2 if insn.reg_name(op.reg).startswith("d") else 1 for op in insn.operands if op.type == ARM_OP_REG)
+        return words, "sp"
+    if m.startswith(("ldm", "vldm")):
+        regs = [op for op in insn.operands[1:] if op.type == ARM_OP_REG]
+        words = sum(2 if insn.reg_name(op.reg).startswith("d") else 1 for op in regs)
+        return words, insn.reg_name(insn.operands[0].reg)
+    if m.startswith(("ldr", "tbb", "tbh", "vldr")):
+        mem = next((op for op in insn.operands if op.type == ARM_OP_MEM), None)
+        if mem is None:
+            return None
+        words = 2 if m.startswith("ldrd") or (m.startswith("vldr") and insn.reg_name(insn.operands[0].reg).startswith("d")) else 1
+        return words, insn.reg_name(mem.mem.base)
+    return None
+
+
 def branch_kind(mnemonic: str, writes_pc: bool) -> str:
     base = mnemonic.split(".")[0]
     if mnemonic in UNCONDITIONAL:
@@ -538,6 +559,9 @@ class Machine:
         self._insns: dict[int, Insn] = {}
         # How each branch decides, by address: a condition code, or the register cbz/cbnz tests.
         self._branch_test: dict[int, tuple[int, str | None]] = {}
+        # Each load's data reads, by address: how many, and the register whose value says which
+        # bus they take. See _code for why these are not counted from a memory hook.
+        self._loads: dict[int, tuple[int, str]] = {}
         self._branch_taken = False
         self.cycle = 0
         self.target = target
@@ -594,12 +618,19 @@ class Machine:
             self._insns.pop(at, None)
             self._decoded.pop(at, None)
             self._branch_test.pop(at, None)
+            self._loads.pop(at, None)
 
     def _mem(self, uc, access, address, size, value, user):
         # GPIO and the PPB report their own accesses, from their callbacks.
         if not self.counting or GPIO_BASE <= address < GPIO_BASE + GPIO_SIZE or address >= 0xE0000000:
             return
         self.engine.access(address, access == 17)  # UC_MEM_WRITE
+
+    @staticmethod
+    def _reg_id(name: str) -> int:
+        from unicorn import arm_const
+
+        return getattr(arm_const, f"UC_ARM_REG_{name.upper()}")
 
     def _decide(self, insn: Insn) -> bool:
         """Whether a branch about to execute will be taken, from the state before it runs."""
@@ -651,6 +682,9 @@ class Machine:
                 if hit.branch == "cond":
                     reg = insn.reg_name(insn.operands[0].reg) if insn.mnemonic.startswith("cb") else None
                     self._branch_test[address] = (insn.cc, reg)
+                loads = load_reads(insn)
+                if loads is not None:
+                    self._loads[address] = loads
             self._insns[address] = hit
         return hit
 
@@ -834,6 +868,17 @@ class Machine:
                     skipped += insn.size
             insn = self._insn(address, size)
             self.cycle = self.engine.issue(insn, address if taken else None)
+            # A load's reads, from the address its base register gives, which is the bus they
+            # take. unicorn 2.1.4 runs an IT block wrongly when a read hook fires on a load inside
+            # it, and has the next branch's target skip its first instruction, so reads are
+            # counted here rather than hooked. GPIO and the PPB report their own accesses.
+            spec = self._loads.get(address)
+            if spec is not None:
+                count, base = spec
+                where = address if base == "pc" else self.uc.reg_read(self._reg_id(base))
+                if not (GPIO_BASE <= where < GPIO_BASE + GPIO_SIZE or where >= 0xE0000000):
+                    for _ in range(count):
+                        self.engine.access(where, False)
             self._branch_taken = self._decide(insn)
             if taken:
                 self.counts.taken_branch += 1
@@ -914,16 +959,15 @@ class Machine:
         self.counting = True
         if self.engine is not None:
             self.engine.reset()
-            # Only over plain memory. A memory hook that also covers the MMIO-mapped GPIO block
-            # changes what unicorn does there, and the JTAG path then takes a different branch;
-            # GPIO and the PPB report their own accesses to the engine anyway.
+            # Writes only: reads are counted from the code hook (see _code). Only over plain memory.
+            # A memory hook that also covers the MMIO-mapped GPIO block changes what unicorn does
+            # there, and the JTAG path then takes a different branch; GPIO and the PPB report
+            # their own accesses to the engine anyway.
             #
             # And only while counting: unicorn 2.1.4 with a write hook over SRAM skips an
             # instruction in a clang build's generator, which then never returns.
             for base, size in (FLASH, SRAMX, SRAM, USB_RAM):
-                self._mem_hooks.append(
-                    self.uc.hook_add(UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE, self._mem, None, base, base + size - 1)
-                )
+                self._mem_hooks.append(self.uc.hook_add(UC_HOOK_MEM_WRITE, self._mem, None, base, base + size - 1))
 
     def end(self) -> Counts:
         self.counting = False
