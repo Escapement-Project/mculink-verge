@@ -4,7 +4,11 @@
 
 #include "thumb.h"
 
-void gen_schedule_reset(struct gen_schedule* s) {
+uint32_t gen_owner = GEN_OWNER_NONE;
+
+void gen_schedule_reset(struct gen_schedule* s, struct gen_event* ev, uint32_t cap) {
+    s->ev = ev;
+    s->cap = cap;
     s->n = 0U;
     s->failed = false;
 }
@@ -28,8 +32,13 @@ bool gen_taken(const struct gen_schedule* s, uint32_t cycle) {
     return (i < s->n) && (s->ev[i].cycle == cycle);
 }
 
+uint32_t gen_at(const struct gen_schedule* s, uint32_t cycle) {
+    const uint32_t i = lower_bound(s, cycle);
+    return (i < s->n) && (s->ev[i].cycle == cycle) ? s->ev[i].insn : 0U;
+}
+
 void gen_put(struct gen_schedule* s, uint32_t cycle, uint32_t insn) {
-    if ((s->n == GEN_EVENTS) || gen_taken(s, cycle)) {
+    if ((s->n == s->cap) || gen_taken(s, cycle)) {
         s->failed = true;
         return;
     }
@@ -98,9 +107,9 @@ void gen_delay(struct gen_emitter* e, uint32_t cycles) {
     }
 }
 
-uint32_t gen_emit_schedule(struct gen_emitter* e, const struct gen_schedule* s) {
-    uint32_t now = 0U;
-    for (uint32_t i = 0U; i < s->n; i++) {
+uint32_t gen_emit_span(struct gen_emitter* e, const struct gen_schedule* s, uint32_t from, uint32_t to) {
+    uint32_t now = from;
+    for (uint32_t i = lower_bound(s, from); (i < s->n) && (s->ev[i].cycle < to); i++) {
         const struct gen_event* ev = &s->ev[i];
         gen_delay(e, ev->cycle - now);
         if (GEN_IS_BRANCH(ev->insn)) {
@@ -111,4 +120,8 @@ uint32_t gen_emit_schedule(struct gen_emitter* e, const struct gen_schedule* s) 
         now = ev->cycle + 1U;
     }
     return now;
+}
+
+uint32_t gen_emit_schedule(struct gen_emitter* e, const struct gen_schedule* s) {
+    return gen_emit_span(e, s, 0U, UINT32_MAX);
 }

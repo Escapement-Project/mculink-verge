@@ -86,6 +86,12 @@ static inline uint32_t t_subs_imm(uint32_t rd, uint32_t rn, uint32_t imm8) {
 }
 static inline uint32_t t_tst_imm(uint32_t rn, uint32_t imm8) { return t32(0xF010U | rn, 0x0F00U | imm8); }
 static inline uint32_t t_mov_imm(uint32_t rd, uint32_t imm8) { return t32(0xF04FU, (rd << 8) | imm8); }
+/** orr.w rd, rn, #imm8. */
+static inline uint32_t t_orr_imm(uint32_t rd, uint32_t rn, uint32_t imm8) { return t32(0xF040U | rn, (rd << 8) | imm8); }
+/** lsl.w rd, rm, #amount, 1 to 31. */
+static inline uint32_t t_lsl(uint32_t rd, uint32_t rm, uint32_t amount) {
+    return t_dp_reg(0x2U, 0U, rd, T_PC, rm, T_LSL, amount);
+}
 /** rsb.w rd, rn, #imm8: imm8 less rn. */
 static inline uint32_t t_rsb_imm(uint32_t rd, uint32_t rn, uint32_t imm8) { return t32(0xF1C0U | rn, (rd << 8) | imm8); }
 

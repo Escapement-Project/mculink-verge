@@ -9,13 +9,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/** Where the generated code lives: the bottom quarter of SRAMX. src/jtag_gen.c has the next
- * quarter and src/code_lab.c the upper half.
+/** Where the generated code lives: the lower half of SRAMX, which src/jtag_gen.c's code shares
+ * (see gen_owner) and src/code_lab.c does not.
  * tools/gen_host builds the generator elsewhere and puts it at an address of its own. */
 #ifndef SWD_GEN_BASE
 #define SWD_GEN_BASE 0x04000000U
 #endif
-#define SWD_GEN_SIZE 0x2000U
+#define SWD_GEN_SIZE 0x4000U
 
 /** A write clock is three instructions: two edges and the next bit's extraction. */
 #define SWD_GEN_PERIOD_MIN 3U

@@ -17,6 +17,10 @@ typedef struct {
     struct {
         uint8_t idle_cycles;
     } transfer;
+    struct {
+        uint8_t count;
+        uint8_t index;
+    } jtag_dev;
 } DAP_Data_t;
 
 extern DAP_Data_t DAP_Data;

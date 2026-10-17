@@ -109,10 +109,11 @@ struct sched {
 
 /* Static rather than on the stack: it is the largest thing here. */
 static struct sched sched;
+static struct gen_event sched_events[256];
 
 static void sched_reset(struct sched* s, const struct gen_cfg* cfg) {
     s->cfg = cfg;
-    gen_schedule_reset(&s->q);
+    gen_schedule_reset(&s->q, sched_events, sizeof sched_events / sizeof sched_events[0]);
     s->t = 0U;
     s->last_fall = 0U;
     s->last_rise = 0U;
@@ -689,11 +690,12 @@ bool swd_gen_ready(void) {
         .data_phase = DAP_Data.swd_conf.data_phase,
         .idle_cycles = DAP_Data.transfer.idle_cycles,
     };
-    if (built_once && (memcmp(&want, &built, sizeof want) == 0)) {
+    if (built_once && (gen_owner == GEN_OWNER_SWD) && (memcmp(&want, &built, sizeof want) == 0)) {
         return built_ok;
     }
     built = want;
     built_once = true;
+    gen_owner = GEN_OWNER_SWD;
     swd_gen_info.ok = false;
     built_ok = swd_gen_build(&want, &swd_gen_read, &swd_gen_write);
     if (built_ok) {

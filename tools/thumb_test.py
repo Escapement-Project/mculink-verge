@@ -54,6 +54,10 @@ for rd, rn, rm in (("r0", "r0", "r12"), ("r4", "r11", "lr"), ("lr", "r1", "r2"))
     case(f"t_lsl_reg({R[rd]}, {R[rn]}, {R[rm]})", f"lsl.w {rd}, {rn}, {rm}")
 for rd, rm in (("r0", "r4"), ("r12", "lr"), ("r4", "r4")):
     case(f"t_rbit({R[rd]}, {R[rm]})", f"rbit {rd}, {rm}")
+for rd, rn, imm in (("r11", "r10", 4), ("r10", "r3", 6), ("lr", "r4", 255)):
+    case(f"t_orr_imm({R[rd]}, {R[rn]}, {imm})", f"orr.w {rd}, {rn}, #{imm}")
+for rd, rm, amount in (("r11", "r12", 1), ("r10", "r3", 1), ("r4", "lr", 31)):
+    case(f"t_lsl({R[rd]}, {R[rm]}, {amount})", f"lsl.w {rd}, {rm}, #{amount}")
 for rd, rn, imm in (("r12", "r1", 32), ("r0", "r0", 0), ("lr", "r4", 255)):
     case(f"t_rsb_imm({R[rd]}, {R[rn]}, {imm})", f"rsb.w {rd}, {rn}, #{imm}")
 for rn, imm in (("r11", 1), ("r11", 4), ("r4", 255)):

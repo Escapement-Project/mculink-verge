@@ -29,6 +29,7 @@
 
 #include "DAP_config.h"
 
+#include "DAP.h"
 #include "gen.h"
 #include "thumb.h"
 
@@ -118,6 +119,7 @@ struct block {
 };
 
 static struct gen_schedule layout;
+static struct gen_event layout_events[SLOTS_MAX + 8U];
 
 static uint32_t later(uint32_t a, uint32_t b) { return a > b ? a : b; }
 
@@ -153,7 +155,7 @@ static bool finish(struct block* b, uint32_t cycles) {
  * instructions fit. */
 static bool try_four_wire(struct block* b, uint32_t cycles, uint32_t at) {
     const uint32_t sample = at % cycles;
-    gen_schedule_reset(&layout);
+    gen_schedule_reset(&layout, layout_events, sizeof layout_events / sizeof layout_events[0]);
     put(0U, S_FALL);
     put(cycles / 2U, S_RISE);
     if (gen_taken(&layout, sample)) {
@@ -215,7 +217,7 @@ static bool layout_two_pin(struct block* b, uint32_t period, uint32_t latency) {
     const uint32_t low = p == 3U ? 2U : p / 2U;
     const uint32_t high = p - low;
     b->masked = p < TWO_PIN_MASK_WHOLE_BELOW;
-    gen_schedule_reset(&layout);
+    gen_schedule_reset(&layout, layout_events, sizeof layout_events / sizeof layout_events[0]);
     put(0U, S_FALL);
     put(1U, S_TAKE_PIN);
     put(2U, S_TAKE_TXEN);
@@ -410,9 +412,688 @@ static bool emit_scan(struct gen_emitter* e, const struct block* b, bool two_pin
     return !e->failed;
 }
 
-bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan) {
+/* -- whole transfers ------------------------------------------------------------------------- */
+
+/* A transfer function runs `count` transfers of one request back to back, each as ARM's
+ * JTAG_Transfer clocks it: Select-DR, Capture-DR and Shift-DR with ARM's held TDI and the bypass
+ * bits before the DAP, then RnW, A2 and A3 with the acknowledge coming back. On OK the data and the
+ * bypass bits after it follow, then Exit1-DR, Update-DR, Run-Test/Idle, TDI high from there, and
+ * the idle cycles. Any other acknowledge leaves through Exit1-DR at once, as ARM's does, in
+ * sequential code after the loop, and the function returns it. */
+
+/* Its registers. */
+#define X_REQ 0U   // RnW, A2 and A3 in bits 0 to 2
+#define X_BUF 1U   // words read or written, post-incremented
+#define X_COUNT 2U // transfers still to do, the current one included
+#define X_TXEN 3U  // two-pin: the TMSC buffer's direction pin
+#define X_WORD 4U
+#define X_ONE 5U   // TCK's mask: also the 1 a byte-register store takes
+#define X_PIN 6U   // four-wire: TDI's mask; two-pin: TMSC's
+#define X_DELAY 7U
+#define X_GPIO 8U
+#define X_PORT 9U
+#define X_DATA 10U // the next clock's TDI as the wire takes it: a port word, or nTDI
+#define X_ACK 11U  // the acknowledge; on OK, a scratch register
+#define X_S0 12U   // samples
+#define X_S1 T_LR  // four-wire: a second sample register; two-pin: zero
+#define X_ZERO T_LR
+
+/** Four-wire: TMS's bit in a port word. */
+#define TMS_WORD TMSC
+
+#define XLABEL_LOOP 0U
+#define XLABEL_FAIL 1U
+#define XLABEL_BITS 2U
+
+/** Idle cycles clocked inside the schedule; more go in a loop after it. */
+#define X_IDLE_INLINE 4U
+
+struct xfer {
+    struct gen_schedule q;
+    bool two_pin;
+    bool masked;
+    uint32_t p, low, high; // a four-wire clock, or a two-pin packet the probe drives
+    uint32_t latency;
+    uint32_t t;      // the earliest cycle the next clock or frame may start on
+    uint32_t ready;  // the earliest cycle the next clock's data is in its register
+    uint32_t fall;   // four-wire: the last clock's falling edge
+    uint32_t rise;   // the last rising edge
+    uint32_t d1;     // two-pin: the last frame's nTDI store
+    uint32_t first;  // the first clock's falling edge, or the first frame's start
+    uint32_t start;  // the last clock's falling edge, or the last frame's start
+    uint32_t data_at[32]; // and each data bit's
+    uint32_t word_ready; // the earliest cycle X_WORD may be read: a write's word loaded, or shifted
+    // The data bits by shifting X_WORD, so that every one is the same instructions and they can
+    // run as a loop, with X_ACK counting once the acknowledge is known; its mov is on `counter`.
+    bool uniform;
+    uint32_t counter;
+    bool pend;       // the last clock's TDO waits for its sample
+    uint32_t pend_at; // four-wire: that clock's fall; two-pin: the latest cycle it may be sampled on
+    uint32_t pend_dst, pend_bit;
+    uint32_t sreg;
+    uint32_t chain;   // the last fold-in, which the next one follows
+    uint32_t busy[2]; // the fold-in of each sample register's last sample
+    uint32_t branch;
+};
+
+static struct xfer xs;
+/* A two-pin transfer is up to 59 frames of about twenty events. */
+static struct gen_event xfer_events[1280];
+
+/** Whether a four-wire clock not laid yet puts an edge on `cycle`, if the clocks to come are like
+ * the last one. */
+static bool x_grid(const struct xfer* x, uint32_t cycle) {
+    if (x->two_pin || (cycle < x->t)) {
+        return false;
+    }
+    const uint32_t phase = (cycle - x->t) % x->p;
+    return (phase == 0U) || (phase == x->low);
+}
+
+static uint32_t x_free(const struct xfer* x, uint32_t cycle, bool grid) {
+    while (gen_taken(&x->q, cycle) || (grid && x_grid(x, cycle))) {
+        cycle++;
+    }
+    return cycle;
+}
+
+/** An instruction the next clock waits for. */
+static uint32_t x_op(struct xfer* x, uint32_t earliest, uint32_t insn) {
+    const uint32_t cycle = x_free(x, earliest, false);
+    gen_put(&x->q, cycle, insn);
+    if (cycle >= x->t) {
+        x->t = cycle + 1U;
+    }
+    if (cycle >= x->ready) {
+        x->ready = cycle + 1U;
+    }
+    return cycle;
+}
+
+/** An instruction that must not hold up a clock. */
+static uint32_t x_side(struct xfer* x, uint32_t earliest, uint32_t insn) {
+    const uint32_t cycle = x_free(x, earliest, true);
+    gen_put(&x->q, cycle, insn);
+    return cycle;
+}
+
+/** A sample folded into the acknowledge (bits as ARM assembles it: the first request clock's is
+ * bit 1, then bit 0, then bit 2) or into the word. */
+static uint32_t fold(const struct xfer* x, uint32_t dst, uint32_t bit, uint32_t reg) {
+    if (dst == X_ACK) {
+        static const uint8_t place[3] = {1U, 0U, 2U};
+        return bit == 0U ? t_lsl(X_ACK, reg, 1U) : t_orr(X_ACK, X_ACK, reg, T_LSL, place[bit]);
+    }
+    if (x->uniform) {
+        return t_orr(X_WORD, reg, X_WORD, T_LSL, 1U); // reversed by an rbit after the last
+    }
+    return bit == 0U ? t_mov(X_WORD, reg) : t_orr(X_WORD, X_WORD, reg, T_LSL, bit);
+}
+
+static void x_capture(struct xfer* x, uint32_t dst, uint32_t bit, uint32_t at) {
+    x->pend = true;
+    x->pend_at = at;
+    x->pend_dst = dst;
+    x->pend_bit = bit;
+}
+
+/** The pending sample on `at`, and its fold-in once the load has landed. */
+static void x_take(struct xfer* x, uint32_t at) {
+    const uint32_t reg = x->sreg == 0U ? X_S0 : X_S1;
+    if (gen_taken(&x->q, at) || (at <= x->busy[x->sreg])) {
+        x->q.failed = true;
+    }
+    gen_put(&x->q, at, t_ldrb(reg, X_GPIO, x->two_pin ? OFF_B_TMS : OFF_B_TDO));
+    x->chain = x_side(x, later(at + 2U, x->chain + 1U), fold(x, x->pend_dst, x->pend_bit, reg));
+    x->busy[x->sreg] = x->chain;
+    if (!x->two_pin) {
+        x->sreg ^= 1U;
+    }
+    x->pend = false;
+}
+
+/* Four-wire. */
+
+/** Bit `bit` of `rm` into TDI's place, everything else clear. */
+static uint32_t tdi_word(uint32_t rd, uint32_t rm, uint32_t bit) {
+    return bit > TDI_PIN ? t_and(rd, X_PIN, rm, T_LSR, bit - TDI_PIN) : t_and(rd, X_PIN, rm, T_LSL, TDI_PIN - bit);
+}
+
+/** The last clock's TDO, now that the fall that ends its window is known. */
+static void fx_sample(struct xfer* x, uint32_t next) {
+    const uint32_t first = x->pend_at + x->latency + MARGIN;
+    // Before the next fall, where no interrupt can make it late: as late as possible.
+    for (uint32_t c = next; c-- > first;) {
+        if (!gen_taken(&x->q, c)) {
+            x_take(x, c);
+            return;
+        }
+    }
+    // After it, in the middle of what is left of the window, off the clocks still to come. Only a
+    // masked function may sample there.
+    const uint32_t last = next + FOUR_WIRE_HOLD - MARGIN;
+    uint32_t best = 0U;
+    uint32_t best_margin = 0U;
+    bool found = false;
+    for (uint32_t c = later(first, next + 1U); x->masked && (c <= last); c++) {
+        if (gen_taken(&x->q, c) || x_grid(x, c)) {
+            continue;
+        }
+        const uint32_t margin = (c - first) < (last - c) ? (c - first) : (last - c);
+        if (!found || (margin > best_margin)) {
+            best = c;
+            best_margin = margin;
+            found = true;
+        }
+    }
+    if (!found) {
+        x->q.failed = true;
+        x->pend = false;
+        return;
+    }
+    x_take(x, best);
+}
+
+static void fx_clock(struct xfer* x, uint32_t data) {
+    uint32_t c = later(x->t, x->ready);
+    while (gen_taken(&x->q, c) || gen_taken(&x->q, c + x->low)) {
+        c++;
+    }
+    gen_put(&x->q, c, t_str(data, X_PORT, OFF_MPIN));
+    gen_put(&x->q, c + x->low, t_str(X_ONE, X_PORT, OFF_SET));
+    if (x->first == UINT32_MAX) {
+        x->first = c;
+    }
+    x->start = c;
+    x->t = c + x->p;
+    if (x->pend) {
+        fx_sample(x, c);
+    }
+    x->fall = c;
+    x->rise = c + x->low;
+}
+
+/** The branch to XLABEL_FAIL, once the acknowledge's last bit is folded in, before anything the
+ * two outcomes do differently. */
+static void x_decide(struct xfer* x) {
+    uint32_t at = x->chain + 1U;
+    while (gen_taken(&x->q, at) || gen_taken(&x->q, at + 1U)) {
+        at++;
+    }
+    // The cmp goes in the cycle before the branch: a delay loop between them would set the flags.
+    gen_put(&x->q, at, t_cmp_imm(X_ACK, DAP_TRANSFER_OK));
+    gen_put(&x->q, at + 1U, GEN_BRANCH(T_COND_NE, XLABEL_FAIL));
+    x->branch = at + 1U;
+    x->t = later(x->t, at + 2U);
+    x->ready = later(x->ready, at + 2U);
+    if (x->uniform) {
+        x->counter = x_side(x, at + 2U, t_mov_imm(X_ACK, 0U)); // the count goes in once it is known
+    }
+}
+
+/** A write's next bit, now that its clock or frame has used this one. */
+static void x_shift(struct xfer* x, uint32_t used) {
+    if (x->uniform) {
+        x->word_ready = x_side(x, used + 1U, t_lsr(X_WORD, X_WORD, 1U)) + 1U;
+    }
+}
+
+/** A read's word starts from zero, and a write's is loaded. */
+static void x_word(struct xfer* x, bool read) {
+    if (!read) {
+        x->word_ready = x_side(x, 0U, t_ldr_post(X_WORD, X_BUF, 4U)) + 2U;
+    } else if (x->uniform) {
+        x_side(x, 0U, t_mov_imm(X_WORD, 0U));
+    }
+}
+
+static void fx_transfer(struct xfer* x, bool read, uint32_t before, uint32_t after, uint32_t idle) {
+    if (x->masked) {
+        x_op(x, 0U, t_msr_primask(X_ONE));
+    }
+    x_word(x, read);
+    // Select-DR with TMS high, then Capture-DR, Shift-DR and the bypass before, all with TDI as
+    // ARM's pin holds it, which X_DATA has.
+    x_op(x, 0U, t_orr_imm(X_ACK, X_DATA, TMS_WORD));
+    fx_clock(x, X_ACK);
+    for (uint32_t i = 0U; i < 2U + before; i++) {
+        fx_clock(x, X_DATA);
+    }
+    for (uint32_t r = 0U; r < 3U; r++) {
+        x_op(x, x->fall + 1U, tdi_word(X_DATA, X_REQ, r));
+        fx_clock(x, X_DATA);
+        x_capture(x, X_ACK, r, x->fall);
+        if (r == 2U) {
+            // As soon as it is on the pin, and before the next clock falls: that fall already
+            // carries the next TMS.
+            x_take(x, x_free(x, x->fall + x->latency + MARGIN, false));
+            x_decide(x);
+        }
+    }
+    // A read holds A3 on TDI, as ARM's pin does; a write sends the word.
+    for (uint32_t j = 0U; j < 32U; j++) {
+        const bool exits = (j == 31U) && (after == 0U);
+        uint32_t used = 0U;
+        if (!read) {
+            used = x_op(x, later(x->fall + 1U, x->word_ready), tdi_word(X_DATA, X_WORD, x->uniform ? 0U : j));
+        }
+        if (exits) {
+            x_op(x, x->fall + 1U, t_orr_imm(X_ACK, X_DATA, TMS_WORD));
+        }
+        fx_clock(x, exits ? X_ACK : X_DATA);
+        x->data_at[j] = x->start;
+        if (read) {
+            x_capture(x, X_WORD, j, x->fall);
+        } else {
+            x_shift(x, used);
+        }
+    }
+    if (after != 0U) {
+        for (uint32_t i = 1U; i < after; i++) {
+            fx_clock(x, X_DATA);
+        }
+        x_op(x, x->fall + 1U, t_orr_imm(X_ACK, X_DATA, TMS_WORD));
+        fx_clock(x, X_ACK); // Exit1-DR
+    }
+    fx_clock(x, X_ACK);  // Update-DR
+    fx_clock(x, X_DATA); // Run-Test/Idle
+    // TDI high from here, where ARM's PIN_TDI_OUT(1) puts it.
+    x_op(x, x->fall + 1U, t_mov_imm(X_DATA, TDI));
+    for (uint32_t i = 0U; (i < idle) && (idle <= X_IDLE_INLINE); i++) {
+        fx_clock(x, X_DATA);
+    }
+}
+
+/* Two-pin. */
+
+/** A frame from the fall that ends the last TDO packet: nTDI from `ntdi`, TMS from `tms` (a
+ * register holding 1 or 0). With `decide`, the acknowledge is checked before its first packet,
+ * whose TDI a failing transfer does not share. */
+static void cx_frame(struct xfer* x, uint32_t ntdi, uint32_t tms, bool decide) {
+    const uint32_t p = x->p;
+    uint32_t s = x->t;
+    while (gen_taken(&x->q, s) || gen_taken(&x->q, s + 1U) || gen_taken(&x->q, s + 2U) ||
+           (x->pend && gen_taken(&x->q, s - 1U))) {
+        s++;
+    }
+    gen_put(&x->q, s, t_str(X_ONE, X_PORT, OFF_CLR));
+    gen_put(&x->q, s + 1U, t_str(X_PIN, X_PORT, OFF_DIRSET));
+    gen_put(&x->q, s + 2U, t_str(X_TXEN, X_PORT, OFF_SET));
+    if (x->first == UINT32_MAX) {
+        x->first = s;
+    }
+    x->start = s;
+    if (x->pend) {
+        // The last frame's TDO, in its last cycle, now that its end is known.
+        x_take(x, s - 1U);
+    }
+    if (decide) {
+        x_decide(x);
+    }
+    const uint32_t d1 = x_free(x, later(s + 3U, x->ready), false);
+    gen_put(&x->q, d1, t_strb(ntdi, X_GPIO, OFF_B_TMS));
+    const uint32_t r1 = x_free(x, later(s + later(4U, x->low), d1 + 1U), false);
+    gen_put(&x->q, r1, t_str(X_ONE, X_PORT, OFF_SET));
+    const uint32_t f1 = x_free(x, later(r1 + x->high, s + p), false);
+    gen_put(&x->q, f1, t_str(X_ONE, X_PORT, OFF_CLR));
+    const uint32_t d2 = x_free(x, f1 + 1U, false);
+    gen_put(&x->q, d2, t_strb(tms, X_GPIO, OFF_B_TMS));
+    const uint32_t r2 = x_free(x, later(later(f1 + later(x->low, 2U), r1 + p), d2 + 1U), false);
+    gen_put(&x->q, r2, t_str(X_ONE, X_PORT, OFF_SET));
+    uint32_t f2 = later(r2 + x->high, f1 + p);
+    while (gen_taken(&x->q, f2) || gen_taken(&x->q, f2 + 1U) || gen_taken(&x->q, f2 + 2U)) {
+        f2++;
+    }
+    if (!x->masked) {
+        uint32_t at = f2 - 1U;
+        while ((at > d2) && gen_taken(&x->q, at)) {
+            at--;
+        }
+        if (gen_taken(&x->q, at)) {
+            x->q.failed = true;
+        } else {
+            gen_put(&x->q, at, t_msr_primask(X_ONE));
+        }
+    }
+    gen_put(&x->q, f2, t_str(X_ONE, X_PORT, OFF_CLR));
+    gen_put(&x->q, f2 + 1U, t_str(X_TXEN, X_PORT, OFF_CLR));
+    gen_put(&x->q, f2 + 2U, t_str(X_PIN, X_PORT, OFF_DIRCLR));
+    const uint32_t r3 = x_free(x, later(f2 + later(x->low, 3U), r2 + p), false);
+    gen_put(&x->q, r3, t_str(X_ONE, X_PORT, OFF_SET));
+    uint32_t last = r3;
+    if (!x->masked) {
+        const uint32_t unmask = x_free(x, f2 + 3U, false);
+        gen_put(&x->q, unmask, t_msr_primask(X_ZERO));
+        last = later(last, unmask);
+    }
+    // The next frame starts once this TDO packet has a whole period, a whole high phase and the
+    // latency the sample in its last cycle needs, and its first rising edge comes a whole period
+    // after this frame's last. The sample's cycle has to be free.
+    x->t = later(later(f2 + x->latency + MARGIN + 1U, f2 + p), later(r3 + x->high, r3 + p - later(4U, x->low)));
+    x->t = later(x->t, last + 2U);
+    x->d1 = d1;
+    x->rise = r3;
+}
+
+static void cx_transfer(struct xfer* x, bool read, uint32_t before, uint32_t after, uint32_t idle) {
+    if (x->masked) {
+        x_op(x, 0U, t_msr_primask(X_ONE));
+    }
+    x_word(x, read);
+    // X_DATA holds the nTDI of ARM's held TDI.
+    cx_frame(x, X_DATA, X_ONE, false); // Select-DR
+    for (uint32_t i = 0U; i < 2U + before; i++) {
+        cx_frame(x, X_DATA, X_ZERO, false);
+    }
+    for (uint32_t r = 0U; r < 3U; r++) {
+        x_op(x, x->d1 + 1U, t_bic(X_DATA, X_ONE, X_REQ, r == 0U ? T_LSL : T_LSR, r));
+        cx_frame(x, X_DATA, X_ZERO, false);
+        x_capture(x, X_ACK, r, 0U);
+    }
+    for (uint32_t j = 0U; j < 32U; j++) {
+        const bool exits = (j == 31U) && (after == 0U);
+        const uint32_t bit = x->uniform ? 0U : j;
+        uint32_t used = 0U;
+        if (!read) {
+            used = x_op(x, later(x->d1 + 1U, x->word_ready), t_bic(X_DATA, X_ONE, X_WORD, bit == 0U ? T_LSL : T_LSR, bit));
+        }
+        cx_frame(x, X_DATA, exits ? X_ONE : X_ZERO, j == 0U);
+        x->data_at[j] = x->start;
+        if (read) {
+            x_capture(x, X_WORD, j, 0U);
+        } else {
+            x_shift(x, used);
+        }
+    }
+    if (after != 0U) {
+        for (uint32_t i = 1U; i < after; i++) {
+            cx_frame(x, X_DATA, X_ZERO, false);
+        }
+        cx_frame(x, X_DATA, X_ONE, false); // Exit1-DR
+    }
+    cx_frame(x, X_DATA, X_ONE, false);  // Update-DR
+    cx_frame(x, X_DATA, X_ZERO, false); // Run-Test/Idle
+    // TDI high from here, where ARM's PIN_TDI_OUT(1) puts it: nTDI 0.
+    x_op(x, x->d1 + 1U, t_mov_imm(X_DATA, 0U));
+    for (uint32_t i = 0U; (i < idle) && (idle <= X_IDLE_INLINE); i++) {
+        cx_frame(x, X_DATA, X_ZERO, false);
+    }
+}
+
+/* Sequential code: clocks only no shorter than the period. */
+
+static void slow_clock(struct gen_emitter* e, const struct xfer* x, uint32_t data) {
+    gen_emit(e, t_str(data, X_PORT, OFF_MPIN));
+    gen_delay(e, x->low - 1U);
+    gen_emit(e, t_str(X_ONE, X_PORT, OFF_SET));
+    gen_delay(e, x->high - 1U);
+}
+
+/** A frame that samples nothing. `fall` with the fall that ends the last TDO packet and the
+ * take-back, which a frame begins with but the failing path has already had. */
+static void slow_frame(struct gen_emitter* e, const struct xfer* x, uint32_t ntdi, uint32_t tms, bool fall) {
+    const uint32_t low1 = later(x->low, 4U);
+    if (fall) {
+        gen_emit(e, t_str(X_ONE, X_PORT, OFF_CLR));
+        gen_emit(e, t_str(X_PIN, X_PORT, OFF_DIRSET));
+        gen_emit(e, t_str(X_TXEN, X_PORT, OFF_SET));
+    }
+    gen_emit(e, t_strb(ntdi, X_GPIO, OFF_B_TMS));
+    gen_delay(e, low1 - 4U);
+    gen_emit(e, t_str(X_ONE, X_PORT, OFF_SET));
+    gen_delay(e, x->high - 1U);
+    gen_emit(e, t_str(X_ONE, X_PORT, OFF_CLR));
+    gen_emit(e, t_strb(tms, X_GPIO, OFF_B_TMS));
+    gen_delay(e, later(x->low, 2U) - 2U);
+    gen_emit(e, t_str(X_ONE, X_PORT, OFF_SET));
+    gen_delay(e, x->high - 1U);
+    if (!x->masked) {
+        gen_emit(e, t_msr_primask(X_ONE));
+    }
+    gen_emit(e, t_str(X_ONE, X_PORT, OFF_CLR));
+    gen_emit(e, t_str(X_TXEN, X_PORT, OFF_CLR));
+    gen_emit(e, t_str(X_PIN, X_PORT, OFF_DIRCLR));
+    if (!x->masked) {
+        gen_emit(e, t_msr_primask(X_ZERO));
+    }
+    gen_delay(e, later(x->low, 3U) - (x->masked ? 3U : 4U));
+    gen_emit(e, t_str(X_ONE, X_PORT, OFF_SET));
+    gen_delay(e, later(x->p, x->high) - 1U);
+}
+
+/** The fall that ends the last TDO packet and the take-back, which leave a two-pin call as it
+ * found the wire. */
+static void slow_tail(struct gen_emitter* e) {
+    gen_emit(e, t_str(X_ONE, X_PORT, OFF_CLR));
+    gen_emit(e, t_str(X_PIN, X_PORT, OFF_DIRSET));
+    gen_emit(e, t_str(X_TXEN, X_PORT, OFF_SET));
+}
+
+/** `n` idle clocks or frames in a loop, TDI high. */
+static void slow_idle(struct gen_emitter* e, const struct xfer* x, uint32_t n) {
+    gen_emit(e, t_movw(X_S0, n));
+    const uint32_t head = e->pos;
+    if (x->two_pin) {
+        slow_frame(e, x, X_DATA, X_ZERO, true);
+    } else {
+        slow_clock(e, x, X_DATA);
+    }
+    gen_emit(e, t_subs_imm(X_S0, X_S0, 1U));
+    gen_emit(e, t_bcond(T_COND_NE, ((int32_t)head - (int32_t)e->pos) * 4));
+}
+
+struct xfer_cfg {
+    bool two_pin;
+    uint32_t period, latency, before, after, idle;
+    bool loop; // the data bits as a loop, which is smaller and takes the same cycles
+};
+
+/** `count` repeats of the `period` cycles from `from`. */
+struct span {
+    uint32_t from, period, count;
+};
+
+/** The longest run of the schedule around the middle data bits that repeats every data bit, cut
+ * where its last three cycles are free for the loop's subs and taken branch. */
+static bool find_loop(const struct xfer* x, struct span* loop) {
+    const struct gen_schedule* q = &x->q;
+    const uint32_t middle = x->data_at[16];
+    const uint32_t period = x->data_at[17] - middle;
+    if (period < 4U) {
+        return false;
+    }
+    // The cycles c for which what is on c differs from what is on c + period: the nearest on each
+    // side of the middle bound the run.
+    uint32_t lo = 0U;
+    uint32_t hi = UINT32_MAX;
+    for (uint32_t i = 0U; i < q->n; i++) {
+        const uint32_t c = q->ev[i].cycle;
+        const uint32_t insn = q->ev[i].insn;
+        const uint32_t ends[2] = {c, c - period};
+        const bool differs[2] = {gen_at(q, c + period) != insn, (c >= period) && (gen_at(q, c - period) != insn)};
+        for (uint32_t k = 0U; k < 2U; k++) {
+            if (!differs[k]) {
+                continue;
+            }
+            if (ends[k] < middle) {
+                lo = later(lo, ends[k] + 1U);
+            } else if (ends[k] < hi) {
+                hi = ends[k];
+            }
+        }
+    }
+    if (hi == UINT32_MAX) {
+        return false;
+    }
+    const uint32_t end = hi + period; // the run repeats from lo up to here
+    for (uint32_t from = lo; (from < lo + period) && (from + 2U * period <= end); from++) {
+        const uint32_t tail = from + period - 3U;
+        if ((gen_at(q, tail) == 0U) && (gen_at(q, tail + 1U) == 0U) && (gen_at(q, tail + 2U) == 0U)) {
+            *loop = (struct span){from, period, (end - from) / period};
+            return true;
+        }
+    }
+    return false;
+}
+
+static void x_patch(struct xfer* x, uint32_t cycle, uint32_t insn) {
+    for (uint32_t i = 0U; i < x->q.n; i++) {
+        if (x->q.ev[i].cycle == cycle) {
+            x->q.ev[i].insn = insn;
+        }
+    }
+}
+
+static bool emit_xfer(struct gen_emitter* e, const struct xfer_cfg* c, bool read) {
+    struct xfer* x = &xs;
+    *x = (struct xfer){.two_pin = c->two_pin, .latency = c->latency, .first = UINT32_MAX, .uniform = c->loop};
+    gen_schedule_reset(&x->q, xfer_events, sizeof xfer_events / sizeof xfer_events[0]);
+    if (c->two_pin) {
+        x->p = c->period;
+        x->low = c->period == 3U ? 2U : c->period / 2U;
+        x->masked = c->period < TWO_PIN_MASK_WHOLE_BELOW;
+    } else {
+        x->p = later(c->period, 5U);
+        x->low = x->p / 2U;
+        x->masked = x->p <= c->latency + MARGIN + 1U;
+    }
+    x->high = x->p - x->low;
+    if (c->two_pin) {
+        cx_transfer(x, read, c->before, c->after, c->idle);
+    } else {
+        fx_transfer(x, read, c->before, c->after, c->idle);
+    }
+    if (read && x->uniform) {
+        x_side(x, x->chain + 1U, t_rbit(X_WORD, X_WORD));
+    }
+    if (x->q.failed || x->pend) {
+        return false;
+    }
+    struct span loop = {0U, 0U, 0U};
+    if (x->uniform) {
+        if (!find_loop(x, &loop) || (loop.count > 255U)) {
+            return false;
+        }
+        x_patch(x, x->counter, t_mov_imm(X_ACK, loop.count));
+    }
+
+    gen_emit(e, t_push(0x4FF0U)); // r4-r11, lr
+    gen_load_const(e, X_GPIO, (uint32_t)GPIO);
+    gen_load_const(e, X_PORT, PORT_BASE);
+    gen_emit(e, t_mov_imm(X_ONE, TCK));
+    gen_emit(e, t_lsr(X_REQ, X_REQ, 1U));
+    if (c->two_pin) {
+        gen_emit(e, t_mov_imm(X_PIN, TMSC));
+        gen_emit(e, t_mov_imm(X_ZERO, 0U));
+        gen_emit(e, t_bic(X_DATA, X_ONE, 3U, T_LSL, 0U)); // the caller's TDI, in r3
+        gen_load_const(e, X_TXEN, TXEN);
+    } else {
+        gen_emit(e, t_mov_imm(X_PIN, TDI));
+        gen_emit(e, t_lsl(X_DATA, 3U, TDI_PIN));
+        // TMS moves with the falling edge here, so it answers the masked port too.
+        gen_load_const(e, X_ACK, (uint32_t)&GPIO->MASK[0]);
+        gen_load_const(e, X_S0, ~(TCK | TDI | TMSC));
+        gen_emit(e, t_str(X_S0, X_ACK, 0U));
+        // Nothing says how long ago the last clock rose.
+        gen_delay(e, x->high);
+    }
+
+    gen_bind(e, XLABEL_LOOP);
+    uint32_t length;
+    if (x->uniform) {
+        // Every pass takes the cycles the unrolled bits would have: the subs and the taken branch
+        // fill the three it leaves free, and a filler after the last pass the one its untaken
+        // branch does not.
+        gen_delay(e, loop.from - gen_emit_span(e, &x->q, 0U, loop.from));
+        gen_bind(e, XLABEL_BITS);
+        const uint32_t tail = loop.from + loop.period - 3U;
+        gen_delay(e, tail - gen_emit_span(e, &x->q, loop.from, tail));
+        gen_emit(e, t_subs_imm(X_ACK, X_ACK, 1U));
+        gen_emit_branch(e, T_COND_NE, XLABEL_BITS);
+        gen_delay(e, 1U);
+        length = gen_emit_span(e, &x->q, loop.from + (loop.count * loop.period), UINT32_MAX);
+    } else {
+        length = gen_emit_schedule(e, &x->q);
+    }
+    // Cycles from the last rising edge to here, and the most the next clock or frame has to wait
+    // after it: the schedule's own x->t, which is past every constraint of the last one.
+    uint32_t since = length - x->rise;
+    uint32_t need = x->t - x->rise;
+    if (c->idle > X_IDLE_INLINE) {
+        gen_delay(e, need > since ? need - since : 0U);
+        slow_idle(e, x, c->idle);
+        since = need; // the loop's clocks end with whole phases of their own
+    }
+    if (read) {
+        gen_emit(e, t_str_post(X_WORD, X_BUF, 4U));
+        since++;
+    }
+    if (x->masked) {
+        gen_emit(e, t_mov_imm(X_ACK, 0U));
+        gen_emit(e, t_msr_primask(X_ACK));
+        since += 2U;
+    }
+    // The subs and the taken branch, then the next transfer's first edge.
+    const uint32_t to_first = since + 3U + x->first;
+    if (to_first < need) {
+        gen_delay(e, need - to_first);
+        since += need - to_first;
+    }
+    gen_emit(e, t_subs_imm(X_COUNT, X_COUNT, 1U));
+    gen_emit_branch(e, T_COND_NE, XLABEL_LOOP);
+    gen_emit(e, t_mov_imm(X_ACK, DAP_TRANSFER_OK));
+    if (c->two_pin) {
+        // The fall that ends the last TDO packet, as the next frame's would have.
+        gen_delay(e, need);
+        slow_tail(e);
+    }
+    const uint32_t exit = e->pos;
+    // ARM leaves TDI high after a transfer, on the pin itself on four wires.
+    if (!c->two_pin) {
+        gen_emit(e, t_strb(X_ONE, X_GPIO, (uint32_t)offsetof(GPIO_Type, B[0][TDI_PIN])));
+    }
+    gen_emit(e, t_mov(0U, X_ACK));
+    gen_emit(e, t_mov(1U, X_COUNT));
+    gen_emit(e, t_pop(0x8FF0U)); // r4-r11, pc
+
+    // Any other acknowledge: Exit1-DR with A3 still on TDI, Update-DR, Run-Test/Idle, TDI high,
+    // the idle cycles.
+    gen_bind(e, XLABEL_FAIL);
+    gen_delay(e, x->high);
+    if (c->two_pin) {
+        gen_emit(e, t_bic(X_DATA, X_ONE, X_REQ, T_LSR, 2U));
+        slow_frame(e, x, X_DATA, X_ONE, false);
+        slow_frame(e, x, X_DATA, X_ONE, true);
+        slow_frame(e, x, X_DATA, X_ZERO, true);
+        gen_emit(e, t_mov_imm(X_DATA, 0U));
+    } else {
+        gen_emit(e, tdi_word(X_DATA, X_REQ, 2U));
+        gen_emit(e, t_orr_imm(X_WORD, X_DATA, TMS_WORD));
+        slow_clock(e, x, X_WORD);
+        slow_clock(e, x, X_WORD);
+        slow_clock(e, x, X_DATA);
+        gen_emit(e, t_mov_imm(X_DATA, TDI));
+    }
+    if (c->idle != 0U) {
+        slow_idle(e, x, c->idle);
+    }
+    if (c->two_pin) {
+        slow_tail(e);
+    }
+    if (x->masked) {
+        gen_emit(e, t_mov_imm(X_S0, 0U));
+        gen_emit(e, t_msr_primask(X_S0));
+    }
+    gen_emit(e, t_b(((int32_t)exit - (int32_t)e->pos) * 4));
+    gen_resolve(e);
+    return !e->failed;
+}
+
+bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan, jtag_gen_xfer_fn* read,
+                    jtag_gen_xfer_fn* write) {
     if ((config->period < JTAG_GEN_PERIOD_MIN) || (config->period > JTAG_GEN_PERIOD_MAX) || (config->latency == 0U) ||
-        (config->latency > 64U) || (config->wire > JTAG_GEN_TWO_PIN)) {
+        (config->latency > 64U) || (config->wire > JTAG_GEN_TWO_PIN) || (config->before > 7U) ||
+        (config->after > 7U) || (config->idle > 255U)) {
         return false;
     }
     const bool two_pin = config->wire == JTAG_GEN_TWO_PIN;
@@ -428,17 +1109,49 @@ bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan
         return false;
     }
 
+    // The transfers, if they fit beside it. The delay register is X_DELAY, the filler the same.
+    struct xfer_cfg xc = {
+        .two_pin = two_pin,
+        .period = config->period,
+        .latency = config->latency,
+        .before = config->before,
+        .after = config->after,
+        .idle = config->idle,
+    };
+    const uint32_t scan_end = e.pos;
+    uint32_t read_at = scan_end;
+    uint32_t write_at = scan_end;
+    bool transfers = false;
+    // Unrolled where that fits, which leaves the fastest clocks the fewest instructions.
+    for (uint32_t loop = 0U; (loop < 2U) && !transfers; loop++) {
+        xc.loop = loop != 0U;
+        e.pos = scan_end;
+        e.failed = false;
+        read_at = e.pos;
+        transfers = emit_xfer(&e, &xc, true);
+        write_at = e.pos;
+        transfers = transfers && emit_xfer(&e, &xc, false);
+    }
+    if (!transfers) {
+        e.pos = scan_end;
+        e.failed = false;
+    }
+
     jtag_gen_info = (struct jtag_gen_info){
         .period = two_pin ? config->period : b.cycles,
         .frame = b.cycles,
         .code_bytes = 4U * e.pos,
         .masked = b.masked,
         .ok = true,
+        .transfers = transfers,
+        .looped = transfers && xc.loop,
     };
     // The code was written as data; the core has to fetch what is there now.
     __DSB();
     __ISB();
     *scan = (jtag_gen_scan_fn)(JTAG_GEN_BASE + 4U * scan_at + 1U);
+    *read = transfers ? (jtag_gen_xfer_fn)(JTAG_GEN_BASE + 4U * read_at + 1U) : NULL;
+    *write = transfers ? (jtag_gen_xfer_fn)(JTAG_GEN_BASE + 4U * write_at + 1U) : NULL;
     return true;
 }
 
@@ -448,6 +1161,8 @@ uint32_t jtag_gen_clock_hz = DAP_DEFAULT_SWJ_CLOCK;
 struct jtag_gen_info jtag_gen_info;
 uint32_t jtag_gen_latency[2] = {JTAG_GEN_LATENCY_DEFAULT, JTAG_GEN_LATENCY_DEFAULT};
 jtag_gen_scan_fn jtag_gen_scan;
+jtag_gen_xfer_fn jtag_gen_read;
+jtag_gen_xfer_fn jtag_gen_write;
 
 static struct jtag_gen_config built;
 static bool built_once;
@@ -466,14 +1181,20 @@ bool jtag_gen_ready(uint32_t wire) {
         .wire = wire,
         .period = period_for(jtag_gen_clock_hz),
         .latency = jtag_gen_latency[wire == JTAG_GEN_TWO_PIN ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE],
+        .before = DAP_Data.jtag_dev.index,
+        .after = DAP_Data.jtag_dev.index < DAP_Data.jtag_dev.count
+                     ? DAP_Data.jtag_dev.count - DAP_Data.jtag_dev.index - 1U
+                     : 0U,
+        .idle = DAP_Data.transfer.idle_cycles,
     };
-    if (built_once && (memcmp(&want, &built, sizeof want) == 0)) {
+    if (built_once && (gen_owner == GEN_OWNER_JTAG) && (memcmp(&want, &built, sizeof want) == 0)) {
         return built_ok;
     }
     built = want;
     built_once = true;
+    gen_owner = GEN_OWNER_JTAG;
     jtag_gen_info.ok = false;
-    built_ok = jtag_gen_build(&want, &jtag_gen_scan);
+    built_ok = jtag_gen_build(&want, &jtag_gen_scan, &jtag_gen_read, &jtag_gen_write);
     if (built_ok) {
         jtag_gen_builds++;
     } else {

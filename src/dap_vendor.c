@@ -109,7 +109,9 @@
  * in Hz, the period (a four-wire clock, or a two-pin packet) and a JTAG clock in core cycles, the
  * generated code's size in bytes, and how many configurations were generated and how many could
  * not be. Status is DAP_ERROR for a latency out of range, which is then left unchanged. `ok` is 0
- * when the current configuration could not be generated and the wire runs ARM's own code.
+ * when the current configuration could not be generated and the wire runs ARM's own code; its bit
+ * 1 says whole transfers were generated too, rather than run as scans, and bit 2 that their data
+ * bits are a loop.
  */
 #define JTAG_GEN_LATENCY_MAX 64U
 
@@ -181,6 +183,12 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             response[1] = DAP_ERROR;
             break;
         }
+#ifdef JTAG_CODEGEN
+        // The wire changed: generate for it now rather than in the next command.
+        if (DAP_Data.debug_port == DAP_PORT_JTAG) {
+            (void)jtag_gen_ready(cJTAG_Active() ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE);
+        }
+#endif
         return (2U << 16) | 2U; // the id and the mode byte in, the id and a status out
 
 #ifdef MARKER_PINS
@@ -286,7 +294,8 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         response[2] = (uint8_t)jtag_gen_latency[JTAG_GEN_TWO_PIN];
         response[3] = (uint8_t)jtag_gen_latency[JTAG_GEN_FOUR_WIRE];
         response[4] = jtag_gen_info.masked ? 1U : 0U;
-        response[5] = jtag_gen_info.ok ? 1U : 0U;
+        response[5] = (jtag_gen_info.ok ? 1U : 0U) | (jtag_gen_info.transfers ? 2U : 0U) |
+                      (jtag_gen_info.looped ? 4U : 0U);
         const uint32_t fields[] = {jtag_gen_clock_hz,       jtag_gen_info.period, jtag_gen_info.frame,
                                    jtag_gen_info.code_bytes, jtag_gen_builds,      jtag_gen_failures};
         uint8_t* out = response + 6;

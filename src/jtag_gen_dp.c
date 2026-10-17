@@ -143,7 +143,28 @@ void jgen_WriteAbort(uint32_t data) {
     set_tdi(1U);
 }
 
+/** One generated transfer, where they exist. */
+static uint8_t transfer_one(uint32_t request, uint32_t* data) {
+    const jtag_gen_xfer_fn fn = (request & DAP_TRANSFER_RnW) != 0U ? jtag_gen_read : jtag_gen_write;
+    uint32_t word = 0U;
+    if ((request & DAP_TRANSFER_RnW) == 0U) {
+        word = *data;
+    }
+    const uint32_t ack = (uint32_t)fn(request, (uint8_t*)&word, 1U, tdi_now());
+    tdi_level = 1U;
+    if ((ack == DAP_TRANSFER_OK) && ((request & DAP_TRANSFER_RnW) != 0U) && (data != NULL)) {
+        *data = word;
+    }
+    if ((request & DAP_TRANSFER_TIMESTAMP) != 0U) {
+        DAP_Data.timestamp = TIMESTAMP_GET();
+    }
+    return (uint8_t)ack;
+}
+
 uint8_t jgen_Transfer(uint32_t request, uint32_t* data) {
+    if (jtag_gen_read != NULL) {
+        return transfer_one(request, data);
+    }
     hold(1U, 1U); // Select-DR-Scan
     // Capture-DR, Shift-DR and the bypass before data with TDI as it was, then RnW, A2 and A3 with
     // the acknowledge coming back: at most twelve frames, with DAP_JTAG_DEV_CNT devices.
@@ -179,9 +200,108 @@ uint8_t jgen_Transfer(uint32_t request, uint32_t* data) {
 JTAG_BLOCK_FUNCTION(jgen_BlockImpl, jgen_Transfer, jgen_IR)
 // clang-format on
 
+/** `count` transfers of `request`, each retried on WAIT as ARM's block loop retries it. Returns the
+ * last acknowledge, and in `done` how many completed. */
+static uint32_t transfer_words(uint32_t request, uint8_t* words, uint32_t count, uint32_t* done) {
+    const jtag_gen_xfer_fn fn = (request & DAP_TRANSFER_RnW) != 0U ? jtag_gen_read : jtag_gen_write;
+    uint32_t ack = DAP_TRANSFER_OK;
+    uint32_t n = 0U;
+    while (count != 0U) {
+        const uint64_t result = fn(request, words, count, tdi_now());
+        tdi_level = 1U;
+        const uint32_t ok = count - (uint32_t)(result >> 32);
+        ack = (uint32_t)result;
+        n += ok;
+        words += 4U * ok;
+        count -= ok;
+        if (ack == DAP_TRANSFER_OK) {
+            break;
+        }
+        uint32_t retry = DAP_Data.transfer.retry_count;
+        while ((ack == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort) {
+            ack = (uint32_t)fn(request, words, 1U, tdi_now());
+        }
+        if (ack != DAP_TRANSFER_OK) {
+            break;
+        }
+        n++;
+        words += 4U;
+        count--;
+    }
+    *done = n;
+    return ack;
+}
+
+/** ARM's DAP_JTAG_TransferBlock, a block at a time rather than a word at a time. */
+static uint32_t block_whole(const uint8_t* request, uint8_t* response) HOT_PATH;
+static uint32_t block_whole(const uint8_t* request, uint8_t* response) {
+    uint32_t response_count = 0U;
+    uint32_t response_value = 0U;
+    uint8_t* response_head = response;
+    uint32_t done;
+    uint32_t discard;
+
+    response += 3;
+    DAP_TransferAbort = 0U;
+    DAP_Data.jtag_dev.index = *request++;
+    if (DAP_Data.jtag_dev.index >= DAP_Data.jtag_dev.count) {
+        goto end;
+    }
+    const uint32_t request_count = (uint32_t)(*(request + 0) << 0) | (uint32_t)(*(request + 1) << 8);
+    request += 2;
+    if (request_count == 0U) {
+        goto end;
+    }
+    const uint32_t request_value = *request++;
+    // The generated transfers are for one chain position: this command's.
+    if (!jtag_gen_ready(cJTAG_Active() ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE) || (jtag_gen_read == NULL)) {
+        return jgen_BlockImpl(request - 4, response_head);
+    }
+    const uint32_t ir = (request_value & DAP_TRANSFER_APnDP) != 0U ? JTAG_APACC : JTAG_DPACC;
+    jgen_IR(ir);
+
+    if ((request_value & DAP_TRANSFER_RnW) != 0U) {
+        // Every JTAG read is posted: the first returns nothing, and the last word comes from RDBUFF.
+        response_value = transfer_words(request_value, (uint8_t*)&discard, 1U, &done);
+        if (response_value != DAP_TRANSFER_OK) {
+            goto read_done;
+        }
+        response_value = transfer_words(request_value, response, request_count - 1U, &done);
+        response += 4U * done;
+        if (response_value != DAP_TRANSFER_OK) {
+            goto read_done;
+        }
+        if (ir != JTAG_DPACC) {
+            jgen_IR(JTAG_DPACC);
+        }
+        response_value = transfer_words(DP_RDBUFF | DAP_TRANSFER_RnW, response, 1U, &done);
+        response += 4U * done;
+    read_done:
+        response_count = (uint32_t)(response - response_head - 3) / 4U;
+    } else {
+        // The generated write only reads from `words`.
+        response_value = transfer_words(request_value, (uint8_t*)(uintptr_t)request, request_count, &done);
+        response_count = done;
+        if (response_value != DAP_TRANSFER_OK) {
+            goto end;
+        }
+        // Check last write
+        if (ir != JTAG_DPACC) {
+            jgen_IR(JTAG_DPACC);
+        }
+        response_value = transfer_words(DP_RDBUFF | DAP_TRANSFER_RnW, (uint8_t*)&discard, 1U, &done);
+    }
+
+end:
+    *(response_head + 0) = (uint8_t)(response_count >> 0);
+    *(response_head + 1) = (uint8_t)(response_count >> 8);
+    *(response_head + 2) = (uint8_t)response_value;
+    return (uint32_t)(response - response_head);
+}
+
 /** The same return shape DAP.c's own DAP_TransferBlock produces. */
 uint32_t jgen_TransferBlock(const uint8_t* request, uint8_t* response) {
-    uint32_t num = jgen_BlockImpl(request, response);
+    uint32_t num = block_whole(request, response);
 
     if ((*(request + 3) & DAP_TRANSFER_RnW) != 0U) {
         num |= 4U << 16;

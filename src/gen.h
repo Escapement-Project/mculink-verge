@@ -17,7 +17,13 @@
 #define GEN_BRANCH(cond, label) (((uint32_t)(label) << 24) | ((uint32_t)(cond) << 16))
 #define GEN_IS_BRANCH(insn) (((insn) & 0xFFFFU) == 0U)
 
-#define GEN_EVENTS 256U
+/** Which generator's code is in the SRAMX region they share. SWD and JTAG are never in use at
+ * once, so each regenerates when it finds the other's code there. */
+#define GEN_OWNER_NONE 0U
+#define GEN_OWNER_SWD 1U
+#define GEN_OWNER_JTAG 2U
+extern uint32_t gen_owner;
+
 #define GEN_LABELS 8U
 #define GEN_FIXUPS 16U
 
@@ -26,15 +32,19 @@ struct gen_event {
     uint32_t insn;
 };
 
-/** Instructions on cycles, sorted by cycle, at most one a cycle. */
+/** Instructions on cycles, sorted by cycle, at most one a cycle, in storage its user provides. */
 struct gen_schedule {
+    struct gen_event* ev;
+    uint32_t cap;
     uint32_t n;
     bool failed; // something did not fit, and the schedule is unusable
-    struct gen_event ev[GEN_EVENTS];
 };
 
-void gen_schedule_reset(struct gen_schedule* s);
+/** Empties `s`, which keeps its events in `ev`, `cap` of them. */
+void gen_schedule_reset(struct gen_schedule* s, struct gen_event* ev, uint32_t cap);
 bool gen_taken(const struct gen_schedule* s, uint32_t cycle);
+/** What is on `cycle`, or 0 when nothing is: no instruction or branch placeholder is 0. */
+uint32_t gen_at(const struct gen_schedule* s, uint32_t cycle);
 /** Puts `insn` on `cycle`. A cycle already taken, or a full schedule, fails the schedule. */
 void gen_put(struct gen_schedule* s, uint32_t cycle, uint32_t insn);
 
@@ -61,5 +71,8 @@ void gen_load_const(struct gen_emitter* e, uint32_t rd, uint32_t value);
 void gen_delay(struct gen_emitter* e, uint32_t cycles);
 /** The schedule as code. Returns its length in cycles. */
 uint32_t gen_emit_schedule(struct gen_emitter* e, const struct gen_schedule* s);
+/** The events on cycles `from` to `to`, not including `to`, as code that starts on `from`. Returns
+ * the cycle after the last, or `from` when there are none. */
+uint32_t gen_emit_span(struct gen_emitter* e, const struct gen_schedule* s, uint32_t from, uint32_t to);
 
 #endif
