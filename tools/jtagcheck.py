@@ -2,22 +2,22 @@
 # requires-python = ">=3.11"
 # dependencies = ["unicorn", "capstone"]
 # ///
-"""Hold the two-pin (OScan1) paths to the wire's timing, on the timing engine.
+"""Hold the JTAG paths, two-pin (OScan1) or four-wire, to the wire's timing, on the timing engine.
 
-For each clock asked for, frame OScan1 against a target that answers by time
-(tools/cycles.py's TimedCjtagTarget, with the TDO window measured on a CC1312R1) and run what a
-host sends: a DR scan and an IR scan as DAP_JTAG_Sequence commands, the way probe-rs reaches a
-debug port, then DAP_Transfer and DAP_TransferBlock reads and writes. Check that every reply
-carries what the target shifted out, that the target's registers got what was shifted in, that
-every TDO sample landed in its window, that no packet is shorter than the clock asked for, and
-that the wire never moved with TCKC high, stayed driven into a TDO packet, or entered
-Test-Logic-Reset.
+For each clock asked for, run what a host sends against a target that answers by time
+(tools/cycles.py's TimedCjtagTarget or TimedJtagTarget, with the TDO windows measured on a
+CC1312R1): a DR scan and an IR scan as DAP_JTAG_Sequence commands, the way probe-rs reaches a debug
+port, then DAP_Transfer and DAP_TransferBlock reads and writes. Check that every reply carries
+what the target shifted out, that the target's registers got what was shifted in, that every TDO
+sample landed in its window, and that no clock or packet is shorter than the clock asked for. On
+two pins, also that the wire never moved with TCKC high, stayed driven into a TDO packet, or
+entered Test-Logic-Reset.
 
-Reports, per clock: the cycles a JTAG clock takes in the DR scan (three packets), the least TDO
-margin, and what went wrong.
+Reports, per clock: the cycles a JTAG clock takes in the DR scan, the least TDO margin, and what
+went wrong.
 
-    uv run tools/cjtagcheck.py build-gen/mculink_cjtag.elf
-    uv run tools/cjtagcheck.py build/mculink_cjtag.elf --mhz 1 10 25 37.5
+    uv run tools/jtagcheck.py build-gen/mculink_cjtag.elf
+    uv run tools/jtagcheck.py build/mculink_cjtag.elf --wire jtag --mhz 1 10 25 37.5
 """
 
 import argparse
@@ -88,7 +88,7 @@ def unpack(reply: bytes, lengths: list[int]) -> int:
     return value
 
 
-def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0) -> dict:
+def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire: str = "cjtag") -> dict:
     dr = cy.JTAG_DR_OK | (WORD << 3)
     model = cy.Model(engine=True)
     probe = cy.Machine(elf, cy.Target([]), restart_at=set(), model=model)
@@ -98,13 +98,15 @@ def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0) -> d
     probe.command(bytes([cy.ID_SWJ_CLOCK]) + cy.u32(hz))
     probe.command(bytes([cy.ID_TRANSFER_CONFIG, 0]) + cy.u16(100) + cy.u16(0))
     probe.command(bytes([cy.ID_JTAG_CONFIGURE, 1, 4]))
-    # Framing on without an activation: the target starts in Run-Test/Idle, framed, which is
-    # where a host leaves it after driving the activation itself.
-    probe.command(bytes([cy.ID_CJTAG_CONTROL, 2]))
+    two_pin = wire == "cjtag"
+    if two_pin:
+        # Framing on without an activation: the target starts in Run-Test/Idle, framed, which is
+        # where a host leaves it after driving the activation itself.
+        probe.command(bytes([cy.ID_CJTAG_CONTROL, 2]))
     if gen_latency:
-        probe.command(bytes([ID_VENDOR_JTAG_GEN, gen_latency]))
+        probe.command(bytes([ID_VENDOR_JTAG_GEN, gen_latency if two_pin else 0, 0 if two_pin else gen_latency]))
     tap = cy.RecordingTap(dr, 35)
-    target = cy.TimedCjtagTarget(tap, latency=latency)
+    target = cy.TimedCjtagTarget(tap, latency=latency) if two_pin else cy.TimedJtagTarget(tap, latency=latency)
     probe.target = target
 
     problems: list[str] = []
@@ -145,7 +147,7 @@ def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0) -> d
     problems += target.problems[:4]
     if len(target.problems) > 4:
         problems.append(f"... {len(target.problems) - 4} more from the target")
-    if counts.moves_while_high:
+    if two_pin and counts.moves_while_high:
         problems.append(f"{counts.moves_while_high} TMSC moves with TCKC high")
     outside = [r for r in target.reads if r.early < 0 or (r.late is not None and r.late < 0)]
     if outside:
@@ -169,7 +171,8 @@ def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0) -> d
     if highs and min(highs) < high:
         problems.append(f"high phase {min(highs)} cycles, wanted {high}")
 
-    frames = sorted(b - a for a, b in zip(scan_rises, scan_rises[3:]))
+    per = 3 if two_pin else 1
+    frames = sorted(b - a for a, b in zip(scan_rises, scan_rises[per:]))
     margins = [m for r in target.reads for m in (r.early, r.late) if m is not None]
     return {
         "period": period,
@@ -182,6 +185,7 @@ def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0) -> d
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("elf", nargs="?", default="build-gen/mculink_cjtag.elf")
+    ap.add_argument("--wire", choices=["cjtag", "jtag"], default="cjtag")
     ap.add_argument("--mhz", type=float, nargs="*")
     ap.add_argument("--latency", type=int, default=8, help="cycles from the TDO packet's fall to valid TDO")
     ap.add_argument("--gen-latency", type=int, default=0, help="the latency to generate for, with vendor 0x8A; 0 leaves the image's")
@@ -194,7 +198,7 @@ def main() -> int:
     print(f"{'MHz':>8} {'P':>5} {'frame':>6} {'margin':>7}  problems")
     for m in mhz:
         hz = int(m * 1e6 + 0.5)
-        r = run(args.elf, hz, args.latency, cpu_hz, args.gen_latency)
+        r = run(args.elf, hz, args.latency, cpu_hz, args.gen_latency, args.wire)
         failures += bool(r["problems"])
         margin = "-" if r["margin"] is None else str(r["margin"])
         print(f"{hz / 1e6:8.3f} {r['period']:5d} {r['frame']:6d} {margin:>7}  " + ("; ".join(r["problems"]) or "ok"))

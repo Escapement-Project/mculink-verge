@@ -470,6 +470,57 @@ class TimedCjtagTarget:
         raise RuntimeError("a timed target answers read(cycle); this machine has no timing engine")
 
 
+class TimedJtagTarget:
+    """A four-wire JTAG target that answers by time.
+
+    It reads TMS and TDI on each rising TCK edge and launches TDO on each falling one. The probe
+    sees a bit from `latency` cycles after the falling-edge store that launched it until `hold`
+    cycles after the next one (a CC1312R1 in four-pin mode: 8, and 6); in between the two it reads
+    the old bit, and the read's late margin says so.
+    """
+
+    def __init__(self, tap: "RecordingTap", latency: int = 8, hold: int = 6):
+        self.tap = tap
+        self.latency, self.hold = latency, hold
+        # (falling-edge store cycle, bit). Before the first clock TDO idles high, as a target that
+        # is not shifting leaves it.
+        self.launches: list[tuple[int, int]] = [(-(10**9), 1)]
+        self.reads: list[Read] = []
+        self.problems: list[str] = []
+        self._open: list[tuple[Read, int]] = []  # reads whose bit's window has not closed yet
+
+    def restart(self) -> None:
+        pass
+
+    def fall(self, cycle: int) -> None:
+        last = len(self.launches) - 1
+        for read, k in self._open:
+            if k == last:
+                read.late = cycle + self.hold - read.cycle
+        self._open = [(r, k) for r, k in self._open if k != last]
+        self.launches.append((cycle, self.tap.tdo()))
+
+    def rise(self, tms: int, tdi: int) -> None:
+        self.tap.clock(tms, tdi)
+
+    def read(self, cycle: int) -> int:
+        k = len(self.launches) - 1
+        while k > 0 and self.launches[k][0] + self.latency > cycle:
+            k -= 1
+        at, bit = self.launches[k]
+        late = None
+        if k + 1 < len(self.launches):
+            late = self.launches[k + 1][0] + self.hold - cycle
+        r = Read(cycle, k, cycle - (at + self.latency), late, got=bit, wanted=bit)
+        if late is None:
+            self._open.append((r, k))
+        self.reads.append(r)
+        return bit
+
+    def bit(self) -> int:
+        raise RuntimeError("a timed target answers read(cycle); this machine has no timing engine")
+
+
 # Acknowledge bits in the order each protocol reads them, then the data phase.
 SWD_OK = [1, 0, 0]  # ack bit0 first, DAP_TRANSFER_OK == 1
 SWD_READ = SWD_OK + [0] * 33  # 32 data bits and parity
@@ -575,6 +626,9 @@ class Machine:
         self._frame_tms = 0
         # The TDO the target holds for the whole of a frame's third packet, rising edge included.
         self._frame_tdo = 0
+        # Four-wire TDO from one falling edge to the next: a sample after the rising edge reads the
+        # bit the fall launched, as on the wire, not the one the rising edge shifted in behind it.
+        self._tdo_latch = 0
         self.explain = False
         self._window: list[int] = []
         self._window_start = 0
@@ -696,8 +750,10 @@ class Machine:
         if offset in (REG_B0 + PIN_SWDIO, REG_B0 + PIN_TDO):
             if self.counting:
                 self.counts.trace.append("S" if offset == REG_B0 + PIN_SWDIO else "T")
+            if isinstance(self.target, TimedJtagTarget) and offset == REG_B0 + PIN_TDO:
+                return self.target.read(self.cycle)
             if self.tap is not None and offset == REG_B0 + PIN_TDO:
-                return self.tap.tdo()
+                return self._tdo_latch
             if isinstance(self.target, TimedCjtagTarget) and offset == REG_B0 + PIN_SWDIO:
                 driven = self._driven()
                 return int(driven) if driven != "z" else self.target.read(self.cycle)
@@ -710,6 +766,9 @@ class Machine:
                     return int(driven)
                 return self.target.read(self.cycle)
             return self.target.bit()
+        if REG_B0 <= offset < REG_B0 + 32:
+            # Any other pin reads its level, which for an output is the level it drives.
+            return (self.level >> (offset - REG_B0)) & 1
         if offset == REG_PIN:
             return self.level & self.dir
         if offset == REG_DIR:
@@ -781,6 +840,11 @@ class Machine:
                 self.target.rise(self.cycle, after_wire)
             elif before_clock and not after_clock:
                 self.target.fall(self.cycle)
+        if isinstance(self.target, TimedJtagTarget):
+            if after_clock and not before_clock:
+                self.target.rise((self.level >> PIN_SWDIO) & 1, after_tdi)
+            elif before_clock and not after_clock:
+                self.target.fall(self.cycle)
 
         if not self.counting:
             return
@@ -823,6 +887,8 @@ class Machine:
                     self.cjtag_tap.clock(self._frame_tms)
                 self._packet = (self._packet + 1) % 3
         elif before_clock and not after_clock:
+            if self.tap is not None:
+                self._tdo_latch = self.tap.tdo()
             self.counts.tck_fall += 1
             self.counts.fall_cycles.append(self.cycle)
             self.counts.trace.append("v")
@@ -1015,6 +1081,10 @@ def build(elf: str, wire: str, read: bool, model: Model) -> Machine:
     probe = Machine(elf, target, restart_at=set(), model=model)
     if wire == "swd":
         probe.resync_on_release = True
+    elif wire == "jtag" and model.engine:
+        # A generated path samples a short clock's TDO after the next falling edge, which only a
+        # target that answers by time can serve.
+        probe.target = TimedJtagTarget(RecordingTap(JTAG_DR_OK, 35))
     elif wire == "jtag":
         probe.tap = JtagTap(JTAG_DR_OK, 35)
     else:

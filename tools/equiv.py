@@ -13,9 +13,9 @@ This drives both builds over the same matrix -- every acknowledge a target can g
 turnaround length, with and without the data phase, with and without idle cycles -- and requires
 that they produce the same wire events and the same answer. Byte for byte, case for case.
 
-`--ignore-samples` leaves the loads of SWDIO out of the comparison. Generated code samples a bit
-up to two clocks after the edge that launched it, so its loads fall among different edges than
-ARM's; the edges, the levels and the answer still have to match.
+`--ignore-samples` leaves the loads of SWDIO and TDO out of the comparison. Generated code samples
+a bit up to two clocks after the edge that launched it, so its loads fall among different edges
+than ARM's; the edges, the levels and the answer still have to match.
 """
 
 import argparse
@@ -50,7 +50,7 @@ CLOCK_HZ = 10_000_000
 
 
 def wire(trace: list[str]) -> list[str]:
-    return [event for event in trace if event != "S"] if IGNORE_SAMPLES else trace
+    return [event for event in trace if event not in ("S", "T")] if IGNORE_SAMPLES else trace
 
 # The acknowledge, in the order SW_READ_BIT reads it: bit 0 first.
 ACKS = {
@@ -163,18 +163,32 @@ def run_cjtag(
     return wire(probe.end().trace), reply
 
 
-def run_cjtag_commands(
-    elf: str, ack: int, word: int, fast: bool, idle: int, commands: list[bytes], chain: tuple[int, ...] = (4,)
+def run_jtag_commands(
+    elf: str,
+    two_pin: bool,
+    ack: int,
+    word: int,
+    fast: bool,
+    idle: int,
+    commands: list[bytes],
+    chain: tuple[int, ...] = (4,),
 ) -> tuple[list[str], bytes]:
-    """Any commands through OScan1 framing, against the TAP run_cjtag uses: the replies, joined."""
+    """Any commands on four wires or through OScan1 framing, against the TAP run_jtag and
+    run_cjtag use: the replies, joined."""
     dr = ((ack >> 1) & 1) | ((ack & 1) << 1) | (((ack >> 2) & 1) << 2) | (word << 3)
     probe = Machine(elf, Target([]), restart_at=set(), model=Model())
     probe.command(bytes([ID_CONNECT, 2]))
-    probe.command(bytes([ID_SWJ_CLOCK]) + u32(50_000_000 if fast else 10_000_000))
+    # On four wires the generated path samples a short clock's TDO after the next falling edge,
+    # which an order-only TAP cannot hold for it; tools/jtagcheck.py times those. 15 MHz is the
+    # fastest clock that samples within its own.
+    probe.command(bytes([ID_SWJ_CLOCK]) + u32((50_000_000 if two_pin else 15_000_000) if fast else 10_000_000))
     probe.command(bytes([ID_TRANSFER_CONFIG, idle]) + u16(2) + u16(2))
     probe.command(bytes([ID_JTAG_CONFIGURE, len(chain)]) + bytes(chain))
-    probe.command(bytes([ID_CJTAG_CONTROL, 1]))
-    probe.cjtag_tap = JtagTap(dr, 35)
+    if two_pin:
+        probe.command(bytes([ID_CJTAG_CONTROL, 1]))
+        probe.cjtag_tap = JtagTap(dr, 35)
+    else:
+        probe.tap = JtagTap(dr, 35)
     probe.begin()
     replies = b"".join(probe.command(c) for c in commands)
     return wire(probe.end().trace), replies
@@ -334,7 +348,7 @@ def main() -> int:
             print(f"  ok     {name}  ({len(a[0])} events, {len(a[1])}B reply)")
         return 0
 
-    if args.wire == "cjtag" and args.command != "block":
+    if args.wire in ("cjtag", "jtag") and args.command != "block":
         # Two TAPs as the CC13xx's ICEPick puts them, the DAP at either end, so the IR and DR
         # scans cross bypass bits on both sides.
         chains = ((4,), (4, 6))
@@ -358,11 +372,17 @@ def main() -> int:
                     ):
                         cases.append((f"{kind} index={index} ack={ack} word=0x{word:08x} {'fast' if fast else 'paced'} idle={idle} chain={chain}",
                                       (ack, word, fast, idle, [payload], chain)))
+        two_pin = args.wire == "cjtag"
         failures = sum(
-            compare(name, run_cjtag_commands(args.reference, *case), run_cjtag_commands(args.candidate, *case))
+            compare(
+                name,
+                run_jtag_commands(args.reference, two_pin, *case),
+                run_jtag_commands(args.candidate, two_pin, *case),
+            )
             for name, case in cases
         )
-        print(f"\n{len(cases) - failures}/{len(cases)} two-pin {args.command} cases identical on the wire and in the reply")
+        kind = "two-pin" if two_pin else "four-wire"
+        print(f"\n{len(cases) - failures}/{len(cases)} {kind} {args.command} cases identical on the wire and in the reply")
         return 1 if failures else 0
 
     if args.command == "transfer":
