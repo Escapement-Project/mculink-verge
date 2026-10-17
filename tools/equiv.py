@@ -43,6 +43,8 @@ from cycles import (  # noqa: E402
 )
 
 AP_DRW_READ, AP_DRW_WRITE = 0x0F, 0x0D
+# Off, so that a generated image's JTAG wire is ARM's exactly even when the target answers WAIT.
+ID_JTAG_PACING = 0x8B
 
 # Set by --ignore-samples and --clock.
 IGNORE_SAMPLES = False
@@ -131,6 +133,7 @@ def run_jtag(
     probe = Machine(elf, Target([]), restart_at=set(), model=Model())
     probe.tap = JtagTap(dr, 35)
     probe.command(bytes([ID_CONNECT, 2]))
+    probe.command(bytes([ID_JTAG_PACING, 0]))
     probe.command(bytes([ID_SWJ_CLOCK]) + u32(10_000_000))
     probe.command(bytes([ID_TRANSFER_CONFIG, idle]) + u16(2) + u16(0))
     probe.command(bytes([ID_JTAG_CONFIGURE, count]) + bytes([4] * count))
@@ -156,6 +159,7 @@ def run_cjtag(
     dr = ((ack >> 1) & 1) | ((ack & 1) << 1) | (((ack >> 2) & 1) << 2) | (word << 3)
     probe = Machine(elf, Target([]), restart_at=set(), model=Model())
     probe.command(bytes([ID_CONNECT, 2]))
+    probe.command(bytes([ID_JTAG_PACING, 0]))
     probe.command(bytes([ID_SWJ_CLOCK]) + u32(50_000_000 if fast else 10_000_000))
     probe.command(bytes([ID_TRANSFER_CONFIG, idle]) + u16(2) + u16(0))
     probe.command(bytes([ID_JTAG_CONFIGURE, 1, 4]))
@@ -188,10 +192,11 @@ def run_jtag_commands(
     dr = ((ack >> 1) & 1) | ((ack & 1) << 1) | (((ack >> 2) & 1) << 2) | (word << 3)
     probe = Machine(elf, Target([]), restart_at=set(), model=Model())
     probe.command(bytes([ID_CONNECT, 2]))
+    probe.command(bytes([ID_JTAG_PACING, 0]))
     # On four wires the generated path samples a short clock's TDO after the next falling edge,
-    # which an order-only TAP cannot hold for it; tools/jtagcheck.py times those. 15 MHz is the
+    # which an order-only TAP cannot hold for it; tools/jtagcheck.py times those. 12.5 MHz is the
     # fastest clock that samples within its own.
-    probe.command(bytes([ID_SWJ_CLOCK]) + u32((50_000_000 if two_pin else 15_000_000) if fast else 10_000_000))
+    probe.command(bytes([ID_SWJ_CLOCK]) + u32((50_000_000 if two_pin else 12_500_000) if fast else 10_000_000))
     probe.command(bytes([ID_TRANSFER_CONFIG, idle]) + u16(2) + u16(2))
     probe.command(bytes([ID_JTAG_CONFIGURE, len(chain)]) + bytes(chain))
     if two_pin:
