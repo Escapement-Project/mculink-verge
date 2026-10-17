@@ -249,6 +249,64 @@ than the adapter wants swallows the next command scans.
   ~1730, 740 of them frames. The rest is the C between ~6 generated calls a transfer (90..145
   cycles each). Next: generate whole transfers, as swd_gen.c does.
 
+## Whole transfers (2026-10-17, commits 55f36f4..4305128)
+
+- `emit_xfer` generates one read and one write function per configuration:
+  `fn(request, words, count, tdi) -> ack | remaining << 32`. Each runs `count` transfers back to
+  back as ARM's JTAG_Transfer clocks them, with the chain position (`before`/`after`) and idle
+  cycles baked in, so `jtag_gen_ready` regenerates on DAP_JTAG_Configure and
+  DAP_TransferConfigure too. Four-wire decides on the acknowledge before the next fall; two-pin
+  before the next frame's first packet (a failing write's Exit1 TDI differs from the first data
+  bit). The failure path is sequential code: Exit1, Update, Run-Test/Idle, TDI high, idle, return.
+  C (`transfer_words` in `jtag_gen_dp.c`) retries WAIT per word as ARM's block loop does.
+  `block_whole` is DAP_TransferBlock: posted read, n-1 reads, RDBUFF; or writes then RDBUFF.
+- SWD and JTAG now share the lower 16 KB of SRAMX (`gen_owner`; each regenerates when it finds
+  the other's code). Schedules keep their events in storage each generator provides (transfers:
+  1280).
+- Unrolled first. Where that does not fit (two-pin from P 12 at latency 8), the data bits use the
+  same instructions every bit (reads `orr X_WORD, s, X_WORD, lsl #1` and an `rbit` after the last;
+  writes `bic` from bit 0 and `lsr X_WORD, #1`), `find_loop` finds the run around data bit 16 that
+  repeats every bit, cuts it where three cycles are free (subs, bne, the taken branch's bubble),
+  and a filler after the loop stands for the untaken branch's missing cycle. The emulator's frames
+  are exactly 3P through the loop at P 12 and 15. Vendor 0x8A's `ok` byte: bit 1 transfers, bit 2
+  looped.
+- gen_host: 5148 configurations, transfers in 2113 of 2268 JTAG ones. None for four-wire at
+  latency 9 and up with a clock shorter than about latency + 6: the transfer layout has no sample
+  slot there (the scan engine lengthens its clock instead). Not needed at the default latency 8.
+- Emulator: unicorn's IT-block fault fires on write hooks as well (clang `itt eq; ldreq; streq`,
+  then the branch target lost its `uxtb`). Stores are now counted from the code hook like loads,
+  and SRAMX code is checked against the bytes it was decoded from; nothing hooks memory.
+  equiv.py sorts TMS and TDI changes between edges. QEMU harness: FPU on (gcc keeps a constant in
+  d8 in `emit_xfer`).
+- Verified: gate (both compilers); equiv four-wire 1080 transfer and 188 block cases, two-pin 128
+  block cases, gcc and clang. Two-pin transfer equivalence was still running at commit time.
+- Bench (lab image, dap.py, 400 queued 127-word ROM reads, depth 3; every block checked against
+  the 1 MHz read):
+
+  | MHz | two-pin before | two-pin after | four-wire |
+  | --- | --- | --- | --- |
+  | 1 | 7410 ms | 6373 | 2136 |
+  | 5 | 1753 | 1290 | 518 |
+  | 10 | 1046 | 655 | 283 |
+  | 15 | 522 | 522 | 207 |
+  | 25 | 421 | 421 | 147 |
+  | 50 | 342 | 342 | 131.6 (30 MHz top) |
+
+  Before = transfers not generated at P >= 12 (scans). Best: four-wire 1508 KiB/s, two-pin 581.
+- Per-word slope, bench against emulator: two-pin 10 MHz 12.34 / 12.31 us, 50 MHz 6.28 / 5.18;
+  four-wire 10 MHz 5.16 / 4.10, 30 MHz 2.19 / 1.47. Commands cost ~30 us more than emulated (USB).
+  The code lab times MPIN/SET/DIRSET store patterns and the 5-cycle clock with its TDO load
+  exactly as the emulator does, so the excess is not the cost model.
+- **The excess is WAIT.** The CC13xx's AP answers WAIT when the next Capture-DR comes too soon
+  after the previous Update-DR. With wait_retry 0, a 127-word read stops at word 1 with WAIT at
+  idle 0: four-wire at 5..30 MHz, two-pin at 15..50 MHz. Idle cycles for a clean block: four-wire
+  2 at 5/10 MHz, 4 at 15, 6 at 30; two-pin 1 at 15/25, 2 at 50; none for two-pin at 10 and below.
+  Neither a time nor a clock count alone fits. Four-wire 30 MHz by idle: 0 131.6, 1 134.6, 2
+  137.7, 3 140.7, 4 144.0, 6 112.3, 8 117.8, 12 128.7 ms. probe-rs sends idle 0, wait_retry
+  0xffff, so every word pays a WAIT and a retry from C: ~0.7 us at 30 MHz, ~0.3 of it wire.
+- Idle above 4 runs in `slow_idle`: 8 cycles a clock at P 5 (the loop is not folded into it).
+- Next: retry WAIT inside the generated code, so idle 0 costs about what the best idle does.
+
 ## The ICEPick join needs time, not a count (2026-10-17)
 
 - probe-rs four-wire failed from 8 MHz on every image: the first DP access read all ones (the
@@ -290,8 +348,8 @@ than the adapter wants swallows the next command scans.
 
 1. Lab: OScan1 window and four-wire window done; take-back timing bounded; second die open.
 2. Emulator: done for both wires (`TimedCjtagTarget`, `TimedJtagTarget`).
-3. Generator: both wires as straight-line blocks under ARM's C (above). Next: generated whole
-   transfers for DAP_Transfer/TransferBlock throughput.
+3. Generator: both wires as straight-line blocks, and whole transfers, unrolled or looped (above).
+   Next: WAIT retried inside the generated transfers.
 4. Gate: done for both wires.
 5. Hardware: both wires correct at 1..50 MHz through probe-rs and dap.py.
 6. Host: probe-rs drives the activation and frames through the probe (outside this repo),
