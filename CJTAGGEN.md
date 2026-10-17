@@ -5,25 +5,18 @@ first: the SWD generator is the template, and its timing model, scheduler, regis
 conventions and SRAMX placement carry over unchanged. This file holds only what differs for
 JTAG, and the wire facts the two-pin generator has to respect.
 
-## Open decisions
+## Decisions (2026-10-17)
 
-1. **Where the activation lives.** It is now TI's documented sequence (below), fully understood,
-   and needs raw clocks between frames, which standard commands can carry (`DAP_SWJ_Pins` in
-   `DAP_ExecuteCommands`, then vendor `0x83 0x02` and `DAP_JTAG_Sequence`). The J-Link splits it
-   the same way: its firmware frames, its host activates. The 2026-10-14 plan wanted it inside
-   the probe so probe-rs sends one vendor command; the sequence is TI-specific (ICEMelter,
-   controller selection), which still argues for the host, next to `icepick.rs`.
-   Recommendation: host.
-2. **Generate four-wire JTAG in the same step.** Same scheduler, same transfer logic, a different
-   clock emitter. Recommendation: yes; it also retires the four-wire path's overshoot (44% at
-   50 MHz, DESIGN.md) and the clang layout failure.
-3. **Keep ARM's C paths as the fallback**, as `arm_SWD_Transfer` is for SWD. Recommendation: yes.
-4. **Scan format.** TI's own probes default to OScan2 (XDS110) or OScan5 (XDS100v3, XDS200) on
-   this part; see "What TI's own configurations say". OScan5 would send 30% fewer packets a
-   transfer, but nothing we hold says how it leaves Shift. Recommendation: OScan1 only, and
-   revisit OScan5 if USB stops being the limit and a reference turns up.
-5. **Detach.** Power the JTAG domain down at detach (see "Detach"), or leave it on.
-   Recommendation: power it down; it is what a pin reset leaves and it clears halt-in-boot.
+1. **The activation lives in the host**, in probe-rs next to `icepick.rs`: standard commands plus
+   vendor `0x83 0x02`, in one or two `DAP_ExecuteCommands` packets. The firmware frames.
+2. **The generator covers OScan1 and four-wire JTAG in the same step**, one scheduler with two
+   clock emitters. It also retires the four-wire overshoot (44% at 50 MHz, DESIGN.md) and the
+   clang layout failure.
+3. **ARM's C paths stay as the fallback**, as `arm_SWD_Transfer` is for SWD.
+4. **OScan1 first.** OScan2 and OScan5 come later, built from a capture of TI's XDS110 (which
+   defaults to OScan2 on this part; see "What TI's own configurations say"). OScan5 still needs
+   a reference for how it leaves Shift.
+5. **Detach powers the JTAG domain down** (see "Detach").
 
 ## The wire, as measured on a CC1312R1 (2026-10-16/17)
 
@@ -200,7 +193,10 @@ than the adapter wants swallows the next command scans.
 4. Gate: equivalence against ARM's paths with samples excluded, every P 3..40 on the timed
    target, zero moves while TCKC is high, baselines under `tools/baseline-codegen`.
 5. Hardware: every P on the CC1312R1 (`dap.py cjtag --mem --sweep`), soak, then four-wire.
-6. Host: probe-rs drives the activation and frames through the probe (outside this repo).
+6. Host: probe-rs drives the activation and frames through the probe (outside this repo),
+   attaches from any state as in "Attach from any state", and detaches as in "Detach".
+7. Later: capture TI's XDS110 on this part, then OScan2, then OScan5 if the capture or a spec
+   shows how it leaves Shift.
 
 ## Tools
 
