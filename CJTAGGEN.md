@@ -331,8 +331,38 @@ than the adapter wants swallows the next command scans.
   MHz (debug build; attach included), against ~45 ms in the probe at 30 MHz four-wire. probe-rs
   builds its ARM interface for CMSIS-DAP JTAG with `create_jtag`: its own JTAG-DP over
   DAP_JTAG_Sequence, a host round trip per scan, so DAP_Transfer and DAP_TransferBlock (and the
-  generated transfers) are never used. Routing CMSIS-DAP JTAG through the probe's DAP_Transfer
-  as SWD is routed is the host-side change that would let the firmware's speed through.
+  generated transfers) are never used. Release build: 64 KiB in 1.11 s four-wire, 1.27 s
+  two-pin at 50 MHz.
+
+## probe-rs through DAP_Transfer (2026-10-17, uncommitted in probe-rs; firmware dcd15c3)
+
+- probe-rs change (left in its working tree): `JtagChainAccess::jtag_dp_transfers`
+  (CMSIS-DAP returns itself); `ArmCommunicationInterface` sends DP/AP traffic through the SWD port
+  engine whenever the probe offers it, so CMSIS-DAP JTAG uses `DAP_Transfer`/`DAP_TransferBlock`
+  with the chain index. In JTAG mode the CMSIS-DAP batch runner sends ABORT as `DAP_WriteABORT`
+  (a DP 0x0 write would reach DPACC), brings the TAP to Run-Test/Idle first and records it there
+  after. Chain routing, ICEPick and sequences still go through probe-rs's scans. 479 probe-rs tests
+  pass (two new), clippy clean. Changelog fragments added.
+- End to end (release, attach included, `read b32 0x0`): 256 KiB four-wire 0.54 / 0.36 / 0.37 s
+  at 10 / 25 / 50 MHz, two-pin 1.20 / 0.72 / 0.62 s; 64 KiB four-wire 0.14 s (was 1.11). Hashes
+  equal on both wires at every clock. Flash + verify of 64 KiB at 0x20000: four-wire 0.66 s, two-pin
+  0.76 s at 50 MHz.
+- Idle cycles end to end (256 KiB read, 50 MHz): four-wire idle 6 0.34 against 0.36 s;
+  two-pin idle 2 0.57 against 0.635 s. Still open.
+- **Four-wire TDO is late after a system reset.** probe-rs's four-wire reset (AON_PMCTL SYSRESET)
+  leaves the routed DAP sending TDO about 2 cycles later until the next pin reset: window from
+  +10 to next fall + 8, against +8 to next fall + 7 after nRESET (`jtag4dap.py --dpacc
+  [--no-reset]`, which routes the DAP and times its DPACC scan; jtag4lab.py
+  measured the ICEPick's own TDO). The generated transfers read the acknowledge's last bit at
+  latency + 1, so they failed there while ARM's C path and probe-rs's scans, which sample late,
+  did not. Fixed in dcd15c3: four-wire latency default 10, and that bit sampled as late as the
+  decision allows (at least latency + 4 on unmasked clocks). Cost: the four-wire clock floor is 6
+  cycles (25 MHz), not 5.
+- **probe-rs four-wire reset on the CC13xx never worked**, on any build: `Icepick::new` for four
+  wires reset the TAPs but kept the chain state, which still held the DAP, so every ICEPick scan
+  after the reset was 13 bits instead of 7. Fixed in icepick.rs by setting the ICEPick-only chain
+  after the TAP reset, as the two-pin branch did. A 200 us power-up wait was tried and is not
+  needed.
 
 ## The ICEPick join needs time, not a count (2026-10-17)
 
@@ -376,8 +406,7 @@ than the adapter wants swallows the next command scans.
 1. Lab: OScan1 window and four-wire window done; take-back timing bounded; second die open.
 2. Emulator: done for both wires (`TimedCjtagTarget`, `TimedJtagTarget`).
 3. Generator: both wires as straight-line blocks, and whole transfers, unrolled or looped (above).
-   Open: how to stop paying for the target's WAITs (above); probe-rs using
-   DAP_Transfer for JTAG.
+   probe-rs reaches them through DAP_Transfer (uncommitted there). Open: the target's WAITs.
 4. Gate: done for both wires.
 5. Hardware: both wires correct at 1..50 MHz through probe-rs and dap.py.
 6. Host: probe-rs drives the activation and frames through the probe (outside this repo),
