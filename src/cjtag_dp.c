@@ -12,6 +12,9 @@
 #include "DAP.h"
 #include "cjtag.h"
 #include "jtag_dp.h"
+#ifdef JTAG_CODEGEN
+#include "jtag_gen.h"
+#endif
 
 /** Which of the three copies a call goes to: four-wire, or two-pin paced or not.
  *
@@ -21,9 +24,16 @@
  */
 #define CJTAG_PICK(name) (DAP_Data.fast_clock ? cjtagf_##name : cjtag_##name)
 
+/** The generated frames when they could be built for this clock, ARM's copies when not. */
+#ifdef JTAG_CODEGEN
+#define CJTAG_ROUTE(name) (jtag_gen_ready() ? jgen_##name : CJTAG_PICK(name))
+#else
+#define CJTAG_ROUTE(name) CJTAG_PICK(name)
+#endif
+
 void JTAG_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo) {
     if (cJTAG_Active()) {
-        CJTAG_PICK(Sequence)(info, tdi, tdo);
+        CJTAG_ROUTE(Sequence)(info, tdi, tdo);
     } else {
         jtag4_Sequence(info, tdi, tdo);
     }
@@ -31,22 +41,22 @@ void JTAG_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo) {
 
 void JTAG_IR(uint32_t ir) {
     if (cJTAG_Active()) {
-        CJTAG_PICK(IR)(ir);
+        CJTAG_ROUTE(IR)(ir);
     } else {
         jtag4_IR(ir);
     }
 }
 
-uint32_t JTAG_ReadIDCode(void) { return cJTAG_Active() ? CJTAG_PICK(ReadIDCode)() : jtag4_ReadIDCode(); }
+uint32_t JTAG_ReadIDCode(void) { return cJTAG_Active() ? CJTAG_ROUTE(ReadIDCode)() : jtag4_ReadIDCode(); }
 
 void JTAG_WriteAbort(uint32_t data) {
     if (cJTAG_Active()) {
-        CJTAG_PICK(WriteAbort)(data);
+        CJTAG_ROUTE(WriteAbort)(data);
     } else {
         jtag4_WriteAbort(data);
     }
 }
 
 uint8_t JTAG_Transfer(uint32_t request, uint32_t* data) {
-    return cJTAG_Active() ? CJTAG_PICK(Transfer)(request, data) : jtag4_Transfer(request, data);
+    return cJTAG_Active() ? CJTAG_ROUTE(Transfer)(request, data) : jtag4_Transfer(request, data);
 }

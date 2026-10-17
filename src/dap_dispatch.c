@@ -33,6 +33,9 @@
 #ifdef SWD_CODEGEN
 #include "swd_gen.h"
 #endif
+#ifdef JTAG_CODEGEN
+#include "jtag_gen.h"
+#endif
 
 extern uint32_t arm_DAP_ProcessCommand(const uint8_t* request, uint8_t* response);
 
@@ -83,6 +86,11 @@ static uint32_t transfer_block(const uint8_t* request, uint8_t* response) {
     if (!cJTAG_Active()) {
         return JTAG_TransferBlock(request, response);
     }
+#ifdef JTAG_CODEGEN
+    if (jtag_gen_ready()) {
+        return jgen_TransferBlock(request, response);
+    }
+#endif
     if (DAP_Data.fast_clock) {
         return cjtagf_TransferBlock(request, response);
     }
@@ -156,21 +164,33 @@ uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* response) {
             return (1U << 16) + 1U + transfer_block(request + 1, response + 1);
         }
     }
-#ifdef SWD_CODEGEN
+#if defined(SWD_CODEGEN) || defined(JTAG_CODEGEN)
     if (*request == ID_DAP_SWJ_Clock) {
-        // ARM keeps only the delay it derives from the clock, and the generator wants the clock.
+        // ARM keeps only the delay it derives from the clock, and the generators want the clock.
         const uint32_t hz = (uint32_t)request[1] | ((uint32_t)request[2] << 8) | ((uint32_t)request[3] << 16) |
                             ((uint32_t)request[4] << 24);
         if (hz != 0U) {
+#ifdef SWD_CODEGEN
             swd_gen_clock_hz = hz;
+#endif
+#ifdef JTAG_CODEGEN
+            jtag_gen_clock_hz = hz;
+#endif
         }
     }
     const uint32_t result = arm_DAP_ProcessCommand(request, response);
+    // Generate now rather than in the first transfer, which would carry the time it takes.
+#ifdef SWD_CODEGEN
     if ((*request == ID_DAP_SWJ_Clock) || (*request == ID_DAP_SWD_Configure) ||
         (*request == ID_DAP_TransferConfigure)) {
-        // Generate now rather than in the first transfer, which would carry the time it takes.
         (void)swd_gen_ready();
     }
+#endif
+#ifdef JTAG_CODEGEN
+    if (*request == ID_DAP_SWJ_Clock) {
+        (void)jtag_gen_ready();
+    }
+#endif
     return result;
 #else
     return arm_DAP_ProcessCommand(request, response);

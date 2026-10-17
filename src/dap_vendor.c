@@ -22,6 +22,9 @@
 #ifdef SWD_CODEGEN
 #include "swd_gen.h"
 #endif
+#ifdef JTAG_CODEGEN
+#include "jtag_gen.h"
+#endif
 #include "target_sense.h"
 
 /// Identifies this firmware and says what it can do. Read-only, so a host may send it blindly.
@@ -40,6 +43,8 @@
 #define ID_VENDOR_LAB ID_DAP_Vendor8
 /// Reports the generated SWD paths and sets the read latency they are generated for. See below.
 #define ID_VENDOR_SWD_GEN ID_DAP_Vendor9
+/// The same for the generated two-pin frames.
+#define ID_VENDOR_JTAG_GEN ID_DAP_Vendor10
 
 /** Answered by ID_VENDOR_CJTAG_INFO, so a host can recognise this firmware rather than assume it.
  *
@@ -71,11 +76,19 @@
 #define CJTAG_CAP_SWD_CODEGEN (1U << 3)
 /// ID_VENDOR_CJTAG_CONTROL takes mode 2: framing on, with the activation left to the host.
 #define CJTAG_CAP_OSCAN1_ENTER (1U << 4)
+/// Two-pin frames are generated at run time, and ID_VENDOR_JTAG_GEN is implemented.
+#define CJTAG_CAP_JTAG_CODEGEN (1U << 5)
 #ifdef SWD_CODEGEN
-#define CJTAG_CAPS_BUILT CJTAG_CAP_SWD_CODEGEN
+#define CJTAG_CAPS_SWD CJTAG_CAP_SWD_CODEGEN
 #else
-#define CJTAG_CAPS_BUILT 0U
+#define CJTAG_CAPS_SWD 0U
 #endif
+#ifdef JTAG_CODEGEN
+#define CJTAG_CAPS_JTAG CJTAG_CAP_JTAG_CODEGEN
+#else
+#define CJTAG_CAPS_JTAG 0U
+#endif
+#define CJTAG_CAPS_BUILT (CJTAG_CAPS_SWD | CJTAG_CAPS_JTAG)
 
 /** ID_VENDOR_SWD_GEN takes `latency`: the cycles from a rising-edge store to the first load that
  * sees the bit it launched, 1 to 64, or 0 to leave it as it is. Setting it regenerates.
@@ -87,6 +100,17 @@
  * could not be generated and transfers run ARM's own code.
  */
 #define SWD_GEN_LATENCY_MAX 64U
+
+/** ID_VENDOR_JTAG_GEN takes `latency`: the cycles from the falling edge that starts a TDO packet
+ * to the first load that sees TDO, 1 to 64, or 0 to leave it as it is. Setting it regenerates.
+ *
+ * It answers `status, latency, masked, ok`, then little-endian u32s: the clock asked for in Hz,
+ * the packet period and the frame in core cycles, the generated code's size in bytes, and how
+ * many configurations were generated and how many could not be. Status is DAP_ERROR for a
+ * latency out of range, which is then left unchanged. `ok` is 0 when the current configuration
+ * could not be generated and frames run ARM's own code.
+ */
+#define JTAG_GEN_LATENCY_MAX 64U
 
 /** ID_VENDOR_TARGET takes `mode, channel` and answers `status, code, millivolts, detect`, the two
  * middle fields little-endian u16.
@@ -233,6 +257,33 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         response[4] = swd_gen_info.ok ? 1U : 0U;
         const uint32_t fields[] = {swd_gen_clock_hz,         swd_gen_info.write_period, swd_gen_info.read_period,
                                    swd_gen_info.code_bytes, swd_gen_builds,            swd_gen_failures};
+        uint8_t* out = response + 5;
+        for (uint32_t i = 0U; i < sizeof fields / sizeof fields[0]; i++) {
+            out[0] = (uint8_t)fields[i];
+            out[1] = (uint8_t)(fields[i] >> 8);
+            out[2] = (uint8_t)(fields[i] >> 16);
+            out[3] = (uint8_t)(fields[i] >> 24);
+            out += 4;
+        }
+        return (2U << 16) | (uint32_t)(out - response);
+    }
+#endif
+
+#ifdef JTAG_CODEGEN
+    case ID_VENDOR_JTAG_GEN: {
+        const uint32_t latency = request[1];
+        response[1] = DAP_OK;
+        if (latency > JTAG_GEN_LATENCY_MAX) {
+            response[1] = DAP_ERROR;
+        } else if (latency != 0U) {
+            jtag_gen_latency = latency;
+        }
+        (void)jtag_gen_ready();
+        response[2] = (uint8_t)jtag_gen_latency;
+        response[3] = jtag_gen_info.masked ? 1U : 0U;
+        response[4] = jtag_gen_info.ok ? 1U : 0U;
+        const uint32_t fields[] = {jtag_gen_clock_hz,       jtag_gen_info.period, jtag_gen_info.frame,
+                                   jtag_gen_info.code_bytes, jtag_gen_builds,      jtag_gen_failures};
         uint8_t* out = response + 5;
         for (uint32_t i = 0U; i < sizeof fields / sizeof fields[0]; i++) {
             out[0] = (uint8_t)fields[i];

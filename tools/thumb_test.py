@@ -34,7 +34,7 @@ for rt, rn, imm in (("r5", "r9", 0x100), ("r11", "r9", 0), ("r2", "r9", 0x280), 
 for rt, rn in (("r10", "r1"), ("r0", "r12")):
     case(f"t_str_post({R[rt]}, {R[rn]}, 4)", f"str.w {rt}, [{rn}], #4")
     case(f"t_ldr_post({R[rt]}, {R[rn]}, 4)", f"ldr.w {rt}, [{rn}], #4")
-for op in ("and", "orr", "eor"):
+for op in ("and", "bic", "orr", "eor"):
     for rd, rn, rm, kind, amount in (
         ("r11", "r2", "r0", "lsr", 3),
         ("r12", "r2", "r10", "lsl", 2),
@@ -47,6 +47,14 @@ for op in ("and", "orr", "eor"):
     case(f"t_{op}(11, 2, 0, T_LSL, 0)", f"{op}.w r11, r2, r0")
 for rd, rm in (("r6", "r6"), ("r10", "r12"), ("r0", "r11"), ("r1", "r4")):
     case(f"t_mov({R[rd]}, {R[rm]})", f"mov.w {rd}, {rm}")
+for rd, rm, amount in (("r0", "r0", 1), ("r10", "r4", 31), ("lr", "r12", 16)):
+    case(f"t_lsr({R[rd]}, {R[rm]}, {amount})", f"lsr.w {rd}, {rm}, #{amount}")
+for rd, rn, rm in (("r0", "r0", "r12"), ("r4", "r11", "lr"), ("lr", "r1", "r2")):
+    case(f"t_lsr_reg({R[rd]}, {R[rn]}, {R[rm]})", f"lsr.w {rd}, {rn}, {rm}")
+for rd, rm in (("r0", "r4"), ("r12", "lr"), ("r4", "r4")):
+    case(f"t_rbit({R[rd]}, {R[rm]})", f"rbit {rd}, {rm}")
+for rd, rn, imm in (("r12", "r1", 32), ("r0", "r0", 0), ("lr", "r4", 255)):
+    case(f"t_rsb_imm({R[rd]}, {R[rn]}, {imm})", f"rsb.w {rd}, {rn}, #{imm}")
 for rn, imm in (("r11", 1), ("r11", 4), ("r4", 255)):
     case(f"t_cmp_imm({R[rn]}, {imm})", f"cmp.w {rn}, #{imm}")
     case(f"t_tst_imm({R[rn]}, {imm})", f"tst.w {rn}, #{imm}")
@@ -60,7 +68,7 @@ for offset in (-8, -4, 4, 8, 0x100, -0x1000, 0x7FFFC, -0x80000):
     case(f"t_bcond(T_COND_EQ, {offset})", f"beq.w .{offset:+d}")
 for offset in (-8, 4, 0x100, -0x1000, 0x3FFFFC, -0x400000, 0xFFFFFC, -0xFFFFFC):
     case(f"t_b({offset})", f"b.w .{offset:+d}")
-for rn in ("r5", "r6"):
+for rn in ("r5", "r6", "lr"):
     case(f"t_msr_primask({R[rn]})", f"msr primask, {rn}")
 case("t_push(0x4FF0)", "push.w {r4-r11, lr}")
 case("t_pop(0x8FF0)", "pop.w {r4-r11, pc}")

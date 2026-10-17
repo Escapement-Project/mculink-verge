@@ -44,6 +44,9 @@ option(SWD_SAMPLE_AFTER_EDGE "Sample SWDIO after the rising edge on the delayed 
 # Generate the SWD transfer paths at run time into SRAMX, for the clock the host asks for. See
 # src/swd_gen.c. Off until the equivalence and the gate pass on it.
 option(SWD_CODEGEN "Generate the SWD transfer paths at run time" OFF)
+# Generate the two-pin (OScan1) frames at run time into SRAMX. See src/jtag_gen.c. Off until the
+# equivalence, the timed check and the bench pass on it.
+option(JTAG_CODEGEN "Generate the two-pin JTAG frames at run time" OFF)
 # Run TinyUSB's device stack from SRAM. Flash runs at 11 wait states, and the stack's interrupt
 # handler and task are branchy code the prefetcher cannot cover; they are paid once per command.
 option(USB_RAM "Run TinyUSB from SRAM" ON)
@@ -71,6 +74,9 @@ if(SWD_SAMPLE_AFTER_EDGE)
 endif()
 if(SWD_CODEGEN)
   string(APPEND FW_VARIANT "+codegen")
+endif()
+if(JTAG_CODEGEN)
+  string(APPEND FW_VARIANT "+jtaggen")
 endif()
 if(CODE_LAB)
   string(APPEND FW_VARIANT "+lab")
@@ -206,10 +212,17 @@ if(SWD_SAMPLE_AFTER_EDGE)
   target_compile_definitions(${PROJECT_NAME} PRIVATE SWD_SAMPLE_AFTER_EDGE=1)
 endif()
 
+if(SWD_CODEGEN OR JTAG_CODEGEN)
+  target_sources(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/gen.c)
+endif()
 if(SWD_CODEGEN)
-  target_sources(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_gen.c
-                                         ${CMAKE_CURRENT_SOURCE_DIR}/src/gen.c)
+  target_sources(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_gen.c)
   target_compile_definitions(${PROJECT_NAME} PRIVATE SWD_CODEGEN=1)
+endif()
+if(JTAG_CODEGEN)
+  target_sources(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_gen.c
+                                         ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_gen_dp.c)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE JTAG_CODEGEN=1)
 endif()
 
 if(CODE_LAB)

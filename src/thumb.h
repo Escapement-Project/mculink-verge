@@ -60,16 +60,29 @@ static inline uint32_t t_orr(uint32_t rd, uint32_t rn, uint32_t rm, uint32_t typ
 static inline uint32_t t_eor(uint32_t rd, uint32_t rn, uint32_t rm, uint32_t type, uint32_t amount) {
     return t_dp_reg(0x4U, 0U, rd, rn, rm, type, amount);
 }
+static inline uint32_t t_bic(uint32_t rd, uint32_t rn, uint32_t rm, uint32_t type, uint32_t amount) {
+    return t_dp_reg(0x1U, 0U, rd, rn, rm, type, amount);
+}
 /** mov.w rd, rm, and the shifts, which are the same encoding with rn = pc. */
 static inline uint32_t t_mov(uint32_t rd, uint32_t rm) { return t_dp_reg(0x2U, 0U, rd, T_PC, rm, T_LSL, 0U); }
+/** lsr.w rd, rm, #amount, 1 to 31. */
+static inline uint32_t t_lsr(uint32_t rd, uint32_t rm, uint32_t amount) {
+    return t_dp_reg(0x2U, 0U, rd, T_PC, rm, T_LSR, amount);
+}
+/** lsr.w rd, rn, rm: a shift by a register. */
+static inline uint32_t t_lsr_reg(uint32_t rd, uint32_t rn, uint32_t rm) { return t32(0xFA20U | rn, 0xF000U | (rd << 8) | rm); }
+/** rbit: rm's bits in the reverse order. */
+static inline uint32_t t_rbit(uint32_t rd, uint32_t rm) { return t32(0xFA90U | rm, 0xF0A0U | (rd << 8) | rm); }
 
-/** Data processing with a small immediate (0..255): cmp.w, subs.w, tst.w, mov.w. */
+/** Data processing with a small immediate (0..255): cmp.w, subs.w, tst.w, mov.w, rsb.w. */
 static inline uint32_t t_cmp_imm(uint32_t rn, uint32_t imm8) { return t32(0xF1B0U | rn, 0x0F00U | imm8); }
 static inline uint32_t t_subs_imm(uint32_t rd, uint32_t rn, uint32_t imm8) {
     return t32(0xF1B0U | rn, (rd << 8) | imm8);
 }
 static inline uint32_t t_tst_imm(uint32_t rn, uint32_t imm8) { return t32(0xF010U | rn, 0x0F00U | imm8); }
 static inline uint32_t t_mov_imm(uint32_t rd, uint32_t imm8) { return t32(0xF04FU, (rd << 8) | imm8); }
+/** rsb.w rd, rn, #imm8: imm8 less rn. */
+static inline uint32_t t_rsb_imm(uint32_t rd, uint32_t rn, uint32_t imm8) { return t32(0xF1C0U | rn, (rd << 8) | imm8); }
 
 /** movw and movt: the low and high halves of a constant. */
 static inline uint32_t t_movw_movt(uint32_t top, uint32_t rd, uint32_t imm16) {

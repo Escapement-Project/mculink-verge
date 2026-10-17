@@ -36,4 +36,12 @@ void cjtagf_WriteAbort(uint32_t data);
 uint8_t cjtagf_Transfer(uint32_t request, uint32_t* data);
 uint32_t cjtagf_TransferBlock(const uint8_t* request, uint8_t* response);
 
+// Two-pin over the generated frames, src/jtag_gen_dp.c, when JTAG_CODEGEN is on.
+void jgen_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo);
+void jgen_IR(uint32_t ir);
+uint32_t jgen_ReadIDCode(void);
+void jgen_WriteAbort(uint32_t data);
+uint8_t jgen_Transfer(uint32_t request, uint32_t* data);
+uint32_t jgen_TransferBlock(const uint8_t* request, uint8_t* response);
+
 #endif
