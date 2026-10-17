@@ -12,6 +12,9 @@ static int semihost(int op, const void* arg) {
 void out(const char* s) { semihost(0x04, s); }
 
 __attribute__((noreturn)) void reset(void) {
+    // The FPU on, as the firmware's SystemInit leaves it: the compilers use its registers anyway.
+    *(volatile uint32_t*)0xE000ED88U |= (3U << 20) | (3U << 22); // CPACR: CP10 and CP11
+    __asm__ volatile("dsb\n isb" ::: "memory");
     for (uint32_t *s = &__data_lma, *d = &__data_start; d < &__data_end;) *d++ = *s++;
     for (uint32_t* d = &__bss_start; d < &__bss_end;) *d++ = 0;
     sweep();
