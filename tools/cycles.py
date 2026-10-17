@@ -345,6 +345,132 @@ class TimedSwdTarget:
         raise RuntimeError("a timed target answers read(cycle); this machine has no timing engine")
 
 
+class RecordingTap:
+    """A TAP that shifts TDI in as well as a word out, and keeps what each update wrote.
+
+    JtagTap shifts out only, which checks a read. A write needs the bits that went in, and on two
+    pins every TDI bit has a packet of its own. Capture-DR loads `dr`; Capture-IR loads 0b01, the
+    two low bits IEEE 1149.1 requires.
+    """
+
+    def __init__(self, dr: int, dr_bits: int, ir_bits: int = 4):
+        self.state = "rti"
+        self.dr, self.dr_bits, self.ir_bits = dr, dr_bits, ir_bits
+        self.shift = 0
+        self.updates: list[tuple[str, int]] = []
+
+    def tdo(self) -> int:
+        return self.shift & 1 if self.state in ("shdr", "shir") else 0
+
+    def clock(self, tms: int, tdi: int = 1) -> None:
+        if self.state == "shdr":
+            self.shift = (self.shift >> 1) | (tdi << (self.dr_bits - 1))
+        elif self.state == "shir":
+            self.shift = (self.shift >> 1) | (tdi << (self.ir_bits - 1))
+        self.state = TAP_NEXT[self.state][1 if tms else 0]
+        if self.state == "capdr":
+            self.shift = self.dr
+        elif self.state == "capir":
+            self.shift = 0b01
+        elif self.state in ("upddr", "updir"):
+            self.updates.append((self.state[3:], self.shift))
+
+
+class TimedCjtagTarget:
+    """A two-pin target (IEEE 1149.7, OScan1) that answers by time.
+
+    A JTAG clock is three TCKC packets. The target reads nTDI and TMS on the rising edges of the
+    first two (the activation sets SEDGE=1), and drives TDO in the third: on the probe's pin from
+    `latency` cycles after the falling edge that starts that packet, until `hold` cycles after the
+    falling edge that ends it (CJTAGGEN.md, measured on a CC1312R1). A read outside that sees
+    what the released wire held, which is the TMS level the probe drove last.
+
+    It also records what hardware punishes and the order-only model cannot see: a probe still
+    driving `release_by` cycles into a TDO packet, a TMSC move while TCKC is high or in the same
+    store as a TCKC edge, a packet the probe should drive but has let go, and any entry into
+    Test-Logic-Reset, which drops a CC13xx out of OScan1.
+    """
+
+    def __init__(self, tap: "RecordingTap", latency: int = 8, hold: int = 7, release_by: int = 3):
+        self.tap = tap
+        self.latency, self.hold, self.release_by = latency, hold, release_by
+        self.packet = 0  # the packet whose cycle this is: 0 nTDI, 1 TMS, 2 TDO
+        self.tdi = 1
+        self.wanted = 0
+        self.tdo_fall: int | None = None
+        self.drive_from: int | None = None
+        self.drive_until: int | None = None
+        self.held = 1
+        self.driving = True
+        self.released_at: int | None = None
+        self.driven_at: int | None = None
+        self.frames = 0
+        self.reads: list[Read] = []
+        self._open: list[Read] = []
+        self.problems: list[str] = []
+
+    def restart(self) -> None:
+        pass
+
+    def wire(self, cycle: int, driven: str, clock_high: bool, with_edge: bool) -> None:
+        if clock_high:
+            self.problems.append(f"TMSC moved to {driven} at {cycle} with TCKC high: an escape edge")
+        elif with_edge:
+            self.problems.append(f"TMSC moved to {driven} at {cycle} in the store of a TCKC edge")
+        if driven == "z":
+            self.driving, self.released_at = False, cycle
+        else:
+            if not self.driving:
+                self.driven_at = cycle
+            self.driving = True
+            self.held = int(driven)
+
+    def rise(self, cycle: int, driven: str) -> None:
+        if self.packet == 2:
+            return
+        if driven == "z":
+            self.problems.append(f"packet {self.packet + 1} rose at {cycle} with TMSC released")
+            return
+        if self.packet == 0:
+            self.tdi = 1 - int(driven)
+            return
+        self.wanted = self.tap.tdo()
+        self.tap.clock(int(driven), self.tdi)
+        self.frames += 1
+        if self.tap.state == "tlr":
+            self.problems.append(f"frame {self.frames} entered Test-Logic-Reset, which drops OScan1")
+
+    def fall(self, cycle: int) -> None:
+        if self.packet == 1:
+            self.tdo_fall = cycle
+            self.drive_from, self.drive_until = cycle + self.latency, None
+        elif self.packet == 2:
+            self.drive_until = cycle + self.hold
+            for read in self._open:
+                read.late = self.drive_until - read.cycle
+            self._open = []
+            start = self.tdo_fall + self.release_by
+            let_go = self.released_at is not None and self.tdo_fall <= self.released_at <= start
+            back = self.driving or (self.driven_at is not None and self.driven_at > self.released_at)
+            if not let_go or back:
+                self.problems.append(f"frame {self.frames}: TMSC driven by the probe during the TDO packet")
+        self.packet = (self.packet + 1) % 3
+
+    def read(self, cycle: int) -> int:
+        if self.drive_from is None:
+            return self.held
+        late = None if self.drive_until is None else self.drive_until - cycle
+        on_wire = self.held if cycle < self.drive_from else self.wanted
+        r = Read(cycle, self.frames - 1, cycle - self.drive_from, late, got=on_wire, wanted=self.wanted)
+        if late is None:
+            self._open.append(r)
+        self.reads.append(r)
+        return on_wire
+
+    def bit(self) -> int:
+        raise RuntimeError("a timed target answers read(cycle); this machine has no timing engine")
+
+
 # Acknowledge bits in the order each protocol reads them, then the data phase.
 SWD_OK = [1, 0, 0]  # ack bit0 first, DAP_TRANSFER_OK == 1
 SWD_READ = SWD_OK + [0] * 33  # 32 data bits and parity
@@ -423,6 +549,8 @@ class Machine:
         self.cjtag_tap: "JtagTap | None" = None
         self._packet = 0
         self._frame_tms = 0
+        # The TDO the target holds for the whole of a frame's third packet, rising edge included.
+        self._frame_tdo = 0
         self.explain = False
         self._window: list[int] = []
         self._window_start = 0
@@ -536,8 +664,11 @@ class Machine:
                 self.counts.trace.append("S" if offset == REG_B0 + PIN_SWDIO else "T")
             if self.tap is not None and offset == REG_B0 + PIN_TDO:
                 return self.tap.tdo()
+            if isinstance(self.target, TimedCjtagTarget) and offset == REG_B0 + PIN_SWDIO:
+                driven = self._driven()
+                return int(driven) if driven != "z" else self.target.read(self.cycle)
             if self.cjtag_tap is not None and offset == REG_B0 + PIN_SWDIO:
-                return self.cjtag_tap.tdo()
+                return self._frame_tdo
             if isinstance(self.target, TimedSwdTarget):
                 # While the probe drives the wire, its pin reads back what it drives.
                 driven = self._driven()
@@ -607,6 +738,15 @@ class Machine:
                 self.target.take_back()
             if after_clock and not before_clock:
                 self.target.rise(self.cycle)
+        if isinstance(self.target, TimedCjtagTarget):
+            if after_wire != before_wire:
+                self.target.wire(
+                    self.cycle, after_wire, bool(before_clock and after_clock), after_clock != before_clock
+                )
+            if after_clock and not before_clock:
+                self.target.rise(self.cycle, after_wire)
+            elif before_clock and not after_clock:
+                self.target.fall(self.cycle)
 
         if not self.counting:
             return
@@ -640,10 +780,12 @@ class Machine:
             if self.tap is not None:
                 self.tap.clock((self.level >> PIN_SWDIO) & 1)
             if self.cjtag_tap is not None:
-                # Packet 1 carries nTDI, packet 2 carries TMS, packet 3 is the target's.
+                # Packet 1 carries nTDI, packet 2 carries TMS, packet 3 is the target's: it drives
+                # the frame's TDO, the bit the TMS packet's clock shifted out, through the whole
+                # packet, so a sample after its rising edge reads the same bit as one before.
                 if self._packet == 1:
                     self._frame_tms = (self.level >> PIN_SWDIO) & 1
-                elif self._packet == 2:
+                    self._frame_tdo = self.cjtag_tap.tdo()
                     self.cjtag_tap.clock(self._frame_tms)
                 self._packet = (self._packet + 1) % 3
         elif before_clock and not after_clock:
