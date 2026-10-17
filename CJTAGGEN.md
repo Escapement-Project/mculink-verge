@@ -18,6 +18,12 @@ JTAG, and the wire facts the two-pin generator has to respect.
    clock emitter. Recommendation: yes; it also retires the four-wire path's overshoot (44% at
    50 MHz, DESIGN.md) and the clang layout failure.
 3. **Keep ARM's C paths as the fallback**, as `arm_SWD_Transfer` is for SWD. Recommendation: yes.
+4. **Scan format.** TI's own probes default to OScan2 (XDS110) or OScan5 (XDS100v3, XDS200) on
+   this part; see "What TI's own configurations say". OScan5 would send 30% fewer packets a
+   transfer, but nothing we hold says how it leaves Shift. Recommendation: OScan1 only, and
+   revisit OScan5 if USB stops being the limit and a reference turns up.
+5. **Detach.** Power the JTAG domain down at detach (see "Detach"), or leave it on.
+   Recommendation: power it down; it is what a pin reset leaves and it clears halt-in-boot.
 
 ## The wire, as measured on a CC1312R1 (2026-10-16/17)
 
@@ -47,14 +53,13 @@ JTAG, and the wire facts the two-pin generator has to respect.
   at "37.5 MHz" every transfer fails (TDO sampled too early, below).
 - **Throughput today**: ~230 KiB/s through `dap.py`, 64-word blocks, USB included, flat from
   15 MHz up because the fast path is unpaced C.
-- **Never enter Test-Logic-Reset after activating.** Any entry, even three frames from
-  Run-Test/Idle, drops OScan1 (reads then show 0x81010101, the signature of an adapter in JScan).
-  With ICEPick SYSCTRL KeepPoweredinTLR clear (its reset value), the reset also powers the JTAG
-  domain down, and a full activation recovers it. With it set, the adapter is left in a state
-  that re-sending the activation does not fix; a pin reset does. probe-rs's `icepick.rs` sets
-  that bit, so in two-pin mode it must not, or must never reset the TAP afterwards. The
-  generator's tails must reach Run-Test/Idle without passing through Test-Logic-Reset, and the
-  host must not ask for it (probe-rs line resets, chain scans and `tap_reset` all do).
+- **Never enter Test-Logic-Reset during a session.** Any entry, even three frames from
+  Run-Test/Idle, drops OScan1 (reads then show 0x81010101, the signature of an adapter in JScan),
+  whatever ICEPick SYSCTRL KeepPoweredinTLR says. The generator's tails must reach Run-Test/Idle
+  without passing through Test-Logic-Reset, and the host must not ask for it (probe-rs line
+  resets, chain scans and `tap_reset` all do). The next attach recovers (see "Attach from any
+  state"). The earlier note that only a pin reset recovers once KeepPoweredinTLR is set was
+  wrong: TI's sequence with its 200 us wait recovers it 3/3.
 - **Chain after the ICEPick switches the Cortex-M TAP in**: `DAP_JTAG_Configure` two devices,
   IR lengths (4, 6), the DAP is index 0 (nearest TDO). The switched-in TAP answers only after
   >= 4 Run-Test/Idle clocks.
@@ -63,7 +68,18 @@ JTAG, and the wire facts the two-pin generator has to respect.
   TCK edges (7 never does, 8 always does, with or without a reset among them), and TI requires
   200 us before further commands (40 us measured enough here; 10-20 us is flaky). A fresh
   domain has the adapter in two-pin JScan (TMSC is TMS on every clock) and the TAP reset. A pin
-  reset therefore gives the same debug-side state as a power cycle.
+  reset therefore gives the same debug-side state as a power cycle. ICEMelter restarts its count
+  if the 3rd to 8th rising edges span more than 4 ms (TRM 6.4), so the wake clocks belong in one
+  command. A domain left half-woken (edges counted, commands lost) needs more than 8: 8 wake
+  clocks attach 0/3 from it, 20 attach 3/3.
+- **Power-down (measured).** Test-Logic-Reset with KeepPoweredinTLR clear powers the domain off,
+  but only if TCKC stops there. Three frames from Run-Test/Idle left it off; eight frames (the
+  last five reach the adapter as JScan clocks) woke it straight back; with the bit set it stayed
+  on (2/2, 3/3, 2/2; the test sends TI's commands with no wake clocks and no wait, which fails
+  0/3 after a pin reset). AON_PMCTL JTAGCFG.JTAG_PD_FORCE_ON (0x40090034 bit 8, reset value 1,
+  forces the domain on) reads 0 here (the register reads 0x3), so the debug subsystem decides;
+  TI's SDK clears the bit only before shutdown. TRM 6.6: powering the domain off with
+  Test-Logic-Reset before a system reset is what clears halt-in-boot.
 
 ## The activation (TI's XDS110 sequence; `dap.py cjtag --ti`)
 
@@ -72,8 +88,11 @@ to enable cJTAG OSCAN1 mode on CC13xx and CC26xx device").
 `WriteTmsPattern(p, n)` is n TMS bits of p, least significant first.
 Verified on the CC1312R1 from a pin reset: IDCODE, then ICEPick routing and CPUID, 3/3.
 
-1. **Power up the JTAG domain**: >= 8 TCK clocks (TI's 8-clock Test-Logic-Reset and one idle clock
-   are 9), then wait 200 us. TI's routine omits the wait; without it the commands are lost.
+1. **Reset the adapter and power up the JTAG domain**: a reset escape (10 TMSC edges with TCKC
+   high), >= 20 TMS-high clocks, one idle clock, then wait 200 us. TI's routine has an 8-clock
+   Test-Logic-Reset and one idle clock here and omits the wait; without the wait the commands are
+   lost. The escape and the extra clocks are for a target a previous session left behind (below);
+   the J-Link sends the escape and 200 clocks.
 2. **JScan, one TMS bit a clock, from Run-Test/Idle**: BYPASS IR scan (64 shift clocks; an inert
    opcode for the command window), two zero-bit scans and a 1-bit DR scan (control level 2: the
    command window opens and the device TAP is decoupled from the scan path), STC1 1 (SEDGE=1:
@@ -88,6 +107,42 @@ Verified on the CC1312R1 from a pin reset: IDCODE, then ICEPick routing and CPUI
    which re-couples the device TAP), 7 CSM clocks. CSM clocks follow every command that selects,
    deselects or closes. Skipping deselect-and-select reads all ones (TAP not coupled).
 5. IR now holds BYPASS from step 2; load IDCODE or route the ICEPick next.
+
+**Attach from any state (measured 2026-10-17).** With step 1 as above, the activation plus
+ICEPick routing read CPUID 3/3 from each starting state, with 20 and with 200 wake clocks
+(36/36): fresh (pin reset), a live OScan1 session with KeepPoweredinTLR set or clear, after a
+Test-Logic-Reset with it set or clear, and a half-woken domain. Without the escape, TI's
+sequence fails 0/3 from a live OScan1 session, whose adapter reads its JScan clocks as OScan1
+frames. So probe-rs can attach without nRESET.
+
+## Detach
+
+To leave the part as a pin reset would (JTAG domain off, its ~400 uA gone, halt-in-boot cleared;
+TRM 6.4, 6.6): clear KeepPoweredinTLR, or never set it in two-pin mode; walk Run-Test/Idle to
+Test-Logic-Reset with exactly three framed TMS-high clocks; send no TCKC edge after that. probe-rs's
+`icepick.rs` sets KeepPoweredinTLR, so a four-wire session that ends in Test-Logic-Reset leaves the
+domain on and halt-in-boot armed (inferred from the TRM, not measured on four-wire).
+
+## What TI's own configurations say (CCS 21.0 and 12.8, read 2026-10-17)
+
+- `ccs_base/common/targetdb/devices/cc1312r1f3.xml` makes two-pin cJTAG this part's default on
+  every TI probe, in a faster format than ours: XDS110 OScan2 (its connection file offers only
+  OScan1 and OScan2), XDS100v3 OScan5 with its converter at 10 MHz, XDS200 OScan5. We and the
+  J-Link use OScan1.
+- TRM Table 6-3: OScan1 sends nTDI, TMS, TDO in every state; OScan2 sends only TMS outside
+  Shift and nTDI, TMS, TDO in Shift; OScan5 sends nTDI, TMS, TDO outside Shift and nTDI, TDO in
+  Shift. Nothing here says how OScan5 leaves Shift without a TMS packet, and we have no IEEE
+  1149.7. For a DPACC/APACC (4 non-shift and 36 shift clocks) OScan2 sends 7% fewer packets
+  than OScan1, OScan5 30% fewer.
+- The XDS110 activates in its firmware, with one `CJTAG_CONNECT`
+  (command 0x2b, as in OpenOCD's xds110.c) carrying the DOT7.* settings. A capture of it is the
+  only TI reference for OScan2 within reach, and needs the LaunchPad's XDS110 jumpered back to the
+  target.
+- `cc26xx_icepick.gel` writes `IP_CC26xx_WAKEUPMCU = 1` on connect: the WUC TAP's
+  MCU_VD_FORCE_ACTIVE (TRM Table 6-23), which powers the MCU domain under a sleeping
+  application. The same TAP holds TMS_PAD_CFG (`IP_CC26xx_TMSSTRENGTH`: TMSC drive strength and
+  slew), chip erase and MCU and system reset requests.
+- OpenOCD's `ti-cjtag.cfg` is the switch to four-pin (STC2), not two-pin.
 
 The J-Link's activation is the same protocol: its two 4-clock bursts at a different clock rate
 are CSM clocks, its 54-clock burst is CCE 0, and its final `110110` IR scan closes the window
