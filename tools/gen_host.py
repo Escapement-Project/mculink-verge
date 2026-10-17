@@ -5,7 +5,7 @@
 
 The generators are ordinary C whose output is code, so a compiler that miscompiles one, or
 undefined behaviour that one compiler exploits and another does not, changes the wire without
-failing to build. Four builds sweep the same 2,880 SWD and 2,016 JTAG configurations and print
+failing to build. Four builds sweep the same 2,880 SWD and 2,268 JTAG configurations and print
 a hash of each result:
 
 - the host, under gcc and clang, with AddressSanitizer and UndefinedBehaviorSanitizer, so any
@@ -99,7 +99,9 @@ def main() -> int:
             print(f"  {label} differs from host gcc first at configuration {first}")
         return 1
     built = sum(1 for line in reference.splitlines() if line.split()[2] == "1")
-    print(f"  all four agree on {lines} configurations ({built} built, {lines - built} refused)")
+    transfers = sum(1 for line in reference.splitlines() if line.startswith("4a") and line.split()[-1] == "1")
+    print(f"  all four agree on {lines} configurations ({built} built, {lines - built} refused;"
+          f" JTAG transfers in {transfers})")
     return 0
 
 

@@ -57,17 +57,24 @@ void sweep(void) {
         *p = 0;
         out(line);
     }
+    // The DAP's place in the chain (count, index) and the idle cycles after each transfer change
+    // only the transfers: every latency at the first, the default latency at the rest.
+    static const uint8_t chains[][3] = {{1, 0, 0}, {2, 1, 3}, {3, 0, 5}, {5, 3, 40}};
+    for (unsigned c = 0; c < sizeof chains / sizeof chains[0]; c++)
     for (unsigned wire = 0; wire <= 1; wire++)
-    for (unsigned lat = 1; lat <= 24; lat++)
+    for (unsigned lat = c == 0 ? 1 : JTAG_GEN_LATENCY_DEFAULT; lat <= (c == 0 ? 24 : JTAG_GEN_LATENCY_DEFAULT); lat++)
     for (unsigned p = 3; p <= 44; p++) {
         static const uint32_t far[] = {75, 150, 1500, 150000};
         const uint32_t period = p <= 40 ? p : far[p - 41];
+        DAP_Data.jtag_dev.count = chains[c][0];
+        DAP_Data.jtag_dev.index = chains[c][1];
+        DAP_Data.transfer.idle_cycles = chains[c][2];
         jtag_gen_latency[wire] = lat;
         jtag_gen_clock_hz = (CPU_CLOCK + period - 1U) / period;
         const bool ok = jtag_gen_ready(wire);
         const uint32_t h = ok ? fnv((const uint8_t*)JTAG_GEN_BASE, jtag_gen_info.code_bytes) : 2166136261U;
         char* q = line;
-        q = hex(q, 0x4A000000U | (wire << 12) | (lat << 4));
+        q = hex(q, 0x4A000000U | (c << 16) | (wire << 12) | (lat << 4));
         *q++ = ' ';
         q = hex(q, jtag_gen_clock_hz);
         *q++ = ' ';
@@ -78,6 +85,8 @@ void sweep(void) {
         q = hex(q, h);
         *q++ = ' ';
         q = hex(q, jtag_gen_info.frame);
+        *q++ = ' ';
+        *q++ = ok && jtag_gen_info.transfers ? '1' : '0';
         *q++ = '\n';
         *q = 0;
         out(line);
