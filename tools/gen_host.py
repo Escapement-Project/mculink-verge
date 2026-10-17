@@ -5,7 +5,7 @@
 
 The generators are ordinary C whose output is code, so a compiler that miscompiles one, or
 undefined behaviour that one compiler exploits and another does not, changes the wire without
-failing to build. Four builds sweep the same 2,880 SWD and 1,008 two-pin configurations and print
+failing to build. Four builds sweep the same 2,880 SWD and 2,016 JTAG configurations and print
 a hash of each result:
 
 - the host, under gcc and clang, with AddressSanitizer and UndefinedBehaviorSanitizer, so any

@@ -57,16 +57,17 @@ void sweep(void) {
         *p = 0;
         out(line);
     }
+    for (unsigned wire = 0; wire <= 1; wire++)
     for (unsigned lat = 1; lat <= 24; lat++)
     for (unsigned p = 3; p <= 44; p++) {
         static const uint32_t far[] = {75, 150, 1500, 150000};
         const uint32_t period = p <= 40 ? p : far[p - 41];
-        jtag_gen_latency = lat;
+        jtag_gen_latency[wire] = lat;
         jtag_gen_clock_hz = (CPU_CLOCK + period - 1U) / period;
-        const bool ok = jtag_gen_ready();
+        const bool ok = jtag_gen_ready(wire);
         const uint32_t h = ok ? fnv((const uint8_t*)JTAG_GEN_BASE, jtag_gen_info.code_bytes) : 2166136261U;
         char* q = line;
-        q = hex(q, 0x4A000000U | (lat << 4));
+        q = hex(q, 0x4A000000U | (wire << 12) | (lat << 4));
         *q++ = ' ';
         q = hex(q, jtag_gen_clock_hz);
         *q++ = ' ';

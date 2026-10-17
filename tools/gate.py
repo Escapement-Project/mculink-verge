@@ -6,8 +6,8 @@
 `ninja -C <build> check` holds one image to its baselines. This runs that for gcc and clang, each
 in the default configuration and with SWD_CODEGEN and JTAG_CODEGEN, because an optimisation that
 holds under one compiler has been seen not to under the other. A generated image also runs its
-two-pin frames against a target that answers by time, at every period up to 40 cycles and three
-longer ones. Before the images it runs the checks that need no image: the Thumb-2 encoders against
+two-pin and four-wire clocks against targets that answer by time, at every period up to 40 cycles
+and three longer ones. Before the images it runs the checks that need no image: the Thumb-2 encoders against
 the assembler, memcpy at every length and offset, and both generators under sanitizers and on an
 emulated Cortex-M33 with both compilers.
 
@@ -71,9 +71,9 @@ def main() -> int:
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(built) or 1) as pool:
         checks = {pool.submit(run, ["ninja", "-C", directory, "check"]): f"emulator gate {name(toolchain, codegen)}"
                   for toolchain, codegen, directory in built}
-        checks |= {pool.submit(run, ["uv", "run", "tools/cjtagcheck.py", os.path.join(directory, "mculink_cjtag.elf")]):
-                   f"timed two-pin frames {name(toolchain, codegen)}"
-                   for toolchain, codegen, directory in built if codegen}
+        checks |= {pool.submit(run, ["uv", "run", "tools/jtagcheck.py", os.path.join(directory, "mculink_cjtag.elf"),
+                                     "--wire", wire]): f"timed {wire} clocks {name(toolchain, codegen)}"
+                   for toolchain, codegen, directory in built if codegen for wire in ("cjtag", "jtag")}
         for future in concurrent.futures.as_completed(checks):
             report(checks[future], *future.result(), failures)
 
