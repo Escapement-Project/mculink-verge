@@ -207,7 +207,8 @@ if(SWD_SAMPLE_AFTER_EDGE)
 endif()
 
 if(SWD_CODEGEN)
-  target_sources(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_gen.c)
+  target_sources(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_gen.c
+                                         ${CMAKE_CURRENT_SOURCE_DIR}/src/gen.c)
   target_compile_definitions(${PROJECT_NAME} PRIVATE SWD_CODEGEN=1)
 endif()
 

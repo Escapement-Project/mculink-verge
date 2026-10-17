@@ -31,6 +31,7 @@
 #include "DAP_config.h"
 
 #include "DAP.h"
+#include "gen.h"
 #include "thumb.h"
 
 /* What the generated functions keep in registers for their whole run. */
@@ -94,22 +95,8 @@ struct gen_cfg {
 
 /* -- schedule ---------------------------------------------------------------------------------- */
 
-/** A branch to a label is scheduled as a placeholder whose low halfword is zero, which no 32-bit
- * encoding has: the label in the top byte, the condition below it (T_AL for b.w). */
-#define T_AL 0xFU
-#define BRANCH(cond, label) (((uint32_t)(label) << 24) | ((uint32_t)(cond) << 16))
-#define IS_BRANCH(insn) (((insn) & 0xFFFFU) == 0U)
-
-#define GEN_EVENTS 256U
-
-struct event {
-    uint32_t cycle;
-    uint32_t insn;
-};
-
 struct sched {
     const struct gen_cfg* cfg;
-    uint32_t n;
     uint32_t t; // the earliest cycle the next clock may fall on
     uint32_t last_fall;
     uint32_t last_rise;
@@ -117,8 +104,7 @@ struct sched {
     uint32_t grid_period;
     uint32_t grid_low;
     uint32_t last_load;
-    bool failed;
-    struct event ev[GEN_EVENTS];
+    struct gen_schedule q;
 };
 
 /* Static rather than on the stack: it is the largest thing here. */
@@ -126,45 +112,18 @@ static struct sched sched;
 
 static void sched_reset(struct sched* s, const struct gen_cfg* cfg) {
     s->cfg = cfg;
-    s->n = 0U;
+    gen_schedule_reset(&s->q);
     s->t = 0U;
     s->last_fall = 0U;
     s->last_rise = 0U;
     s->last_load = 0U;
     s->grid_period = cfg->wperiod;
     s->grid_low = cfg->wlow;
-    s->failed = false;
 }
 
-static uint32_t lower_bound(const struct sched* s, uint32_t cycle) {
-    uint32_t lo = 0U;
-    uint32_t hi = s->n;
-    while (lo < hi) {
-        const uint32_t mid = (lo + hi) / 2U;
-        if (s->ev[mid].cycle < cycle) {
-            lo = mid + 1U;
-        } else {
-            hi = mid;
-        }
-    }
-    return lo;
-}
+static bool taken(const struct sched* s, uint32_t cycle) { return gen_taken(&s->q, cycle); }
 
-static bool taken(const struct sched* s, uint32_t cycle) {
-    const uint32_t i = lower_bound(s, cycle);
-    return (i < s->n) && (s->ev[i].cycle == cycle);
-}
-
-static void put(struct sched* s, uint32_t cycle, uint32_t insn) {
-    if ((s->n == GEN_EVENTS) || taken(s, cycle)) {
-        s->failed = true;
-        return;
-    }
-    const uint32_t i = lower_bound(s, cycle);
-    memmove(&s->ev[i + 1U], &s->ev[i], (s->n - i) * sizeof s->ev[0]);
-    s->ev[i] = (struct event){cycle, insn};
-    s->n++;
-}
+static void put(struct sched* s, uint32_t cycle, uint32_t insn) { gen_put(&s->q, cycle, insn); }
 
 /** Whether a clock not laid yet puts an edge on `cycle`, if the clocks from s->t on are like the
  * last one. Where they are not, a clock that finds its cycle taken waits a cycle. */
@@ -271,7 +230,7 @@ static uint32_t sample(struct sched* s, uint32_t launch, uint32_t end, uint32_t 
         }
     }
     if (!found) {
-        s->failed = true;
+        s->q.failed = true;
         return s->last_load;
     }
     put(s, best, t_ldrb(reg, R_GPIO, OFF_B_SWDIO));
@@ -332,7 +291,6 @@ static uint32_t consume_insn(uint32_t k, uint32_t reg) {
 #define LABEL_PARITY 3U
 #define LABEL_WAIT_FAULT 4U
 #define LABEL_EXIT 5U
-#define LABELS 6U
 
 /** Where a body leaves its schedule, for what comes after it. */
 struct body {
@@ -363,7 +321,7 @@ static void decide(struct sched* s, struct sampling* p, struct body* b) {
         at++;
     }
     put(s, at - 1U, t_cmp_imm(R_ACK, DAP_TRANSFER_OK));
-    put(s, at, BRANCH(T_COND_NE, LABEL_FAIL));
+    put(s, at, GEN_BRANCH(T_COND_NE, LABEL_FAIL));
     if (at >= s->t) {
         s->t = at + 1U;
     }
@@ -505,140 +463,53 @@ static void schedule_write(struct sched* s, struct body* b) {
 
 /* -- code ------------------------------------------------------------------------------------- */
 
-#define GEN_FIXUPS 16U
-
-struct emitter {
-    uint32_t* code;
-    uint32_t pos;
-    uint32_t cap;
-    uint32_t label[LABELS];
-    uint32_t fix[GEN_FIXUPS];
-    uint32_t nfix;
-    bool failed;
-};
-
-static void emit(struct emitter* e, uint32_t insn) {
-    if (e->pos >= e->cap) {
-        e->failed = true;
-        return;
-    }
-    e->code[e->pos++] = insn;
-}
-
-static void emit_branch(struct emitter* e, uint32_t cond, uint32_t label) {
-    if (e->nfix == GEN_FIXUPS) {
-        e->failed = true;
-        return;
-    }
-    e->fix[e->nfix++] = e->pos;
-    emit(e, BRANCH(cond, label));
-}
-
-static void bind(struct emitter* e, uint32_t label) { e->label[label] = e->pos; }
-
-static void resolve(struct emitter* e) {
-    for (uint32_t i = 0U; i < e->nfix; i++) {
-        const uint32_t at = e->fix[i];
-        if (at >= e->pos) {
-            continue; // the emitter ran out of room before writing it
-        }
-        const uint32_t insn = e->code[at];
-        const int32_t offset = ((int32_t)e->label[insn >> 24] - (int32_t)at) * 4;
-        const uint32_t cond = (insn >> 16) & 0xFU;
-        e->code[at] = cond == T_AL ? t_b(offset) : t_bcond(cond, offset);
-    }
-    e->nfix = 0U;
-}
-
-static void load_const(struct emitter* e, uint32_t rd, uint32_t value) {
-    emit(e, t_movw(rd, value & 0xFFFFU));
-    if ((value >> 16) != 0U) {
-        emit(e, t_movt(rd, value >> 16));
-    }
-}
-
-/** Exactly `cycles` cycles: a counted loop of three cycles an iteration and fillers for the rest.
- * The loop's head is word-aligned like everything here, which is what makes it three. */
-static void delay(struct emitter* e, uint32_t cycles) {
-    if (cycles >= 6U) {
-        uint32_t n = cycles / 3U;
-        if (n > 0xFFFFU) {
-            n = (cycles - 1U) / 3U; // movt costs a cycle
-        }
-        const bool wide = n > 0xFFFFU;
-        load_const(e, R_DELAY, n);
-        emit(e, t_subs_imm(R_DELAY, R_DELAY, 1U));
-        emit(e, t_bcond(T_COND_NE, -4));
-        cycles -= 3U * n + (wide ? 1U : 0U);
-    }
-    while (cycles-- != 0U) {
-        emit(e, FILLER);
-    }
-}
-
-/** The schedule as code. Returns its length in cycles. */
-static uint32_t emit_schedule(struct emitter* e, const struct sched* s) {
-    uint32_t now = 0U;
-    for (uint32_t i = 0U; i < s->n; i++) {
-        const struct event* ev = &s->ev[i];
-        delay(e, ev->cycle - now);
-        if (IS_BRANCH(ev->insn)) {
-            emit_branch(e, (ev->insn >> 16) & 0xFU, ev->insn >> 24);
-        } else {
-            emit(e, ev->insn);
-        }
-        now = ev->cycle + 1U;
-    }
-    return now;
-}
-
 /** `n` clocks with the wire left as it is, `since` cycles after the last rising edge. Returns the
  * cycles from the last of them to the instruction after the loop. Not timing-critical: these
  * clocks only have to be no shorter than the period. */
-static uint32_t clock_loop(struct emitter* e, const struct gen_cfg* c, uint32_t n, uint32_t since) {
+static uint32_t clock_loop(struct gen_emitter* e, const struct gen_cfg* c, uint32_t n, uint32_t since) {
     const uint32_t high = c->period - c->low;
     if (since + 1U < high) {
-        delay(e, high - since - 1U); // and the counter's load is the last cycle of it
+        gen_delay(e, high - since - 1U); // and the counter's load is the last cycle of it
     }
-    emit(e, t_movw(R_T0, n));
+    gen_emit(e, t_movw(R_T0, n));
     const uint32_t head = e->pos;
-    emit(e, t_str(R_ONE, R_PORT, OFF_CLR));
-    delay(e, c->low - 1U);
-    emit(e, t_str(R_ONE, R_PORT, OFF_SET));
+    gen_emit(e, t_str(R_ONE, R_PORT, OFF_CLR));
+    gen_delay(e, c->low - 1U);
+    gen_emit(e, t_str(R_ONE, R_PORT, OFF_SET));
     // The subs and a taken bne put the next fall four cycles after the delay.
     const uint32_t gap = high > 4U ? high - 4U : 0U;
-    delay(e, gap);
-    emit(e, t_subs_imm(R_T0, R_T0, 1U));
-    emit(e, t_bcond(T_COND_NE, ((int32_t)head - (int32_t)e->pos) * 4));
+    gen_delay(e, gap);
+    gen_emit(e, t_subs_imm(R_T0, R_T0, 1U));
+    gen_emit(e, t_bcond(T_COND_NE, ((int32_t)head - (int32_t)e->pos) * 4));
     return gap + 3U;
 }
 
-static void emit_enable(struct emitter* e) {
-    emit(e, t_str(R_FOUR, R_PORT, OFF_DIRSET));
-    emit(e, t_str(R_TXEN, R_PORT, OFF_SET));
+static void emit_enable(struct gen_emitter* e) {
+    gen_emit(e, t_str(R_FOUR, R_PORT, OFF_DIRSET));
+    gen_emit(e, t_str(R_TXEN, R_PORT, OFF_SET));
 }
 
 /** Returns the acknowledge in `ack`'s instruction and the count left. */
-static void emit_return(struct emitter* e, uint32_t ack) {
-    emit(e, ack);
-    emit(e, t_mov(1U, R_COUNT));
-    emit(e, t_pop(0x8FF0U)); // r4-r11, pc
+static void emit_return(struct gen_emitter* e, uint32_t ack) {
+    gen_emit(e, ack);
+    gen_emit(e, t_mov(1U, R_COUNT));
+    gen_emit(e, t_pop(0x8FF0U)); // r4-r11, pc
 }
 
 /** After an acknowledge other than OK, `since` cycles after the last rising edge, with the
  * turnaround clocked: what ARM's SWD_Transfer clocks for WAIT, FAULT or a protocol error. */
-static void emit_fail(struct emitter* e, const struct gen_cfg* c, bool read, uint32_t since) {
-    emit(e, t_cmp_imm(R_ACK, DAP_TRANSFER_WAIT));
-    emit_branch(e, T_COND_EQ, LABEL_WAIT_FAULT);
-    emit(e, t_cmp_imm(R_ACK, DAP_TRANSFER_FAULT));
-    emit_branch(e, T_COND_EQ, LABEL_WAIT_FAULT);
+static void emit_fail(struct gen_emitter* e, const struct gen_cfg* c, bool read, uint32_t since) {
+    gen_emit(e, t_cmp_imm(R_ACK, DAP_TRANSFER_WAIT));
+    gen_emit_branch(e, T_COND_EQ, LABEL_WAIT_FAULT);
+    gen_emit(e, t_cmp_imm(R_ACK, DAP_TRANSFER_FAULT));
+    gen_emit_branch(e, T_COND_EQ, LABEL_WAIT_FAULT);
     // A protocol error backs off a whole data phase, then takes the wire back.
     clock_loop(e, c, 32U + 1U, since + 4U);
     emit_enable(e);
-    emit(e, t_strb(R_ONE, R_GPIO, OFF_B_SWDIO));
-    emit_branch(e, T_AL, LABEL_EXIT);
+    gen_emit(e, t_strb(R_ONE, R_GPIO, OFF_B_SWDIO));
+    gen_emit_branch(e, T_AL, LABEL_EXIT);
 
-    bind(e, LABEL_WAIT_FAULT);
+    gen_bind(e, LABEL_WAIT_FAULT);
     const uint32_t after = since + 3U; // a cmp and a taken branch at least
     if (read) {
         if (c->data_phase) {
@@ -648,21 +519,21 @@ static void emit_fail(struct emitter* e, const struct gen_cfg* c, bool read, uin
     } else {
         emit_enable(e);
         if (c->data_phase) {
-            emit(e, t_strb(R_ZERO, R_GPIO, OFF_B_SWDIO));
+            gen_emit(e, t_strb(R_ZERO, R_GPIO, OFF_B_SWDIO));
             clock_loop(e, c, 32U + 1U, after + 3U);
         }
     }
-    emit(e, t_strb(R_ONE, R_GPIO, OFF_B_SWDIO));
+    gen_emit(e, t_strb(R_ONE, R_GPIO, OFF_B_SWDIO));
 
-    bind(e, LABEL_EXIT);
+    gen_bind(e, LABEL_EXIT);
     if (c->masked) {
-        emit(e, t_msr_primask(R_ZERO));
+        gen_emit(e, t_msr_primask(R_ZERO));
     }
     emit_return(e, t_mov(0U, R_ACK));
 }
 
 /** One function: entry, the transfer loop, and its exits. */
-static bool emit_function(struct emitter* e, const struct gen_cfg* c, bool read) {
+static bool emit_function(struct gen_emitter* e, const struct gen_cfg* c, bool read) {
     struct sched* s = &sched;
     struct body b = {0};
     sched_reset(s, c);
@@ -671,13 +542,13 @@ static bool emit_function(struct emitter* e, const struct gen_cfg* c, bool read)
     } else {
         schedule_write(s, &b);
     }
-    if (s->failed) {
+    if (s->q.failed) {
         return false;
     }
     uint32_t first_fall = 0U;
-    for (uint32_t i = 0U; i < s->n; i++) {
-        if (s->ev[i].insn == t_str(R_FOUR, R_PORT, OFF_MPIN)) {
-            first_fall = s->ev[i].cycle;
+    for (uint32_t i = 0U; i < s->q.n; i++) {
+        if (s->q.ev[i].insn == t_str(R_FOUR, R_PORT, OFF_MPIN)) {
+            first_fall = s->q.ev[i].cycle;
             break;
         }
     }
@@ -687,57 +558,57 @@ static bool emit_function(struct emitter* e, const struct gen_cfg* c, bool read)
     const uint32_t write_high = c->wperiod - c->wlow;
     const uint32_t high = read_high > write_high ? read_high : write_high;
 
-    emit(e, t_push(0x4FF0U)); // r4-r11, lr
-    emit(e, t_mov(R_COUNT, 2U));
-    load_const(e, R_GPIO, (uint32_t)GPIO);
-    load_const(e, R_PORT, PORT_BASE);
-    emit(e, t_mov_imm(R_ONE, SWCLK));
-    emit(e, t_mov_imm(R_ZERO, 0U));
-    emit(e, t_mov_imm(R_FOUR, SWDIO));
-    load_const(e, R_TXEN, TXEN);
+    gen_emit(e, t_push(0x4FF0U)); // r4-r11, lr
+    gen_emit(e, t_mov(R_COUNT, 2U));
+    gen_load_const(e, R_GPIO, (uint32_t)GPIO);
+    gen_load_const(e, R_PORT, PORT_BASE);
+    gen_emit(e, t_mov_imm(R_ONE, SWCLK));
+    gen_emit(e, t_mov_imm(R_ZERO, 0U));
+    gen_emit(e, t_mov_imm(R_FOUR, SWDIO));
+    gen_load_const(e, R_TXEN, TXEN);
     // Nothing says how long ago the last rising edge was.
-    delay(e, high);
+    gen_delay(e, high);
 
-    bind(e, LABEL_LOOP);
-    const uint32_t length = emit_schedule(e, s);
+    gen_bind(e, LABEL_LOOP);
+    const uint32_t length = gen_emit_schedule(e, &s->q);
     uint32_t since = length - s->last_rise;
     if (b.idle_loop) {
         since = clock_loop(e, c, c->idle, since);
-        emit(e, t_strb(R_ONE, R_GPIO, OFF_B_SWDIO));
+        gen_emit(e, t_strb(R_ONE, R_GPIO, OFF_B_SWDIO));
         since++;
     }
     if (c->masked) {
-        emit(e, t_msr_primask(R_ZERO));
+        gen_emit(e, t_msr_primask(R_ZERO));
         since++;
     }
     if (read) {
         // The parity, off the finished word: R_ACK holds the sampled bit.
-        emit(e, t_eor(R_T1, R_ACK, R_WORD, T_LSL, 0U));
+        gen_emit(e, t_eor(R_T1, R_ACK, R_WORD, T_LSL, 0U));
         for (uint32_t shift = 16U; shift != 0U; shift >>= 1) {
-            emit(e, t_eor(R_T1, R_T1, R_T1, T_LSR, shift));
+            gen_emit(e, t_eor(R_T1, R_T1, R_T1, T_LSR, shift));
         }
-        emit(e, t_tst_imm(R_T1, 1U));
-        emit_branch(e, T_COND_NE, LABEL_PARITY);
-        emit(e, t_str_post(R_WORD, R_BUF, 4U));
+        gen_emit(e, t_tst_imm(R_T1, 1U));
+        gen_emit_branch(e, T_COND_NE, LABEL_PARITY);
+        gen_emit(e, t_str_post(R_WORD, R_BUF, 4U));
         since += 9U;
     }
     // subs, then the taken branch back, then the next transfer's first fall.
     const uint32_t to_fall = since + 3U + first_fall;
     if (to_fall < high) {
-        delay(e, high - to_fall);
+        gen_delay(e, high - to_fall);
     }
-    emit(e, t_subs_imm(R_COUNT, R_COUNT, 1U));
-    emit_branch(e, T_COND_NE, LABEL_LOOP);
+    gen_emit(e, t_subs_imm(R_COUNT, R_COUNT, 1U));
+    gen_emit_branch(e, T_COND_NE, LABEL_LOOP);
     emit_return(e, t_mov_imm(0U, DAP_TRANSFER_OK));
 
     if (read) {
-        bind(e, LABEL_PARITY);
+        gen_bind(e, LABEL_PARITY);
         emit_return(e, t_mov_imm(0U, DAP_TRANSFER_ERROR));
     }
 
-    bind(e, LABEL_FAIL);
+    gen_bind(e, LABEL_FAIL);
     emit_fail(e, c, read, b.branch + 2U - b.branch_rise);
-    resolve(e);
+    gen_resolve(e);
     return !e->failed;
 }
 
@@ -761,7 +632,8 @@ bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_ge
         .idle = config->idle_cycles,
         .masked = period < config->latency + 1U + SAFE_MARGIN,
     };
-    struct emitter e = {.code = (uint32_t*)SWD_GEN_BASE, .cap = SWD_GEN_SIZE / 4U};
+    struct gen_emitter e = {
+        .code = (uint32_t*)SWD_GEN_BASE, .cap = SWD_GEN_SIZE / 4U, .delay_reg = R_DELAY, .filler = FILLER};
 
     const uint32_t read_at = e.pos;
     if (!emit_function(&e, &c, true)) {

@@ -43,7 +43,7 @@ def run(args: list[str], cwd: str, merge: bool = False) -> str:
 def host(cc: str, work: str) -> str:
     exe = os.path.join(work, f"host-{cc}")
     run([cc, "-g", "-O2", "-fsanitize=address,undefined", "-fno-sanitize-recover=all", GEN_BASE, "-I.",
-         "swd_gen.c", "gen_main.c", "host_main.c", "-o", exe], work)
+         "swd_gen.c", "gen.c", "gen_main.c", "host_main.c", "-o", exe], work)
     return run([exe], work)
 
 
@@ -63,7 +63,7 @@ def qemu(cc: str, work: str) -> str:
                 "-Wl,-T,qemu.ld", "-Wl,--gc-sections", "-Wl,-e,reset"]
         libs = []
     objects = []
-    for source, flags in (("swd_gen.c", lto), ("gen_main.c", lto), ("qemu_start.c", []), ("libc_min.c", libc)):
+    for source, flags in (("swd_gen.c", lto), ("gen.c", lto), ("gen_main.c", lto), ("qemu_start.c", []), ("libc_min.c", libc)):
         obj = os.path.join(work, f"{cc}-{source}.o")
         run([*compile_, *flags, "-c", source, "-o", obj], work)
         objects.append(obj)
@@ -77,7 +77,7 @@ def main() -> int:
         if shutil.which(tool) is None:
             raise SystemExit(f"{tool} is not installed")
     with tempfile.TemporaryDirectory() as work:
-        for name in ("swd_gen.c", "swd_gen.h", "thumb.h"):
+        for name in ("swd_gen.c", "swd_gen.h", "gen.c", "gen.h", "thumb.h"):
             shutil.copy(os.path.join(SRC, name), work)
         for name in os.listdir(HARNESS):
             shutil.copy(os.path.join(HARNESS, name), work)
