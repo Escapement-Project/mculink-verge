@@ -334,9 +334,9 @@ than the adapter wants swallows the next command scans.
   generated transfers) are never used. Release build: 64 KiB in 1.11 s four-wire, 1.27 s
   two-pin at 50 MHz.
 
-## probe-rs through DAP_Transfer (2026-10-17, uncommitted in probe-rs; firmware dcd15c3)
+## probe-rs through DAP_Transfer (2026-10-17; probe-rs fa72f8fca..6444d1059, firmware dcd15c3)
 
-- probe-rs change (left in its working tree): `JtagChainAccess::jtag_dp_transfers`
+- probe-rs change (committed locally on wip-cmsisdap-cjtag, not pushed): `JtagChainAccess::jtag_dp_transfers`
   (CMSIS-DAP returns itself); `ArmCommunicationInterface` sends DP/AP traffic through the SWD port
   engine whenever the probe offers it, so CMSIS-DAP JTAG uses `DAP_Transfer`/`DAP_TransferBlock`
   with the chain index. In JTAG mode the CMSIS-DAP batch runner sends ABORT as `DAP_WriteABORT`
@@ -348,7 +348,26 @@ than the adapter wants swallows the next command scans.
   equal on both wires at every clock. Flash + verify of 64 KiB at 0x20000: four-wire 0.66 s, two-pin
   0.76 s at 50 MHz.
 - Idle cycles end to end (256 KiB read, 50 MHz): four-wire idle 6 0.34 against 0.36 s;
-  two-pin idle 2 0.57 against 0.635 s. Still open.
+  two-pin idle 2 0.57 against 0.635 s. Taken in the firmware as learned pacing, below.
+
+## Learned pacing (2026-10-17, 519898b)
+
+- After each DAP_Transfer or DAP_TransferBlock that met a WAIT, the generated transfers get one
+  more Run-Test/Idle clock after every transfer (`jtag_gen_paced`, up to 32), regenerated between
+  commands; a change of clock, latency, chain position or host idle starts again from none.
+  A target that never answers WAIT sees ARM's wire. Vendor 0x8B `mode` (0 off, 1 on, else query)
+  answers `status, on, paced`; equiv.py turns it off.
+- Bench, 400 queued 127-word reads, host idle 0, pacing off -> on (learned clocks): four-wire
+  50 MHz 156.9 -> 128.4 ms (5), 25 MHz 156.8 -> 128.5 (5), 10 MHz 294.1 -> 252.0 (2); two-pin
+  50 MHz 350.7 -> 301.5 (2), 25 MHz 430.3 -> 367.7 (1), 15 MHz 530.6 -> 470.5 (1), 10 MHz
+  656.0 -> 657.8 (0: no WAITs there). Fixed idle 6 four-wire 50 MHz was 129.7: pacing finds it.
+  Data checked against the 1 MHz read at every clock on both wires.
+- probe-rs end to end, 256 KiB read at 50 MHz: four-wire 0.33 s, two-pin 0.56 s (0.37 and 0.62
+  without pacing); 10 MHz 0.47 / 1.08 s. 64 KiB flash and verify 0.67 / 0.76 s.
+- Emulator: against a target that always answers WAIT, one clock per command on both wires, and
+  none after a clock change (a throwaway script, not kept).
+- The in-code WAIT retry on branch jtag-wait-retry stays parked: with pacing there is next to
+  nothing left for it to speed up.
 - **Four-wire TDO is late after a system reset.** probe-rs's four-wire reset (AON_PMCTL SYSRESET)
   leaves the routed DAP sending TDO about 2 cycles later until the next pin reset: window from
   +10 to next fall + 8, against +8 to next fall + 7 after nRESET (`jtag4dap.py --dpacc
@@ -406,7 +425,7 @@ than the adapter wants swallows the next command scans.
 1. Lab: OScan1 window and four-wire window done; take-back timing bounded; second die open.
 2. Emulator: done for both wires (`TimedCjtagTarget`, `TimedJtagTarget`).
 3. Generator: both wires as straight-line blocks, and whole transfers, unrolled or looped (above).
-   probe-rs reaches them through DAP_Transfer (uncommitted there). Open: the target's WAITs.
+   probe-rs reaches them through DAP_Transfer; the probe learns idle clocks from WAITs.
 4. Gate: done for both wires.
 5. Hardware: both wires correct at 1..50 MHz through probe-rs and dap.py.
 6. Host: probe-rs drives the activation and frames through the probe (outside this repo),
