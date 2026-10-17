@@ -83,14 +83,14 @@ static uint32_t transfer_block(const uint8_t* request, uint8_t* response) {
     if (DAP_Data.debug_port == DAP_PORT_SWD) {
         return SWD_TransferBlock(request, response);
     }
-    if (!cJTAG_Active()) {
-        return JTAG_TransferBlock(request, response);
-    }
 #ifdef JTAG_CODEGEN
-    if (jtag_gen_ready()) {
+    if (jtag_gen_ready(cJTAG_Active() ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE)) {
         return jgen_TransferBlock(request, response);
     }
 #endif
+    if (!cJTAG_Active()) {
+        return JTAG_TransferBlock(request, response);
+    }
     if (DAP_Data.fast_clock) {
         return cjtagf_TransferBlock(request, response);
     }
@@ -187,8 +187,8 @@ uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* response) {
     }
 #endif
 #ifdef JTAG_CODEGEN
-    if (*request == ID_DAP_SWJ_Clock) {
-        (void)jtag_gen_ready();
+    if ((*request == ID_DAP_SWJ_Clock) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {
+        (void)jtag_gen_ready(cJTAG_Active() ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE);
     }
 #endif
     return result;

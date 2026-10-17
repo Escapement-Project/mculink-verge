@@ -1,6 +1,6 @@
-/** Thumb-2 encoders for the code src/swd_gen.c writes into SRAMX.
+/** Thumb-2 encoders for the code src/swd_gen.c and src/jtag_gen.c write into SRAMX.
  *
- * Every encoding here is 32-bit. Generated code is all 32-bit so that every instruction sits on a
+ * Every encoding here is 32-bit, or a 16-bit one padded to 32. Generated code is all 32-bit so that every instruction sits on a
  * word boundary, which is what makes each one cost one cycle and every loop head cost the same
  * (TIMING.md). An encoding is returned as the word a little-endian store puts in memory: the
  * first halfword in the low half.
@@ -69,8 +69,13 @@ static inline uint32_t t_mov(uint32_t rd, uint32_t rm) { return t_dp_reg(0x2U, 0
 static inline uint32_t t_lsr(uint32_t rd, uint32_t rm, uint32_t amount) {
     return t_dp_reg(0x2U, 0U, rd, T_PC, rm, T_LSR, amount);
 }
-/** lsr.w rd, rn, rm: a shift by a register. */
+/** lsl.w and lsr.w rd, rn, rm: shifts by a register. */
+static inline uint32_t t_lsl_reg(uint32_t rd, uint32_t rn, uint32_t rm) { return t32(0xFA00U | rn, 0xF000U | (rd << 8) | rm); }
 static inline uint32_t t_lsr_reg(uint32_t rd, uint32_t rn, uint32_t rm) { return t32(0xFA20U | rn, 0xF000U | (rd << 8) | rm); }
+/** mla rd, rn, rm, ra: rn * rm + ra. Its result is usable two cycles after it issues. */
+static inline uint32_t t_mla(uint32_t rd, uint32_t rn, uint32_t rm, uint32_t ra) {
+    return t32(0xFB00U | rn, (ra << 12) | (rd << 8) | rm);
+}
 /** rbit: rm's bits in the reverse order. */
 static inline uint32_t t_rbit(uint32_t rd, uint32_t rm) { return t32(0xFA90U | rm, 0xF0A0U | (rd << 8) | rm); }
 
@@ -107,6 +112,9 @@ static inline uint32_t t_b(int32_t offset) {
     const uint32_t j2 = (~((v >> 22) ^ s)) & 1U;
     return t32(0xF000U | (s << 10) | ((v >> 12) & 0x3FFU), 0x9000U | (j1 << 13) | (j2 << 11) | ((v >> 1) & 0x7FFU));
 }
+
+/** bx rm, then a 16-bit nop that never runs, so the next instruction keeps its word boundary. */
+static inline uint32_t t_bx_pad(uint32_t rm) { return t32(0x4700U | (rm << 3), 0xBF00U); }
 
 /** msr primask, rn. */
 static inline uint32_t t_msr_primask(uint32_t rn) { return t32(0xF380U | rn, 0x8810U); }

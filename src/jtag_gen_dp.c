@@ -5,26 +5,39 @@
  * From CMSIS-DAP, JTAG_DP.c and DAP.c's JTAG commands. Changed by the Escapement Project: driven
  * over generated clocks, blocks taken whole.
  */
-/** ARM's JTAG entry points on two pins, over the generated OScan1 frames.
+/** ARM's JTAG entry points over the generated clocks, four-wire or two-pin.
  *
- * src/jtag_gen.c generates one function: up to 32 frames with TMS held. Everything ARM's
- * JTAG_DP.c does is a run of those, so each entry point here is ARM's frames, TMS and TDI, in
- * ARM's order, with the timing left to the generated code. Where ARM sets no TDI a frame carries
- * whatever the last frame did, and so do these: tools/equiv.py holds them to ARM's frame for frame.
+ * src/jtag_gen.c generates one function for the wire in use: up to 32 JTAG clocks with TMS held.
+ * Everything ARM's JTAG_DP.c does is a run of those, so each entry point here is ARM's clocks, TMS
+ * and TDI, in ARM's order, with the timing left to the generated code. Where ARM sets no TDI a
+ * clock carries whatever the last one did, and so do these: tools/equiv.py holds them to ARM's
+ * clock for clock.
  */
 // DAP_config.h first: DAP.h reads the DAP_SWD and DAP_JTAG settings it defines, so a sorted
 // include block that puts DAP.h ahead of it will not compile.
 #include "DAP_config.h"
 
 #include "DAP.h"
+#include "cjtag.h"
 #include "jtag_block.h"
 #include "jtag_dp.h"
 #include "jtag_gen.h"
 
-/** ARM's TDI pin: the level a frame carries when nothing sets it. */
+/** ARM's TDI pin on two pins, where no pin holds it: the level a frame carries when nothing sets
+ * it. On four wires the pin itself is the state, as it is for ARM. */
 static uint32_t tdi_level;
 
-static uint32_t held(void) { return tdi_level != 0U ? 0xFFFFFFFFU : 0U; }
+static uint32_t tdi_now(void) { return cJTAG_Active() ? tdi_level : PIN_TDI_IN(); }
+
+static uint32_t held(void) { return tdi_now() != 0U ? 0xFFFFFFFFU : 0U; }
+
+/** ARM's PIN_TDI_OUT between clocks: on four wires the pin moves now, as ARM's does. */
+static void set_tdi(uint32_t level) {
+    tdi_level = level;
+    if (!cJTAG_Active()) {
+        PIN_TDI_OUT(level);
+    }
+}
 
 /** Up to 32 frames with TMS held and TDI from `tdi`, least significant bit first. */
 static uint32_t frames(uint32_t tdi, uint32_t count, uint32_t tms) {
@@ -84,7 +97,7 @@ void jgen_IR(uint32_t ir) {
     const uint32_t index = DAP_Data.jtag_dev.index;
     hold(2U, 1U); // Select-DR-Scan, Select-IR-Scan
     hold(2U, 0U); // Capture-IR, Shift-IR
-    tdi_level = 1U;
+    set_tdi(1U);
     hold(DAP_Data.jtag_dev.ir_before[index], 0U); // Bypass before data
     // Every IR bit but the last. ARM counts a zero length down from 2^32; this sends none.
     const uint32_t length = DAP_Data.jtag_dev.ir_length[index];
@@ -97,7 +110,7 @@ void jgen_IR(uint32_t ir) {
     const uint32_t after = DAP_Data.jtag_dev.ir_after[index];
     if (after != 0U) {
         (void)frames(ir, 1U, 0U); // Set last IR bit
-        tdi_level = 1U;
+        set_tdi(1U);
         hold(after - 1U, 0U); // Bypass after data
         hold(1U, 1U);         // Bypass & Exit1-IR
     } else {
@@ -105,7 +118,7 @@ void jgen_IR(uint32_t ir) {
     }
     hold(1U, 1U); // Update-IR
     hold(1U, 0U); // Idle
-    tdi_level = 1U;
+    set_tdi(1U);
 }
 
 uint32_t jgen_ReadIDCode(void) {
@@ -121,13 +134,13 @@ uint32_t jgen_ReadIDCode(void) {
 void jgen_WriteAbort(uint32_t data) {
     hold(1U, 1U);                             // Select-DR-Scan
     hold(2U + DAP_Data.jtag_dev.index, 0U); // Capture-DR, Shift-DR, bypass before data
-    tdi_level = 0U;
+    set_tdi(0U);
     hold(3U, 0U);                // RnW, A2 and A3, all zero
     (void)frames(data, 31U, 0U); // D0..D30
     (void)last_bit(data >> 31);
     hold(1U, 1U); // Update-DR
     hold(1U, 0U); // Idle
-    tdi_level = 1U;
+    set_tdi(1U);
 }
 
 uint8_t jgen_Transfer(uint32_t request, uint32_t* data) {
@@ -135,7 +148,7 @@ uint8_t jgen_Transfer(uint32_t request, uint32_t* data) {
     // Capture-DR, Shift-DR and the bypass before data with TDI as it was, then RnW, A2 and A3 with
     // the acknowledge coming back: at most twelve frames, with DAP_JTAG_DEV_CNT devices.
     const uint32_t before = 2U + DAP_Data.jtag_dev.index;
-    const uint32_t tdi = (tdi_level != 0U ? (1U << before) - 1U : 0U) | (((request >> 1) & 7U) << before);
+    const uint32_t tdi = (tdi_now() != 0U ? (1U << before) - 1U : 0U) | (((request >> 1) & 7U) << before);
     const uint32_t bits = frames(tdi, before + 3U, 0U) >> before;
     const uint32_t ack = ((bits & 1U) << 1) | ((bits >> 1) & 1U) | (((bits >> 2) & 1U) << 2);
 
@@ -143,7 +156,7 @@ uint8_t jgen_Transfer(uint32_t request, uint32_t* data) {
         hold(1U, 1U); // Exit1-DR
     } else if ((request & DAP_TRANSFER_RnW) != 0U) {
         uint32_t val = frames(held(), 31U, 0U); // D0..D30
-        val |= last_bit(tdi_level) << 31;
+        val |= last_bit(tdi_now()) << 31;
         if (data != NULL) {
             *data = val;
         }
@@ -154,7 +167,7 @@ uint8_t jgen_Transfer(uint32_t request, uint32_t* data) {
 
     hold(1U, 1U); // Update-DR
     hold(1U, 0U); // Idle
-    tdi_level = 1U;
+    set_tdi(1U);
     if ((request & DAP_TRANSFER_TIMESTAMP) != 0U) {
         DAP_Data.timestamp = TIMESTAMP_GET();
     }

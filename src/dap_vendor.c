@@ -101,14 +101,15 @@
  */
 #define SWD_GEN_LATENCY_MAX 64U
 
-/** ID_VENDOR_JTAG_GEN takes `latency`: the cycles from the falling edge that starts a TDO packet
- * to the first load that sees TDO, 1 to 64, or 0 to leave it as it is. Setting it regenerates.
+/** ID_VENDOR_JTAG_GEN takes `two_pin, four_wire`: each wire's cycles from the falling edge that
+ * launches TDO to the first load that sees it, 1 to 64, or 0 to leave it as it is. Setting either
+ * regenerates the wire in use.
  *
- * It answers `status, latency, masked, ok`, then little-endian u32s: the clock asked for in Hz,
- * the packet period and the frame in core cycles, the generated code's size in bytes, and how
- * many configurations were generated and how many could not be. Status is DAP_ERROR for a
- * latency out of range, which is then left unchanged. `ok` is 0 when the current configuration
- * could not be generated and frames run ARM's own code.
+ * It answers `status, two_pin, four_wire, masked, ok`, then little-endian u32s: the clock asked for
+ * in Hz, the period (a four-wire clock, or a two-pin packet) and a JTAG clock in core cycles, the
+ * generated code's size in bytes, and how many configurations were generated and how many could
+ * not be. Status is DAP_ERROR for a latency out of range, which is then left unchanged. `ok` is 0
+ * when the current configuration could not be generated and the wire runs ARM's own code.
  */
 #define JTAG_GEN_LATENCY_MAX 64U
 
@@ -271,20 +272,24 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
 
 #ifdef JTAG_CODEGEN
     case ID_VENDOR_JTAG_GEN: {
-        const uint32_t latency = request[1];
         response[1] = DAP_OK;
-        if (latency > JTAG_GEN_LATENCY_MAX) {
-            response[1] = DAP_ERROR;
-        } else if (latency != 0U) {
-            jtag_gen_latency = latency;
+        const uint32_t wires[] = {JTAG_GEN_TWO_PIN, JTAG_GEN_FOUR_WIRE};
+        for (uint32_t i = 0U; i < 2U; i++) {
+            const uint32_t latency = request[1U + i];
+            if (latency > JTAG_GEN_LATENCY_MAX) {
+                response[1] = DAP_ERROR;
+            } else if (latency != 0U) {
+                jtag_gen_latency[wires[i]] = latency;
+            }
         }
-        (void)jtag_gen_ready();
-        response[2] = (uint8_t)jtag_gen_latency;
-        response[3] = jtag_gen_info.masked ? 1U : 0U;
-        response[4] = jtag_gen_info.ok ? 1U : 0U;
+        (void)jtag_gen_ready(cJTAG_Active() ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE);
+        response[2] = (uint8_t)jtag_gen_latency[JTAG_GEN_TWO_PIN];
+        response[3] = (uint8_t)jtag_gen_latency[JTAG_GEN_FOUR_WIRE];
+        response[4] = jtag_gen_info.masked ? 1U : 0U;
+        response[5] = jtag_gen_info.ok ? 1U : 0U;
         const uint32_t fields[] = {jtag_gen_clock_hz,       jtag_gen_info.period, jtag_gen_info.frame,
                                    jtag_gen_info.code_bytes, jtag_gen_builds,      jtag_gen_failures};
-        uint8_t* out = response + 5;
+        uint8_t* out = response + 6;
         for (uint32_t i = 0U; i < sizeof fields / sizeof fields[0]; i++) {
             out[0] = (uint8_t)fields[i];
             out[1] = (uint8_t)(fields[i] >> 8);

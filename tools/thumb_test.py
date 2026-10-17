@@ -51,6 +51,7 @@ for rd, rm, amount in (("r0", "r0", 1), ("r10", "r4", 31), ("lr", "r12", 16)):
     case(f"t_lsr({R[rd]}, {R[rm]}, {amount})", f"lsr.w {rd}, {rm}, #{amount}")
 for rd, rn, rm in (("r0", "r0", "r12"), ("r4", "r11", "lr"), ("lr", "r1", "r2")):
     case(f"t_lsr_reg({R[rd]}, {R[rn]}, {R[rm]})", f"lsr.w {rd}, {rn}, {rm}")
+    case(f"t_lsl_reg({R[rd]}, {R[rn]}, {R[rm]})", f"lsl.w {rd}, {rn}, {rm}")
 for rd, rm in (("r0", "r4"), ("r12", "lr"), ("r4", "r4")):
     case(f"t_rbit({R[rd]}, {R[rm]})", f"rbit {rd}, {rm}")
 for rd, rn, imm in (("r12", "r1", 32), ("r0", "r0", 0), ("lr", "r4", 255)):
@@ -70,6 +71,10 @@ for offset in (-8, 4, 0x100, -0x1000, 0x3FFFFC, -0x400000, 0xFFFFFC, -0xFFFFFC):
     case(f"t_b({offset})", f"b.w .{offset:+d}")
 for rn in ("r5", "r6", "lr"):
     case(f"t_msr_primask({R[rn]})", f"msr primask, {rn}")
+for rd, rn, rm, ra in (("r3", "r1", "r7", "r3"), ("r12", "r0", "lr", "r2")):
+    case(f"t_mla({R[rd]}, {R[rn]}, {R[rm]}, {R[ra]})", f"mla {rd}, {rn}, {rm}, {ra}")
+for rm in ("r3", "r12", "lr"):
+    case(f"t_bx_pad({R[rm]})", f"bx {rm}\n    nop")
 case("t_push(0x4FF0)", "push.w {r4-r11, lr}")
 case("t_pop(0x8FF0)", "pop.w {r4-r11, pc}")
 
