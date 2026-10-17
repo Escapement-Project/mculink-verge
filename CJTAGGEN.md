@@ -172,6 +172,57 @@ than the adapter wants swallows the next command scans.
   42 clocks at P = 4 = 1.1 us a word. USB will bound both, as it does SWD (BENCH.md "The USB path
   at 50 MHz").
 
+## The two-pin generator as built (2026-10-17, commits 171c92a..d84161e)
+
+- `src/gen.{c,h}`: the schedule and emitter, shared with swd_gen.c (SWD output byte-identical over
+  the host sweep). SRAMX: SWD 0x0400_0000 (8 KB, its largest output is ~6 KB), frames 0x0400_2000
+  (8 KB), lab upper 16 KB.
+- `src/jtag_gen.c`: one function `fn(tdi, count, tms) -> tdo`, 1..32 OScan1 frames with TMS held,
+  a loop of one frame. Packet = CLR fall, data `strb` to B[TMSC], SET rise (no store moves both
+  pins). Release (TXEN CLR, DIRCLR) right after the fall that starts the TDO packet, take-back
+  (DIRSET, TXEN SET) right after the next fall, which starts the loop body. Sample at
+  fall + latency + EARLY_MARGIN (1), latency default 8 (vendor 0x8A sets it; JTAG_CODEGEN, variant
+  `+jtaggen`, capability bit 5). Below P 9 the whole call runs masked; from 9 `msr primask` brackets
+  each fall-to-release. Frame cycles: P3 20, P4 22, P6 25, P10 32, flat 3P from P12. At fast P the
+  frame's own work (next nTDI, fold-in, subs) fills fall+3..+7, so the sample cannot sit earlier
+  than fall+8 whatever the latency knob says; latency 5..7 all place it at +8.
+- `src/jtag_gen_dp.c`: ARM's Sequence, IR, Transfer, ReadIDCode, WriteAbort as runs of frames, frame
+  for frame; TDI where ARM sets none is the last frame's (`tdi_level`). Block via jtag_block.h.
+  `cjtag_dp.c` routes to it while `jtag_gen_ready()`, else to ARM's copies; so does dap_dispatch's
+  block route.
+- Tools: cycles.py `RecordingTap`, `TimedCjtagTarget` (latency 8, hold 7, release by +3; flags
+  escapes, contention, Test-Logic-Reset). The order-only model latches the frame's TDO at the TMS
+  packet's rise (a real target holds it through the TDO packet; ARM's traces unchanged).
+  `tools/cjtagcheck.py` (every P 3..40, 75, 150, 1500; in the gate for generated images).
+  `equiv.py --wire cjtag --command sequence|transfer` (two-TAP chains, both ends).
+- Model check: ARM's C paths on the timed target show margin 0 at 10/12.5 MHz and -3 from 15 MHz,
+  the bench's probe-rs boundary exactly.
+- Verified: gate (gcc, clang); equiv 720 sequence + 1080 transfer + 128 block cases, both
+  compilers; cjtagcheck 41/41; gen_host 1008 two-pin configurations, four builds agree.
+- Bench (CC1312R1, image 8007864-dirty+codegen+jtaggen+lab): probe-rs `--protocol cjtag` 4 KiB ROM
+  correct at 1, 4, 10, 12.5, 15, 18.75, 25, 30, 37.5, 50 MHz (the previous image fails from 15);
+  64 KiB flash 21/21 runs; 64-word writes to AUX RAM read back at 1..50 MHz; reset 3/3; detach
+  still powers the domain down. dap.py 64-word ROM blocks 2000/2000 at 50/37.5/25/13.6 MHz.
+- Throughput, dap.py 64-word blocks with USB, same session: previous image 172 KiB/s at 12.5,
+  ~230 at 15..30, broken from 37.5; generated 223 at 12.5, 244..278 at 15..30, 290 at 37.5/50.
+  Through probe-rs a 64 KiB read takes ~2.8 s at every rate from 10 MHz: host round trips per
+  JTAG scan, not the wire (probe-rs would have to batch JTAG scans).
+- Where the time goes (emulator, 50 MHz block read): ~1230 cycles a word, ~820 of them frames;
+  the rest is C between the ~6 generated calls a transfer makes. Generated whole transfers would
+  take the wire rate up ~45%.
+
+## Four-wire on this part (measured 2026-10-17)
+
+- After a pin reset the adapter is two-pin JScan: TDO is not driven. Four-wire needs probe-rs
+  icepick.rs `ctag_to_jtag` first (BYPASS, zero-bit scans x2, 1-bit scan, STC2 = 2-bit scan,
+  operand 9 = 9-bit scan, BYPASS, IDCODE).
+- TDO window, sample offset from the falling-edge store that launches the bit (IDCODE reads, 5
+  repeats, P = 6, 8, 10, 12, 16, 20, 30): good from +8 to next fall + 6, bad at +7 and at next
+  fall + 7. One cycle narrower than the period; the extra cycle at the front is likely bit 0, whose
+  output enable switches on at that fall.
+- ARM's four-wire C path reads CPUID through probe-rs at 1..5 MHz and fails from 8 MHz, on the
+  previous image as well as the generated one: not a regression.
+
 ## To measure before writing the generator (lab blobs, as for SWD)
 
 1. Done: the TDO window (8 cycles to at least next fall + 7), minimum phases (1-cycle highs),
@@ -181,18 +232,16 @@ than the adapter wants swallows the next command scans.
    analog on D1 (contention shows as a mid-level), or a probe-side readback with the target's
    bit opposite the latch.
 3. **The window on a second CC13xx/CC26xx die**, and calibration at connect (as SWD's A).
-4. **Four-wire TDO window and A**, on a four-wire target or on this part after `ctag_to_jtag`
+4. Done: **four-wire TDO window**, above.
 
 ## Steps
 
-1. Lab: the five measurements above.
-2. Emulator: give the modelled 1149.7 target in `tools/cycles.py` the measured windows (a timed
-   target, as `TimedSwdTarget`), SEDGE=1 sampling, and the Test-Logic-Reset kill.
-3. Generator: `src/jtag_gen.c` on the SWD scheduler, OScan1 emitter first (the measured wire),
-   four-wire second; behind a `JTAG_CODEGEN` option, off by default.
-4. Gate: equivalence against ARM's paths with samples excluded, every P 3..40 on the timed
-   target, zero moves while TCKC is high, baselines under `tools/baseline-codegen`.
-5. Hardware: every P on the CC1312R1 (`dap.py cjtag --mem --sweep`), soak, then four-wire.
+1. Lab: OScan1 window and four-wire window done; take-back timing bounded; second die open.
+2. Emulator: done for OScan1 (`TimedCjtagTarget`); four-wire next.
+3. Generator: OScan1 done as a frame loop under ARM's C (above). Next: the four-wire emitter, then
+   straight-line bodies (no loop overhead) and generated whole transfers for throughput.
+4. Gate: done for OScan1.
+5. Hardware: OScan1 done (above); four-wire next.
 6. Host: probe-rs drives the activation and frames through the probe (outside this repo),
    attaches from any state as in "Attach from any state", and detaches as in "Detach".
    Working 2026-10-17 as `--protocol cjtag` (probe-rs branch wip-cmsisdap-cjtag, commits
