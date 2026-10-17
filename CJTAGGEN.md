@@ -270,9 +270,10 @@ than the adapter wants swallows the next command scans.
   and a filler after the loop stands for the untaken branch's missing cycle. The emulator's frames
   are exactly 3P through the loop at P 12 and 15. Vendor 0x8A's `ok` byte: bit 1 transfers, bit 2
   looped.
-- gen_host: 5148 configurations, transfers in 2113 of 2268 JTAG ones. None for four-wire at
-  latency 9 and up with a clock shorter than about latency + 6: the transfer layout has no sample
-  slot there (the scan engine lengthens its clock instead). Not needed at the default latency 8.
+- gen_host: 5148 configurations, transfers in all 2268 JTAG ones since 2e2e08b. Before it, none
+  for four-wire at latency 9 and up with a clock shorter than about latency + 6 (no sample slot);
+  the transfers now lengthen the clock as the scan engine does (timed checks clean at latency 12,
+  18, 24 from 5 to 50 MHz).
 - Emulator: unicorn's IT-block fault fires on write hooks as well (clang `itt eq; ldreq; streq`,
   then the branch target lost its `uxtb`). Stores are now counted from the code hook like loads,
   and SRAMX code is checked against the bytes it was decoded from; nothing hooks memory.
