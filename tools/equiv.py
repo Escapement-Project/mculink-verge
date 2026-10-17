@@ -50,7 +50,17 @@ CLOCK_HZ = 10_000_000
 
 
 def wire(trace: list[str]) -> list[str]:
-    return [event for event in trace if event not in ("S", "T")] if IGNORE_SAMPLES else trace
+    """The trace with TMS and TDI changes put in one order between clock edges, where a TAP cannot
+    see which came first."""
+    events = [event for event in trace if event not in ("S", "T")] if IGNORE_SAMPLES else list(trace)
+    i = 0
+    while i < len(events):
+        j = i
+        while j < len(events) and events[j][0] in "WI":
+            j += 1
+        events[i:j] = sorted(events[i:j], key=lambda event: event[0] == "I")
+        i = j + 1
+    return events
 
 # The acknowledge, in the order SW_READ_BIT reads it: bit 0 first.
 ACKS = {
