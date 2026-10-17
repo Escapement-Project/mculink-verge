@@ -279,7 +279,7 @@ than the adapter wants swallows the next command scans.
   equiv.py sorts TMS and TDI changes between edges. QEMU harness: FPU on (gcc keeps a constant in
   d8 in `emit_xfer`).
 - Verified: gate (both compilers); equiv four-wire 1080 transfer and 188 block cases, two-pin 128
-  block cases, gcc and clang. Two-pin transfer equivalence was still running at commit time.
+  block cases, two-pin 1080 transfer cases (finished after the commit), gcc and clang.
 - Bench (lab image, dap.py, 400 queued 127-word ROM reads, depth 3; every block checked against
   the 1 MHz read):
 
@@ -303,9 +303,35 @@ than the adapter wants swallows the next command scans.
   2 at 5/10 MHz, 4 at 15, 6 at 30; two-pin 1 at 15/25, 2 at 50; none for two-pin at 10 and below.
   Neither a time nor a clock count alone fits. Four-wire 30 MHz by idle: 0 131.6, 1 134.6, 2
   137.7, 3 140.7, 4 144.0, 6 112.3, 8 117.8, 12 128.7 ms. probe-rs sends idle 0, wait_retry
-  0xffff, so every word pays a WAIT and a retry from C: ~0.7 us at 30 MHz, ~0.3 of it wire.
+  0xffff. With retry 1 every word completes: never more than one WAIT a word.
 - Idle above 4 runs in `slow_idle`: 8 cycles a clock at P 5 (the loop is not folded into it).
-- Next: retry WAIT inside the generated code, so idle 0 costs about what the best idle does.
+
+## WAIT retried in the generated code: parked (branch `jtag-wait-retry`, 5185655)
+
+- The failure path retries a WAIT itself: per-word budget from a fifth argument (the slot at
+  [sp] holds the count it was taken for), DAP_TransferAbort checked, interrupts let in first,
+  a write's word re-sent. DAP_Transfer passes 0 (ARM's loop retries). Gate, gen_host, equiv
+  (blocks with a target that always WAITs, both wires, both compilers; four-wire transfers) pass.
+- It is slower at idle 0, two-pin: 50 MHz 346.2 against 341.8 ms, 25 MHz 435 / 421, 15 MHz 549 /
+  522. The retry from C made a new call for the rest of the block, and that call's time worked as
+  idle for the next word, so only every other word waited. Retried in place, every word waits,
+  and a WAIT's failed transfer (~9 clocks) costs more wire than the call did.
+- What wins is not waiting: two-pin idle 2 is 297.6 / 371.7 / 463.0 ms at 50 / 25 / 15 MHz,
+  11-13% under idle 0; four-wire idle 6 at 30 MHz is 15% under. Ways there:
+  the probe adds Run-Test/Idle clocks after a WAIT (learned per configuration; DAP results
+  unchanged, but clocks on the wire the host did not ask for, unlike ARM's); or the host sets
+  idle cycles (probe-rs hardcodes 0).
+
+## Through probe-rs (2026-10-17, c732a6a image)
+
+- Correct on both wires at 1/5/10/15/25/50 MHz: 4 KiB and 64 KiB ROM reads hash the same at every
+  clock.
+- 64 KiB takes 6.43 / 3.47 / 3.35 s two-pin and 4.14 / 3.24 / 3.20 s four-wire at 1 / 10 / 50
+  MHz (debug build; attach included), against ~45 ms in the probe at 30 MHz four-wire. probe-rs
+  builds its ARM interface for CMSIS-DAP JTAG with `create_jtag`: its own JTAG-DP over
+  DAP_JTAG_Sequence, a host round trip per scan, so DAP_Transfer and DAP_TransferBlock (and the
+  generated transfers) are never used. Routing CMSIS-DAP JTAG through the probe's DAP_Transfer
+  as SWD is routed is the host-side change that would let the firmware's speed through.
 
 ## The ICEPick join needs time, not a count (2026-10-17)
 
@@ -349,7 +375,8 @@ than the adapter wants swallows the next command scans.
 1. Lab: OScan1 window and four-wire window done; take-back timing bounded; second die open.
 2. Emulator: done for both wires (`TimedCjtagTarget`, `TimedJtagTarget`).
 3. Generator: both wires as straight-line blocks, and whole transfers, unrolled or looped (above).
-   Next: WAIT retried inside the generated transfers.
+   Open: how to stop paying for the target's WAITs (above); probe-rs using
+   DAP_Transfer for JTAG.
 4. Gate: done for both wires.
 5. Hardware: both wires correct at 1..50 MHz through probe-rs and dap.py.
 6. Host: probe-rs drives the activation and frames through the probe (outside this repo),
