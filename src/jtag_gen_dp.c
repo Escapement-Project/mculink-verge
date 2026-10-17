@@ -152,6 +152,9 @@ static uint8_t transfer_one(uint32_t request, uint32_t* data) {
     }
     const uint32_t ack = (uint32_t)fn(request, (uint8_t*)&word, 1U, tdi_now());
     tdi_level = 1U;
+    if (ack == DAP_TRANSFER_WAIT) {
+        jtag_gen_waited();
+    }
     if ((ack == DAP_TRANSFER_OK) && ((request & DAP_TRANSFER_RnW) != 0U) && (data != NULL)) {
         *data = word;
     }
@@ -216,6 +219,9 @@ static uint32_t transfer_words(uint32_t request, uint8_t* words, uint32_t count,
         count -= ok;
         if (ack == DAP_TRANSFER_OK) {
             break;
+        }
+        if (ack == DAP_TRANSFER_WAIT) {
+            jtag_gen_waited();
         }
         uint32_t retry = DAP_Data.transfer.retry_count;
         while ((ack == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort) {

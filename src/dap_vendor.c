@@ -45,6 +45,8 @@
 #define ID_VENDOR_SWD_GEN ID_DAP_Vendor9
 /// The same for the generated two-pin frames.
 #define ID_VENDOR_JTAG_GEN ID_DAP_Vendor10
+/// Switches the generated JTAG transfers' learned pacing. See below.
+#define ID_VENDOR_JTAG_PACING ID_DAP_Vendor11
 
 /** Answered by ID_VENDOR_CJTAG_INFO, so a host can recognise this firmware rather than assume it.
  *
@@ -114,6 +116,11 @@
  * bits are a loop.
  */
 #define JTAG_GEN_LATENCY_MAX 64U
+
+/** ID_VENDOR_JTAG_PACING takes `mode`: 0 turns the learned idle clocks off, so the generated wire
+ * is ARM's exactly, 1 turns them on (the default), anything else leaves them. It answers `status,
+ * on, paced`: whether pacing is on and the idle clocks learned so far (jtag_gen_paced).
+ */
 
 /** ID_VENDOR_TARGET takes `mode, channel` and answers `status, code, millivolts, detect`, the two
  * middle fields little-endian u16.
@@ -308,6 +315,18 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         }
         return (2U << 16) | (uint32_t)(out - response);
     }
+
+    case ID_VENDOR_JTAG_PACING:
+        if (request[1] <= 1U) {
+            jtag_gen_pacing = request[1] != 0U;
+            if (DAP_Data.debug_port == DAP_PORT_JTAG) {
+                (void)jtag_gen_ready(cJTAG_Active() ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE);
+            }
+        }
+        response[1] = DAP_OK;
+        response[2] = jtag_gen_pacing ? 1U : 0U;
+        response[3] = (uint8_t)jtag_gen_paced;
+        return (2U << 16) | 4U;
 #endif
 
     default:

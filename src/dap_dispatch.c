@@ -84,8 +84,11 @@ static uint32_t transfer_block(const uint8_t* request, uint8_t* response) {
         return SWD_TransferBlock(request, response);
     }
 #ifdef JTAG_CODEGEN
-    if (jtag_gen_ready(cJTAG_Active() ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE)) {
-        return jgen_TransferBlock(request, response);
+    const uint32_t wire = cJTAG_Active() ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE;
+    if (jtag_gen_ready(wire)) {
+        const uint32_t length = jgen_TransferBlock(request, response);
+        jtag_gen_learn(wire);
+        return length;
     }
 #endif
     if (!cJTAG_Active()) {
@@ -193,6 +196,9 @@ uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* response) {
          (*request == ID_DAP_TransferConfigure)) &&
         (DAP_Data.debug_port == DAP_PORT_JTAG)) {
         (void)jtag_gen_ready(cJTAG_Active() ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE);
+    }
+    if ((*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {
+        jtag_gen_learn(cJTAG_Active() ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE);
     }
 #endif
     return result;

@@ -1188,6 +1188,7 @@ jtag_gen_xfer_fn jtag_gen_read;
 jtag_gen_xfer_fn jtag_gen_write;
 
 static struct jtag_gen_config built;
+static struct jtag_gen_config asked; // `built` as the host configured it, before pacing
 static bool built_once;
 static bool built_ok;
 uint32_t jtag_gen_builds;
@@ -1199,8 +1200,22 @@ static uint32_t period_for(uint32_t hz) {
     return period < JTAG_GEN_PERIOD_MIN ? JTAG_GEN_PERIOD_MIN : period;
 }
 
+uint32_t jtag_gen_paced;
+bool jtag_gen_pacing = true;
+static bool waited;
+
+void jtag_gen_waited(void) { waited = true; }
+
+void jtag_gen_learn(uint32_t wire) {
+    if (waited && jtag_gen_pacing && (jtag_gen_paced < JTAG_GEN_PACED_MAX)) {
+        jtag_gen_paced++;
+        (void)jtag_gen_ready(wire);
+    }
+    waited = false;
+}
+
 bool jtag_gen_ready(uint32_t wire) {
-    const struct jtag_gen_config want = {
+    struct jtag_gen_config want = {
         .wire = wire,
         .period = period_for(jtag_gen_clock_hz),
         .latency = jtag_gen_latency[wire == JTAG_GEN_TWO_PIN ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE],
@@ -1210,6 +1225,11 @@ bool jtag_gen_ready(uint32_t wire) {
                      : 0U,
         .idle = DAP_Data.transfer.idle_cycles,
     };
+    if (!jtag_gen_pacing || (built_once && (memcmp(&want, &asked, sizeof want) != 0))) {
+        jtag_gen_paced = 0U;
+    }
+    asked = want;
+    want.idle = want.idle + jtag_gen_paced > 255U ? 255U : want.idle + jtag_gen_paced;
     if (built_once && (gen_owner == GEN_OWNER_JTAG) && (memcmp(&want, &built, sizeof want) == 0)) {
         return built_ok;
     }

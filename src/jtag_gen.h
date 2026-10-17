@@ -83,6 +83,19 @@ extern uint32_t jtag_gen_failures;
  * generated: the caller runs ARM's path instead. */
 bool jtag_gen_ready(uint32_t wire);
 
+/** Run-Test/Idle clocks the generated transfers add to the host's after each transfer, learned from
+ * the target's WAITs: one more after each command that met one, up to JTAG_GEN_PACED_MAX, and none
+ * again once the host changes the clock or the configuration. A target that answers WAIT to a
+ * transfer close behind the last one stops doing so, and one that never does sees ARM's wire. */
+extern uint32_t jtag_gen_paced;
+#define JTAG_GEN_PACED_MAX 32U
+/** Whether WAITs teach jtag_gen_paced. Off, the wire is ARM's exactly. */
+extern bool jtag_gen_pacing;
+/** A generated transfer was answered WAIT. */
+void jtag_gen_waited(void);
+/** Between commands: one more idle clock if a WAIT came since the last call, generated now. */
+void jtag_gen_learn(uint32_t wire);
+
 /** What the last build produced, for a host to read back. */
 struct jtag_gen_info {
     uint32_t period;     // cycles a clock (four-wire) or a packet the probe drives (two-pin)
