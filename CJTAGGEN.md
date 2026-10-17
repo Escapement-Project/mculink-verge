@@ -211,6 +211,55 @@ than the adapter wants swallows the next command scans.
   the rest is C between the ~6 generated calls a transfer makes. Generated whole transfers would
   take the wire rate up ~45%.
 
+## Both wires as straight-line blocks (2026-10-17, commits 435b79e..ec73cdc)
+
+- `src/jtag_gen.c` now emits 32 identical blocks, one JTAG clock each, and enters at block
+  32 - count (`mla` + padded `bx`); only shift immediates differ between blocks, so no clock pays
+  for a loop. Only the wire in use is generated (`jtag_gen_ready(wire)`), into the same 8 KB.
+  Largest output 5.6 KB.
+- Two-pin block: the frame as before, sample in the block's last cycle. Frames: P3 18, P4 20,
+  P5 22, P6 23, flat 3P from P12.
+- Four-wire block: MPIN store (TCK low + TDI; GPIO MASK = ~(TCK|TDI) set in the prologue, the
+  caller's mask restored at the end), SET rise, sample, fold-in, next TDI: five instructions, so a
+  clock is max(P, 5) cycles (30 MHz top). TMS is a byte store once per call, while TCK is still
+  high, as ARM sets it. Sample window [fall + 8 + 1, next fall + 6 - 1]: from P 10 inside its own
+  clock and unmasked, below that after the next fall, masked. The layout tries every sample
+  position, then longer clocks, and keeps the first that fits.
+- C side: on four wires ARM's TDI pin is the state (`PIN_TDI_IN`, `set_tdi` drives it where ARM's
+  PIN_TDI_OUT does). Vendor 0x8A takes `[two-pin latency, four-wire latency]`.
+- Bug found and fixed on the way: the first block a call runs folds in a "previous" sample that
+  never existed; R_SAMPLE still held the block size from the entry calculation and spilled into
+  kept bits. It is zeroed before the `bx`.
+- Emulator: unicorn 2.1.4 runs an IT block wrongly when a read hook fires on a load inside it, and
+  the next branch's target skips its first instruction (a clang build's `blx` into the generated
+  code lost its `push`). Loads are now counted from the code hook by their base register's bus;
+  the timed sweeps are byte-identical either way on gcc. Probably also the clang layout failure. The order-only
+  four-wire model latches TDO at the fall; B-register reads return the pin level;
+  `TimedJtagTarget` (latency 8, hold 6) serves generated images in the gate.
+- Verified: gate (gcc, clang, both wires timed at all 41 periods); equiv four-wire 720 sequence,
+  1080 transfer, 188 block cases, two-pin 720/1080/128, gcc and clang; gen_host 2016 JTAG
+  configurations x 4 builds.
+- Bench (ec73cdc+codegen+jtaggen+lab): probe-rs ROM reads correct at 1..50 MHz on both wires (with
+  the probe-rs fix below); clang image too. dap.py 64-word blocks, USB included: four-wire 69 / 222
+  / 303 / 351 / 381 / 390 / 389 KiB/s at 1 / 5 / 10 / 15 / 25 / 37.5 / 50 MHz; two-pin 25 / 102 /
+  170 / 216 / 246 / 264 / 280.
+- Cost now (emulator, 50 MHz block read): four-wire ~810 cycles a word, 205 of them clocks; two-pin
+  ~1730, 740 of them frames. The rest is the C between ~6 generated calls a transfer (90..145
+  cycles each). Next: generate whole transfers, as swd_gen.c does.
+
+## The ICEPick join needs time, not a count (2026-10-17)
+
+- probe-rs four-wire failed from 8 MHz on every image: the first DP access read all ones (the
+  Cortex-M TAP not in the chain). Bisected by replaying probe-rs's command stream through dap.py
+  with the clock lowered for a prefix: only the routing command matters (IR ROUTER, SD_TAP0 write,
+  BYPASS, 10 Run-Test/Idle clocks, one DAP_JTAG_Sequence).
+- The selected TAP joins only on Run-Test/Idle clocks that come about 2.5-3 us after the routing
+  write. One contiguous run: 5 MHz 8 clocks pass; 10 MHz 16 fail, 20 pass; 30 MHz 20 fail. A wait
+  without clocks after it does not help (the next command's DP access leaves Run-Test/Idle at
+  once). Two-pin frames are slow enough that 10 clocks happened to cover it.
+- Fix in probe-rs `icepick.rs`: `SD_TAP_JOIN_CLOCKS` 10 -> 256 (over 5 us up to 50 MHz).
+  Uncommitted in probe-rs's tree.
+
 ## Four-wire on this part (measured 2026-10-17)
 
 - After a pin reset the adapter is two-pin JScan: TDO is not driven. Four-wire needs probe-rs
@@ -221,7 +270,8 @@ than the adapter wants swallows the next command scans.
   fall + 7. One cycle narrower than the period; the extra cycle at the front is likely bit 0, whose
   output enable switches on at that fall.
 - ARM's four-wire C path reads CPUID through probe-rs at 1..5 MHz and fails from 8 MHz, on the
-  previous image as well as the generated one: not a regression.
+  previous image as well as the generated one: not a regression. Cause: the ICEPick join (below the
+  blocks section), a host matter.
 
 ## To measure before writing the generator (lab blobs, as for SWD)
 
@@ -237,11 +287,11 @@ than the adapter wants swallows the next command scans.
 ## Steps
 
 1. Lab: OScan1 window and four-wire window done; take-back timing bounded; second die open.
-2. Emulator: done for OScan1 (`TimedCjtagTarget`); four-wire next.
-3. Generator: OScan1 done as a frame loop under ARM's C (above). Next: the four-wire emitter, then
-   straight-line bodies (no loop overhead) and generated whole transfers for throughput.
-4. Gate: done for OScan1.
-5. Hardware: OScan1 done (above); four-wire next.
+2. Emulator: done for both wires (`TimedCjtagTarget`, `TimedJtagTarget`).
+3. Generator: both wires as straight-line blocks under ARM's C (above). Next: generated whole
+   transfers for DAP_Transfer/TransferBlock throughput.
+4. Gate: done for both wires.
+5. Hardware: both wires correct at 1..50 MHz through probe-rs and dap.py.
 6. Host: probe-rs drives the activation and frames through the probe (outside this repo),
    attaches from any state as in "Attach from any state", and detaches as in "Detach".
    Working 2026-10-17 as `--protocol cjtag` (probe-rs branch wip-cmsisdap-cjtag, commits
