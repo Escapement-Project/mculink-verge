@@ -25,8 +25,10 @@
 #define JTAG_GEN_PERIOD_MAX (1U << 24)
 /** Cycles from the falling edge that launches TDO to the first load that sees it: on two pins the
  * fall that starts the TDO packet, on four wires the clock's own fall. The bench measured 8 for
- * both on a CC1312R1, at every period it tried (CJTAGGEN.md). */
+ * both on a CC1312R1 after a pin reset. After a system reset the Cortex-M DAP behind its ICEPick
+ * sends TDO about 2 cycles later, so four wires default to 10 (CJTAGGEN.md). */
 #define JTAG_GEN_LATENCY_DEFAULT 8U
+#define JTAG_GEN_FOUR_WIRE_LATENCY_DEFAULT 10U
 /** The most frames one call clocks. */
 #define JTAG_GEN_FRAMES_MAX 32U
 

@@ -79,6 +79,12 @@ _Static_assert((TMSC < 256U) && (TDI < 256U), "R_PIN is loaded as an 8-bit immed
 #define MARGIN 1U
 /** Four-wire: cycles past the next falling edge that TDO still holds the bit (measured). */
 #define FOUR_WIRE_HOLD 6U
+/** Four-wire: the acknowledge's last bit is loaded, folded in and compared, and the branch taken,
+ * in this many cycles before the next falling edge. */
+#define FOUR_WIRE_DECIDE 5U
+/** Four-wire: cycles past the latency that the acknowledge's last bit is sampled on a clock long
+ * enough to run unmasked, where the margin costs at most a few cycles a transfer. */
+#define FOUR_WIRE_DECIDE_SLACK 3U
 /** Two-pin periods below this run with interrupts masked for the whole call. A frame there has no
  * cycle to spare for masking around each release, and a call takes a few microseconds. */
 #define TWO_PIN_MASK_WHOLE_BELOW 9U
@@ -664,9 +670,14 @@ static void fx_transfer(struct xfer* x, bool read, uint32_t before, uint32_t aft
         fx_clock(x, X_DATA);
         x_capture(x, X_ACK, r, x->fall);
         if (r == 2U) {
-            // As soon as it is on the pin, and before the next clock falls: that fall already
-            // carries the next TMS.
-            x_take(x, x_free(x, x->fall + x->latency + MARGIN, false));
+            // Before the next clock falls, which already carries the next TMS, and otherwise as
+            // late as the decision allows, as every other sample is.
+            const uint32_t first = x->fall + x->latency + MARGIN;
+            uint32_t at = later(first, x->fall + x->p - FOUR_WIRE_DECIDE);
+            if (!x->masked) {
+                at = later(at, first + FOUR_WIRE_DECIDE_SLACK);
+            }
+            x_take(x, x_free(x, at, false));
             x_decide(x);
         }
     }
@@ -1171,7 +1182,7 @@ bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan
 
 uint32_t jtag_gen_clock_hz = DAP_DEFAULT_SWJ_CLOCK;
 struct jtag_gen_info jtag_gen_info;
-uint32_t jtag_gen_latency[2] = {JTAG_GEN_LATENCY_DEFAULT, JTAG_GEN_LATENCY_DEFAULT};
+uint32_t jtag_gen_latency[2] = {JTAG_GEN_FOUR_WIRE_LATENCY_DEFAULT, JTAG_GEN_LATENCY_DEFAULT};
 jtag_gen_scan_fn jtag_gen_scan;
 jtag_gen_xfer_fn jtag_gen_read;
 jtag_gen_xfer_fn jtag_gen_write;
