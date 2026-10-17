@@ -4,10 +4,12 @@
 """The whole gate: host checks, then both compilers' images through the emulator.
 
 `ninja -C <build> check` holds one image to its baselines. This runs that for gcc and clang, each
-in the default configuration and with SWD_CODEGEN, because an optimisation that holds under one
-compiler has been seen not to under the other. Before the images it runs the checks that need no
-image: the Thumb-2 encoders against the assembler, memcpy at every length and offset, and the
-transfer generator under sanitizers and on an emulated Cortex-M33 with both compilers.
+in the default configuration and with SWD_CODEGEN and JTAG_CODEGEN, because an optimisation that
+holds under one compiler has been seen not to under the other. A generated image also runs its
+two-pin frames against a target that answers by time, at every period up to 40 cycles and three
+longer ones. Before the images it runs the checks that need no image: the Thumb-2 encoders against
+the assembler, memcpy at every length and offset, and both generators under sanitizers and on an
+emulated Cortex-M33 with both compilers.
 
 Builds go to build-gate/. The image checks run in parallel; each is single-threaded.
 
@@ -26,7 +28,7 @@ BUILD = os.path.join(ROOT, "build-gate")
 HOST_CHECKS = (
     ("Thumb-2 encoders against gas", ["uv", "run", "tools/thumb_test.py"]),
     ("memcpy at every length and offset", ["uv", "run", "tools/mem_test.py"]),
-    ("generator: sanitizers, both compilers, QEMU", ["uv", "run", "tools/gen_host.py"]),
+    ("generators: sanitizers, both compilers, QEMU", ["uv", "run", "tools/gen_host.py"]),
 )
 IMAGES = [(toolchain, codegen) for toolchain in ("gcc", "clang") for codegen in (False, True)]
 
@@ -56,8 +58,9 @@ def main() -> int:
     built = []
     for toolchain, codegen in IMAGES:
         directory = os.path.join(BUILD, name(toolchain, codegen))
-        ok, output, seconds = run(["cmake", "-B", directory, "-G", "Ninja", "-DBOARD=mcu_link",
-                                   f"-DTOOLCHAIN={toolchain}", f"-DSWD_CODEGEN={'ON' if codegen else 'OFF'}", "."])
+        flag = "ON" if codegen else "OFF"
+        ok, output, seconds = run(["cmake", "-B", directory, "-G", "Ninja", "-DBOARD=mcu_link", f"-DTOOLCHAIN={toolchain}",
+                                   f"-DSWD_CODEGEN={flag}", f"-DJTAG_CODEGEN={flag}", "."])
         if ok:
             ok, more, extra = run(["ninja", "-C", directory])
             output, seconds = output + more, seconds + extra
@@ -66,11 +69,13 @@ def main() -> int:
             built.append((toolchain, codegen, directory))
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(built) or 1) as pool:
-        checks = {pool.submit(run, ["ninja", "-C", directory, "check"]): (toolchain, codegen)
+        checks = {pool.submit(run, ["ninja", "-C", directory, "check"]): f"emulator gate {name(toolchain, codegen)}"
                   for toolchain, codegen, directory in built}
+        checks |= {pool.submit(run, ["uv", "run", "tools/cjtagcheck.py", os.path.join(directory, "mculink_cjtag.elf")]):
+                   f"timed two-pin frames {name(toolchain, codegen)}"
+                   for toolchain, codegen, directory in built if codegen}
         for future in concurrent.futures.as_completed(checks):
-            toolchain, codegen = checks[future]
-            report(f"emulator gate {name(toolchain, codegen)}", *future.result(), failures)
+            report(checks[future], *future.result(), failures)
 
     if failures:
         print(f"\n{len(failures)} failed: {', '.join(failures)}")

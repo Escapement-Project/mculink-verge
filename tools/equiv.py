@@ -26,6 +26,7 @@ sys.path.insert(0, __file__.rsplit("/", 1)[0])
 
 from cycles import (  # noqa: E402
     ID_CJTAG_CONTROL,
+    ID_JTAG_SEQUENCE,
     ID_TRANSFER,
     ID_CONNECT,
     ID_JTAG_CONFIGURE,
@@ -162,6 +163,55 @@ def run_cjtag(
     return wire(probe.end().trace), reply
 
 
+def run_cjtag_commands(
+    elf: str, ack: int, word: int, fast: bool, idle: int, commands: list[bytes], chain: tuple[int, ...] = (4,)
+) -> tuple[list[str], bytes]:
+    """Any commands through OScan1 framing, against the TAP run_cjtag uses: the replies, joined."""
+    dr = ((ack >> 1) & 1) | ((ack & 1) << 1) | (((ack >> 2) & 1) << 2) | (word << 3)
+    probe = Machine(elf, Target([]), restart_at=set(), model=Model())
+    probe.command(bytes([ID_CONNECT, 2]))
+    probe.command(bytes([ID_SWJ_CLOCK]) + u32(50_000_000 if fast else 10_000_000))
+    probe.command(bytes([ID_TRANSFER_CONFIG, idle]) + u16(2) + u16(2))
+    probe.command(bytes([ID_JTAG_CONFIGURE, len(chain)]) + bytes(chain))
+    probe.command(bytes([ID_CJTAG_CONTROL, 1]))
+    probe.cjtag_tap = JtagTap(dr, 35)
+    probe.begin()
+    replies = b"".join(probe.command(c) for c in commands)
+    return wire(probe.end().trace), replies
+
+
+def jtag_sequence(*seqs: tuple[int, bool, bool, int]) -> bytes:
+    """DAP_JTAG_Sequence from (clocks, tms, capture, tdi) entries; 64 clocks encode as 0."""
+    body = b""
+    for clocks, tms, capture, tdi in seqs:
+        body += bytes([(clocks & 0x3F) | (0x40 if tms else 0) | (0x80 if capture else 0)])
+        body += tdi.to_bytes((clocks + 7) // 8, "little")
+    return bytes([ID_JTAG_SEQUENCE, len(seqs)]) + body
+
+
+def cjtag_sequence_cases(word: int) -> dict[str, list[bytes]]:
+    """Sequences of every length class, and the transfers whose first frames carry the TDI a
+    sequence left behind: ARM sets none before the request bits."""
+    mask = lambda n: (1 << n) - 1  # noqa: E731
+    pattern = 0xF0E1_D2C3_B4A5_9687
+    read = bytes([ID_TRANSFER, 0, 2, AP_DRW_READ, AP_DRW_READ])
+    write = bytes([ID_TRANSFER, 0, 1, AP_DRW_WRITE]) + u32(word)
+    return {
+        "probe-rs dr scan": [
+            jtag_sequence((1, True, False, 1), (2, False, False, 3), (34, False, True, pattern & mask(34)),
+                          (1, True, True, 1), (1, True, False, 1), (1, False, False, 1))
+        ],
+        "lengths": [
+            jtag_sequence(*[(n, n % 2 == 0, True, pattern & mask(n)) for n in (1, 7, 8, 9, 31, 32, 33, 63)]),
+            jtag_sequence((64, False, True, pattern), (64, True, False, pattern ^ mask(64))),
+        ],
+        "stale tdi 0 then read": [jtag_sequence((5, False, False, 0)), read],
+        "stale tdi 1 then write": [jtag_sequence((5, False, False, 0x1F)), write],
+        "stale tdi 0 then idcode": [jtag_sequence((3, False, False, 0)), bytes([0x16, 0])],
+        "write abort": [jtag_sequence((2, False, False, 0)), bytes([0x08, 0]) + u32(word)],
+    }
+
+
 def run_transfer(
     elf: str, ack: str, kind: str, turnaround: int, idle: int, word: int
 ) -> tuple[list[str], bytes]:
@@ -259,7 +309,7 @@ def main() -> int:
     ap.add_argument("reference")
     ap.add_argument("candidate")
     ap.add_argument("--wire", choices=["swd", "jtag", "cjtag"], default="swd")
-    ap.add_argument("--command", choices=["block", "transfer"], default="block")
+    ap.add_argument("--command", choices=["block", "transfer", "sequence"], default="block")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--ignore-samples", action="store_true", help="compare without the SWDIO loads")
     ap.add_argument("--clock", type=float, default=10.0, help="SWD clock in MHz for the SWD cases")
@@ -267,6 +317,53 @@ def main() -> int:
     global IGNORE_SAMPLES, CLOCK_HZ
     IGNORE_SAMPLES = args.ignore_samples
     CLOCK_HZ = int(args.clock * 1e6)
+
+    def compare(name: str, a: tuple[list[str], bytes], b: tuple[list[str], bytes]) -> int:
+        if a[0] != b[0]:
+            first = next((i for i, (x, y) in enumerate(zip(a[0], b[0])) if x != y), min(len(a[0]), len(b[0])))
+            print(f"  WIRE   {name}")
+            print(
+                f"         diverges at event {first} of {len(a[0])}/{len(b[0])}:"
+                f" {a[0][first : first + 6]} against {b[0][first : first + 6]}"
+            )
+            return 1
+        if a[1] != b[1]:
+            print(f"  REPLY  {name}\n         {a[1].hex()} against {b[1].hex()}")
+            return 1
+        if args.verbose:
+            print(f"  ok     {name}  ({len(a[0])} events, {len(a[1])}B reply)")
+        return 0
+
+    if args.wire == "cjtag" and args.command != "block":
+        # Two TAPs as the CC13xx's ICEPick puts them, the DAP at either end, so the IR and DR
+        # scans cross bypass bits on both sides.
+        chains = ((4,), (4, 6))
+        cases = []
+        for ack, word, fast, idle, chain in itertools.product(
+            (0, 1, 2, 4, 7), (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF), (False, True), (0, 3), chains
+        ):
+            if args.command == "sequence":
+                for label, commands in cjtag_sequence_cases(word).items():
+                    cases.append((f"{label} ack={ack} word=0x{word:08x} {'fast' if fast else 'paced'} idle={idle} chain={chain}",
+                                  (ack, word, fast, idle, commands, chain)))
+            else:
+                for index in range(len(chain)):
+                    for kind, payload in (
+                        ("read", bytes([ID_TRANSFER, index, 3]) + bytes([AP_DRW_READ]) * 3),
+                        ("write", bytes([ID_TRANSFER, index, 2]) + (bytes([AP_DRW_WRITE]) + u32(word)) * 2),
+                        ("dp", bytes([ID_TRANSFER, index, 2, 0x02, 0x06])),
+                        ("match", bytes([ID_TRANSFER, index, 2, 0x20]) + u32(0xFFFF0000) + bytes([0x1F]) + u32(word)),
+                        ("timestamped", bytes([ID_TRANSFER, index, 2, AP_DRW_READ | 0x80, AP_DRW_READ])),
+                        ("block", bytes([ID_TRANSFER_BLOCK, index]) + u16(3) + bytes([AP_DRW_READ])),
+                    ):
+                        cases.append((f"{kind} index={index} ack={ack} word=0x{word:08x} {'fast' if fast else 'paced'} idle={idle} chain={chain}",
+                                      (ack, word, fast, idle, [payload], chain)))
+        failures = sum(
+            compare(name, run_cjtag_commands(args.reference, *case), run_cjtag_commands(args.candidate, *case))
+            for name, case in cases
+        )
+        print(f"\n{len(cases) - failures}/{len(cases)} two-pin {args.command} cases identical on the wire and in the reply")
+        return 1 if failures else 0
 
     if args.command == "transfer":
         failures = 0

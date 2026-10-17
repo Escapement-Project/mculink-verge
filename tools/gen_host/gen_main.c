@@ -1,11 +1,20 @@
-/* Sweeps the transfer generator over its configurations and prints a hash of what each builds. */
+/* Sweeps the generators over their configurations and prints a hash of what each builds. */
 #include <stdint.h>
 #include "DAP_config.h"
 #include "DAP.h"
+#include "jtag_gen.h"
 #include "swd_gen.h"
 
 void out(const char* s);
 DAP_Data_t DAP_Data;
+
+static uint32_t fnv(const uint8_t* code, uint32_t bytes) {
+    uint32_t h = 2166136261U;
+    for (uint32_t k = 0; k < bytes; k++) {
+        h = (h ^ code[k]) * 16777619U;
+    }
+    return h;
+}
 
 static char* hex(char* p, uint32_t v) {
     for (int i = 7; i >= 0; i--) {
@@ -46,6 +55,30 @@ void sweep(void) {
         p = hex(p, h);
         *p++ = '\n';
         *p = 0;
+        out(line);
+    }
+    for (unsigned lat = 1; lat <= 24; lat++)
+    for (unsigned p = 3; p <= 44; p++) {
+        static const uint32_t far[] = {75, 150, 1500, 150000};
+        const uint32_t period = p <= 40 ? p : far[p - 41];
+        jtag_gen_latency = lat;
+        jtag_gen_clock_hz = (CPU_CLOCK + period - 1U) / period;
+        const bool ok = jtag_gen_ready();
+        const uint32_t h = ok ? fnv((const uint8_t*)JTAG_GEN_BASE, jtag_gen_info.code_bytes) : 2166136261U;
+        char* q = line;
+        q = hex(q, 0x4A000000U | (lat << 4));
+        *q++ = ' ';
+        q = hex(q, jtag_gen_clock_hz);
+        *q++ = ' ';
+        *q++ = ok ? '1' : '0';
+        *q++ = ' ';
+        q = hex(q, jtag_gen_info.code_bytes);
+        *q++ = ' ';
+        q = hex(q, h);
+        *q++ = ' ';
+        q = hex(q, jtag_gen_info.frame);
+        *q++ = '\n';
+        *q = 0;
         out(line);
     }
 }
