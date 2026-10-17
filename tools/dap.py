@@ -1259,7 +1259,7 @@ def icepick_read_cpuid(probe: Probe, args) -> None:
     The ICEPick steps are probe-rs's icepick.rs, which ports OpenOCD's icepick.cfg.
     """
     ir_connect, ir_router, ir_bypass = 0x07, 0x02, 0x3F
-    sysctrl = (1 << 31) | (1 << 24) | 0x80
+    sysctrl = args.sysctrl
     sd_tap0 = (1 << 31) | (0x20 << 24) | (1 << 20) | (1 << 8) | (1 << 6) | (1 << 3)
     walk = TapWalk().scan(True, ir_connect, 6).scan(False, 0x89, 8).idle(1)
     walk.scan(True, ir_router, 6).scan(False, sysctrl, 32).scan(True, ir_router, 6).scan(False, 0, 32).idle(1)
@@ -1309,6 +1309,10 @@ def icepick_read_cpuid(probe: Probe, args) -> None:
     reply = probe.command(bytes(request))
     words = [int.from_bytes(reply[3 + 4 * i : 7 + 4 * i], "little") for i in range(2)]
     print(f"  DAP_Transfer count {reply[1]} ack {reply[2]}: AP IDR 0x{words[0]:08x}, CPUID 0x{words[1]:08x}")
+    for address in args.read:
+        request = bytes([DAP_TRANSFER, index, 2, 0x05]) + address.to_bytes(4, "little") + bytes([0x0F])
+        reply = probe.command(request)
+        print(f"  read 0x{address:08x}: 0x{int.from_bytes(reply[3:7], 'little'):08x} (count {reply[1]} ack {reply[2]})")
     if args.sweep:
         sweep_block_reads(probe, index, args)
 
@@ -1438,6 +1442,10 @@ def cmd_cjtag(args) -> int:
         print(f"  read {attempt}: IDCODE 0x{idcode:08x} ({verdict})")
     if args.mem:
         icepick_read_cpuid(probe, args)
+    if args.tlr_after:
+        # Framed TMS-high clocks; the TAP stays in Test-Logic-Reset when the run ends.
+        probe.jtag_sequence([(args.tlr_after, 1, False, 0)])
+        print(f"  {args.tlr_after} framed TMS-high clocks: Test-Logic-Reset")
     if not args.keep:
         probe.command(bytes([DAP_VENDOR_CJTAG_CONTROL, 0]))
     probe.release()
@@ -1546,6 +1554,10 @@ def main() -> int:
     cjtag.add_argument("--expect", type=lambda s: int(s, 0), default=0x3BB4102F)
     cjtag.add_argument("--no-activate", action="store_true", help="skip vendor 0x83")
     cjtag.add_argument("--keep", action="store_true", help="leave OScan1 framing on afterwards")
+    cjtag.add_argument("--tlr-after", type=int, default=0, help="framed TMS-high clocks at the end of the run")
+    cjtag.add_argument("--read", type=lambda v: int(v, 0), action="append", default=[], help="--mem: a word to read, repeatable")
+    cjtag.add_argument("--sysctrl", type=lambda v: int(v, 0), default=0x81000080,
+                       help="--mem: ICEPick SYSCTRL write; bit 7 is KeepPoweredinTLR (probe-rs sets it)")
     cjtag.add_argument("--nreset", action="store_true", help="pulse nRESET before every read after the first")
     cjtag.add_argument("--replay", help="drive the activation from this capture's CSV instead")
     cjtag.add_argument("--tmsc", type=int, default=0, help="the capture's TMSC channel")
