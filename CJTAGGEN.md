@@ -195,6 +195,11 @@ than the adapter wants swallows the next command scans.
 5. Hardware: every P on the CC1312R1 (`dap.py cjtag --mem --sweep`), soak, then four-wire.
 6. Host: probe-rs drives the activation and frames through the probe (outside this repo),
    attaches from any state as in "Attach from any state", and detaches as in "Detach".
+   Working 2026-10-17 as `--protocol cjtag` (probe-rs working tree, uncommitted): CPUID and
+   4 KiB ROM reads, reset, re-attach after a killed session, alternating with four-wire. Reads
+   are clean up to 12.5 MHz requested and fail from 15 MHz; at 25 MHz CTRL/STAT reads come
+   back with bits missing. probe-rs reaches the DP through framed `DAP_JTAG_Sequence` captures,
+   not `DAP_Transfer`, so the generated paths need to cover that command too.
 7. Later: capture TI's XDS110 on this part, then OScan2, then OScan5 if the capture or a spec
    shows how it leaves Shift.
 
