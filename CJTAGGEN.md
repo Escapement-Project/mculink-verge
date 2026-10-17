@@ -233,7 +233,9 @@ than the adapter wants swallows the next command scans.
 - Emulator: unicorn 2.1.4 runs an IT block wrongly when a read hook fires on a load inside it, and
   the next branch's target skips its first instruction (a clang build's `blx` into the generated
   code lost its `push`). Loads are now counted from the code hook by their base register's bus;
-  the timed sweeps are byte-identical either way on gcc. Probably also the clang layout failure. The order-only
+  the timed sweeps are byte-identical either way on gcc. It was also the clang layout failure (a clang image's
+  four-wire DAP_Transfer failing under the engine on one layout): its repro fails before the fix
+  and passes after. The order-only
   four-wire model latches TDO at the fall; B-register reads return the pin level;
   `TimedJtagTarget` (latency 8, hold 6) serves generated images in the gate.
 - Verified: gate (gcc, clang, both wires timed at all 41 periods); equiv four-wire 720 sequence,

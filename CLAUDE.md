@@ -32,8 +32,11 @@ treatment.
 ## Known traps
 
 - **unicorn 2.1.4 mis-executes with memory hooks over SRAM.** It skipped one load in a clang image
-  and the generator never returned. `tools/cycles.py` installs its memory hooks only between
-  `begin()` and `end()`. A hang that QEMU and hardware do not show is the emulator; check with
-  `tools/gen_host.py` or on hardware before blaming a compiler.
+  and the generator never returned, so `tools/cycles.py` installs its memory hooks only between
+  `begin()` and `end()`. A read hook on a load inside an IT block also breaks the IT state: the
+  next branch's target skips its first instruction (a `blx` into generated code lost its `push`).
+  So loads are counted from the code hook and only writes are hooked. A fault or hang that QEMU
+  and hardware do not show is the emulator; check with `tools/gen_host.py` or on hardware before
+  blaming a compiler.
 - **Nothing obliges a compiler to word-align a byte array.** Buffers that the generated code or a
   word copy touches carry `__attribute__((aligned(4)))`. clang left the reply buffer on a halfword.
