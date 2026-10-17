@@ -944,20 +944,20 @@ static void x_patch(struct xfer* x, uint32_t cycle, uint32_t insn) {
     }
 }
 
-static bool emit_xfer(struct gen_emitter* e, const struct xfer_cfg* c, bool read) {
+/** Lays out one transfer in `xs` with a four-wire clock or two-pin packet of `p` cycles. */
+static bool lay_xfer(const struct xfer_cfg* c, bool read, uint32_t p) {
     struct xfer* x = &xs;
     *x = (struct xfer){.two_pin = c->two_pin, .latency = c->latency, .first = UINT32_MAX, .uniform = c->loop};
     gen_schedule_reset(&x->q, xfer_events, sizeof xfer_events / sizeof xfer_events[0]);
+    x->p = p;
     if (c->two_pin) {
-        x->p = c->period;
-        x->low = c->period == 3U ? 2U : c->period / 2U;
-        x->masked = c->period < TWO_PIN_MASK_WHOLE_BELOW;
+        x->low = p == 3U ? 2U : p / 2U;
+        x->masked = p < TWO_PIN_MASK_WHOLE_BELOW;
     } else {
-        x->p = later(c->period, 5U);
-        x->low = x->p / 2U;
-        x->masked = x->p <= c->latency + MARGIN + 1U;
+        x->low = p / 2U;
+        x->masked = p <= c->latency + MARGIN + 1U;
     }
-    x->high = x->p - x->low;
+    x->high = p - x->low;
     if (c->two_pin) {
         cx_transfer(x, read, c->before, c->after, c->idle);
     } else {
@@ -966,8 +966,20 @@ static bool emit_xfer(struct gen_emitter* e, const struct xfer_cfg* c, bool read
     if (read && x->uniform) {
         x_side(x, x->chain + 1U, t_rbit(X_WORD, X_WORD));
     }
-    if (x->q.failed || x->pend) {
-        return false;
+    return !x->q.failed && !x->pend;
+}
+
+static bool emit_xfer(struct gen_emitter* e, const struct xfer_cfg* c, bool read) {
+    struct xfer* x = &xs;
+    // A four-wire clock too short for the TDO window runs longer, as the scan engine's does. A
+    // two-pin frame finds its own room.
+    const uint32_t shortest = c->two_pin ? c->period : later(c->period, 5U);
+    const uint32_t longest = c->two_pin ? shortest : later(shortest, c->latency + FOUR_WIRE_HOLD);
+    uint32_t p = shortest;
+    while (!lay_xfer(c, read, p)) {
+        if (p++ == longest) {
+            return false;
+        }
     }
     struct span loop = {0U, 0U, 0U};
     if (x->uniform) {
