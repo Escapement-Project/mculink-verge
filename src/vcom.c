@@ -5,6 +5,8 @@
  * runs after board_init and takes the peripheral back. Losing that logging costs nothing here --
  * the probe has no console of its own -- and a Flexcomm can only serve one set of pins.
  */
+#include <stdint.h>
+
 #include "fsl_clock.h"
 #include "fsl_device_registers.h"
 #include "fsl_iocon.h"
@@ -20,7 +22,9 @@
 #define VCOM_PIN_MODE (IOCON_FUNC1 | IOCON_MODE_INACT | IOCON_DIGITAL_EN | IOCON_SLEW_FAST)
 #define VCOM_DEFAULT_BAUD 115200U
 
-static uint32_t vcom_clock(void) { return CLOCK_GetFlexCommClkFreq(0U); }
+static uint32_t vcom_clock_hz;
+
+static uint32_t vcom_clock(void) { return vcom_clock_hz; }
 
 static void vcom_configure(uint32_t baud, uint8_t stop_bits, uint8_t parity, uint8_t data_bits) {
     usart_config_t config;
@@ -46,6 +50,7 @@ __attribute__((noinline)) void vcom_init(void) {
     CLOCK_SetClkDiv(kCLOCK_DivFlexFrg0, 0U, false);
     IOCON_PinMuxSet(IOCON, VCOM_PORT, VCOM_RXD_PIN, VCOM_PIN_MODE);
     IOCON_PinMuxSet(IOCON, VCOM_PORT, VCOM_TXD_PIN, VCOM_PIN_MODE);
+    vcom_clock_hz = CLOCK_GetFlexCommClkFreq(0U);
     vcom_configure(VCOM_DEFAULT_BAUD, 1U, 0U, 8U);
 }
 
