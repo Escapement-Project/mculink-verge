@@ -306,7 +306,7 @@ def check_timestamp(c: Checker, elf: str) -> None:
     )
 
 
-def check_commands(c: Checker, elf: str) -> None:
+def check_commands(c: Checker, elf: str, code_lab: bool) -> None:
     """Every command in COMMANDS has to answer. The claim is that none is a downgrade.
 
     One caveat worth keeping honest. This runs before the clock setup, so the four SWO commands
@@ -332,6 +332,8 @@ def check_commands(c: Checker, elf: str) -> None:
         reply = probe.command(bytes([cmd, 0, 0, 0]))
         if cmd == 0x07:
             continue  # TransferAbort is handled out of band and answers nothing
+        if cmd == 0x88 and code_lab:
+            continue  # check_identity verifies the lab's info command
         if not reply or reply[0] != ID_DAP_INVALID:
             c.problems.append(f"command {cmd:#04x} should answer ID_DAP_Invalid")
     c.note(
@@ -467,7 +469,7 @@ def check_request_bounds(c: Checker, elf: str) -> None:
         c.note(f"{len(REQUEST_CASES)} oversized requests are refused and leave DAP_Data's neighbours alone")
 
 
-def check_identity(c: Checker, elf: str) -> None:
+def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
     """A host has to be able to recognise this firmware and tell two builds of it apart.
 
     Three things carry it, and they have to agree. The vendor command answers a magic, a
@@ -530,8 +532,13 @@ def check_identity(c: Checker, elf: str) -> None:
         c.problems.append("vendor string is empty")
     c.note(f"strings: vendor {vendor!r}, product {product!r}")
 
-    unknown = probe.command(bytes([0x88, 0]))
-    if not unknown or unknown[0] != ID_DAP_INVALID:
+    lab = probe.command(bytes([0x88, 0]))
+    if code_lab:
+        if len(lab) != 19 or lab[0] != 0x88 or lab[1] != 0 or lab[2] != 2:
+            c.problems.append(f"vendor 0x88 lab info answered {lab.hex()}, wanted two arenas")
+        else:
+            c.note("vendor 0x88 code lab: two arenas reported")
+    elif not lab or lab[0] != ID_DAP_INVALID:
         c.problems.append("vendor 0x88 should answer ID_DAP_Invalid until something implements it")
 
     # A mode the firmware does not define has to be refused, not guessed at: getting it wrong
@@ -627,6 +634,48 @@ def check_info(c: Checker, elf: str, packet_size: int, packet_count: int) -> Non
     c.check(bool(product), "DAP_Info has no product name, so a host cannot say what it found")
     c.note(f"DAP_Info: {size}-byte packets x{count}, {', '.join(named)}")
     c.note(f"DAP_Info: product {product!r}, serial {serial!r}")
+
+
+def check_core1_image(c: Checker, elf: str) -> None:
+    sym = symbols_with_size(elf)
+    names = ("core1_vectors", "core1_stack", "core1_reset", "dap_core1_main", "dap_core1_mailbox_wait_init",
+             "dap_core_security_init", "usb_shared", "DAP_TransferAbort", "USB1_IRQHandler")
+    missing = [name for name in names if name not in sym]
+    if missing:
+        c.problems.append(f"CPU1 DAP image is missing {', '.join(missing)}")
+        return
+
+    vectors = sym["core1_vectors"][0]
+    stack, stack_size = sym["core1_stack"]
+    shared, shared_size = sym["usb_shared"]
+    abort_flag, abort_flag_size = sym["DAP_TransferAbort"]
+    c.check(vectors == 0x00072000, f"second-core vectors start at {vectors:#x}, wanted 0x72000")
+    c.check(vectors % 512 == 0, f"second-core vector table at {vectors:#x} is not 512-byte aligned")
+    c.check(stack >= 0x40100000 and stack + stack_size <= 0x40104000,
+            f"second-core stack at {stack:#x} ({stack_size} bytes) is outside USB SRAM")
+    c.check(shared >= 0x40100000 and shared + shared_size <= 0x40104000,
+            f"core-shared USB state at {shared:#x} ({shared_size} bytes) is outside USB SRAM")
+    c.check(abort_flag >= 0x40100000 and abort_flag + abort_flag_size <= 0x40104000,
+            f"DAP abort flag at {abort_flag:#x} ({abort_flag_size} bytes) is outside USB SRAM")
+    table = struct.unpack("<87I", _read_at(elf, vectors, 87 * 4, ".core1_code"))
+    c.check(table[0] == stack + stack_size,
+            f"second-core initial stack is {table[0]:#x}, wanted {stack + stack_size:#x}")
+    c.check((table[1] & ~1) == sym["core1_reset"][0],
+            "second-core reset vector does not point to its reset handler")
+    c.check(table[2] != 0, "CPU1 default exception vector is empty")
+    c.check(table[15] == table[2], "CPU1 SysTick vector is not masked to the default handler")
+    c.check(table[16 + 47] == table[2], "CPU1 USB1 vector is not masked to the default handler")
+    c.check((sym["dap_core1_main"][0] & ~1) >= vectors,
+            "DAP core entry is not in the CPU1 image")
+    c.check((sym["dap_core1_mailbox_wait_init"][0] & ~1) >= vectors,
+            "CPU1 mailbox wake setup is not in the CPU1 image")
+    c.check((sym["dap_core_security_init"][0] & ~1) < vectors,
+            "DAP security setup is not in the CPU0 image")
+    c.check("core1_usb1_irq_handler" not in sym and "usb_core1_main" not in sym,
+            "USB code remains assigned to CPU1")
+    c.check(sym["USB1_IRQHandler"][0] < vectors,
+            "USB1 interrupt handler is not in the CPU0 image")
+    c.note("CPU1 DAP entry, mailbox wake, masked interrupts, shared queue, abort flag, and USB SRAM are laid out")
 
 
 DAP_ID_PRODUCT, DAP_ID_SER_NUM = 2, 3
@@ -777,6 +826,7 @@ def main() -> int:
     # Two, not ARM's eight: TinyUSB's vendor class is a byte stream and a buffer of more than one
     # packet hands two commands to one read. src/tusb_config.h has the measurement.
     ap.add_argument("--packet-count", type=int, default=2)
+    ap.add_argument("--code-lab", action="store_true", help="check the optional vendor 0x88 code lab")
     args = ap.parse_args()
 
     sym = symbols_with_size(args.elf)
@@ -793,10 +843,11 @@ def main() -> int:
         check_bos(c, _read_at(args.elf, *sym["desc_bos"]), ms_os[1])
     else:
         c.note("the MS OS 2.0 descriptor was folded away; its length not cross-checked")
-    check_commands(c, args.elf)
+    check_commands(c, args.elf, args.code_lab)
     check_response_bounds(c, args.elf, args.packet_size)
     check_request_bounds(c, args.elf)
-    check_identity(c, args.elf)
+    check_identity(c, args.elf, args.code_lab)
+    check_core1_image(c, args.elf)
     check_clocks(c, args.elf)
     check_led(c, args.elf)
     check_sample_probe(c, args.elf)
@@ -816,7 +867,7 @@ def main() -> int:
     return 1 if c.problems else 0
 
 
-def _read_at(elf: str, addr: int, size: int) -> bytes:
+def _read_at(elf: str, addr: int, size: int, section: str = ".text") -> bytes:
     """The bytes a symbol occupies, read out of the image.
 
     Three things to get right. `objdump -s` dumps every section that covers the range and the
@@ -830,7 +881,7 @@ def _read_at(elf: str, addr: int, size: int) -> bytes:
             "arm-none-eabi-objdump",
             "-s",
             "-j",
-            ".text",
+            section,
             # Widened to whole dump lines: objdump truncates the last one at the stop address,
             # and the bytes are placed by address afterwards anyway.
             f"--start-address={addr & ~0xF}",

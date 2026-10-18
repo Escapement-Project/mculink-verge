@@ -2,7 +2,8 @@
 
 #include "bsp/board_api.h"
 #include "fsl_device_registers.h"
-#include "tusb.h"
+#include "reboot_usb.h"
+#include "usb_transport.h"
 
 /** The ROM reads AOREG1's boot mode field out of reset, and 0x0A there means auto ISP.
  *
@@ -20,7 +21,14 @@
 /** No request pending. Any value outside the two modes would do; this one cannot be a mode. */
 #define REBOOT_NONE 0xFFU
 
+extern volatile uint32_t system_ticks;
+
 static volatile uint8_t pending = REBOOT_NONE;
+static volatile uint8_t usb_pending = REBOOT_NONE;
+static uint8_t active_mode = REBOOT_NONE;
+static bool active_from_usb;
+static uint32_t disconnect_started;
+static bool disconnect_requested;
 
 void reboot_clear_boot_mode(void) {
     PMC->AOREG1 &= ~AOREG1_BOOT_MODE_MASK;
@@ -30,22 +38,41 @@ void reboot_request(uint8_t mode) {
     pending = mode;
 }
 
+void reboot_request_from_usb(uint8_t mode) {
+    usb_pending = mode;
+}
+
 void reboot_poll(void) {
-    if (pending == REBOOT_NONE) {
+    if (usb_pending != REBOOT_NONE) {
+        active_mode = usb_pending;
+        usb_pending = REBOOT_NONE;
+        active_from_usb = true;
+    } else if ((active_mode == REBOOT_NONE) && (pending != REBOOT_NONE)) {
+        active_mode = pending;
+        pending = REBOOT_NONE;
+        active_from_usb = false;
+    }
+
+    if (active_mode == REBOOT_NONE ||
+        reboot_wait_for_response(active_from_usb, usb_transport_response_idle())) {
         return;
     }
-    const uint8_t mode = pending;
-    pending = REBOOT_NONE;
 
-    // board_delay runs tud_task while it waits, so the reply to the command that asked for this
-    // actually leaves the endpoint. Then drop off the bus deliberately: a host that sees a
-    // disconnect re-enumerates cleanly, where one whose device simply stops answering reports a
-    // transfer error first.
-    board_delay(20);
-    tud_disconnect();
-    board_delay(20);
+    if (!usb_transport_disconnect_complete()) {
+        if (!disconnect_requested) {
+            usb_transport_request_disconnect();
+            disconnect_started = system_ticks;
+            disconnect_requested = true;
+        }
+        return;
+    }
 
-    if (mode == REBOOT_BOOTLOADER) {
+    // Keep the USB disconnect visible to the host before resetting.
+    if ((uint32_t)(system_ticks - disconnect_started) < 20U) {
+        return;
+    }
+
+    if (active_mode == REBOOT_BOOTLOADER) {
         PMC->AOREG1 |= AOREG1_BOOT_MODE_ISP;
     }
     NVIC_SystemReset();

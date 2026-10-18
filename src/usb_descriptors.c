@@ -15,6 +15,8 @@
 #include "DAP_config.h"
 
 #include "ser_num.h"
+#include "reboot.h"
+#include "reboot_usb.h"
 #include "tusb.h"
 
 #define USB_VID 0x1FC9 // NXP
@@ -171,6 +173,20 @@ static uint8_t const desc_ms_os_20[] = {
 TU_VERIFY_STATIC(sizeof(desc_ms_os_20) == MS_OS_20_DESC_LEN, "MS OS 2.0 descriptor length mismatch");
 
 bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_request_t const* request) {
+    if (request->bRequest == REBOOT_USB_VENDOR_REQUEST) {
+        if (!reboot_usb_control_request_valid(request->bmRequestType, request->bRequest, request->wValue,
+                                              request->wIndex, request->wLength)) {
+            return false;
+        }
+        if (stage == CONTROL_STAGE_SETUP) {
+            return tud_control_status(rhport, request);
+        }
+        if (stage == CONTROL_STAGE_ACK) {
+            reboot_request_from_usb((uint8_t)request->wValue);
+        }
+        return true;
+    }
+
     if (stage != CONTROL_STAGE_SETUP) {
         return true;
     }

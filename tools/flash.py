@@ -54,13 +54,26 @@ def present(ids: tuple[str, str]) -> list[pathlib.Path]:
 
 def check() -> int:
     """What every attached MCU-Link is running, without touching any of them."""
+    isp = present(ISP) + present(MINI_ISP)
+    firmware = present(PROBE)
+    for device in isp:
+        print(f"{device.name}: in ISP mode, waiting for an image")
+    for device in firmware:
+        print(f"{device.name}: in firmware mode")
+
+    if not firmware:
+        if not isp:
+            print("nothing attached")
+        return 0
+
     sys.path.insert(0, str(pathlib.Path(__file__).parent))
     import dap  # noqa: PLC0415  -- only needed for this path, and it needs pyusb
 
-    isp = present(ISP) + present(MINI_ISP)
-    for device in isp:
-        print(f"{device.name}: in ISP mode, waiting for an image")
-    probes = dap.find()
+    try:
+        probes = dap.find()
+    except ValueError as error:
+        print(f"  DAP details unavailable: {error}")
+        return 0
     for probe in probes:
         try:
             reply = probe.command(bytes([0x82]))
@@ -75,8 +88,6 @@ def check() -> int:
         except Exception as error:
             print(f"{probe.serial}: did not answer vendor 0x82 ({error})")
         probe.release()
-    if not isp and not probes:
-        print("nothing attached")
     return 0
 
 
@@ -94,10 +105,9 @@ def wait_for(ids: tuple[str, str], seconds: float = 15.0) -> list[pathlib.Path]:
 def cycle(elf: pathlib.Path, serial: str | None) -> int:
     """Reboot a unit running ours into the bootloader, flash, reset, and say what came back.
 
-    No jumper and no hands: vendor 0x85 asks for the ROM bootloader, and the ROM clears the boot
-    mode on entry so `rblhost reset` returns the unit to its firmware rather than to the
-    bootloader again. The jumper stays the only route for a unit running stock, and for recovering
-    an image that will not enumerate.
+    No jumper and no hands: a USB control request asks CPU 0 to enter the ROM bootloader, without
+    relying on CPU 1's DAP worker. The ROM clears the boot mode on entry so `rblhost reset` returns
+    the unit to its firmware rather than to the bootloader again.
     """
     sys.path.insert(0, str(pathlib.Path(__file__).parent))
     import dap  # noqa: PLC0415
@@ -107,12 +117,13 @@ def cycle(elf: pathlib.Path, serial: str | None) -> int:
         names = ", ".join(p.serial for p in dap.find())
         sys.exit(f"need exactly one probe to reflash; attached: {names or 'none'}. Use --serial")
     probe = probes[0]
-    probe.drain()  # a pipelined run that stopped early leaves replies for whoever asks next
     print(f"{probe.serial}: asking for the ROM bootloader")
-    reply = probe.command(bytes([0x85, 1]))
+    try:
+        probe.reboot(bootloader=True)
+    except Exception as error:
+        probe.release()
+        sys.exit(f"the probe did not accept the CPU0 USB reboot request ({error}). Use the ISP jumper")
     probe.release()
-    if len(reply) < 2 or reply[0] != 0x85 or reply[1] != 0:
-        sys.exit(f"the probe refused to reboot: {reply.hex()}. Use the ISP jumper")
 
     if not wait_for(ISP):
         sys.exit("the unit never came back as 1fc9:0021. Use the ISP jumper")

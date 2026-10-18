@@ -47,6 +47,7 @@ DAP_JTAG_CONFIGURE = 0x15
 DAP_VENDOR_CJTAG_CONTROL = 0x83
 DAP_VENDOR_J8 = 0x84
 DAP_VENDOR_REBOOT = 0x85
+USB_REBOOT_REQUEST = 0x03
 DAP_VENDOR_TARGET = 0x86
 DAP_VENDOR_SAMPLE = 0x87
 DAP_VENDOR_SWD_GEN = 0x89
@@ -128,6 +129,10 @@ class Probe:
     def disconnect(self) -> int:
         return self.command(bytes([DAP_DISCONNECT]))[1]
 
+    def reboot(self, bootloader: bool = False) -> None:
+        """Reset through CPU 0's USB control path, without waiting on DAP execution."""
+        self.device.ctrl_transfer(0x40, USB_REBOOT_REQUEST, int(bootloader), 0, 0, timeout=1000)
+
     def swj_clock(self, hz: int) -> int:
         return self.command(bytes([DAP_SWJ_CLOCK]) + hz.to_bytes(4, "little"))[1]
 
@@ -165,9 +170,10 @@ def find(serial: str | None = None, vid: int = 0x1FC9, pid: int = 0x0143) -> lis
             device_serial = usb.util.get_string(device, device.iSerialNumber) or ""
             product = usb.util.get_string(device, device.iProduct) or ""
             manufacturer = usb.util.get_string(device, device.iManufacturer) or ""
-        except usb.core.USBError as error:
-            print(f"  cannot read strings from {device}: {error}", file=sys.stderr)
-            continue
+        except (usb.core.USBError, ValueError):
+            # Some firmware builds omit string descriptors. The vendor-class bulk interface
+            # still identifies the CMSIS-DAP transport well enough to use its commands.
+            device_serial = product = manufacturer = ""
         if serial is not None and device_serial != serial:
             continue
         for configuration in device:
@@ -176,9 +182,9 @@ def find(serial: str | None = None, vid: int = 0x1FC9, pid: int = 0x0143) -> lis
                 if interface.iInterface:
                     try:
                         name = usb.util.get_string(device, interface.iInterface) or ""
-                    except usb.core.USBError:
+                    except (usb.core.USBError, ValueError):
                         name = ""
-                if CMSIS_DAP not in name.lower() or interface.bInterfaceClass != 0xFF:
+                if interface.bInterfaceClass != 0xFF or (name and CMSIS_DAP not in name.lower()):
                     continue
                 out_ep = in_ep = None
                 for endpoint in interface:
@@ -542,9 +548,10 @@ def cmd_reboot(args) -> int:
     probe = one(args)
     mode = 1 if args.bootloader else 0
     print(f"{probe.serial}  {probe.product}")
-    reply = probe.command(bytes([DAP_VENDOR_REBOOT, mode]))
-    if len(reply) < 2 or reply[0] != DAP_VENDOR_REBOOT or reply[1] != 0:
-        print(f"  refused: {reply.hex()}")
+    try:
+        probe.reboot(bootloader=bool(mode))
+    except usb.core.USBError as error:
+        print(f"  refused: USB control request failed ({error})")
         probe.release()
         return 1
     where = "the ROM bootloader (1fc9:0021)" if mode else "its firmware"
@@ -1460,7 +1467,6 @@ def main() -> int:
     sub.add_parser("list", help="every attached CMSIS-DAP v2 probe").set_defaults(run=cmd_list)
     sub.add_parser("info", help="every DAP_Info field").set_defaults(run=cmd_info)
     sub.add_parser("identify", help="vendor 0x82, our firmware's identity").set_defaults(run=cmd_identify)
-
     vendor = sub.add_parser("vendor", help="send one vendor command and show the reply")
     vendor.add_argument("--id", type=lambda s: int(s, 0), required=True)
     vendor.add_argument("--payload", help="hex bytes after the id")

@@ -23,6 +23,9 @@ void reboot_clear_boot_mode(void);
 /** Ask for a reset. It happens in reboot_poll, after the current reply has reached the host. */
 void reboot_request(uint8_t mode);
 
+/** Request a reset from CPU 0's USB control path, independent of DAP execution on CPU 1. */
+void reboot_request_from_usb(uint8_t mode);
+
 /** Carry out a pending request. Call from the main loop, below the command and USB tasks. */
 void reboot_poll(void);
 

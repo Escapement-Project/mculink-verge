@@ -7,11 +7,10 @@
 in the default configuration and with SWD_CODEGEN and JTAG_CODEGEN, because an optimisation that
 holds under one compiler has been seen not to under the other. A generated image also runs its
 two-pin and four-wire clocks against targets that answer by time, at every period up to 40 cycles
-and three longer ones. Before the images it runs the checks that need no image: the Thumb-2 encoders against
-the assembler, memcpy at every length and offset, and both generators under sanitizers and on an
-emulated Cortex-M33 with both compilers.
+and three longer ones. It runs the host checks and image builds together, then runs image checks
+and timing sweeps together. Each timing sweep simulates its independent clock points in parallel.
 
-Builds go to build-gate/. The image checks run in parallel; each is single-threaded.
+Builds go to build-gate/.
 
     uv run tools/gate.py
 """
@@ -28,6 +27,7 @@ BUILD = os.path.join(ROOT, "build-gate")
 HOST_CHECKS = (
     ("Thumb-2 encoders against gas", ["uv", "run", "tools/thumb_test.py"]),
     ("memcpy at every length and offset", ["uv", "run", "tools/mem_test.py"]),
+    ("CPU0-to-CPU1 DAP handoff simulator: sanitizers, both compilers", ["uv", "run", "tools/dap_usb_slots_test.py"]),
     ("generators: sanitizers, both compilers, QEMU", ["uv", "run", "tools/gen_host.py"]),
 )
 IMAGES = [(toolchain, codegen) for toolchain in ("gcc", "clang") for codegen in (False, True)]
@@ -50,37 +50,54 @@ def report(label: str, ok: bool, output: str, seconds: float, failures: list[str
         print("\n".join("     " + line for line in output.rstrip().splitlines()[-25:]), flush=True)
 
 
+def build_image(toolchain: str, codegen: bool) -> tuple[str, bool, str, float, str | None, str, bool]:
+    directory = os.path.join(BUILD, name(toolchain, codegen))
+    flag = "ON" if codegen else "OFF"
+    started = time.monotonic()
+    ok, output, _ = run(["cmake", "-B", directory, "-G", "Ninja", "-DBOARD=mcu_link",
+                         f"-DTOOLCHAIN={toolchain}", f"-DSWD_CODEGEN={flag}",
+                         f"-DJTAG_CODEGEN={flag}", "."])
+    if ok:
+        jobs = max(1, (os.cpu_count() or 1) // len(IMAGES))
+        ok, more, _ = run(["ninja", "-C", directory, "-j", str(jobs)])
+        output += more
+    return (f"build {name(toolchain, codegen)}", ok, output, time.monotonic() - started,
+            directory if ok else None, toolchain, codegen)
+
+
 def main() -> int:
+    started = time.monotonic()
     failures: list[str] = []
-    for label, args in HOST_CHECKS:
-        report(label, *run(args), failures)
-
     built = []
-    for toolchain, codegen in IMAGES:
-        directory = os.path.join(BUILD, name(toolchain, codegen))
-        flag = "ON" if codegen else "OFF"
-        ok, output, seconds = run(["cmake", "-B", directory, "-G", "Ninja", "-DBOARD=mcu_link", f"-DTOOLCHAIN={toolchain}",
-                                   f"-DSWD_CODEGEN={flag}", f"-DJTAG_CODEGEN={flag}", "."])
-        if ok:
-            ok, more, extra = run(["ninja", "-C", directory])
-            output, seconds = output + more, seconds + extra
-        report(f"build {name(toolchain, codegen)}", ok, output, seconds, failures)
-        if ok:
-            built.append((toolchain, codegen, directory))
+    initial = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(HOST_CHECKS) + len(IMAGES)) as pool:
+        initial.update({pool.submit(run, args): label for label, args in HOST_CHECKS})
+        initial.update({pool.submit(build_image, toolchain, codegen): None for toolchain, codegen in IMAGES})
+        for future in concurrent.futures.as_completed(initial):
+            label = initial[future]
+            result = future.result()
+            if label is None:
+                label, ok, output, seconds, directory, toolchain, codegen = result
+                if directory is not None:
+                    built.append((toolchain, codegen, directory))
+            else:
+                ok, output, seconds = result
+            report(label, ok, output, seconds, failures)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(built) or 1) as pool:
-        checks = {pool.submit(run, ["ninja", "-C", directory, "check"]): f"emulator gate {name(toolchain, codegen)}"
-                  for toolchain, codegen, directory in built}
-        checks |= {pool.submit(run, ["uv", "run", "tools/jtagcheck.py", os.path.join(directory, "mculink_cjtag.elf"),
-                                     "--wire", wire]): f"timed {wire} clocks {name(toolchain, codegen)}"
-                   for toolchain, codegen, directory in built if codegen for wire in ("cjtag", "jtag")}
+    tasks = [(f"emulator gate {name(toolchain, codegen)}", ["ninja", "-C", directory, "check"])
+             for toolchain, codegen, directory in built]
+    tasks += [(f"timed {wire} clocks {name(toolchain, codegen)}",
+               ["uv", "run", "tools/jtagcheck.py", os.path.join(directory, "mculink_cjtag.elf"), "--wire", wire])
+              for toolchain, codegen, directory in built if codegen for wire in ("cjtag", "jtag")]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(tasks))) as pool:
+        checks = {pool.submit(run, args): label for label, args in tasks}
         for future in concurrent.futures.as_completed(checks):
             report(checks[future], *future.result(), failures)
 
     if failures:
-        print(f"\n{len(failures)} failed: {', '.join(failures)}")
+        print(f"\n{len(failures)} failed: {', '.join(failures)} ({time.monotonic() - started:.1f} s)")
         return 1
-    print("\nall clear")
+    print(f"\nall clear ({time.monotonic() - started:.1f} s)")
     return 0
 
 

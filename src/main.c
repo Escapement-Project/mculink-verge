@@ -1,143 +1,219 @@
 /** CMSIS-DAP firmware for the MCU-Link.
  *
- * One DAP command per USB packet, which is what CMSIS-DAP v2 specifies: the host sends a request
- * and waits for exactly one response before sending the next. There is no queue here because the
- * protocol does not need one -- DAP_ExecuteCommands batches on the host's behalf inside a single
- * packet instead.
+ * CPU 0 owns USB and publishes received packets in USB SRAM. CPU 1 executes one DAP command at a
+ * time and publishes its response back to CPU 0.
  */
 #include <string.h>
 
 #include "bsp/board_api.h"
+#include "fsl_device_registers.h"
+#include "fsl_clock.h"
+#include "fsl_reset.h"
 #include "tusb.h"
 
 #include "board_pins.h"
+#include "core_clock.h"
+#include "dap_core.h"
+#include "dap_usb_shared.h"
+#include "dap_usb_slots.h"
 #include "led.h"
 #include "marker.h"
 #include "reboot.h"
 #include "target_sense.h"
-#include "core_clock.h"
+#include "dap_core_security.h"
+#include "usb_transport.h"
 #include "vcom.h"
 
-// DAP_config.h first: DAP.h reads the DAP_SWD and DAP_JTAG settings it defines, so a sorted
-// include block that puts DAP.h ahead of it will not compile.
+// DAP_config.h first: DAP.h reads the DAP_SWD and DAP_JTAG settings it defines.
 #include "DAP_config.h"
 
 #include "DAP.h"
 #include "dap_dispatch.h"
 
-/** Two request slots, so the host can have a second command in flight while the first runs.
- *
- * With one, the wire sits idle from the moment a reply goes out until the host has noticed it and
- * sent the next request. Measured on a 64-word block read, a second command in flight is worth
- * 11%, and a third no more than that.
- *
- * **Three slots, for two in flight.** A host keeps its pipeline one packet short of what the
- * probe reports, because the spare buffer is where DAP_TransferAbort has to land to overtake the
- * queue. probe-rs computes its depth as the reported count minus one, so a probe advertising two
- * gets no overlap at all.
- *
- * The receive endpoint is armed only while a slot is free, which is what refuses a command there
- * is nowhere to put: the host sees NAK and retries, rather than the firmware dropping a packet.
- */
-#ifndef REQUEST_SLOTS
-#define REQUEST_SLOTS 2U
-#endif
+// USB DMA and the generated transfer paths access these buffers as words.
+static CFG_TUD_MEM_SECTION CFG_TUD_MEM_ALIGN uint8_t request[REQUEST_SLOTS][DAP_PACKET_SIZE];
+static CFG_TUD_MEM_SECTION CFG_TUD_MEM_ALIGN uint8_t hid_request[DAP_PACKET_SIZE];
+static CFG_TUD_MEM_SECTION CFG_TUD_MEM_ALIGN uint8_t response[DAP_USB_RESPONSE_SLOT_SIZE(DAP_RESPONSE_SIZE)];
+static CFG_TUD_MEM_SECTION CFG_TUD_MEM_ALIGN uint8_t hid_response[DAP_RESPONSE_SIZE];
 
-// Word aligned, which no compiler is obliged to make a byte array: the generated transfers store
-// words into the reply, and the copy into the endpoint buffer moves words only when both ends are.
-static uint8_t request[REQUEST_SLOTS][DAP_PACKET_SIZE] __attribute__((aligned(4)));
-static volatile uint16_t request_len[REQUEST_SLOTS];
-static uint8_t request_head; // the slot dap_task takes next
-static uint8_t request_tail; // the slot tud_vendor_rx_cb fills next
+CFG_TUD_MEM_SECTION CFG_TUD_MEM_ALIGN dap_usb_shared_state_t usb_shared __attribute__((used));
 
-static uint8_t response[DAP_RESPONSE_SIZE] __attribute__((aligned(4)));
-/** Non-zero while a reply is built and the transmit endpoint has not taken it yet. */
-static uint32_t response_len;
+#define request_len (usb_shared.request_len)
+#define request_seq (usb_shared.request_seq)
+#define request_head (usb_shared.request_head)
+#define request_tail (usb_shared.request_tail)
+#define rx_armed_slot (usb_shared.rx_armed_slot)
+#define next_request_seq (usb_shared.next_request_seq)
+#define hid_request_len (usb_shared.hid_request_len)
+#define hid_request_seq (usb_shared.hid_request_seq)
+#define response_len (usb_shared.response_len)
+#define response_transport (usb_shared.response_transport)
+#define response_state (usb_shared.response_state)
 
-// CMSIS-DAP v1 shares the command layer with v2 but not its packet size: a HID report is bounded
-// by the interrupt endpoint while the bulk interface carries 512. The buffer is full size so an
-// over-long response cannot run past it; only a report's worth is ever sent.
-static uint8_t hid_response[DAP_RESPONSE_SIZE] __attribute__((aligned(4)));
+uint8_t core1_stack[4096] __attribute__((section("m_usb_global"), aligned(8), used));
+
+enum {
+    DAP_TRANSPORT_BULK,
+    DAP_TRANSPORT_HID,
+};
+
+static bool disconnect_requested;
+static bool disconnect_complete;
 
 #ifdef MARKER_PINS
 /** Which J8 pins the marker still owns. ID_VENDOR_J8 takes pins away from it and gives them back. */
 volatile uint32_t marker_mask = J8_PIN_MASK;
 #endif
 
-/** One received packet, which is one command. Runs inside tud_task, not alongside it. */
+static void hid_report_packet_size(const uint8_t* req, uint8_t* resp);
+static bool dap_task(void);
+static void usb_transport_task(void);
+static void start_core1(void);
+
+static void signal_core1(void) {
+    MAILBOX->MBOXIRQ[0].IRQSET = DAP_CORE_MAILBOX_WAKE_MASK;
+    __DSB();
+}
+
+/** One received packet, which is one command. This callback runs on CPU 0. */
 void tud_vendor_rx_cb(uint8_t index, const uint8_t* buffer, uint32_t length) {
     (void)index;
     if ((length == 0U) || (length > DAP_PACKET_SIZE)) {
-        return; // dap_task arms the endpoint again
+        return;
     }
-    // **The abort is handled here and never queued.** It exists to stop a transfer that is
-    // running now, so putting it in a slot behind that transfer makes it useless: the flag would
-    // be set once the thing it was meant to abort had already finished. ARM's own MCU-Link
-    // example does the same in its endpoint callback. It answers nothing, which is why a host
-    // that reads for a reply after sending it waits for ever.
-    //
-    // This is also the contract a host relies on when it keeps its pipeline one packet short of
-    // what the probe says it holds: the spare buffer is for an abort to arrive in, and it only
-    // helps if the abort overtakes the queue rather than joining it.
+
+    // The abort must reach an active transfer before the command queue can delay it.
     if (buffer[0] == ID_DAP_TransferAbort) {
         DAP_TransferAbort = 1U;
+        __DMB();
+        signal_core1();
         return;
     }
-    memcpy(request[request_tail], buffer, length);
+    if (buffer != request[rx_armed_slot]) {
+        return;
+    }
+
+    request_seq[request_tail] = next_request_seq++;
+    __DMB();
     request_len[request_tail] = (uint16_t)length;
-    request_tail = (uint8_t)((request_tail + 1U) % REQUEST_SLOTS);
+    __DMB();
+    request_tail = dap_usb_next_slot(request_tail, REQUEST_SLOTS);
+    signal_core1();
 }
 
-static void dap_task(void) {
-    // Arm the receive endpoint whenever a slot can take a command. Idempotent: the call claims
-    // the endpoint and does nothing if a transfer is already up, so this also covers the first
-    // arming after enumeration.
-    if (request_len[request_tail] == 0U) {
-        tud_vendor_read_xfer();
+void tud_vendor_tx_cb(uint8_t index, uint32_t sent_bytes) {
+    (void)index;
+    (void)sent_bytes;
+    if (response_transport == DAP_TRANSPORT_BULK) {
+        dap_usb_response_complete(&response_state);
+        __DMB();
+        signal_core1();
+    }
+}
+
+static bool start_rx(void* context, uint8_t slot) {
+    uint8_t (*buffers)[DAP_PACKET_SIZE] = context;
+    return tud_vendor_read_xfer_buf(buffers[slot]);
+}
+
+static bool start_tx(void* context, uint8_t slot, uint16_t length) {
+    (void)slot;
+    return tud_vendor_write_xfer(context, length) == length;
+}
+
+/** Keep TinyUSB and endpoint ownership on CPU 0. */
+static void usb_transport_task(void) {
+    bool const vendor_mounted = tud_vendor_mounted();
+    if (vendor_mounted) {
+        (void)dap_usb_arm_rx(dap_usb_request_slot_free(request_len, request_tail), request_tail, &rx_armed_slot,
+                             start_rx, request);
     }
 
-    // A reply the endpoint would not take last time. Nothing else may run until it goes, because
-    // a host reads replies in the order it sent the commands.
-    if (response_len != 0U) {
-        if (tud_vendor_write(response, response_len) != response_len) {
-            return;
-        }
-        response_len = 0U;
+    if (disconnect_requested) {
+        tud_disconnect();
+        disconnect_complete = true;
+        disconnect_requested = false;
     }
 
-    if (request_len[request_head] == 0U) {
+    if (response_state != DAP_USB_RESPONSE_READY) {
         return;
     }
 
-    // The high half of the return value counts request bytes consumed; only the response length
-    // matters here, because one packet carries one command.
+    __DMB();
+    if (!dap_usb_response_start(&response_state)) {
+        return;
+    }
+
+    bool started;
+    if (response_transport == DAP_TRANSPORT_BULK) {
+        started = start_tx(response, 0U, response_len);
+    } else {
+        started = tud_hid_n_report(0U, 0U, hid_response, CFG_TUD_HID_EP_BUFSIZE);
+    }
+    if (!started) {
+        dap_usb_response_retry(&response_state);
+    }
+}
+
+bool usb_transport_response_idle(void) {
+    __DMB();
+    return response_state == DAP_USB_RESPONSE_FREE;
+}
+
+void usb_transport_request_disconnect(void) {
+    disconnect_complete = false;
+    disconnect_requested = true;
+}
+
+bool usb_transport_disconnect_complete(void) { return disconnect_complete; }
+
+static bool dap_task(void) {
+    __DMB();
+    bool const bulk_ready = request_len[request_head] != 0U;
+    bool const hid_ready = hid_request_len != 0U;
+    if (!dap_core_has_work(response_state == DAP_USB_RESPONSE_FREE, bulk_ready, hid_ready)) {
+        return false;
+    }
+    __DMB();
+
+    bool const use_hid = dap_usb_choose_hid(hid_ready, hid_request_seq, bulk_ready, request_seq[request_head]);
+    const uint8_t* request_data;
+    if (use_hid) {
+        request_data = hid_request;
+        response_transport = DAP_TRANSPORT_HID;
+    } else {
+        request_data = request[request_head];
+        response_transport = DAP_TRANSPORT_BULK;
+    }
+
     led_activity();
     MARKER_BUSY();
-    uint32_t produced = DAP_ExecuteCommand(request[request_head], response) & 0xFFFFU;
+    uint32_t produced = DAP_ExecuteCommand(request_data, use_hid ? hid_response : response) & 0xFFFFU;
     MARKER_IDLE();
-    // One command answers in one packet. A longer reply would split across two, which a v2 host
-    // does not expect, so send what fits and drop the rest with the malformed request that caused
-    // it.
     if (produced > DAP_PACKET_SIZE) {
         produced = DAP_PACKET_SIZE;
     }
-    request_len[request_head] = 0U;
-    request_head = (uint8_t)((request_head + 1U) % REQUEST_SLOTS);
 
-    if (produced != 0U) {
-        response_len = produced;
-        if (tud_vendor_write(response, response_len) == response_len) {
-            response_len = 0U;
-        }
+    if (use_hid) {
+        hid_request_len = 0U;
+        __DMB();
+        response_len = CFG_TUD_HID_EP_BUFSIZE;
+        hid_report_packet_size(request_data, hid_response);
+    } else {
+        __DMB();
+        request_head = dap_usb_request_release(request_len, request_head, REQUEST_SLOTS);
+        __DMB();
+        response_len = (uint16_t)produced;
     }
+
+    if (response_len != 0U) {
+        __DMB();
+        response_state = DAP_USB_RESPONSE_READY;
+    }
+    return true;
 }
 
-/** Answer the v1 host with the v1 packet size.
- *
- * DAP_Info builds its reply from DAP_PACKET_SIZE, which is sized for the bulk interface. A v1 host
- * that read 512 would try to send a 512-byte HID report, which cannot exist. The command layer has
- * no idea which interface asked, so the correction belongs here.
- */
+/** Answer the v1 host with the v1 packet size. */
 static void hid_report_packet_size(const uint8_t* req, uint8_t* resp) {
     if ((req[0] == ID_DAP_Info) && (req[1] == DAP_ID_PACKET_SIZE)) {
         resp[1] = 2U;
@@ -148,7 +224,6 @@ static void hid_report_packet_size(const uint8_t* req, uint8_t* resp) {
 
 uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t* buffer,
                                uint16_t reqlen) {
-    // Requests arrive as OUT reports, never as GET_REPORT.
     (void)instance;
     (void)report_id;
     (void)report_type;
@@ -159,17 +234,94 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_t
 
 void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t const* buffer,
                            uint16_t bufsize) {
+    (void)instance;
     (void)report_id;
     (void)report_type;
 
-    if (bufsize == 0U) {
+    if ((bufsize == 0U) || (bufsize > DAP_PACKET_SIZE) || (hid_request_len != 0U)) {
         return;
     }
 
-    led_activity();
-    DAP_ExecuteCommand(buffer, hid_response);
-    hid_report_packet_size(buffer, hid_response);
-    tud_hid_n_report(instance, 0U, hid_response, CFG_TUD_HID_EP_BUFSIZE);
+    memcpy(hid_request, buffer, bufsize);
+    hid_request_seq = next_request_seq++;
+    __DMB();
+    hid_request_len = bufsize;
+    __DMB();
+    signal_core1();
+}
+
+void tud_hid_report_complete_cb(uint8_t instance, uint8_t const* report, uint16_t len) {
+    (void)instance;
+    (void)report;
+    (void)len;
+    if (response_transport == DAP_TRANSPORT_HID) {
+        dap_usb_response_complete(&response_state);
+        __DMB();
+        signal_core1();
+    }
+}
+
+void tud_hid_report_failed_cb(uint8_t instance, hid_report_type_t report_type,
+                              uint8_t const* report, uint16_t xferred_bytes) {
+    (void)instance;
+    (void)report_type;
+    (void)report;
+    (void)xferred_bytes;
+    if (response_transport == DAP_TRANSPORT_HID) {
+        dap_usb_response_retry(&response_state);
+    }
+}
+
+/** Initialize the DAP core, then sleep until CPU 0 publishes another request. */
+__attribute__((section(".core1_code.text"), noinline, noreturn)) void dap_core1_main(void) {
+    __disable_irq();
+    dap_core1_mailbox_wait_init();
+
+    for (;;) {
+        if (dap_task()) {
+            continue;
+        }
+
+        volatile MAILBOX_Type* const mailbox = (volatile MAILBOX_Type*)0x4008B000U;
+        uint32_t const pending = dap_core_mailbox_ack_mask(mailbox->MBOXIRQ[0].IRQ);
+        if (pending != 0U) {
+            mailbox->MBOXIRQ[0].IRQCLR = pending;
+        }
+        NVIC_ClearPendingIRQ(MAILBOX_IRQn);
+        __DSB();
+        __DMB();
+        if (!dap_task()) {
+            __WFE();
+        }
+    }
+}
+
+/** Use a pending mailbox IRQ as a WFE event without running an ISR during DAP transfers. */
+__attribute__((section(".core1_code.text"), noinline)) void dap_core1_mailbox_wait_init(void) {
+    SCB->SCR |= SCB_SCR_SEVONPEND_Msk;
+    NVIC_ClearPendingIRQ(MAILBOX_IRQn);
+    NVIC_EnableIRQ(MAILBOX_IRQn);
+    __DSB();
+    __ISB();
+}
+
+static void start_core1(void) {
+    extern uint32_t core1_vectors[];
+    (void)core1_vectors;
+
+    SYSCON->CPUCFG |= SYSCON_CPUCFG_CPU1ENABLE_MASK;
+    SYSCON->CPBOOT = SYSCON_CPBOOT_CPBOOT((uint32_t)core1_vectors);
+    uint32_t const control = SYSCON->CPUCTRL | 0xC0C48000U;
+    SYSCON->CPUCTRL = control | SYSCON_CPUCTRL_CPU1RSTEN_MASK | SYSCON_CPUCTRL_CPU1CLKEN_MASK;
+    SYSCON->CPUCTRL = (control | SYSCON_CPUCTRL_CPU1CLKEN_MASK) & ~SYSCON_CPUCTRL_CPU1RSTEN_MASK;
+    __DSB();
+    __ISB();
+}
+
+__attribute__((noinline, used)) void dap_core_security_init(void) {
+    dap_core_security_apply((volatile uint32_t*)0x500AC000U);
+    __DSB();
+    __ISB();
 }
 
 int main(void) {
@@ -177,11 +329,18 @@ int main(void) {
     reboot_clear_boot_mode();
     board_core_clock_init();
     board_clocks_init();
-    board_timestamp_init();
-    DAP_Setup();
     target_sense_init();
     led_init();
     vcom_init();
+    board_timestamp_init();
+    DAP_Setup();
+    CLOCK_EnableClock(kCLOCK_Mailbox);
+    RESET_PeripheralReset(kMAILBOX_RST_SHIFT_RSTn);
+    MAILBOX->MBOXIRQ[0].IRQCLR = UINT32_MAX;
+    dap_usb_shared_init(&usb_shared);
+    DAP_TransferAbort = 0U;
+    dap_core_security_init();
+    start_core1();
 
     board_init_after_tusb();
     tusb_rhport_init_t const init = {
@@ -189,10 +348,12 @@ int main(void) {
         .speed = TUSB_SPEED_AUTO,
     };
     tusb_init(BOARD_TUD_RHPORT, &init);
+    __DMB();
+    __enable_irq();
 
     for (;;) {
         tud_task();
-        dap_task();
+        usb_transport_task();
         vcom_task();
         reboot_poll();
     }

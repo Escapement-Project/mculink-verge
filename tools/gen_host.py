@@ -33,9 +33,9 @@ M33 = ["-mcpu=cortex-m33", "-mthumb", "-mfloat-abi=hard", "-mfpu=fpv5-sp-d16", "
        "-ffunction-sections", "-fdata-sections"]
 
 
-def run(args: list[str], cwd: str, merge: bool = False) -> str:
+def run(args: list[str], cwd: str, merge: bool = False, env: dict[str, str] | None = None) -> str:
     done = subprocess.run(args, cwd=cwd, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT if merge else subprocess.PIPE, text=True)
+                          stderr=subprocess.STDOUT if merge else subprocess.PIPE, text=True, env=env)
     if done.returncode != 0:
         raise SystemExit(f"{' '.join(args)}\n{done.stdout}{done.stderr or ''}")
     return done.stdout
@@ -45,7 +45,9 @@ def host(cc: str, work: str) -> str:
     exe = os.path.join(work, f"host-{cc}")
     run([cc, "-g", "-O2", "-fsanitize=address,undefined", "-fno-sanitize-recover=all", *GEN_BASE, "-I.",
          "swd_gen.c", "jtag_gen.c", "gen.c", "gen_main.c", "host_main.c", "-o", exe], work)
-    return run([exe], work)
+    env = os.environ.copy()
+    env["ASAN_OPTIONS"] = ":".join(filter(None, (env.get("ASAN_OPTIONS"), "detect_leaks=0")))
+    return run([exe], work, env=env)
 
 
 def qemu(cc: str, work: str) -> str:

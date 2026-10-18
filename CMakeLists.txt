@@ -98,6 +98,7 @@ set(DAP_SRC ${CMAKE_CURRENT_SOURCE_DIR}/external/CMSIS-DAP/Firmware/Source)
 
 target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/main.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/core1_start.S
   ${CMAKE_CURRENT_SOURCE_DIR}/src/mem.S
   ${CMAKE_CURRENT_SOURCE_DIR}/src/usb_descriptors.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/ser_num.c
@@ -325,16 +326,28 @@ endforeach()
 # own Python and the emulator, so it is a target rather than part of the build.
 find_program(UV_EXECUTABLE uv)
 if(UV_EXECUTABLE)
-  add_custom_target(check
+  set(IMAGE_CHECK_ARGS --packet-count ${DAP_PACKET_COUNT})
+  if(CODE_LAB)
+    list(APPEND IMAGE_CHECK_ARGS --code-lab)
+  endif()
+  add_custom_target(check_wire
     COMMAND ${UV_EXECUTABLE} run ${CMAKE_CURRENT_SOURCE_DIR}/tools/cycles.py
             --check $<TARGET_FILE:${PROJECT_NAME}>
             --cpu ${CORE_CLOCK_MHZ}
             --config ${CMAKE_CURRENT_SOURCE_DIR}/src/DAP_config.h
     DEPENDS ${PROJECT_NAME}
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "Checking wire events against tools/baseline"
+  )
+  add_custom_target(check_image
     COMMAND ${UV_EXECUTABLE} run ${CMAKE_CURRENT_SOURCE_DIR}/tools/image.py
-            $<TARGET_FILE:${PROJECT_NAME}> --packet-count ${DAP_PACKET_COUNT}
+            $<TARGET_FILE:${PROJECT_NAME}> ${IMAGE_CHECK_ARGS}
+    DEPENDS ${PROJECT_NAME}
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "Checking image descriptors and internal layout"
+  )
+  add_custom_target(check
+    DEPENDS check_wire check_image
     COMMENT "Checking the wire against tools/baseline, and the descriptors against themselves"
-    USES_TERMINAL
-    )
+  )
 endif()

@@ -21,6 +21,7 @@ went wrong.
 """
 
 import argparse
+import concurrent.futures
 import os
 import sys
 
@@ -182,6 +183,10 @@ def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire
     }
 
 
+def run_point(args: tuple[str, int, int, int, int, str]) -> dict:
+    return run(*args)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("elf", nargs="?", default="build-gen/mculink_cjtag.elf")
@@ -190,15 +195,25 @@ def main() -> int:
     ap.add_argument("--latency", type=int, default=8, help="cycles from the TDO packet's fall to valid TDO")
     ap.add_argument("--gen-latency", type=int, default=0, help="the latency to generate for, with vendor 0x8A; 0 leaves the image's")
     ap.add_argument("--cpu", type=int, default=150)
+    ap.add_argument("--jobs", type=int, default=min(4, os.cpu_count() or 1),
+                    help="independent clock simulations to run at once")
     args = ap.parse_args()
+    if args.jobs < 1:
+        ap.error("--jobs must be at least 1")
     cpu_hz = args.cpu * 1_000_000
     mhz = args.mhz or [-(-cpu_hz // p) / 1e6 for p in list(range(3, 41)) + [75, 150, 1500]]
 
+    points = [(args.elf, int(m * 1e6 + 0.5), args.latency, cpu_hz, args.gen_latency, args.wire) for m in mhz]
+    if args.jobs == 1 or len(points) == 1:
+        results = list(map(run_point, points))
+    else:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=min(args.jobs, len(points))) as pool:
+            results = list(pool.map(run_point, points))
+
     failures = 0
     print(f"{'MHz':>8} {'P':>5} {'frame':>6} {'margin':>7}  problems")
-    for m in mhz:
+    for m, r in zip(mhz, results):
         hz = int(m * 1e6 + 0.5)
-        r = run(args.elf, hz, args.latency, cpu_hz, args.gen_latency, args.wire)
         failures += bool(r["problems"])
         margin = "-" if r["margin"] is None else str(r["margin"])
         print(f"{hz / 1e6:8.3f} {r['period']:5d} {r['frame']:6d} {margin:>7}  " + ("; ".join(r["problems"]) or "ok"))
