@@ -18,20 +18,28 @@ A command that does not answer, or that never returns. COMMANDS below is a claim
 sends all of them.
 
 And the serial number, which comes from a flash region this firmware has never touched.
+
+The firmware is two images: CPU 0's, which owns USB, and CPU 1's, which executes the commands and
+is embedded in CPU 0's. Each check runs against the image whose code it is about, and one more
+checks that the two agree on everything they share.
 """
 
 import argparse
+import os
 import re
 import struct
 import subprocess
 import sys
+import tempfile
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 
-from cycles import SCRATCH, SRAM, Machine, Model, Target, build, u16, u32  # noqa: E402
+from cycles import SCRATCH, SRAM, Machine, Model, Target, build, symbols, u16, u32  # noqa: E402
 from unicorn.arm_const import UC_ARM_REG_R0  # noqa: E402
 
 UUID_ADDRESS = 0x0009FC70
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+USB_SRAM = (0x40100000, 0x00004000)
 
 
 def base_name(symbol: str) -> str:
@@ -59,6 +67,65 @@ def symbols_with_size(elf: str) -> dict[str, tuple[int, int]]:
             out[parts[3]] = entry
             out.setdefault(base_name(parts[3]), entry)
     return out
+
+
+def config_value(config: str, name: str) -> int | None:
+    m = re.search(rf"^#define\s+{name}\s+(\d+)U?", open(config).read(), re.M)
+    return int(m.group(1)) if m else None
+
+
+def short_enums(elf: str) -> bool:
+    """Whether the image was built with enums as small as their values, as arm-none-eabi-gcc
+    builds them, rather than an int, as clang does."""
+    attributes = subprocess.run(["arm-none-eabi-readelf", "-A", elf], capture_output=True, text=True,
+                                check=True).stdout
+    return "Tag_ABI_enum_size: small" in attributes
+
+
+def shared_fields() -> list[str]:
+    """Every member dap_shared.h declares in dap_shared_t, with a member whose type is another
+    struct from the same header named field by field, as `outer.inner`."""
+    text = open(os.path.join(ROOT, "src", "dap_shared.h")).read()
+    text = re.sub(r"//[^\n]*|/\*.*?\*/", "", text, flags=re.S)
+    structs = {name: body for body, name in re.findall(r"typedef struct \{(.*?)\} (\w+);", text, re.S)}
+
+    def fields(body: str) -> list[str]:
+        out = []
+        for declaration in re.findall(r"([^;{}]+);", body):
+            m = re.search(r"(\w+)\s*(?:\[[^;]*\])?\s*$", declaration.strip())
+            if not m:
+                continue
+            kind = next((t for t in structs if re.search(rf"\b{t}\b", declaration)), None)
+            out += [f"{m.group(1)}.{inner}" for inner in fields(structs[kind])] if kind else [m.group(1)]
+        return out
+
+    return fields(structs["dap_shared_t"])
+
+
+def shared_offsets(request_slots: int, *fields: str, small_enums: bool = True) -> dict[str, int]:
+    """Member offsets of dap_shared_t, and its size as "size", as the firmware's compiler lays it
+    out. A host compiler would not: its pointers are a different size. An image's enum size is
+    its compiler's choice, so pass the image's own."""
+    entries = [f"offsetof(dap_shared_t, {f})" for f in fields] + ["sizeof(dap_shared_t)"]
+    source = '#include <stddef.h>\n#include "dap_shared.h"\n'
+    source += f"const unsigned layout[] = {{{', '.join(entries)}}};\n"
+    with tempfile.TemporaryDirectory() as tmp:
+        c_file, obj, raw = (os.path.join(tmp, n) for n in ("layout.c", "layout.o", "layout.bin"))
+        open(c_file, "w").write(source)
+        subprocess.run(["arm-none-eabi-gcc", "-mthumb", "-mcpu=cortex-m33", f"-DREQUEST_SLOTS={request_slots}U",
+                        "-fshort-enums" if small_enums else "-fno-short-enums",
+                        f"-I{os.path.join(ROOT, 'src')}", "-c", c_file, "-o", obj], check=True)
+        subprocess.run(["arm-none-eabi-objcopy", "-O", "binary", "-j", ".rodata", obj, raw], check=True)
+        values = struct.unpack(f"<{len(entries)}I", open(raw, "rb").read()[: 4 * len(entries)])
+    return dict(zip([*fields, "size"], values))
+
+
+def binary(elf: str, *sections: str) -> bytes:
+    """What `objcopy -O binary` makes of the image, or of the sections named."""
+    with tempfile.NamedTemporaryFile(suffix=".bin") as raw:
+        only = [arg for name in sections for arg in ("-j", name)]
+        subprocess.run(["arm-none-eabi-objcopy", "-O", "binary", *only, elf, raw.name], check=True)
+        return open(raw.name, "rb").read()
 
 
 class Checker:
@@ -234,6 +301,7 @@ DAP_COMMANDS = {
     0x87: b"\x00\x00\xff\x00\x00\x00\x00\x00\x00",
 }
 ID_DAP_INVALID = 0xFF
+SWO_COMMANDS = (0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1E)
 
 
 def nxp_baudrate(src: int, want: int) -> tuple[int, int, bool]:
@@ -306,18 +374,23 @@ def check_timestamp(c: Checker, elf: str) -> None:
     )
 
 
-def check_commands(c: Checker, elf: str, code_lab: bool) -> None:
+def check_commands(c: Checker, elf: str, code_lab: bool, swo: bool) -> None:
     """Every command in COMMANDS has to answer. The claim is that none is a downgrade.
 
     One caveat worth keeping honest. This runs before the clock setup, so the four SWO commands
     reach a Flexcomm with no clock and NXP's driver returns early rather than configuring
     anything. They answer, which is what is being checked, but nothing here says SWO works. With
     a real clock the driver waits on a status bit the register model never sets, so the emulator
-    cannot take that path at all: SWO is a bench item.
+    cannot take that path at all: SWO is a bench item. A build without SWO has to refuse them.
     """
     probe = Machine(elf, Target([0] * 64), restart_at=set(), model=Model())
     answered = 0
-    for cmd, operands in DAP_COMMANDS.items():
+    commands = {cmd: ops for cmd, ops in DAP_COMMANDS.items() if swo or cmd not in SWO_COMMANDS}
+    for cmd in SWO_COMMANDS if not swo else ():
+        reply = probe.command(bytes([cmd]) + DAP_COMMANDS[cmd])
+        if not reply or reply[0] != ID_DAP_INVALID:
+            c.problems.append(f"command {cmd:#04x} should answer ID_DAP_Invalid in a build without SWO")
+    for cmd, operands in commands.items():
         reply = probe.command(bytes([cmd]) + operands)
         if not reply:
             c.problems.append(f"command {cmd:#04x} returned nothing")
@@ -337,8 +410,8 @@ def check_commands(c: Checker, elf: str, code_lab: bool) -> None:
         if not reply or reply[0] != ID_DAP_INVALID:
             c.problems.append(f"command {cmd:#04x} should answer ID_DAP_Invalid")
     c.note(
-        f"{answered} of {len(DAP_COMMANDS)} commands answered, unimplemented ids rejected"
-        " (the SWO four with the clock still off; see the note above)"
+        f"{answered} of {len(commands)} commands answered, unimplemented ids rejected"
+        + (" (the SWO four with the clock still off; see the note above)" if swo else ", SWO not built")
     )
 
 
@@ -372,10 +445,10 @@ def check_response_bounds(c: Checker, elf: str, packet_size: int) -> None:
     this measures the shipped size rather than a number repeated here.
     """
     sym = symbols_with_size(elf)
-    if "response" not in sym:
+    if "response_copy" not in sym:
         c.note("the response buffer was folded away; its bounds not checked")
         return
-    size = sym["response"][1]
+    size = sym["response_copy"][1]
     resp = SCRATCH + 0x400
     ceiling = SRAM[0] + SRAM[1] - 0x1000  # clear of the stack, which is at the top
     if resp + size >= ceiling:
@@ -608,7 +681,7 @@ CAPABILITY_BITS = {
 }
 
 
-def check_info(c: Checker, elf: str, packet_size: int, packet_count: int) -> None:
+def check_info(c: Checker, elf: str, packet_size: int, packet_count: int, swo: bool) -> None:
     probe = Machine(elf, Target([0] * 64), restart_at=set(), model=Model())
 
     def info(sub: int) -> bytes:
@@ -623,9 +696,9 @@ def check_info(c: Checker, elf: str, packet_size: int, packet_count: int) -> Non
     caps = info(0xF0)
     bits = caps[0] if caps else 0
     named = [n for b, n in CAPABILITY_BITS.items() if bits & (1 << b)]
-    for wanted in ("SWD", "JTAG", "SWO UART", "atomic commands", "timestamps"):
+    for wanted in ("SWD", "JTAG", "atomic commands", "timestamps") + (("SWO UART",) if swo else ()):
         c.check(wanted in named, f"DAP_Info does not claim {wanted}, which COMMANDS relies on")
-    for unwanted in ("UART port",):
+    for unwanted in ("UART port",) + (() if swo else ("SWO UART",)):
         c.check(unwanted not in named, f"DAP_Info claims {unwanted}, which is not implemented")
 
     product = info(DAP_ID_PRODUCT).rstrip(b"\x00").decode("ascii", "replace")
@@ -636,46 +709,132 @@ def check_info(c: Checker, elf: str, packet_size: int, packet_count: int) -> Non
     c.note(f"DAP_Info: product {product!r}, serial {serial!r}")
 
 
-def check_core1_image(c: Checker, elf: str) -> None:
+# Instructions CPU 1 cannot execute: it has no FPU and no DSP extension (LPC55S6x data sheet,
+# section 7.4). The DSP list is the Armv7E-M one; SMULL, SMLAL, SSAT and the like are base
+# Mainline and stay allowed.
+CONDITIONS = {"eq", "ne", "cs", "hs", "cc", "lo", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", "al"}
+COPROCESSOR = re.compile(r"^(mcrr?2?|mrrc2?|mrc2?|cdp2?|ldc2?l?|stc2?l?)$")
+DSP = re.compile(
+    r"^([su]add(8|16)|[su]sub(8|16)|[su]asx|[su]sax|q(add|sub)(8|16)?|qasx|qsax|qdadd|qdsub"
+    r"|[su]h(add|sub)(8|16)|[su]h(asx|sax)|uq(add|sub)(8|16)|uq(asx|sax)|usada?8|sel|pkh(bt|tb)"
+    r"|[su]sat16|[su]xta[bh]|[su]xtab16|[su]xtb16|smla(bb|bt|tb|tt|d|dx|wb|wt)|smlal(bb|bt|tb|tt|d|dx)"
+    r"|smlsl?dx?|smml[as]r?|smmulr?|smuadx?|smul(bb|bt|tb|tt|wb|wt)|smusdx?)$"
+)
+
+
+def foreign_instructions(elf: str) -> list[str]:
+    """Every FPU, coprocessor or DSP instruction in the image, by where it is.
+
+    From objdump rather than capstone over each function's bytes: a function's size takes in its
+    literal pool, and its constants decode as instructions. The ELF's mapping symbols say which
+    bytes are data, and objdump reads them.
+    """
+    found = []
+    function = "?"
+    listing = subprocess.run(["arm-none-eabi-objdump", "-d", "--no-show-raw-insn", elf],
+                             capture_output=True, text=True, check=True).stdout
+    for line in listing.splitlines():
+        header = re.match(r"^[0-9a-f]+ <(.+)>:$", line)
+        if header:
+            function = header.group(1)
+            continue
+        m = re.match(r"^\s*([0-9a-f]+):\s+([a-z][a-z0-9.]*)", line)
+        if not m:
+            continue
+        name = m.group(2).split(".")[0]
+        bare = name[:-2] if name[-2:] in CONDITIONS and len(name) > 3 else name
+        if name.startswith("v") or COPROCESSOR.match(bare) or DSP.match(name) or DSP.match(bare):
+            found.append(f"{m.group(2)} at {m.group(1)} in {function}")
+    return found
+
+
+# A branch in an objdump listing: address, mnemonic, target, and the symbol objdump names it by.
+# objdump indents an address only when it has fewer than eight digits.
+BRANCH = re.compile(r"^\s*([0-9a-f]+):\s+(bl|blx|b(?:eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)?(?:\.[nw])?)"
+                    r"\s+([0-9a-f]+)?(?: <(\S+)>)?")
+
+
+def check_sram_wait(c: Checker, elf: str, who: str, names: tuple[str, ...]) -> None:
+    """Both cores wait for work from SRAM: a core fetching from flash slows the other's command
+    code (src/main.c), and CPU 1's wait polls a level instead of sleeping (src/core1_main.c). A
+    dropped section attribute, or a call the compiler adds back into flash, would undo that and
+    change nothing else checked here."""
     sym = symbols_with_size(elf)
-    names = ("core1_vectors", "core1_stack", "core1_reset", "dap_core1_main", "dap_core1_mailbox_wait_init",
-             "dap_core_security_init", "usb_shared", "DAP_TransferAbort", "USB1_IRQHandler")
-    missing = [name for name in names if name not in sym]
+    sram = range(0x2000_0000, 0x3000_0000)
+    before = len(c.problems)
+    for name in names:
+        if not c.check(name in sym, f"{name} is not in {who}'s image"):
+            continue
+        at, size = sym[name]
+        if not c.check(at in sram, f"{name} is at {at:#x}, not in SRAM"):
+            continue
+        listing = subprocess.run(
+            ["arm-none-eabi-objdump", "-d", "--no-show-raw-insn", f"--start-address={at:#x}",
+             f"--stop-address={at + size:#x}", elf], capture_output=True, text=True, check=True).stdout
+        for line in listing.splitlines():
+            m = BRANCH.match(line)
+            if not m:
+                continue
+            target = int(m.group(3), 16) if m.group(3) else None
+            # A call out of range gets a linker veneer, placed next to the caller in SRAM. What
+            # matters is where the veneer goes, so take the function it is named for.
+            veneer = re.fullmatch(r"__(.+)_veneer", m.group(4) or "")
+            if veneer and veneer.group(1) in sym:
+                target = sym[veneer.group(1)][0]
+            c.check(target is not None and target in sram,
+                    f"{name} branches out of SRAM at {m.group(1)}: {m.group(2)} {m.group(4) or m.group(3)}")
+    if len(c.problems) == before:
+        c.note(f"{who} waits for work from SRAM: {' and '.join(names)}, and every branch they take")
+
+
+def check_core1_image(c: Checker, elf: str, core1: str, request_slots: int) -> None:
+    """CPU 0 starts CPU 1 from the image it embeds, and both reach the same shared struct.
+
+    Built separately, the two images agree on nothing a linker can check. So this checks what each
+    needs of the other: the embedded bytes are the CPU 1 image, the vector table CPU 0 points at
+    starts CPU 1 on its own stack, and dap_shared has one address and one layout in both.
+    """
+    sym0, sym1 = symbols_with_size(elf), symbols_with_size(core1)
+    # The linker script defines the stack top, and a linker symbol has no size.
+    top = symbols(core1).get("__core1_stack_top")
+    missing = [f"{name} (CPU 0)" for name in ("core1_image", "dap_shared") if name not in sym0]
+    missing += [f"{name} (CPU 1)" for name in ("core1_vectors", "core1_reset", "dap_shared") if name not in sym1]
+    missing += [] if top is not None else ["__core1_stack_top (CPU 1)"]
     if missing:
-        c.problems.append(f"CPU1 DAP image is missing {', '.join(missing)}")
+        c.problems.append(f"the two images are missing {', '.join(missing)}")
         return
 
-    vectors = sym["core1_vectors"][0]
-    stack, stack_size = sym["core1_stack"]
-    shared, shared_size = sym["usb_shared"]
-    abort_flag, abort_flag_size = sym["DAP_TransferAbort"]
-    c.check(vectors == 0x00072000, f"second-core vectors start at {vectors:#x}, wanted 0x72000")
-    c.check(vectors % 512 == 0, f"second-core vector table at {vectors:#x} is not 512-byte aligned")
-    c.check(stack >= 0x40100000 and stack + stack_size <= 0x40104000,
-            f"second-core stack at {stack:#x} ({stack_size} bytes) is outside USB SRAM")
-    c.check(shared >= 0x40100000 and shared + shared_size <= 0x40104000,
-            f"core-shared USB state at {shared:#x} ({shared_size} bytes) is outside USB SRAM")
-    c.check(abort_flag >= 0x40100000 and abort_flag + abort_flag_size <= 0x40104000,
-            f"DAP abort flag at {abort_flag:#x} ({abort_flag_size} bytes) is outside USB SRAM")
-    table = struct.unpack("<87I", _read_at(elf, vectors, 87 * 4, ".core1_code"))
-    c.check(table[0] == stack + stack_size,
-            f"second-core initial stack is {table[0]:#x}, wanted {stack + stack_size:#x}")
-    c.check((table[1] & ~1) == sym["core1_reset"][0],
-            "second-core reset vector does not point to its reset handler")
-    c.check(table[2] != 0, "CPU1 default exception vector is empty")
-    c.check(table[15] == table[2], "CPU1 SysTick vector is not masked to the default handler")
-    c.check(table[16 + 47] == table[2], "CPU1 USB1 vector is not masked to the default handler")
-    c.check((sym["dap_core1_main"][0] & ~1) >= vectors,
-            "DAP core entry is not in the CPU1 image")
-    c.check((sym["dap_core1_mailbox_wait_init"][0] & ~1) >= vectors,
-            "CPU1 mailbox wake setup is not in the CPU1 image")
-    c.check((sym["dap_core_security_init"][0] & ~1) < vectors,
-            "DAP security setup is not in the CPU0 image")
-    c.check("core1_usb1_irq_handler" not in sym and "usb_core1_main" not in sym,
-            "USB code remains assigned to CPU1")
-    c.check(sym["USB1_IRQHandler"][0] < vectors,
-            "USB1 interrupt handler is not in the CPU0 image")
-    c.note("CPU1 DAP entry, mailbox wake, masked interrupts, shared queue, abort flag, and USB SRAM are laid out")
+    image_at, vectors = sym0["core1_image"][0], sym1["core1_vectors"][0]
+    c.check(image_at == vectors, f"CPU 0 embeds CPU 1's image at {image_at:#x}; CPU 1 is linked at {vectors:#x}")
+    c.check(vectors % 512 == 0, f"CPU 1's vector table at {vectors:#x} is not 512-byte aligned")
+    linked = binary(core1)
+    c.check(binary(elf, ".core1_code")[: len(linked)] == linked,
+            "the image CPU 0 embeds is not the CPU 1 image built alongside it")
+
+    table = struct.unpack("<87I", linked[: 87 * 4])
+    c.check(table[0] == top, f"CPU 1 starts with its stack at {table[0]:#x}, wanted {top:#x}")
+    c.check(table[1] == sym1["core1_reset"][0] | 1, "CPU 1's reset vector does not point at core1_reset")
+    c.check(len(set(table[2:])) == 1, "CPU 1's vector table names a handler; nothing should interrupt it")
+
+    (at0, size0), (at1, size1) = sym0["dap_shared"], sym1["dap_shared"]
+    c.check((at0, size0) == (at1, size1),
+            f"dap_shared is {size0} bytes at {at0:#x} on CPU 0 and {size1} bytes at {at1:#x} on CPU 1")
+    # Equal sizes can hide moved members, so compare where each image's compiler puts every one.
+    fields = shared_fields()
+    layout0 = shared_offsets(request_slots, *fields, small_enums=short_enums(elf))
+    layout1 = shared_offsets(request_slots, *fields, small_enums=short_enums(core1))
+    moved = [f for f in fields if layout0[f] != layout1[f]]
+    c.check(not moved, f"CPU 0 and CPU 1 lay dap_shared out differently: {', '.join(moved)}")
+    c.check(size0 == layout0["size"], f"dap_shared is {size0} bytes in the images and {layout0['size']} in dap_shared.h")
+    c.check(USB_SRAM[0] <= at0 and at0 + size0 <= USB_SRAM[0] + USB_SRAM[1],
+            f"dap_shared at {at0:#x} is outside USB SRAM, the only memory the USB DMA reaches")
+
+    c.check("DAP_ExecuteCommand" not in sym0, "CPU 0's image carries the DAP command layer")
+    c.check(not any(name.startswith("tud_") for name in sym1), "CPU 1's image carries TinyUSB")
+    foreign = foreign_instructions(core1)
+    c.check(not foreign, f"CPU 1 has no FPU or DSP extension, and its image uses them: {'; '.join(foreign[:5])}")
+    c.note(f"CPU 1's image is embedded at {vectors:#x}, {len(linked)} bytes, and uses no FPU or DSP"
+           f" instruction; dap_shared is {size0} bytes at {at0:#x} in both")
 
 
 DAP_ID_PRODUCT, DAP_ID_SER_NUM = 2, 3
@@ -697,7 +856,7 @@ LED_SETTLE_MS = 800
 LED_TIMER_HZ = 1_000_000
 
 
-def check_led(c: Checker, elf: str) -> None:
+def check_led(c: Checker, elf: str, request_slots: int) -> None:
     """CTIMER3 drives the LED as a PWM and its period interrupt decides the level.
 
     Nothing about the LED is visible from a capture -- P0_5 goes nowhere but the LED -- so the
@@ -711,10 +870,14 @@ def check_led(c: Checker, elf: str) -> None:
     depends on the tick it arrives on, and the shortest of those is what a person would see.
     """
     probe = Machine(elf, Target([]), restart_at=set(), model=Model())
-    for name in ("board_clocks_init", "led_init", "CTIMER3_IRQHandler", "led_activity_seen", "led_ticks"):
+    for name in ("board_clocks_init", "led_init", "CTIMER3_IRQHandler", "dap_shared", "led_ticks"):
         if name not in probe.sym:
             c.note(f"{name} is not a symbol; the LED policy not checked")
             return
+    # CPU 1 sets these; check_led_inputs checks that it does.
+    fields = shared_offsets(request_slots, "led_activity", "led_connected", small_enums=short_enums(elf))
+    seen = probe.sym["dap_shared"] + fields["led_activity"]
+    connected = probe.sym["dap_shared"] + fields["led_connected"]
 
     probe.call("board_clocks_init")
     probe.call("led_init")
@@ -738,17 +901,15 @@ def check_led(c: Checker, elf: str) -> None:
     c.check(max(levels) >= period * 9 // 10, f"an idle probe's LED never gets brighter than {max(levels)}/{period}")
     c.check(largest_step(levels) <= smooth, f"an idle probe's fade jumps by {largest_step(levels)}/{period} in one tick")
 
-    # Through the protocol, so the path from DAP_HostStatus to the LED is checked as well.
-    probe.command(bytes([ID_DAP_HOST_STATUS, 0, 1]))
+    probe.uc.mem_write(connected, b"\x01")
     c.check(all(level >= period for level in run(1000)), "the LED is not fully lit after a host said it is connected")
-    probe.command(bytes([ID_DAP_HOST_STATUS, 0, 0]))
+    probe.uc.mem_write(connected, b"\x00")
     c.check(largest_step(run(1000)) <= smooth, "the LED does not go back to breathing after the host disconnected")
 
     # One command, landing on each tick of a blink period in turn. 128 covers any half-period up
     # to 64 ticks without this check knowing which one the firmware picked. What is measured is
     # the longest unbroken stretch the LED is fully lit, because that is the flash a person sees.
     ticks = probe.sym["led_ticks"]
-    seen = probe.sym["led_activity_seen"]
     worst = settle
     for phase in range(128):
         probe.uc.mem_write(ticks, u32(100_000 + phase))
@@ -773,6 +934,23 @@ def check_led(c: Checker, elf: str) -> None:
     )
 
 
+def check_led_inputs(c: Checker, core1: str, request_slots: int) -> None:
+    """DAP_HostStatus reaches CPU 0's LED through dap_shared. Activity is set by CPU 1's command
+    loop rather than the command layer, so the bench is what shows it."""
+    probe = Machine(core1, Target([]), restart_at=set(), model=Model())
+    if "dap_shared" not in probe.sym:
+        c.problems.append("CPU 1's image has no dap_shared")
+        return
+    connected = probe.sym["dap_shared"] + shared_offsets(request_slots, "led_connected",
+                                                         small_enums=short_enums(core1))["led_connected"]
+    probe.command(bytes([ID_DAP_HOST_STATUS, 0, 1]))
+    on = probe.uc.mem_read(connected, 1)[0]
+    probe.command(bytes([ID_DAP_HOST_STATUS, 0, 0]))
+    off = probe.uc.mem_read(connected, 1)[0]
+    if c.check((on, off) == (1, 0), f"DAP_HostStatus connected/disconnected left led_connected {on}/{off}"):
+        c.note("LED inputs: DAP_HostStatus sets and clears led_connected in dap_shared")
+
+
 def check_clocks(c: Checker, elf: str) -> None:
     """Run the boot-time clock setup and ask the clock driver what came out.
 
@@ -782,28 +960,35 @@ def check_clocks(c: Checker, elf: str) -> None:
     reaches a baud rate. Running it against the register model says what the driver would read.
     """
     probe = Machine(elf, Target([]), restart_at=set(), model=Model())
-    for name in ("board_clocks_init", "board_swo_pin_init", "vcom_init", "USART3_GetFreq"):
+    for name in ("board_clocks_init", "vcom_init"):
         if name not in probe.sym:
             c.note(f"{name} was inlined away; the clock setup not checked")
             return
 
     probe.call("board_clocks_init")
-    probe.call("board_swo_pin_init")
-    swo = probe.call("USART3_GetFreq")
-    c.check(swo != 0, "SWO's Flexcomm has no clock, so it would never reach a baud rate")
-    c.check(
-        swo == 96_000_000,
-        f"SWO's Flexcomm reads {swo} Hz, wanted the 96 MHz FRO_HF through a divider of one",
-    )
+    swo = None
+    if "board_swo_pin_init" in probe.sym and "USART3_GetFreq" in probe.sym:
+        probe.call("board_swo_pin_init")
+        swo = probe.call("USART3_GetFreq")
+        c.check(swo != 0, "SWO's Flexcomm has no clock, so it would never reach a baud rate")
+        c.check(
+            swo == 96_000_000,
+            f"SWO's Flexcomm reads {swo} Hz, wanted the 96 MHz FRO_HF through a divider of one",
+        )
 
     probe.call("vcom_init")
-    console = probe.call("CLOCK_GetFlexCommClkFreq", 0) if "CLOCK_GetFlexCommClkFreq" in probe.sym else 0
+    # Kept out of line only while something other than the console calls it, which SWO does.
+    if "CLOCK_GetFlexCommClkFreq" not in probe.sym:
+        c.note("CLOCK_GetFlexCommClkFreq was inlined away; the console clock not checked")
+        return
+    console = probe.call("CLOCK_GetFlexCommClkFreq", 0)
     c.check(console != 0, "the console Flexcomm has no clock")
     c.check(
         console == 96_000_000,
         f"the console Flexcomm reads {console} Hz; the fractional divider is not back to one",
     )
-    c.note(f"after boot: SWO Flexcomm {swo / 1e6:g} MHz, console Flexcomm {console / 1e6:g} MHz")
+    c.note(f"after boot: SWO Flexcomm {'not built' if swo is None else f'{swo / 1e6:g} MHz'},"
+           f" console Flexcomm {console / 1e6:g} MHz")
 
     # What a host can actually ask the console for. The driver accepts anything within 3%, which
     # leaves a link no room for the other end's error, so check the rates against a tighter bound.
@@ -819,7 +1004,8 @@ def check_clocks(c: Checker, elf: str) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("elf", nargs="?", default="build/mculink_cjtag.elf")
+    ap.add_argument("elf", nargs="?", default="build/mculink_cjtag.elf", help="CPU 0's image")
+    ap.add_argument("--core1", default="build/mculink_cjtag_core1.elf", help="CPU 1's image")
     ap.add_argument("--prefix", default="CJ", help="what the serial should start with")
     ap.add_argument("--config", default="src/DAP_config.h")
     ap.add_argument("--packet-size", type=int, default=512)
@@ -843,21 +1029,29 @@ def main() -> int:
         check_bos(c, _read_at(args.elf, *sym["desc_bos"]), ms_os[1])
     else:
         c.note("the MS OS 2.0 descriptor was folded away; its length not cross-checked")
-    check_commands(c, args.elf, args.code_lab)
-    check_response_bounds(c, args.elf, args.packet_size)
-    check_request_bounds(c, args.elf)
-    check_identity(c, args.elf, args.code_lab)
-    check_core1_image(c, args.elf)
+    # REQUEST_SLOTS is what the host is told as the packet count, and it sizes dap_shared.
+    slots = args.packet_count
+    swo = bool(config_value(args.config, "SWO_UART"))
+    check_core1_image(c, args.elf, args.core1, slots)
+    check_sram_wait(c, args.elf, "CPU 0", ("wait_for_work", "vcom_ready"))
+    check_sram_wait(c, args.core1, "CPU 1", ("wait_for_mailbox",))
     check_clocks(c, args.elf)
-    check_led(c, args.elf)
-    check_sample_probe(c, args.elf)
-    check_timestamp(c, args.elf)
-    check_swo_baudrate(c, args.config, 96_000_000)
-    check_info(c, args.elf, args.packet_size, args.packet_count)
-    check_serial(c, args.elf, bytes(range(1, 17)), args.prefix)
-    check_serial(c, args.elf, b"\xff" * 16, args.prefix, uniform=True)
+    check_led(c, args.elf, slots)
+    check_led_inputs(c, args.core1, slots)
+    check_commands(c, args.core1, args.code_lab, swo)
+    check_response_bounds(c, args.core1, args.packet_size)
+    check_request_bounds(c, args.core1)
+    check_identity(c, args.core1, args.code_lab)
+    check_sample_probe(c, args.core1)
+    check_timestamp(c, args.core1)
+    if swo:
+        check_swo_baudrate(c, args.config, 96_000_000)
+    check_info(c, args.core1, args.packet_size, args.packet_count, swo)
+    for image in (args.elf, args.core1):
+        check_serial(c, image, bytes(range(1, 17)), args.prefix)
+        check_serial(c, image, b"\xff" * 16, args.prefix, uniform=True)
 
-    print(args.elf)
+    print(f"{args.elf} with {args.core1}")
     for n in c.notes:
         print(f"  {n}")
     for p in c.problems:

@@ -1,19 +1,14 @@
 #include <assert.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "dap_core.h"
 #include "dap_usb_slots.h"
-#include "dap_usb_shared.h"
+#include "dap_shared.h"
 #include "dap_core_security.h"
 #include "reboot_usb.h"
 
 #define SLOT_COUNT 3U
-#define RESPONSE_SIZE 2558U
-#define RESPONSE_STRIDE DAP_USB_RESPONSE_SLOT_SIZE(RESPONSE_SIZE)
-
-struct response_slot {
-    uint8_t bytes[RESPONSE_STRIDE];
-} __attribute__((aligned(DAP_USB_BUFFER_ALIGN)));
 
 struct completion_context {
     volatile bool* busy;
@@ -43,7 +38,7 @@ static bool reject_rx(void* opaque, uint8_t slot) {
 
 static bool complete_tx(void* opaque, uint8_t slot, uint16_t length) {
     struct completion_context* context = opaque;
-    assert(slot == 0U);
+    assert(slot == 2U);
     assert(length == 64U);
     assert(*context->busy);
     if (!context->complete) {
@@ -51,14 +46,6 @@ static bool complete_tx(void* opaque, uint8_t slot, uint16_t length) {
     }
     *context->busy = false;
     return true;
-}
-
-static void test_dma_alignment(void) {
-    struct response_slot slots[SLOT_COUNT];
-    assert(RESPONSE_STRIDE % DAP_USB_BUFFER_ALIGN == 0U);
-    for (uint8_t i = 0; i < SLOT_COUNT; i++) {
-        assert(((uintptr_t)slots[i].bytes % DAP_USB_BUFFER_ALIGN) == 0U);
-    }
 }
 
 static void test_rx_completion_during_arm(void) {
@@ -82,33 +69,47 @@ static void test_tx_completion_during_start(void) {
     volatile bool busy = false;
     struct completion_context context = {&busy, NULL, NULL, NULL, SLOT_COUNT, true};
 
-    assert(dap_usb_start_tx(&busy, 64U, complete_tx, &context));
+    assert(dap_usb_start_tx(&busy, 2U, 64U, complete_tx, &context));
     assert(!busy);
 
     context.complete = false;
-    assert(!dap_usb_start_tx(&busy, 64U, complete_tx, &context));
+    assert(!dap_usb_start_tx(&busy, 2U, 64U, complete_tx, &context));
     assert(!busy);
 }
 
+/** CPU 1 fills reply slots at the tail, as core1_main.c does; returns whether it could. */
+static bool core1_publish(volatile uint16_t* response_len, uint8_t* tail, uint16_t length) {
+    if (!dap_core_has_work(dap_usb_slot_free(response_len, *tail), true, false)) {
+        return false;
+    }
+    response_len[*tail] = length;
+    *tail = dap_usb_next_slot(*tail, SLOT_COUNT);
+    return true;
+}
+
+/** CPU 1 runs as far ahead as there are reply slots, and CPU 0 sends them in the order it ran. */
 static void test_cross_core_response_handoff(void) {
-    volatile dap_usb_response_state_t state = DAP_USB_RESPONSE_FREE;
+    volatile uint16_t response_len[SLOT_COUNT] = {0};
+    uint8_t head = 0U;
+    uint8_t tail = 0U;
 
-    assert(!dap_usb_response_start(&state));
-    state = DAP_USB_RESPONSE_READY;
-    assert(dap_usb_response_start(&state));
-    assert(state == DAP_USB_RESPONSE_IN_FLIGHT);
+    for (uint16_t i = 0U; i < SLOT_COUNT; i++) {
+        assert(core1_publish(response_len, &tail, (uint16_t)(10U + i)));
+    }
+    assert(!core1_publish(response_len, &tail, 99U));
+    assert(tail == head);
 
-    dap_usb_response_complete(&state);
-    dap_usb_response_retry(&state);
-    assert(state == DAP_USB_RESPONSE_FREE);
-
-    state = DAP_USB_RESPONSE_READY;
-    assert(dap_usb_response_start(&state));
-    dap_usb_response_retry(&state);
-    assert(state == DAP_USB_RESPONSE_READY);
-    assert(dap_usb_response_start(&state));
-    dap_usb_response_complete(&state);
-    assert(state == DAP_USB_RESPONSE_FREE);
+    // CPU 0 sends the oldest first, and each release lets CPU 1 publish one more.
+    assert(response_len[head] == 10U);
+    head = dap_usb_slot_release(response_len, head, SLOT_COUNT);
+    assert(core1_publish(response_len, &tail, 13U));
+    assert(!core1_publish(response_len, &tail, 99U));
+    for (uint16_t expect = 11U; expect <= 13U; expect++) {
+        assert(response_len[head] == expect);
+        head = dap_usb_slot_release(response_len, head, SLOT_COUNT);
+    }
+    assert(dap_usb_slot_free(response_len, head));
+    assert(head == tail);
 }
 
 static void test_request_queue_and_transport_order(void) {
@@ -118,27 +119,27 @@ static void test_request_queue_and_transport_order(void) {
     uint8_t tail = 0U;
     uint32_t const hid_seq = 4U;
 
-    assert(dap_usb_request_slot_free(request_len, tail));
+    assert(dap_usb_slot_free(request_len, tail));
     request_seq[tail] = 5U;
     request_len[tail] = 64U;
     tail = dap_usb_next_slot(tail, SLOT_COUNT);
     assert(dap_usb_choose_hid(true, hid_seq, true, request_seq[head]));
 
-    assert(dap_usb_request_slot_free(request_len, tail));
+    assert(dap_usb_slot_free(request_len, tail));
     request_seq[tail] = 6U;
     request_len[tail] = 64U;
     tail = dap_usb_next_slot(tail, SLOT_COUNT);
     assert(!dap_usb_choose_hid(true, 7U, true, request_seq[head]));
 
-    head = dap_usb_request_release(request_len, head, SLOT_COUNT);
+    head = dap_usb_slot_release(request_len, head, SLOT_COUNT);
     assert(head == 1U);
-    assert(dap_usb_request_slot_free(request_len, 0U));
-    assert(!dap_usb_request_slot_free(request_len, 1U));
+    assert(dap_usb_slot_free(request_len, 0U));
+    assert(!dap_usb_slot_free(request_len, 1U));
 
     request_len[2] = 64U;
     tail = dap_usb_next_slot(tail, SLOT_COUNT);
     assert(tail == 0U);
-    assert(dap_usb_request_slot_free(request_len, tail));
+    assert(dap_usb_slot_free(request_len, tail));
     assert(dap_usb_choose_hid(true, UINT32_MAX, true, 0U));
 }
 
@@ -152,30 +153,38 @@ static void test_abort_overtakes_queued_commands(void) {
     assert(request_len[0] != 0U);
 }
 
-static void test_mailbox_wakeup_and_recheck(void) {
-    uint32_t pending = 0U;
-    uint32_t const wake_mask = DAP_CORE_MAILBOX_WAKE_MASK;
-    bool bulk_ready = false;
-
-    assert(!dap_core_has_work(false, bulk_ready, false));
+/** CPU 0 publishes a command, then raises CPU 1's mailbox register. CPU 1 clears the register,
+ *  then checks for work, and waits on the level only if the check found none. At every
+ *  interleaving of those four steps, and whether or not the register was left raised before,
+ *  CPU 1 either finds the work or finds the register raised. */
+static void test_mailbox_level_handoff(void) {
     assert(!dap_core_has_work(false, true, false));
     assert(!dap_core_has_work(true, false, false));
+    assert(dap_core_has_work(true, true, false));
+    assert(dap_core_has_work(true, false, true));
 
-    bulk_ready = true;
-    pending |= wake_mask;
-    pending |= wake_mask;
-    assert(dap_core_has_work(true, bulk_ready, false));
-    assert(dap_core_mailbox_ack_mask(pending | 0x2U) == wake_mask);
-    pending &= ~dap_core_mailbox_ack_mask(pending);
-    assert(pending == 0U);
-
-    // A request published after clearing a stale mailbox bit is found by the pre-WFE recheck.
-    bulk_ready = false;
-    pending |= wake_mask;
-    pending &= ~dap_core_mailbox_ack_mask(pending);
-    bulk_ready = true;
-    pending |= wake_mask;
-    assert(dap_core_has_work(true, bulk_ready, false));
+    for (uint32_t stale = 0U; stale < 2U; stale++) {
+        for (uint32_t publish_at = 0U; publish_at < 4U; publish_at++) {
+            for (uint32_t raise_at = publish_at + 1U; raise_at < 4U; raise_at++) {
+                bool published = false;
+                bool raised = stale != 0U;
+                bool found = false;
+                uint32_t cpu1_step = 0U;
+                for (uint32_t t = 0U; t < 4U; t++) {
+                    if (t == publish_at) {
+                        published = true;
+                    } else if (t == raise_at) {
+                        raised = true;
+                    } else if (cpu1_step++ == 0U) {
+                        raised = false;
+                    } else {
+                        found = dap_core_has_work(true, published, false);
+                    }
+                }
+                assert(found || raised);
+            }
+        }
+    }
 }
 
 static void test_dap_core_security_attribution(void) {
@@ -212,18 +221,35 @@ static void test_dap_core_security_attribution(void) {
 }
 
 static void test_shared_state_initialization(void) {
-    dap_usb_shared_state_t state;
+    static dap_shared_t state;
     uint8_t* bytes = (uint8_t*)&state;
     for (size_t i = 0U; i < sizeof(state); i++) {
         bytes[i] = 0xA5U;
     }
 
-    dap_usb_shared_init(&state);
+    dap_shared_init(&state);
 
-    for (size_t i = 0U; i < sizeof(state); i++) {
-        assert(bytes[i] == 0U);
+    for (size_t i = 0U; i < offsetof(dap_shared_t, request); i++) {
+        if (i != offsetof(dap_shared_t, reboot_mode)) {
+            assert(bytes[i] == 0U);
+        }
     }
-    assert(state.response_state == DAP_USB_RESPONSE_FREE);
+    for (size_t i = 0U; i < REQUEST_SLOTS; i++) {
+        assert(dap_usb_slot_free(state.response_len, (uint8_t)i));
+        assert(dap_usb_slot_free(state.hid_request_len, (uint8_t)i));
+    }
+    assert(state.response_head == 0U && state.response_tail == 0U);
+    assert(state.transfer_abort == NULL);
+    assert(state.reboot_mode == REBOOT_NONE);
+}
+
+/** The USB DMA buffers in the struct both images place at one address. */
+static void test_shared_buffer_alignment(void) {
+    assert(offsetof(dap_shared_t, request) % DAP_USB_BUFFER_ALIGN == 0U);
+    assert(sizeof(((dap_shared_t*)0)->request[0]) % DAP_USB_BUFFER_ALIGN == 0U);
+    assert(offsetof(dap_shared_t, response) % DAP_USB_BUFFER_ALIGN == 0U);
+    assert(sizeof(((dap_shared_t*)0)->response[0]) % DAP_USB_BUFFER_ALIGN == 0U);
+    assert(offsetof(dap_shared_t, hid_request) % DAP_USB_BUFFER_ALIGN == 0U);
 }
 
 static void test_cpu0_usb_reboot_request(void) {
@@ -242,15 +268,15 @@ static void test_cpu0_usb_reboot_request(void) {
 }
 
 int main(void) {
-    test_dma_alignment();
     test_rx_completion_during_arm();
     test_tx_completion_during_start();
     test_cross_core_response_handoff();
     test_request_queue_and_transport_order();
     test_abort_overtakes_queued_commands();
-    test_mailbox_wakeup_and_recheck();
+    test_mailbox_level_handoff();
     test_dap_core_security_attribution();
     test_shared_state_initialization();
+    test_shared_buffer_alignment();
     test_cpu0_usb_reboot_request();
     return 0;
 }

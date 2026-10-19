@@ -1,0 +1,56 @@
+/* CPU 1's image. CMakeLists.txt fills in the layout it shares with CPU 0's link script, and
+ * core1_image.S embeds the result at @CORE1_FLASH_ORIGIN@ in CPU 0's image. */
+ENTRY(core1_reset)
+
+MEMORY
+{
+  m_text       (RX) : ORIGIN = @CORE1_FLASH_ORIGIN@, LENGTH = @CORE1_FLASH_LENGTH@
+  m_data       (RW) : ORIGIN = @CORE1_RAM_ORIGIN@, LENGTH = @CORE1_RAM_LENGTH@
+  m_dap_shared (RW) : ORIGIN = @DAP_SHARED_ORIGIN@, LENGTH = @DAP_SHARED_LENGTH@
+}
+
+SECTIONS
+{
+  .text :
+  {
+    KEEP(*(.core1_vectors))
+    *(.text .text*)
+    *(.rodata .rodata*)
+    . = ALIGN(4);
+  } > m_text
+
+  .ARM.exidx :
+  {
+    *(.ARM.exidx* .gnu.linkonce.armexidx.*)
+  } > m_text
+
+  /* The bit paths that run from RAM are .ramfunc, and core1_start.S copies them with the rest. */
+  .data : ALIGN(4)
+  {
+    __data_start__ = .;
+    *(.ramfunc*)
+    *(.data .data*)
+    . = ALIGN(4);
+    __data_end__ = .;
+  } > m_data AT > m_text
+  __data_load__ = LOADADDR(.data);
+
+  .bss (NOLOAD) : ALIGN(4)
+  {
+    __bss_start__ = .;
+    *(.bss .bss* COMMON)
+    . = ALIGN(4);
+    __bss_end__ = .;
+  } > m_data
+
+  .dap_shared (NOLOAD) :
+  {
+    KEEP(*(.dap_shared))
+  } > m_dap_shared
+
+  /* newlib's snprintf links its allocator, whose sbrk starts at `end`. Nothing here allocates. */
+  PROVIDE(end = __bss_end__);
+
+  __core1_stack_top = ORIGIN(m_data) + LENGTH(m_data);
+  ASSERT(__core1_stack_top - __bss_end__ >= @CORE1_STACK_SIZE@, "CPU 1's RAM leaves less than its stack")
+}

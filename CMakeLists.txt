@@ -96,19 +96,49 @@ target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/g
 
 set(DAP_SRC ${CMAKE_CURRENT_SOURCE_DIR}/external/CMSIS-DAP/Firmware/Source)
 
+# CPU 0's image: USB, the console and the way back to the bootloader. Every DAP command runs in
+# CPU 1's image, which is built below and embedded here by src/core1_image.S.
 target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/main.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/core1_start.S
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/core1_image.S
   ${CMAKE_CURRENT_SOURCE_DIR}/src/mem.S
   ${CMAKE_CURRENT_SOURCE_DIR}/src/usb_descriptors.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/ser_num.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/board_pins.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/board_clocks.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/reboot.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/led.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/target_sense.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcuxsdk-core/drivers/lpadc/fsl_lpadc.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/swo_board.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/vcom.c
+  )
+
+# CPU 1's image. CPU 1 has no FPU, no DSP extension and no MPU (LPC55S6x data sheet, section 7.4),
+# so it is compiled for that core rather than CPU 0's.
+set(CORE1 ${PROJECT_NAME}_core1)
+add_executable(${CORE1})
+add_dependencies(${CORE1} fw_version)
+target_include_directories(${CORE1} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+  set(CORE1_CPU_FLAGS -mcpu=cortex-m33+nodsp+nofp -mfpu=auto -mfloat-abi=soft)
+else()
+  set(CORE1_CPU_FLAGS -mcpu=cortex-m33+nodsp+nofp -mfpu=none -mfloat-abi=soft)
+endif()
+# After the toolchain's CPU 0 flags on every command line, so these are the ones that count.
+target_compile_options(${CORE1} PRIVATE ${CORE1_CPU_FLAGS} ${WARN_FLAGS_${CMAKE_C_COMPILER_ID}})
+target_compile_definitions(${CORE1} PRIVATE CPU_LPC55S69JBD64_cm33_core1)
+
+set(MCUX_DRIVERS ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcuxsdk-core/drivers)
+set(LPC55_DEVICE ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcux-devices-lpc/LPC5500)
+
+target_sources(${CORE1} PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/core1_start.S
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/core1_main.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/mem.S
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/board_pins.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/ser_num.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/target_sense.c
+  ${MCUX_DRIVERS}/lpadc/fsl_lpadc.c
+  ${LPC55_DEVICE}/LPC55S69/drivers/fsl_clock.c
+  ${LPC55_DEVICE}/LPC55S69/drivers/fsl_reset.c
   ${DAP_SRC}/DAP.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_vendor.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/sample_probe.c
@@ -120,9 +150,18 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_dp.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_dispatch.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_dp_block.c
-  ${DAP_SRC}/SWO.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/external/lpc55s69-sdk/fsl_usart_cmsis.c
   ${DAP_SRC}/JTAG_DP.c
+  )
+
+target_include_directories(${CORE1} PRIVATE
+  ${MCUX_DRIVERS}/common
+  ${MCUX_DRIVERS}/lpc_iocon
+  ${MCUX_DRIVERS}/lpc_gpio
+  ${MCUX_DRIVERS}/lpadc
+  ${LPC55_DEVICE}/LPC55S69
+  ${LPC55_DEVICE}/LPC55S69/drivers
+  ${LPC55_DEVICE}/periph
+  ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/lib/CMSIS_6/CMSIS/Core/Include
   )
 
 # Upstream sources compile as they ship. TinyUSB's example flags are far stricter than either ARM
@@ -142,6 +181,8 @@ set(UPSTREAM_RELAX
 set_source_files_properties(
   ${DAP_SRC}/DAP.c ${DAP_SRC}/SW_DP.c ${DAP_SRC}/JTAG_DP.c ${DAP_SRC}/SWO.c
   ${CMAKE_CURRENT_SOURCE_DIR}/external/lpc55s69-sdk/fsl_usart_cmsis.c
+  ${LPC55_DEVICE}/LPC55S69/drivers/fsl_clock.c
+  ${LPC55_DEVICE}/LPC55S69/drivers/fsl_reset.c
   PROPERTIES COMPILE_OPTIONS "${UPSTREAM_RELAX}"
   )
 
@@ -166,7 +207,7 @@ set_source_files_properties(
   )
 
 if(RAMFUNC)
-  target_compile_definitions(${PROJECT_NAME} PRIVATE RAMFUNC_BIT_PATHS=1)
+  target_compile_definitions(${CORE1} PRIVATE RAMFUNC_BIT_PATHS=1)
 endif()
 
 # Clang reaches for its own compiler-rt start files and runtime, which the distribution only
@@ -190,6 +231,26 @@ if(CMAKE_C_COMPILER_ID MATCHES "Clang")
   target_link_libraries(${PROJECT_NAME} PRIVATE -Wl,--start-group c_nano nosys gcc -Wl,--end-group)
 endif()
 
+# The toolchain's CPU 0 flags stay on CPU 1's command lines, ahead of CPU 1's own. They lose for
+# code generation, but gcc still lets them steer its library choice, to the ARMv4T default. So
+# CPU 1 names its libraries itself, under either compiler.
+execute_process(COMMAND arm-none-eabi-gcc -mthumb -mcpu=cortex-m33+nodsp+nofp -mfloat-abi=soft
+                        -print-libgcc-file-name
+                OUTPUT_VARIABLE _core1_libgcc OUTPUT_STRIP_TRAILING_WHITESPACE)
+execute_process(COMMAND arm-none-eabi-gcc -mthumb -mcpu=cortex-m33+nodsp+nofp -mfloat-abi=soft
+                        -print-file-name=libc_nano.a
+                OUTPUT_VARIABLE _core1_libc OUTPUT_STRIP_TRAILING_WHITESPACE)
+get_filename_component(_core1_libgcc_dir "${_core1_libgcc}" DIRECTORY)
+get_filename_component(_core1_libc_dir "${_core1_libc}" DIRECTORY)
+if(NOT _core1_libgcc_dir MATCHES "v8-m.main/nofp$" OR NOT _core1_libc_dir MATCHES "v8-m.main/nofp$")
+  message(FATAL_ERROR "No v8-M Mainline soft-float libraries for CPU 1: ${_core1_libgcc_dir}, ${_core1_libc_dir}")
+endif()
+target_link_options(${CORE1} PRIVATE -nostdlib -nostartfiles -L${_core1_libgcc_dir} -L${_core1_libc_dir})
+target_link_libraries(${CORE1} PRIVATE -Wl,--start-group c_nano nosys gcc -Wl,--end-group)
+if(NO_WARN_RWX_SEGMENTS_SUPPORTED)
+  target_link_options(${CORE1} PRIVATE "LINKER:--no-warn-rwx-segments")
+endif()
+
 # How many host commands the firmware will hold. DAP_PACKET_COUNT in src/DAP_config.h has to
 # match, because it is what the host is told.
 # Three, because a host keeps its pipeline one packet short of what the probe says it holds.
@@ -201,43 +262,93 @@ set(REQUEST_SLOTS 3 CACHE STRING "How many host commands the firmware will hold"
 if(NOT REQUEST_SLOTS)
   set(REQUEST_SLOTS 3 CACHE STRING "How many host commands the firmware will hold" FORCE)
 endif()
-target_compile_definitions(${PROJECT_NAME} PRIVATE REQUEST_SLOTS=${REQUEST_SLOTS}U
-                                                   DAP_PACKET_COUNT_OVERRIDE=${REQUEST_SLOTS}U)
 set(DAP_PACKET_COUNT ${REQUEST_SLOTS})
 
 if(MARKER)
-  target_compile_definitions(${PROJECT_NAME} PRIVATE MARKER_PINS=1)
+  target_compile_definitions(${CORE1} PRIVATE MARKER_PINS=1)
 endif()
 
 if(SWD_SAMPLE_AFTER_EDGE)
-  target_compile_definitions(${PROJECT_NAME} PRIVATE SWD_SAMPLE_AFTER_EDGE=1)
+  target_compile_definitions(${CORE1} PRIVATE SWD_SAMPLE_AFTER_EDGE=1)
 endif()
 
 if(SWD_CODEGEN OR JTAG_CODEGEN)
-  target_sources(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/gen.c)
+  target_sources(${CORE1} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/gen.c)
 endif()
 if(SWD_CODEGEN)
-  target_sources(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_gen.c)
-  target_compile_definitions(${PROJECT_NAME} PRIVATE SWD_CODEGEN=1)
+  target_sources(${CORE1} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_gen.c)
+  target_compile_definitions(${CORE1} PRIVATE SWD_CODEGEN=1)
 endif()
 if(JTAG_CODEGEN)
-  target_sources(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_gen.c
-                                         ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_gen_dp.c)
-  target_compile_definitions(${PROJECT_NAME} PRIVATE JTAG_CODEGEN=1)
+  target_sources(${CORE1} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_gen.c
+                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_gen_dp.c)
+  target_compile_definitions(${CORE1} PRIVATE JTAG_CODEGEN=1)
 endif()
 
 if(CODE_LAB)
-  target_sources(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/code_lab.c)
-  target_compile_definitions(${PROJECT_NAME} PRIVATE CODE_LAB=1)
+  target_sources(${CORE1} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/code_lab.c)
+  target_compile_definitions(${CORE1} PRIVATE CODE_LAB=1)
 endif()
 
-
 if(CORE_150MHZ)
-  target_compile_definitions(${PROJECT_NAME} PRIVATE CORE_150MHZ=1)
   set(CORE_CLOCK_MHZ 150)
 else()
   set(CORE_CLOCK_MHZ 144)
 endif()
+
+# How the two images share the part. CPU 1 runs the bit paths from RAM, and their load copies are
+# most of its flash, so it gets the larger share of both. CPU 0's RAM is SRAM0 alone and CPU 1's
+# is SRAM1 to SRAM4, so the two cores never meet at an SRAM bank. USB SRAM is split between
+# TinyUSB's buffers and dap_shared, the one struct both images use (src/dap_shared.h).
+set(CORE1_FLASH_ORIGIN 0x00040000)
+set(CORE1_FLASH_END    0x0009D800)  # where the SDK's own reservation for CPU 1 ends
+set(CORE0_RAM_LENGTH   0x00010000)
+set(CORE1_RAM_ORIGIN   0x20010000)
+set(CORE1_RAM_LENGTH   0x00034000)
+set(CORE1_STACK_SIZE   0x00001000)
+set(CORE0_USB_LENGTH   0x00001000)
+set(DAP_SHARED_ORIGIN  0x40101000)
+set(DAP_SHARED_LENGTH  0x00003000)
+math(EXPR CORE1_FLASH_LENGTH "${CORE1_FLASH_END} - ${CORE1_FLASH_ORIGIN}" OUTPUT_FORMAT HEXADECIMAL)
+math(EXPR CORE0_TEXT_LENGTH "${CORE1_FLASH_ORIGIN} - 0x200" OUTPUT_FORMAT HEXADECIMAL)
+
+foreach(_target ${PROJECT_NAME} ${CORE1})
+  target_compile_definitions(${_target} PRIVATE
+    REQUEST_SLOTS=${REQUEST_SLOTS}U
+    DAP_PACKET_COUNT_OVERRIDE=${REQUEST_SLOTS}U
+    CORE1_RAM_ORIGIN=${CORE1_RAM_ORIGIN}U
+    CORE1_RAM_LENGTH=${CORE1_RAM_LENGTH}U
+    $<$<BOOL:${CORE_150MHZ}>:CORE_150MHZ=1>
+    )
+  target_include_directories(${_target} PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/CMSIS-DAP/Firmware/Include
+    ${DAP_SRC}
+    )
+endforeach()
+
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/core1.ld.in ${CMAKE_CURRENT_BINARY_DIR}/generated/core1.ld @ONLY)
+target_link_options(${CORE1} PRIVATE
+  ${CORE1_CPU_FLAGS}
+  "LINKER:--script=${CMAKE_CURRENT_BINARY_DIR}/generated/core1.ld"
+  "LINKER:-Map=$<TARGET_FILE:${CORE1}>.map"
+  )
+set_property(TARGET ${CORE1} APPEND PROPERTY LINK_DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/generated/core1.ld)
+
+# CPU 1's binary, which src/core1_image.S embeds in CPU 0's image.
+set(CORE1_BIN ${CMAKE_CURRENT_BINARY_DIR}/${CORE1}.bin)
+add_custom_command(OUTPUT ${CORE1_BIN}
+  COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${CORE1}> ${CORE1_BIN}
+  DEPENDS ${CORE1}
+  COMMENT "Extracting CPU 1's image"
+  VERBATIM
+  )
+add_custom_target(core1_bin DEPENDS ${CORE1_BIN})
+add_dependencies(${PROJECT_NAME} core1_bin)
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/core1_image.S PROPERTIES
+  COMPILE_DEFINITIONS "CORE1_BIN=\"${CORE1_BIN}\""
+  OBJECT_DEPENDS ${CORE1_BIN}
+  )
 
 # ARM's JTAG entry points are renamed here so src/cjtag_dp.c can own the real names and dispatch
 # between four-wire and OScan1. Renaming at compile time rather than patching keeps the submodule
@@ -269,35 +380,52 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   # fsl_usart_cmsis.c reaches fsl_usart_dma.h through the usart header whether or not DMA is
   # enabled, and that wants fsl_dma.h. Headers only: no DMA source is compiled.
   ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcuxsdk-core/drivers/lpc_dma
-  ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcuxsdk-core/drivers/lpadc
   )
 
 # The ADC driver's calibration waits spin on a status bit for ever unless these are set. A probe
 # that hangs because a host asked for the target's voltage is a worse failure than a reading that
 # says it failed, so every wait is bounded. Counts of poll iterations: tens of milliseconds.
-target_compile_definitions(${PROJECT_NAME} PRIVATE
+target_compile_definitions(${CORE1} PRIVATE
   CONFIG_LPADC_CONVERSION_COMPLETE_TIMEOUT=1000000U
   CONFIG_LPADC_CALIBRATION_READY_TIMEOUT=1000000U
   CONFIG_LPADC_GAIN_CAL_READY_TIMEOUT=1000000U
   )
 
-# USB_RAM moves TinyUSB's code into the RAM copy of .data, after .ramfunc so the bit paths keep
-# their addresses. The linker places input sections by file, which LTO erases, so those sources
-# compile without it. The board support's script is rewritten rather than copied, so a submodule
-# bump carries its changes over.
-if(USB_RAM)
-  file(READ ${LD_FILE_GNU} _ld)
-  string(REPLACE "*(.text)" "*(EXCLUDE_FILE(*/tinyusb/src/*) .text)" _ld "${_ld}")
-  string(REPLACE "*(.text*)" "*(EXCLUDE_FILE(*/tinyusb/src/*) .text*)" _ld "${_ld}")
-  string(REPLACE "*(.ramfunc*)" "*(.ramfunc*)\n    */tinyusb/src/*(.text .text*)" _ld "${_ld}")
-  string(FIND "${_ld}" "*/tinyusb/src/*(.text .text*)" _placed)
-  if(_placed EQUAL -1)
-    message(FATAL_ERROR "USB_RAM: ${LD_FILE_GNU} no longer has the .ramfunc line to place TinyUSB after")
+# CPU 0's link script is the board support's, rewritten rather than copied, so a submodule bump
+# carries its changes over. Each rewrite checks that it found what it replaces.
+file(READ ${LD_FILE_GNU} _ld)
+function(rewrite_ld pattern replacement what)
+  string(REGEX MATCH "${pattern}" _found "${_ld}")
+  if(NOT _found)
+    message(FATAL_ERROR "${LD_FILE_GNU} no longer has ${what}")
   endif()
-  set(LD_FILE_GNU ${CMAKE_CURRENT_BINARY_DIR}/generated/flash_usb_ram.ld)
-  set(LD_FILE_Clang ${LD_FILE_GNU})
-  file(WRITE ${LD_FILE_GNU} "${_ld}")
+  string(REGEX REPLACE "${pattern}" "${replacement}" _ld "${_ld}")
+  set(_ld "${_ld}" PARENT_SCOPE)
+endfunction()
+rewrite_ld("(m_text +\\(RX\\) +: ORIGIN = 0x00000200, LENGTH = )0x[0-9A-Fa-f]+"
+           "\\1${CORE0_TEXT_LENGTH}" "the m_text region")
+rewrite_ld("(m_core1_image +\\(RX\\) +: )ORIGIN = 0x[0-9A-Fa-f]+, LENGTH = 0x[0-9A-Fa-f]+"
+           "\\1ORIGIN = ${CORE1_FLASH_ORIGIN}, LENGTH = ${CORE1_FLASH_LENGTH}" "the m_core1_image region")
+rewrite_ld("(m_data +\\(RW\\) +: ORIGIN = 0x20000000, LENGTH = )0x[0-9A-Fa-f]+ - RPMSG_SHMEM_SIZE"
+           "\\1${CORE0_RAM_LENGTH}" "the m_data region")
+rewrite_ld("(m_usb_sram +\\(RW\\) +: ORIGIN = 0x40100000, LENGTH = )0x[0-9A-Fa-f]+"
+           "\\1${CORE0_USB_LENGTH}\n  m_dap_shared (RW) : ORIGIN = ${DAP_SHARED_ORIGIN}, LENGTH = ${DAP_SHARED_LENGTH}"
+           "the m_usb_sram region")
+rewrite_ld("(\n  m_usb_global \\(NOLOAD\\) :)"
+           "\n  .dap_shared (NOLOAD) :\n  {\n    KEEP(*(.dap_shared))\n  } > m_dap_shared\n\\1"
+           "the m_usb_global section")
+
+# USB_RAM moves TinyUSB's code into the RAM copy of .data. The linker places input sections by
+# file, which LTO erases, so those sources compile without it.
+if(USB_RAM)
+  rewrite_ld("\\*\\(\\.text\\)" "*(EXCLUDE_FILE(*/tinyusb/src/*) .text)" "*(.text)")
+  rewrite_ld("\\*\\(\\.text\\*\\)" "*(EXCLUDE_FILE(*/tinyusb/src/*) .text*)" "*(.text*)")
+  rewrite_ld("\\*\\(\\.ramfunc\\*\\)" "*(.ramfunc*)\n    */tinyusb/src/*(.text .text*)"
+             "the .ramfunc line to place TinyUSB after")
 endif()
+set(LD_FILE_GNU ${CMAKE_CURRENT_BINARY_DIR}/generated/core0.ld)
+set(LD_FILE_Clang ${LD_FILE_GNU})
+file(WRITE ${LD_FILE_GNU} "${_ld}")
 
 family_configure_device_example(${PROJECT_NAME} noos)
 
@@ -332,16 +460,16 @@ if(UV_EXECUTABLE)
   endif()
   add_custom_target(check_wire
     COMMAND ${UV_EXECUTABLE} run ${CMAKE_CURRENT_SOURCE_DIR}/tools/cycles.py
-            --check $<TARGET_FILE:${PROJECT_NAME}>
+            --check $<TARGET_FILE:${CORE1}>
             --cpu ${CORE_CLOCK_MHZ}
             --config ${CMAKE_CURRENT_SOURCE_DIR}/src/DAP_config.h
-    DEPENDS ${PROJECT_NAME}
+    DEPENDS ${CORE1}
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Checking wire events against tools/baseline"
   )
   add_custom_target(check_image
     COMMAND ${UV_EXECUTABLE} run ${CMAKE_CURRENT_SOURCE_DIR}/tools/image.py
-            $<TARGET_FILE:${PROJECT_NAME}> ${IMAGE_CHECK_ARGS}
+            $<TARGET_FILE:${PROJECT_NAME}> --core1 $<TARGET_FILE:${CORE1}> ${IMAGE_CHECK_ARGS}
     DEPENDS ${PROJECT_NAME}
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Checking image descriptors and internal layout"

@@ -32,7 +32,7 @@ from cycles import Model, measure  # noqa: E402
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("elf", nargs="?", default="build/mculink_cjtag.elf")
+    ap.add_argument("elf", nargs="?", default="build/mculink_cjtag_core1.elf", help="CPU 1's image")
     ap.add_argument("--wire", choices=["swd", "jtag", "cjtag"], default="swd")
     ap.add_argument("--write", action="store_true", help="measure a write block, not a read")
     ap.add_argument("--clock", type=float, default=50.0, help="requested wire clock, MHz")

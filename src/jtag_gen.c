@@ -63,7 +63,7 @@ _Static_assert((DBGIF_TCK_SWCLK_PORT == 0U) && (DBGIF_TMS_SWDIO_PORT == 0U) && (
 _Static_assert(TCK == 1U, "R_ONE is the clock mask and also the 1 a byte-register store takes");
 _Static_assert((TMSC < 256U) && (TDI < 256U), "R_PIN is loaded as an 8-bit immediate");
 
-#define PORT_BASE ((uint32_t)&GPIO->MPIN[0])
+#define PORT_BASE ((uint32_t)&DBGIF_GPIO->MPIN[0])
 #define PORT_OFFSET(field) ((uint32_t)(offsetof(GPIO_Type, field) - offsetof(GPIO_Type, MPIN)))
 #define OFF_MPIN 0U
 #define OFF_SET PORT_OFFSET(SET)
@@ -349,7 +349,7 @@ static void patch_const(struct gen_emitter* e, uint32_t at, uint32_t rd, uint32_
 
 static bool emit_scan(struct gen_emitter* e, const struct block* b, bool two_pin) {
     gen_emit(e, t_push(0x4FF0U)); // r4-r11, lr
-    gen_load_const(e, R_GPIO, (uint32_t)GPIO);
+    gen_load_const(e, R_GPIO, (uint32_t)DBGIF_GPIO);
     gen_load_const(e, R_PORT, PORT_BASE);
     gen_emit(e, t_mov_imm(R_ONE, TCK));
     gen_emit(e, t_mov_imm(R_ZERO, 0U));
@@ -364,7 +364,7 @@ static bool emit_scan(struct gen_emitter* e, const struct block* b, bool two_pin
         // TMS for the whole call, while TCK is still high from the last clock, as ARM sets it.
         gen_emit(e, t_strb(R_TMS, R_GPIO, OFF_B_TMS));
         // Only TCK and TDI answer the masked port; the caller's mask comes back at the end.
-        gen_load_const(e, R_TXEN, (uint32_t)&GPIO->MASK[0]);
+        gen_load_const(e, R_TXEN, (uint32_t)&DBGIF_GPIO->MASK[0]);
         gen_emit(e, t_ldr(R_TMS, R_TXEN, 0U));
         gen_load_const(e, R_ENTRY, ~(TCK | TDI));
         gen_emit(e, t_str(R_ENTRY, R_TXEN, 0U));
@@ -407,7 +407,7 @@ static bool emit_scan(struct gen_emitter* e, const struct block* b, bool two_pin
 
     gen_emit(e, t_lsr_reg(R_TDI, R_ACC, R_SKIP));
     if (!two_pin) {
-        gen_load_const(e, R_TXEN, (uint32_t)&GPIO->MASK[0]);
+        gen_load_const(e, R_TXEN, (uint32_t)&DBGIF_GPIO->MASK[0]);
         gen_emit(e, t_str(R_TMS, R_TXEN, 0U));
     }
     if (b->masked) {
@@ -1001,7 +1001,7 @@ static bool emit_xfer(struct gen_emitter* e, const struct xfer_cfg* c, bool read
     }
 
     gen_emit(e, t_push(0x4FF0U)); // r4-r11, lr
-    gen_load_const(e, X_GPIO, (uint32_t)GPIO);
+    gen_load_const(e, X_GPIO, (uint32_t)DBGIF_GPIO);
     gen_load_const(e, X_PORT, PORT_BASE);
     gen_emit(e, t_mov_imm(X_ONE, TCK));
     gen_emit(e, t_lsr(X_REQ, X_REQ, 1U));
@@ -1014,7 +1014,7 @@ static bool emit_xfer(struct gen_emitter* e, const struct xfer_cfg* c, bool read
         gen_emit(e, t_mov_imm(X_PIN, TDI));
         gen_emit(e, t_lsl(X_DATA, 3U, TDI_PIN));
         // TMS moves with the falling edge here, so it answers the masked port too.
-        gen_load_const(e, X_ACK, (uint32_t)&GPIO->MASK[0]);
+        gen_load_const(e, X_ACK, (uint32_t)&DBGIF_GPIO->MASK[0]);
         gen_load_const(e, X_S0, ~(TCK | TDI | TMSC));
         gen_emit(e, t_str(X_S0, X_ACK, 0U));
         // Nothing says how long ago the last clock rose.

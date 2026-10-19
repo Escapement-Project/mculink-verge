@@ -56,6 +56,7 @@ _Static_assert(offsetof(GPIO_Type, DIRCLR) == 0x2400, "LPC55S69 GPIO layout");
 
 #define GPIO_ADDR 0x38180000U
 #define GPIO ((GPIO_Type*)GPIO_ADDR)
+#define DBGIF_GPIO GPIO
 #define __DSB() ((void)0)
 #define __ISB() ((void)0)
 

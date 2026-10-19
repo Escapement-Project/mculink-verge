@@ -31,18 +31,11 @@
 /** One breath, as a shift of the tick: 2048 ticks, about four seconds. */
 #define LED_BREATH_SHIFT 11U
 
-volatile uint8_t led_activity_seen;
-static volatile uint8_t connected;
-
 /** The LED's own clock, in PWM periods. */
 static uint32_t led_ticks;
 
 /** Far enough back that a probe nobody has spoken to yet starts out breathing. */
 static uint32_t last_activity = 0U - LED_QUIET_TICKS;
-
-void led_connected(uint32_t on) {
-    connected = (on != 0U);
-}
 
 /** Brightness through one breath: a triangle, squared so the fade looks even to the eye rather
  *  than lingering near full. */
@@ -64,15 +57,15 @@ void CTIMER3_IRQHandler(void);
 void CTIMER3_IRQHandler(void) {
     CTIMER3->IR = CTIMER_IR_MR3INT_MASK;
     const uint32_t now = ++led_ticks;
-    if (led_activity_seen != 0U) {
-        led_activity_seen = 0U;
+    if (dap_shared.led_activity != 0U) {
+        dap_shared.led_activity = 0U;
         last_activity = now;
     }
 
     uint32_t level;
     if ((uint32_t)(now - last_activity) < LED_QUIET_TICKS) {
         level = (((now >> LED_BLINK_SHIFT) & 1U) != 0U) ? LED_FULL : 0U;
-    } else if (connected != 0U) {
+    } else if (dap_shared.led_connected != 0U) {
         level = LED_FULL;
     } else {
         level = breath(now);

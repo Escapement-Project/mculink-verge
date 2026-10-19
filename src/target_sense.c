@@ -25,6 +25,7 @@
 static bool adc_ready;
 
 void target_sense_init(void) {
+    CLOCK_EnableClock(kCLOCK_Gpio0);
     IOCON_PinMuxSet(IOCON, SENSE_VREF_PORT, SENSE_VREF_PIN,
                     IOCON_FUNC0 | IOCON_MODE_INACT | IOCON_ANALOG_EN | IOCON_PIO_ASW_MASK);
     IOCON_PinMuxSet(IOCON, SENSE_DETECT_PORT, SENSE_DETECT_PIN, IOCON_FUNC0 | IOCON_MODE_PULLUP | IOCON_DIGITAL_EN);

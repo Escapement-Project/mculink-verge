@@ -13,6 +13,9 @@
 #define REBOOT_FIRMWARE 0U
 #define REBOOT_BOOTLOADER 1U
 
+/** No request pending. Any value outside the two modes would do; this one cannot be a mode. */
+#define REBOOT_NONE 0xFFU
+
 /** Clear a boot mode left in the always-on register. Call once, early, before anything resets.
  *
  * Without this a unit that was sent to the bootloader would go back there on every reset until it
@@ -20,7 +23,8 @@
  */
 void reboot_clear_boot_mode(void);
 
-/** Ask for a reset. It happens in reboot_poll, after the current reply has reached the host. */
+/** CPU 1: ask for a reset from inside a command. CPU 1 publishes it once that command's reply is
+ *  READY, and CPU 0's reboot_poll resets after the reply has reached the host. */
 void reboot_request(uint8_t mode);
 
 /** Request a reset from CPU 0's USB control path, independent of DAP execution on CPU 1. */

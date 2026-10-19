@@ -16,8 +16,8 @@ entered Test-Logic-Reset.
 Reports, per clock: the cycles a JTAG clock takes in the DR scan, the least TDO margin, and what
 went wrong.
 
-    uv run tools/jtagcheck.py build-gen/mculink_cjtag.elf
-    uv run tools/jtagcheck.py build/mculink_cjtag.elf --wire jtag --mhz 1 10 25 37.5
+    uv run tools/jtagcheck.py build-gen/mculink_cjtag_core1.elf
+    uv run tools/jtagcheck.py build/mculink_cjtag_core1.elf --wire jtag --mhz 1 10 25 37.5
 """
 
 import argparse
@@ -189,7 +189,7 @@ def run_point(args: tuple[str, int, int, int, int, str]) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("elf", nargs="?", default="build-gen/mculink_cjtag.elf")
+    ap.add_argument("elf", nargs="?", default="build-gen/mculink_cjtag_core1.elf", help="CPU 1's image")
     ap.add_argument("--wire", choices=["cjtag", "jtag"], default="cjtag")
     ap.add_argument("--mhz", type=float, nargs="*")
     ap.add_argument("--latency", type=int, default=8, help="cycles from the TDO packet's fall to valid TDO")

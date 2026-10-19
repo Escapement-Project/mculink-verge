@@ -2,6 +2,7 @@
 
 #include "bsp/board_api.h"
 #include "fsl_device_registers.h"
+#include "dap_shared.h"
 #include "reboot_usb.h"
 #include "usb_transport.h"
 
@@ -18,12 +19,8 @@
  *  clearing the mode has to leave them alone. */
 #define AOREG1_BOOT_MODE_MASK (0xFFUL << 16)
 
-/** No request pending. Any value outside the two modes would do; this one cannot be a mode. */
-#define REBOOT_NONE 0xFFU
-
 extern volatile uint32_t system_ticks;
 
-static volatile uint8_t pending = REBOOT_NONE;
 static volatile uint8_t usb_pending = REBOOT_NONE;
 static uint8_t active_mode = REBOOT_NONE;
 static bool active_from_usb;
@@ -32,10 +29,6 @@ static bool disconnect_requested;
 
 void reboot_clear_boot_mode(void) {
     PMC->AOREG1 &= ~AOREG1_BOOT_MODE_MASK;
-}
-
-void reboot_request(uint8_t mode) {
-    pending = mode;
 }
 
 void reboot_request_from_usb(uint8_t mode) {
@@ -47,10 +40,17 @@ void reboot_poll(void) {
         active_mode = usb_pending;
         usb_pending = REBOOT_NONE;
         active_from_usb = true;
-    } else if ((active_mode == REBOOT_NONE) && (pending != REBOOT_NONE)) {
-        active_mode = pending;
-        pending = REBOOT_NONE;
-        active_from_usb = false;
+    } else if (active_mode == REBOOT_NONE) {
+        // CPU 1 publishes the mode after its reply is READY, so the wait below sees that reply.
+        // A faulting CPU 1 can leave anything here, and only the two modes may reset the probe.
+        uint8_t const mode = dap_shared.reboot_mode;
+        if ((mode == REBOOT_FIRMWARE) || (mode == REBOOT_BOOTLOADER)) {
+            active_mode = mode;
+            active_from_usb = false;
+        }
+        if (mode != REBOOT_NONE) {
+            dap_shared.reboot_mode = REBOOT_NONE;
+        }
     }
 
     if (active_mode == REBOOT_NONE ||

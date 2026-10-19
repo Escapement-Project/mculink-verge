@@ -38,8 +38,10 @@ from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_AR
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from m33 import Engine, Insn  # noqa: E402
 
-# LPC55S69, non-secure aliases, which is what the image was built against.
-GPIO_BASE = 0x4008C000
+# LPC55S69, non-secure aliases, which is what the image was built against. GPIO_BASE is the block the
+# debug interface is driven through: the secure GPIO, with port 0's register layout (DBGIF_GPIO in
+# src/board_pins.h). The ordinary GPIO, which only J8 and target sensing still use, is plain memory.
+GPIO_BASE = 0x400A8000
 GPIO_SIZE = 0x4000
 # Byte-addressable pin registers live at the base; the rest start 0x2000 in. Port 0 is the only
 # port this firmware touches, so every offset below is that port's word.
@@ -74,6 +76,7 @@ PPB = (0xE0000000, 0x00100000)
 STACK_TOP = SRAM[0] + SRAM[1] - 0x100
 SCRATCH = SRAM[0] + SRAM[1] - 0x4000  # request/response buffers, clear of .bss and the stack
 RETURN_MAGIC = 0x00F00000  # inside flash, nothing is linked there
+PACKET_SIZE = 512  # DAP_PACKET_SIZE: the longest request USB delivers
 
 
 def sh(*args: str) -> str:
@@ -112,6 +115,17 @@ def sections(elf: str) -> dict[str, tuple[int, int, int]]:
         if m:
             out[m.group(1)] = (int(m.group(2), 16), int(m.group(3), 16), int(m.group(4), 16))
     return out
+
+
+def load_address(elf: str) -> int:
+    """Where `objcopy -O binary` output starts: the lowest load address of anything with bytes.
+    CPU 0's image starts at 0 and CPU 1's at its own flash origin."""
+    starts = []
+    for line in sh("arm-none-eabi-readelf", "-lW", elf).splitlines():
+        parts = line.split()
+        if parts and parts[0] == "LOAD" and int(parts[4], 16) != 0:
+            starts.append(int(parts[3], 16))
+    return min(starts)
 
 
 @dataclass
@@ -662,7 +676,7 @@ class Machine:
         with tempfile.NamedTemporaryFile(suffix=".bin") as raw:
             sh("arm-none-eabi-objcopy", "-O", "binary", elf, raw.name)
             image = open(raw.name, "rb").read()
-        self.uc.mem_write(FLASH[0], image)
+        self.uc.mem_write(load_address(elf), image)
         # The startup code is not run, so do what it does for .data.
         secs = sections(elf)
         size, vma, lma = secs[".data"]
@@ -1009,13 +1023,16 @@ class Machine:
         return self.uc.reg_read(UC_ARM_REG_R0)
 
     def command(self, request: bytes) -> bytes:
-        self.uc.mem_write(SCRATCH, request + bytes(600 - len(request)))
-        self.uc.mem_write(SCRATCH + 0x400, bytes(600))
+        request_at, response_at = SCRATCH, SCRATCH + 0x400
+        if len(request) > PACKET_SIZE:
+            raise SystemExit(f"a {len(request)}-byte request is longer than a {PACKET_SIZE}-byte packet")
+        self.uc.mem_write(request_at, request + bytes(PACKET_SIZE - len(request)))
+        self.uc.mem_write(response_at, bytes(600))
         # The entry point main() uses. DAP_ProcessCommand sits behind it and is not always a
         # symbol: a build that routes some commands of its own leaves a wrapper small enough to
         # inline away.
         entry = "DAP_ExecuteCommand" if "DAP_ExecuteCommand" in self.sym else "DAP_ProcessCommand"
-        produced = self.call(entry, SCRATCH, SCRATCH + 0x400) & 0xFFFF
+        produced = self.call(entry, request_at, response_at) & 0xFFFF
         if produced > 0x400:
             # A reply that long means the call did not finish: the usual cause is a pacing loop
             # counting down from zero, which takes about a minute of emulated time and leaves a
@@ -1023,7 +1040,7 @@ class Machine:
             raise SystemExit(
                 f"{entry} returned a {produced}-byte reply to {request[:8].hex()}, which means it never returned"
             )
-        return bytes(self.uc.mem_read(SCRATCH + 0x400, max(produced, 1)))
+        return bytes(self.uc.mem_read(response_at, max(produced, 1)))
 
     def begin(self):
         self.counts = Counts()
@@ -1528,9 +1545,10 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
 
     # The count a block reply carries, at the sizes the traces above do not reach. It is derived
     # from the response pointer rather than counted, so one word and a full packet are the two
-    # that would show an off-by-one, and both are outside every other case here.
+    # that would show an off-by-one, and both are outside every other case here. A full packet is
+    # 127 words of reply, but 126 of request: a write's five header bytes take the 127th.
     for wire, (label, read) in itertools.product(CHECK_WIRES, (("read", True), ("write", False))):
-        for words in (1, 2, 3, 127):
+        for words in (1, 2, 3, 127 if read else 126):
             _, reply, _ = measure(elf, wire, 10_000_000, words, read, model)
             want = 4 + (4 * words) if read else 4
             got_words = reply[1] | (reply[2] << 8)
@@ -1588,7 +1606,7 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("elf", nargs="?", default="build/mculink_cjtag.elf")
+    ap.add_argument("elf", nargs="?", default="build/mculink_cjtag_core1.elf", help="CPU 1's image")
     ap.add_argument("--wire", choices=["swd", "jtag", "cjtag"], default="swd")
     ap.add_argument("--words", type=int, default=16, help="words in the measured DAP_TransferBlock")
     ap.add_argument(

@@ -45,7 +45,9 @@ static uint32_t crc32(const uint8_t* data, uint32_t len) {
     return crc;
 }
 
-char* GetSerialNum(void) {
+/** Out of line, like the boot-time functions in board_pins.h: being a symbol is what lets
+ *  tools/image.py run it against a unique id of its choosing. Each image calls it once. */
+__attribute__((noinline)) char* GetSerialNum(void) {
     if (serial[0] != '\0') {
         return serial;
     }

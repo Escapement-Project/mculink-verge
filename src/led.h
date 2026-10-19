@@ -21,19 +21,21 @@
 
 #include <stdint.h>
 
-/** Set by every command and taken by the LED's tick. A lost update loses one command's worth of
- *  blinking, so neither side locks: a command must not pay for the LED. */
-extern volatile uint8_t led_activity_seen;
+#include "dap_shared.h"
 
-/** A command has arrived. One store, so it may go anywhere a command passes, never in a bit path. */
+/** CPU 1: a command has arrived. Taken by CPU 0's LED tick. A lost update loses one command's
+ *  worth of blinking, so neither side locks: a command must not pay for the LED. One store, so it
+ *  may go anywhere a command passes, never in a bit path. */
 static inline void led_activity(void) {
-    led_activity_seen = 1U;
+    dap_shared.led_activity = 1U;
 }
 
-/** The host's opinion of whether it is connected, from DAP_HostStatus. */
-void led_connected(uint32_t on);
+/** CPU 1: the host's opinion of whether it is connected, from DAP_HostStatus. */
+static inline void led_connected(uint32_t on) {
+    dap_shared.led_connected = (on != 0U);
+}
 
-/** Hand the pin to CTIMER3 and start it. FRO_HF clocks the timer, so call after
+/** CPU 0: hand the pin to CTIMER3 and start it. FRO_HF clocks the timer, so call after
  *  board_clocks_init. */
 void led_init(void);
 

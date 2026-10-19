@@ -1,7 +1,9 @@
-/** CMSIS-DAP firmware for the MCU-Link.
+/** CMSIS-DAP firmware for the MCU-Link: CPU 0's image.
  *
- * CPU 0 owns USB and publishes received packets in USB SRAM. CPU 1 executes one DAP command at a
- * time and publishes its response back to CPU 0.
+ * CPU 0 owns USB and publishes received packets in USB SRAM. CPU 1 runs its own image, embedded in
+ * this one by core1_image.S, executes one DAP command at a time and publishes its response back to
+ * CPU 0. Nothing here waits on CPU 1, so a CPU 1 that has stopped answering can still be sent to
+ * the bootloader over USB.
  */
 #include <string.h>
 
@@ -14,13 +16,11 @@
 #include "board_pins.h"
 #include "core_clock.h"
 #include "dap_core.h"
-#include "dap_usb_shared.h"
+#include "dap_core_security.h"
+#include "dap_shared.h"
 #include "dap_usb_slots.h"
 #include "led.h"
-#include "marker.h"
 #include "reboot.h"
-#include "target_sense.h"
-#include "dap_core_security.h"
 #include "usb_transport.h"
 #include "vcom.h"
 
@@ -28,51 +28,38 @@
 #include "DAP_config.h"
 
 #include "DAP.h"
-#include "dap_dispatch.h"
 
-// USB DMA and the generated transfer paths access these buffers as words.
-static CFG_TUD_MEM_SECTION CFG_TUD_MEM_ALIGN uint8_t request[REQUEST_SLOTS][DAP_PACKET_SIZE];
-static CFG_TUD_MEM_SECTION CFG_TUD_MEM_ALIGN uint8_t hid_request[DAP_PACKET_SIZE];
-static CFG_TUD_MEM_SECTION CFG_TUD_MEM_ALIGN uint8_t response[DAP_USB_RESPONSE_SLOT_SIZE(DAP_RESPONSE_SIZE)];
-static CFG_TUD_MEM_SECTION CFG_TUD_MEM_ALIGN uint8_t hid_response[DAP_RESPONSE_SIZE];
+_Static_assert(DAP_PACKET_SIZE == DAP_SHARED_PACKET_SIZE, "dap_shared.h repeats DAP_PACKET_SIZE");
+_Static_assert(CFG_TUD_HID_EP_BUFSIZE == DAP_SHARED_HID_REPORT_SIZE, "dap_shared.h repeats the HID report size");
 
-CFG_TUD_MEM_SECTION CFG_TUD_MEM_ALIGN dap_usb_shared_state_t usb_shared __attribute__((used));
-
-#define request_len (usb_shared.request_len)
-#define request_seq (usb_shared.request_seq)
-#define request_head (usb_shared.request_head)
-#define request_tail (usb_shared.request_tail)
-#define rx_armed_slot (usb_shared.rx_armed_slot)
-#define next_request_seq (usb_shared.next_request_seq)
-#define hid_request_len (usb_shared.hid_request_len)
-#define hid_request_seq (usb_shared.hid_request_seq)
-#define response_len (usb_shared.response_len)
-#define response_transport (usb_shared.response_transport)
-#define response_state (usb_shared.response_state)
-
-uint8_t core1_stack[4096] __attribute__((section("m_usb_global"), aligned(8), used));
-
-enum {
-    DAP_TRANSPORT_BULK,
-    DAP_TRANSPORT_HID,
-};
+dap_shared_t dap_shared __attribute__((section(".dap_shared")));
 
 static bool disconnect_requested;
 static bool disconnect_complete;
 
-#ifdef MARKER_PINS
-/** Which J8 pins the marker still owns. ID_VENDOR_J8 takes pins away from it and gives them back. */
-volatile uint32_t marker_mask = J8_PIN_MASK;
-#endif
+/** The reply at response_head is on its way to the host. At most one is: both transports send
+ *  from the head of the one ring, so replies leave in the order their commands ran. */
+static volatile bool response_in_flight;
 
-static void hid_report_packet_size(const uint8_t* req, uint8_t* resp);
-static bool dap_task(void);
 static void usb_transport_task(void);
 static void start_core1(void);
 
 static void signal_core1(void) {
-    MAILBOX->MBOXIRQ[0].IRQSET = DAP_CORE_MAILBOX_WAKE_MASK;
+    MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU1].IRQSET = DAP_CORE_MAILBOX_WAKE_MASK;
     __DSB();
+}
+
+/** DAP_TransferAbort skips the queue on either transport: it has to reach the transfer running now,
+ *  not wait behind it. Before CPU 1 has published the flag there is no transfer to abort. A
+ *  faulting CPU 1 can leave anything in the pointer, and a stray write would take CPU 0 and the
+ *  way back to the bootloader with it. */
+static void transfer_abort(void) {
+    uintptr_t const abort = (uintptr_t)dap_shared.transfer_abort;
+    if ((abort >= CORE1_RAM_ORIGIN) && (abort < CORE1_RAM_ORIGIN + CORE1_RAM_LENGTH)) {
+        *(volatile uint8_t*)abort = 1U;
+    }
+    __DMB();
+    signal_core1();
 }
 
 /** One received packet, which is one command. This callback runs on CPU 0. */
@@ -81,33 +68,39 @@ void tud_vendor_rx_cb(uint8_t index, const uint8_t* buffer, uint32_t length) {
     if ((length == 0U) || (length > DAP_PACKET_SIZE)) {
         return;
     }
-
-    // The abort must reach an active transfer before the command queue can delay it.
     if (buffer[0] == ID_DAP_TransferAbort) {
-        DAP_TransferAbort = 1U;
-        __DMB();
-        signal_core1();
+        transfer_abort();
         return;
     }
-    if (buffer != request[rx_armed_slot]) {
+    if (buffer != dap_shared.request[dap_shared.rx_armed_slot]) {
         return;
     }
 
-    request_seq[request_tail] = next_request_seq++;
+    dap_shared.request_seq[dap_shared.request_tail] = dap_shared.next_request_seq++;
     __DMB();
-    request_len[request_tail] = (uint16_t)length;
+    dap_shared.request_len[dap_shared.request_tail] = (uint16_t)length;
     __DMB();
-    request_tail = dap_usb_next_slot(request_tail, REQUEST_SLOTS);
+    dap_shared.request_tail = dap_usb_next_slot(dap_shared.request_tail, REQUEST_SLOTS);
     signal_core1();
+}
+
+/** The head reply has left: its slot goes back to CPU 1, which may be waiting for one. */
+static void response_sent(void) {
+    dap_shared.response_head = dap_usb_slot_release(dap_shared.response_len, dap_shared.response_head, REQUEST_SLOTS);
+    response_in_flight = false;
+    __DMB();
+    signal_core1();
+}
+
+static bool head_in_flight_on(uint8_t transport) {
+    return response_in_flight && (dap_shared.response_transport[dap_shared.response_head] == transport);
 }
 
 void tud_vendor_tx_cb(uint8_t index, uint32_t sent_bytes) {
     (void)index;
     (void)sent_bytes;
-    if (response_transport == DAP_TRANSPORT_BULK) {
-        dap_usb_response_complete(&response_state);
-        __DMB();
-        signal_core1();
+    if (head_in_flight_on(DAP_TRANSPORT_BULK)) {
+        response_sent();
     }
 }
 
@@ -117,16 +110,19 @@ static bool start_rx(void* context, uint8_t slot) {
 }
 
 static bool start_tx(void* context, uint8_t slot, uint16_t length) {
-    (void)slot;
-    return tud_vendor_write_xfer(context, length) == length;
+    uint8_t (*buffers)[DAP_PACKET_SIZE] = context;
+    if (dap_shared.response_transport[slot] == DAP_TRANSPORT_BULK) {
+        return tud_vendor_write_xfer(buffers[slot], length) == length;
+    }
+    return tud_hid_n_report(0U, 0U, buffers[slot], length);
 }
 
 /** Keep TinyUSB and endpoint ownership on CPU 0. */
 static void usb_transport_task(void) {
     bool const vendor_mounted = tud_vendor_mounted();
     if (vendor_mounted) {
-        (void)dap_usb_arm_rx(dap_usb_request_slot_free(request_len, request_tail), request_tail, &rx_armed_slot,
-                             start_rx, request);
+        (void)dap_usb_arm_rx(dap_usb_slot_free(dap_shared.request_len, dap_shared.request_tail),
+                             dap_shared.request_tail, &dap_shared.rx_armed_slot, start_rx, dap_shared.request);
     }
 
     if (disconnect_requested) {
@@ -135,29 +131,57 @@ static void usb_transport_task(void) {
         disconnect_requested = false;
     }
 
-    if (response_state != DAP_USB_RESPONSE_READY) {
+    uint8_t const head = dap_shared.response_head;
+    uint16_t const length = dap_shared.response_len[head];
+    if (length == 0U) {
         return;
     }
-
     __DMB();
-    if (!dap_usb_response_start(&response_state)) {
-        return;
-    }
+    (void)dap_usb_start_tx(&response_in_flight, head, length, start_tx, dap_shared.response);
+}
 
-    bool started;
-    if (response_transport == DAP_TRANSPORT_BULK) {
-        started = start_tx(response, 0U, response_len);
-    } else {
-        started = tud_hid_n_report(0U, 0U, hid_response, CFG_TUD_HID_EP_BUFSIZE);
-    }
-    if (!started) {
-        dap_usb_response_retry(&response_state);
+/** CPU 0 waits here between events, running from SRAM with interrupts masked, so that one pending
+ *  shows in ISPR instead of being taken.
+ *
+ * CPU 1's per-command code runs from flash, and CPU 0 fetching its own loop from flash slowed it by
+ * 20 us in a 126-word block read: 270 us of execution against 250. CPU 0 reading USB SRAM cost
+ * nothing. Sleeping in WFE instead kept the same gain but added 5 us to waking for each request.
+ */
+__attribute__((section(".ramfunc"), noinline)) static void wait_for_work(void) {
+    for (;;) {
+        if ((MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQ != 0U) || vcom_ready()) {
+            return;
+        }
+        for (uint32_t i = 0U; i < (NUMBER_OF_INT_VECTORS - 16U + 31U) / 32U; i++) {
+            if ((NVIC->ISPR[i] & NVIC->ISER[i]) != 0U) {
+                return;
+            }
+        }
     }
 }
 
+/** Everything that gives the loop work wakes it: USB and the LED tick by interrupt, CPU 1 through
+ *  the mailbox when it frees a request slot, publishes a reply or asks for a reboot, and the
+ *  console through vcom_ready. The mailbox is cleared before the checks, so a write CPU 1 makes
+ *  after them still ends the wait. */
+static void idle(void) {
+    MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQCLR = DAP_CORE_MAILBOX_WAKE_MASK;
+    __DSB();
+    bool const reply_waiting =
+        !response_in_flight && !dap_usb_slot_free(dap_shared.response_len, dap_shared.response_head);
+    if (reply_waiting || disconnect_requested || tud_task_event_ready()) {
+        return;
+    }
+    __disable_irq();
+    wait_for_work();
+    __enable_irq();
+}
+
+bool usb_transport_reply_in_flight(void) { return response_in_flight; }
+
 bool usb_transport_response_idle(void) {
     __DMB();
-    return response_state == DAP_USB_RESPONSE_FREE;
+    return !response_in_flight && dap_usb_slot_free(dap_shared.response_len, dap_shared.response_head);
 }
 
 void usb_transport_request_disconnect(void) {
@@ -166,61 +190,6 @@ void usb_transport_request_disconnect(void) {
 }
 
 bool usb_transport_disconnect_complete(void) { return disconnect_complete; }
-
-static bool dap_task(void) {
-    __DMB();
-    bool const bulk_ready = request_len[request_head] != 0U;
-    bool const hid_ready = hid_request_len != 0U;
-    if (!dap_core_has_work(response_state == DAP_USB_RESPONSE_FREE, bulk_ready, hid_ready)) {
-        return false;
-    }
-    __DMB();
-
-    bool const use_hid = dap_usb_choose_hid(hid_ready, hid_request_seq, bulk_ready, request_seq[request_head]);
-    const uint8_t* request_data;
-    if (use_hid) {
-        request_data = hid_request;
-        response_transport = DAP_TRANSPORT_HID;
-    } else {
-        request_data = request[request_head];
-        response_transport = DAP_TRANSPORT_BULK;
-    }
-
-    led_activity();
-    MARKER_BUSY();
-    uint32_t produced = DAP_ExecuteCommand(request_data, use_hid ? hid_response : response) & 0xFFFFU;
-    MARKER_IDLE();
-    if (produced > DAP_PACKET_SIZE) {
-        produced = DAP_PACKET_SIZE;
-    }
-
-    if (use_hid) {
-        hid_request_len = 0U;
-        __DMB();
-        response_len = CFG_TUD_HID_EP_BUFSIZE;
-        hid_report_packet_size(request_data, hid_response);
-    } else {
-        __DMB();
-        request_head = dap_usb_request_release(request_len, request_head, REQUEST_SLOTS);
-        __DMB();
-        response_len = (uint16_t)produced;
-    }
-
-    if (response_len != 0U) {
-        __DMB();
-        response_state = DAP_USB_RESPONSE_READY;
-    }
-    return true;
-}
-
-/** Answer the v1 host with the v1 packet size. */
-static void hid_report_packet_size(const uint8_t* req, uint8_t* resp) {
-    if ((req[0] == ID_DAP_Info) && (req[1] == DAP_ID_PACKET_SIZE)) {
-        resp[1] = 2U;
-        resp[2] = (uint8_t)(CFG_TUD_HID_EP_BUFSIZE & 0xFFU);
-        resp[3] = (uint8_t)(CFG_TUD_HID_EP_BUFSIZE >> 8);
-    }
-}
 
 uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t* buffer,
                                uint16_t reqlen) {
@@ -238,15 +207,26 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
     (void)report_id;
     (void)report_type;
 
-    if ((bufsize == 0U) || (bufsize > DAP_PACKET_SIZE) || (hid_request_len != 0U)) {
+    if ((bufsize == 0U) || (bufsize > DAP_SHARED_HID_REPORT_SIZE)) {
+        return;
+    }
+    if (buffer[0] == ID_DAP_TransferAbort) {
+        transfer_abort();
+        return;
+    }
+    // Full only for a host with more reports outstanding than the packet count it was told.
+    // TinyUSB re-arms the endpoint when this returns, so there is nowhere to hold the report.
+    uint8_t const tail = dap_shared.hid_request_tail;
+    if (!dap_usb_slot_free(dap_shared.hid_request_len, tail)) {
         return;
     }
 
-    memcpy(hid_request, buffer, bufsize);
-    hid_request_seq = next_request_seq++;
+    memcpy(dap_shared.hid_request[tail], buffer, bufsize);
+    dap_shared.hid_request_seq[tail] = dap_shared.next_request_seq++;
     __DMB();
-    hid_request_len = bufsize;
+    dap_shared.hid_request_len[tail] = bufsize;
     __DMB();
+    dap_shared.hid_request_tail = dap_usb_next_slot(tail, REQUEST_SLOTS);
     signal_core1();
 }
 
@@ -254,63 +234,27 @@ void tud_hid_report_complete_cb(uint8_t instance, uint8_t const* report, uint16_
     (void)instance;
     (void)report;
     (void)len;
-    if (response_transport == DAP_TRANSPORT_HID) {
-        dap_usb_response_complete(&response_state);
-        __DMB();
-        signal_core1();
+    if (head_in_flight_on(DAP_TRANSPORT_HID)) {
+        response_sent();
     }
 }
 
+/** TinyUSB reports a failed OUT report here too, and that is no reply of ours. */
 void tud_hid_report_failed_cb(uint8_t instance, hid_report_type_t report_type,
                               uint8_t const* report, uint16_t xferred_bytes) {
     (void)instance;
-    (void)report_type;
     (void)report;
     (void)xferred_bytes;
-    if (response_transport == DAP_TRANSPORT_HID) {
-        dap_usb_response_retry(&response_state);
+    if ((report_type == HID_REPORT_TYPE_INPUT) && head_in_flight_on(DAP_TRANSPORT_HID)) {
+        response_in_flight = false;  // usb_transport_task sends it again
     }
-}
-
-/** Initialize the DAP core, then sleep until CPU 0 publishes another request. */
-__attribute__((section(".core1_code.text"), noinline, noreturn)) void dap_core1_main(void) {
-    __disable_irq();
-    dap_core1_mailbox_wait_init();
-
-    for (;;) {
-        if (dap_task()) {
-            continue;
-        }
-
-        volatile MAILBOX_Type* const mailbox = (volatile MAILBOX_Type*)0x4008B000U;
-        uint32_t const pending = dap_core_mailbox_ack_mask(mailbox->MBOXIRQ[0].IRQ);
-        if (pending != 0U) {
-            mailbox->MBOXIRQ[0].IRQCLR = pending;
-        }
-        NVIC_ClearPendingIRQ(MAILBOX_IRQn);
-        __DSB();
-        __DMB();
-        if (!dap_task()) {
-            __WFE();
-        }
-    }
-}
-
-/** Use a pending mailbox IRQ as a WFE event without running an ISR during DAP transfers. */
-__attribute__((section(".core1_code.text"), noinline)) void dap_core1_mailbox_wait_init(void) {
-    SCB->SCR |= SCB_SCR_SEVONPEND_Msk;
-    NVIC_ClearPendingIRQ(MAILBOX_IRQn);
-    NVIC_EnableIRQ(MAILBOX_IRQn);
-    __DSB();
-    __ISB();
 }
 
 static void start_core1(void) {
-    extern uint32_t core1_vectors[];
-    (void)core1_vectors;
+    extern uint32_t core1_image[];
 
     SYSCON->CPUCFG |= SYSCON_CPUCFG_CPU1ENABLE_MASK;
-    SYSCON->CPBOOT = SYSCON_CPBOOT_CPBOOT((uint32_t)core1_vectors);
+    SYSCON->CPBOOT = SYSCON_CPBOOT_CPBOOT((uint32_t)core1_image);
     uint32_t const control = SYSCON->CPUCTRL | 0xC0C48000U;
     SYSCON->CPUCTRL = control | SYSCON_CPUCTRL_CPU1RSTEN_MASK | SYSCON_CPUCTRL_CPU1CLKEN_MASK;
     SYSCON->CPUCTRL = (control | SYSCON_CPUCTRL_CPU1CLKEN_MASK) & ~SYSCON_CPUCTRL_CPU1RSTEN_MASK;
@@ -329,16 +273,12 @@ int main(void) {
     reboot_clear_boot_mode();
     board_core_clock_init();
     board_clocks_init();
-    target_sense_init();
     led_init();
     vcom_init();
-    board_timestamp_init();
-    DAP_Setup();
     CLOCK_EnableClock(kCLOCK_Mailbox);
     RESET_PeripheralReset(kMAILBOX_RST_SHIFT_RSTn);
     MAILBOX->MBOXIRQ[0].IRQCLR = UINT32_MAX;
-    dap_usb_shared_init(&usb_shared);
-    DAP_TransferAbort = 0U;
+    dap_shared_init(&dap_shared);
     dap_core_security_init();
     start_core1();
 
@@ -356,5 +296,6 @@ int main(void) {
         usb_transport_task();
         vcom_task();
         reboot_poll();
+        idle();
     }
 }

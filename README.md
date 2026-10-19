@@ -72,7 +72,7 @@ before trusting a change.
 ```
 for t in Release MinSizeRel; do for l in ON OFF; do
   cmake -B build-$t-$l -G Ninja -DBOARD=mcu_link -DTOOLCHAIN=gcc -DCMAKE_BUILD_TYPE=$t -DLTO=$l .
-  ninja -C build-$t-$l && uv run tools/cycles.py build-$t-$l/mculink_cjtag.elf --check
+  ninja -C build-$t-$l && uv run tools/cycles.py build-$t-$l/mculink_cjtag_core1.elf --check
 done; done
 ```
 

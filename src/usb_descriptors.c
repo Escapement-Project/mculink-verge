@@ -14,6 +14,9 @@
 // live there, so the USB strings and DAP_Info cannot drift apart.
 #include "DAP_config.h"
 
+#include "dap_core.h"
+#include "dap_shared.h"
+#include "usb_transport.h"
 #include "ser_num.h"
 #include "reboot.h"
 #include "reboot_usb.h"
@@ -173,6 +176,68 @@ static uint8_t const desc_ms_os_20[] = {
 TU_VERIFY_STATIC(sizeof(desc_ms_os_20) == MS_OS_20_DESC_LEN, "MS OS 2.0 descriptor length mismatch");
 
 bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_request_t const* request) {
+    if (request->bRequest == DAP_SHARED_CORE1_STATUS_REQUEST) {
+        if (request->bmRequestType != 0xC0U || request->wValue > DAP_SHARED_QUEUE_STATUS || request->wIndex != 0U) {
+            return false;
+        }
+        if (stage != CONTROL_STAGE_SETUP) {
+            return true;
+        }
+        if (request->wValue == DAP_SHARED_QUEUE_STATUS) {
+            // Slot count, the heads and tails, CPU 0's reply in flight, both mailbox registers'
+            // low bytes, then each ring's lengths and the replies' transports: what
+            // tools/dap.py core1 --queues prints.
+            static uint8_t queues[11U + 7U * REQUEST_SLOTS];
+            uint8_t* out = queues;
+            *out++ = REQUEST_SLOTS;
+            *out++ = dap_shared.request_head;
+            *out++ = dap_shared.request_tail;
+            *out++ = dap_shared.rx_armed_slot;
+            *out++ = dap_shared.hid_request_head;
+            *out++ = dap_shared.hid_request_tail;
+            *out++ = dap_shared.response_head;
+            *out++ = dap_shared.response_tail;
+            *out++ = usb_transport_reply_in_flight() ? 1U : 0U;
+            *out++ = (uint8_t)MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU1].IRQ;
+            *out++ = (uint8_t)MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQ;
+            for (uint32_t i = 0U; i < REQUEST_SLOTS; i++) {
+                uint16_t const lengths[] = {dap_shared.request_len[i], dap_shared.hid_request_len[i],
+                                            dap_shared.response_len[i]};
+                for (uint32_t j = 0U; j < 3U; j++) {
+                    *out++ = (uint8_t)lengths[j];
+                    *out++ = (uint8_t)(lengths[j] >> 8);
+                }
+                *out++ = dap_shared.response_transport[i];
+            }
+            return tud_control_xfer(rhport, request, queues, (uint16_t)TU_MIN(sizeof(queues), request->wLength));
+        }
+        // A snapshot, so the reply is one consistent read of what CPU 1 last wrote.
+        static dap_core1_status_t status;
+        status = dap_shared.core1;
+        return tud_control_xfer(rhport, request, &status, (uint16_t)TU_MIN(sizeof(status), request->wLength));
+    }
+
+    if (request->bRequest == DAP_SHARED_CORE1_SAMPLE_REQUEST) {
+        if (request->bmRequestType != 0x40U || request->wValue != 0U || request->wIndex != 0U ||
+            request->wLength != 0U) {
+            return false;
+        }
+        if (stage == CONTROL_STAGE_SETUP) {
+            return tud_control_status(rhport, request);
+        }
+        if (stage == CONTROL_STAGE_ACK) {
+            // The NMI mux takes CPU 0's interrupt lines, where the mailbox's is the register that
+            // wakes CPU 0: raising CPU 1's own does nothing (measured). The NMI wants a rising edge,
+            // so the line is dropped first.
+            MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQCLR = UINT32_MAX;
+            __DSB();
+            SYSCON->NMISRC = SYSCON_NMISRC_IRQCPU1(MAILBOX_IRQn) | SYSCON_NMISRC_NMIENCPU1_MASK;
+            __DSB();
+            MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQSET = DAP_CORE_MAILBOX_WAKE_MASK;
+        }
+        return true;
+    }
+
     if (request->bRequest == REBOOT_USB_VENDOR_REQUEST) {
         if (!reboot_usb_control_request_valid(request->bmRequestType, request->bRequest, request->wValue,
                                               request->wIndex, request->wLength)) {

@@ -9,7 +9,7 @@ that is the core itself. Vendor 0x88 (src/code_lab.c, built with -DCODE_LAB=ON) 
 the host writes into RAM, with interrupts masked. Each case here is a body of instructions the
 template times with DWT->CYCCNT, assembled once and run in both places.
 
-    uv run tools/lab.py corpus --elf build-lab/mculink_cjtag.elf
+    uv run tools/lab.py corpus --elf build-lab/mculink_cjtag_core1.elf
     uv run tools/lab.py corpus --emu-only
 """
 
@@ -32,8 +32,9 @@ ARENA_NAMES = {ARENA_SRAM: "sram", ARENA_SRAMX: "sramx"}
 DWT_BASE = 0xE0001000
 CYCCNT = DWT_BASE + 4
 
-# GPIO port 0 on the non-secure alias, as the image uses it.
-GPIO = 0x4008C000
+# The secure GPIO on its non-secure alias, which drives port 0 and is the block the bit paths use
+# (DBGIF_GPIO in src/board_pins.h). It has port 0's register offsets.
+GPIO = 0x400A8000
 GPIO_SET0 = GPIO + 0x2200
 GPIO_CLR0 = GPIO + 0x2280
 GPIO_NOT0 = GPIO + 0x2300
@@ -762,7 +763,7 @@ def swd_stream(value: int) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--serial")
-    ap.add_argument("--elf", default="build-lab/mculink_cjtag.elf")
+    ap.add_argument("--elf", default="build-lab/mculink_cjtag_core1.elf", help="CPU 1's image, which runs the lab")
     sub = ap.add_subparsers(dest="command", required=True)
     c = sub.add_parser("corpus", help="time every case on the probe and in the emulator")
     c.add_argument("--arena", choices=["sram", "sramx"], default="sram")

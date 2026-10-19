@@ -60,7 +60,7 @@ _Static_assert((DBGIF_TCK_SWCLK_PORT == 0U) && (DBGIF_TMS_SWDIO_PORT == 0U) && (
 _Static_assert(SWCLK == 1U, "R_ONE is the clock mask and also the 1 a byte-register store takes");
 _Static_assert(SWDIO < 256U, "R_FOUR is loaded as an 8-bit immediate");
 
-#define PORT_BASE ((uint32_t)&GPIO->MPIN[0])
+#define PORT_BASE ((uint32_t)&DBGIF_GPIO->MPIN[0])
 #define PORT_OFFSET(field) ((uint32_t)(offsetof(GPIO_Type, field) - offsetof(GPIO_Type, MPIN)))
 #define OFF_MPIN 0U
 #define OFF_SET PORT_OFFSET(SET)
@@ -561,7 +561,7 @@ static bool emit_function(struct gen_emitter* e, const struct gen_cfg* c, bool r
 
     gen_emit(e, t_push(0x4FF0U)); // r4-r11, lr
     gen_emit(e, t_mov(R_COUNT, 2U));
-    gen_load_const(e, R_GPIO, (uint32_t)GPIO);
+    gen_load_const(e, R_GPIO, (uint32_t)DBGIF_GPIO);
     gen_load_const(e, R_PORT, PORT_BASE);
     gen_emit(e, t_mov_imm(R_ONE, SWCLK));
     gen_emit(e, t_mov_imm(R_ZERO, 0U));
@@ -653,7 +653,7 @@ bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_ge
         .ok = true,
     };
     // Only SWCLK and SWDIO answer a masked-port store. Nothing else in the image uses MPIN.
-    GPIO->MASK[0] = ~(SWCLK | SWDIO);
+    DBGIF_GPIO->MASK[0] = ~(SWCLK | SWDIO);
     // The code was written as data; the core has to fetch what is there now.
     __DSB();
     __ISB();

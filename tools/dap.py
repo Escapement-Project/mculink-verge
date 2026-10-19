@@ -21,6 +21,7 @@ times out. Nothing here sends it.
 """
 
 import argparse
+import struct
 import sys
 import time
 
@@ -48,6 +49,8 @@ DAP_VENDOR_CJTAG_CONTROL = 0x83
 DAP_VENDOR_J8 = 0x84
 DAP_VENDOR_REBOOT = 0x85
 USB_REBOOT_REQUEST = 0x03
+USB_CORE1_STATUS_REQUEST = 0x04  # DAP_SHARED_CORE1_STATUS_REQUEST
+USB_CORE1_SAMPLE_REQUEST = 0x05  # DAP_SHARED_CORE1_SAMPLE_REQUEST
 DAP_VENDOR_TARGET = 0x86
 DAP_VENDOR_SAMPLE = 0x87
 DAP_VENDOR_SWD_GEN = 0x89
@@ -128,6 +131,24 @@ class Probe:
 
     def disconnect(self) -> int:
         return self.command(bytes([DAP_DISCONNECT]))[1]
+
+    def queue_status(self) -> dict:
+        """The shared queues as CPU 0 sees them: which side holds work, if the probe has stopped."""
+        raw = bytes(self.device.ctrl_transfer(0xC0, USB_CORE1_STATUS_REQUEST, 1, 0, 256, timeout=1000))
+        slots = raw[0]
+        names = ("request_head", "request_tail", "rx_armed_slot", "hid_head", "hid_tail",
+                 "response_head", "response_tail", "reply_in_flight", "mailbox_cpu1", "mailbox_cpu0")
+        state = dict(zip(names, raw[1:11]), slots=slots)
+        per = [struct.unpack_from("<HHHB", raw, 11 + 7 * i) for i in range(slots)]
+        state["request_len"], state["hid_request_len"], state["response_len"], state["response_transport"] = (
+            [p[k] for p in per] for k in range(4))
+        return state
+
+    def core1_status(self) -> dict[str, int]:
+        """CPU 1's progress and last fault, answered by CPU 0 however CPU 1 is doing."""
+        raw = bytes(self.device.ctrl_transfer(0xC0, USB_CORE1_STATUS_REQUEST, 0, 0, 36, timeout=1000))
+        names = ("commands", "command", "exception", "cfsr", "hfsr", "bfar", "pc", "lr", "xpsr")
+        return dict(zip(names, struct.unpack("<9I", raw)))
 
     def reboot(self, bootloader: bool = False) -> None:
         """Reset through CPU 0's USB control path, without waiting on DAP execution."""
@@ -531,6 +552,42 @@ def cmd_j8(args) -> int:
     read = drive(mask, args.levels & mask)
     owned = "none" if mask == 0 else ", ".join(f"{p + 1}" for p in range(4) if mask & (1 << p))
     print(f"  host owns pin {owned}; pins read {read:#06b}")
+    probe.release()
+    return 0
+
+
+def cmd_core1(args) -> int:
+    """What CPU 1 last did, from CPU 0: the commands it has answered, the one it is in, its fault."""
+    probe = one(args)
+    print(f"{probe.serial}  {probe.product}")
+    if args.sample:
+        # CPU 1 takes an NMI and stops in its fault handler; only a probe reset brings it back.
+        probe.device.ctrl_transfer(0x40, USB_CORE1_SAMPLE_REQUEST, 0, 0, 0, timeout=1000)
+        deadline = time.perf_counter() + 1.0
+        while probe.core1_status()["exception"] == 0 and time.perf_counter() < deadline:
+            time.sleep(0.01)
+    try:
+        status = probe.core1_status()
+    except usb.core.USBError as error:
+        print(f"  refused: USB control request failed ({error}); an image older than this command")
+        probe.release()
+        return 1
+    command = status["command"].to_bytes(4, "little")
+    print(f"  {status['commands']} replies published; current or last command {command.hex(' ')}")
+    if status["exception"] == 0:
+        print("  no fault recorded")
+    else:
+        print(f"  FAULT: exception {status['exception']}, PC {status['pc']:#010x}, LR {status['lr']:#010x}, "
+              f"xPSR {status['xpsr']:#010x}")
+        print(f"         CFSR {status['cfsr']:#010x}, HFSR {status['hfsr']:#010x}, BFAR {status['bfar']:#010x}")
+    if args.queues:
+        q = probe.queue_status()
+        print(f"  bulk requests: head {q['request_head']} tail {q['request_tail']} armed {q['rx_armed_slot']}, "
+              f"lengths {q['request_len']}")
+        print(f"  HID requests:  head {q['hid_head']} tail {q['hid_tail']}, lengths {q['hid_request_len']}")
+        print(f"  replies:       head {q['response_head']} tail {q['response_tail']}, lengths {q['response_len']}, "
+              f"transports {q['response_transport']}, head in flight {bool(q['reply_in_flight'])}")
+        print(f"  mailbox:       CPU 1's register {q['mailbox_cpu1']:#04x}, CPU 0's {q['mailbox_cpu0']:#04x}")
     probe.release()
     return 0
 
@@ -1524,6 +1581,12 @@ def main() -> int:
     limit.add_argument("--blocks", type=int, default=50, help="block commands per rate")
     limit.add_argument("--max-mhz", type=float, default=0.0, help="stop above this wire rate")
     limit.set_defaults(run=cmd_limit)
+
+    core1 = sub.add_parser("core1", help="CPU 1's progress and last fault, from CPU 0")
+    core1.add_argument("--queues", action="store_true", help="also the shared queues' state")
+    core1.add_argument("--sample", action="store_true",
+                       help="stop CPU 1 with an NMI to record where it is; reset the probe afterwards")
+    core1.set_defaults(run=cmd_core1)
 
     reboot = sub.add_parser("reboot", help="reset the probe, optionally into the ROM bootloader")
     reboot.add_argument("--bootloader", action="store_true", help="come back in ISP mode, not the firmware")

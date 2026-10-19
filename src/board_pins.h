@@ -13,31 +13,39 @@
  * board_pins.c holds a static assertion for it. */
 #define DBGIF_PORT 0U
 
-#define DBGIF_TCK_SWCLK_GPIO GPIO
+/** The GPIO block the debug interface is driven through: the secure GPIO, which drives port 0 pins
+ * set to IOCON function 10 and has port 0's register layout at its own base (UM11126 chapter 17).
+ *
+ * It sits on AHB matrix port 10. The ordinary GPIO shares port 8 with Flexcomm 0 to 4 and the
+ * mailbox (UM11126 table 6), and CPU 0's console polling there delayed CPU 1's pin accesses by
+ * enough to misread bits at 50 MHz. */
+#define DBGIF_GPIO SECGPIO
+
+#define DBGIF_TCK_SWCLK_GPIO DBGIF_GPIO
 #define DBGIF_TCK_SWCLK_PORT 0U
 #define DBGIF_TCK_SWCLK_PIN 0U
 
-#define DBGIF_TDI_GPIO GPIO
+#define DBGIF_TDI_GPIO DBGIF_GPIO
 #define DBGIF_TDI_PORT 0U
 #define DBGIF_TDI_PIN 1U
 
-#define DBGIF_TMS_SWDIO_GPIO GPIO
+#define DBGIF_TMS_SWDIO_GPIO DBGIF_GPIO
 #define DBGIF_TMS_SWDIO_PORT 0U
 #define DBGIF_TMS_SWDIO_PIN 2U
 
-#define DBGIF_TDO_SWO_GPIO GPIO
+#define DBGIF_TDO_SWO_GPIO DBGIF_GPIO
 #define DBGIF_TDO_SWO_PORT 0U
 #define DBGIF_TDO_SWO_PIN 3U
 
-#define DBGIF_TMS_SWDIO_TXEN_GPIO GPIO
+#define DBGIF_TMS_SWDIO_TXEN_GPIO DBGIF_GPIO
 #define DBGIF_TMS_SWDIO_TXEN_PORT 0U
 #define DBGIF_TMS_SWDIO_TXEN_PIN 28U
 
-#define DBGIF_RESET_GPIO GPIO
+#define DBGIF_RESET_GPIO DBGIF_GPIO
 #define DBGIF_RESET_PORT 0U
 #define DBGIF_RESET_PIN 19U
 
-#define DBGIF_RESET_TXEN_GPIO GPIO
+#define DBGIF_RESET_TXEN_GPIO DBGIF_GPIO
 #define DBGIF_RESET_TXEN_PORT 0U
 #define DBGIF_RESET_TXEN_PIN 13U
 
@@ -54,21 +62,22 @@
 #define J8_PORT 1U
 #define J8_PIN_MASK 0x0FU
 
-/** Start the clocks the peripherals here depend on.
+/** CPU 0: start the clocks the peripherals here depend on.
  *
  * Kept out of line, like the other two things that run once at boot and bring a peripheral up.
  * The call costs nothing at that rate, and being a symbol is what lets tools/image.py run
  * it and ask the clock driver what came out.
  *
- * Call before anything attaches a Flexcomm. See the note in board_pins.c for why this is not
- * something the board support already did.
+ * Call before anything attaches a Flexcomm, and before CPU 1 starts. See the note in
+ * board_clocks.c for why this is not something the board support already did.
  */
 void board_clocks_init(void);
 
-/** Start the cycle counter that TIMESTAMP_GET reads. Call before the first host command. */
+/** CPU 1: start the cycle counter that TIMESTAMP_GET reads. Each core has its own DWT, so this
+ *  runs on the core that reads it. Call before the first host command. */
 void board_timestamp_init(void);
 
-/** Put the debug interface pins into their idle state.
+/** CPU 1: put the debug interface pins into their idle state.
  *
  * Called from DAP_SETUP, so it runs before any host command can reach the pin layer.
  */

@@ -11,8 +11,8 @@ read the bit it was placed for, and that the replies carry what the target sent.
 smallest sample margin, and the cycles a transfer takes in a running block against its floor: 46
 clocks, those the probe drives at the write period and the rest at the read period.
 
-    uv run tools/gencheck.py build-gen/mculink_cjtag.elf
-    uv run tools/gencheck.py build-gen/mculink_cjtag.elf --mhz 37.5 30 25 --latency 7
+    uv run tools/gencheck.py build-gen/mculink_cjtag_core1.elf
+    uv run tools/gencheck.py build-gen/mculink_cjtag_core1.elf --mhz 37.5 30 25 --latency 7
 """
 
 import argparse
@@ -99,7 +99,7 @@ def run(elf: str, hz: int, read: bool, words: int, latency: int, target_latency:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("elf", nargs="?", default="build-gen/mculink_cjtag.elf")
+    ap.add_argument("elf", nargs="?", default="build-gen/mculink_cjtag_core1.elf", help="CPU 1's image")
     ap.add_argument("--mhz", type=float, nargs="*")
     ap.add_argument("--words", type=int, default=16)
     ap.add_argument("--latency", type=int, default=7, help="the latency the image generates for")

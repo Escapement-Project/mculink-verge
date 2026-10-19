@@ -114,7 +114,8 @@ This information includes:
 
 /// Indicate that UART Serial Wire Output (SWO) trace is available.
 /// This information is returned by the command \ref DAP_Info as part of <b>Capabilities</b>.
-#define SWO_UART                1               ///< SWO UART:  1 = available, 0 = not available.
+/// Off while capture moves to CPU 0: on CPU 1 its USART interrupt would be the only interrupt there.
+#define SWO_UART                0               ///< SWO UART:  1 = available, 0 = not available.
 
 /// USART Driver instance number for the UART SWO.
 #define SWO_UART_DRIVER         3               ///< USART Driver instance number (Driver_USART#).
@@ -384,7 +385,7 @@ __STATIC_INLINE void PORT_JTAG_SETUP (void) {
   DBGIF_RESET_TXEN_GPIO->SET[DBGIF_RESET_TXEN_PORT] = (1U << DBGIF_RESET_TXEN_PIN);
 
   // TDO
-  GPIO->DIRCLR[PIN_SWO_TDO_PORT] = (1U << PIN_SWO_TDO_PIN);
+  DBGIF_TDO_SWO_GPIO->DIRCLR[PIN_SWO_TDO_PORT] = (1U << PIN_SWO_TDO_PIN);
 }
 
 /** Setup SWD I/O pins: SWCLK, SWDIO, and nRESET.
@@ -433,7 +434,7 @@ __STATIC_INLINE void PORT_OFF (void) {
   DBGIF_TDI_GPIO->DIRCLR[DBGIF_TDI_PORT] = (1U << DBGIF_TDI_PIN);
   
   // TDO
-  GPIO->DIRCLR[PIN_SWO_TDO_PORT] = (1U << PIN_SWO_TDO_PIN);
+  DBGIF_TDO_SWO_GPIO->DIRCLR[PIN_SWO_TDO_PORT] = (1U << PIN_SWO_TDO_PIN);
 }
 
 
@@ -540,7 +541,7 @@ __STATIC_FORCEINLINE void     PIN_TDI_OUT (uint32_t bit) {
 \return Current status of the TDO DAP hardware I/O pin.
 */
 __STATIC_FORCEINLINE uint32_t PIN_TDO_IN  (void) {
-  return (GPIO->B[PIN_SWO_TDO_PORT][PIN_SWO_TDO_PIN]);
+  return (DBGIF_TDO_SWO_GPIO->B[PIN_SWO_TDO_PORT][PIN_SWO_TDO_PIN]);
 
 }
 

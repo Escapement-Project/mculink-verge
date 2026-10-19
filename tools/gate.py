@@ -87,7 +87,7 @@ def main() -> int:
     tasks = [(f"emulator gate {name(toolchain, codegen)}", ["ninja", "-C", directory, "check"])
              for toolchain, codegen, directory in built]
     tasks += [(f"timed {wire} clocks {name(toolchain, codegen)}",
-               ["uv", "run", "tools/jtagcheck.py", os.path.join(directory, "mculink_cjtag.elf"), "--wire", wire])
+               ["uv", "run", "tools/jtagcheck.py", os.path.join(directory, "mculink_cjtag_core1.elf"), "--wire", wire])
               for toolchain, codegen, directory in built if codegen for wire in ("cjtag", "jtag")]
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(tasks))) as pool:
         checks = {pool.submit(run, args): label for label, args in tasks}
