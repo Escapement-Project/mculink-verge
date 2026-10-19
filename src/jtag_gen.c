@@ -1214,7 +1214,8 @@ void jtag_gen_learn(uint32_t wire) {
     waited = false;
 }
 
-bool jtag_gen_ready(uint32_t wire) {
+/** Out of line, so the check every transfer command makes does not pay its frame or its divide. */
+static __attribute__((noinline)) bool regenerate(uint32_t wire) {
     struct jtag_gen_config want = {
         .wire = wire,
         .period = period_for(jtag_gen_clock_hz),
@@ -1244,4 +1245,47 @@ bool jtag_gen_ready(uint32_t wire) {
         jtag_gen_failures++;
     }
     return built_ok;
+}
+
+/** Everything regenerate reads, as the last call found it. The chain position comes with every
+ *  transfer command, so a flag cleared by the configuration commands would not do: this compares
+ *  the inputs themselves, and needs no list of what writes them. */
+struct jtag_gen_inputs {
+    uint32_t wire;
+    uint32_t hz;
+    uint32_t latency;
+    uint32_t index;
+    uint32_t count;
+    uint32_t idle;
+    uint32_t paced;
+    bool pacing;
+};
+
+static struct jtag_gen_inputs seen;
+static bool seen_once;
+
+static inline bool same_inputs(const struct jtag_gen_inputs* a, const struct jtag_gen_inputs* b) {
+    return (a->wire == b->wire) && (a->hz == b->hz) && (a->latency == b->latency) && (a->index == b->index) &&
+           (a->count == b->count) && (a->idle == b->idle) && (a->paced == b->paced) && (a->pacing == b->pacing);
+}
+
+bool jtag_gen_ready(uint32_t wire) {
+    const struct jtag_gen_inputs now = {
+        .wire = wire,
+        .hz = jtag_gen_clock_hz,
+        .latency = jtag_gen_latency[wire == JTAG_GEN_TWO_PIN ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE],
+        .index = DAP_Data.jtag_dev.index,
+        .count = DAP_Data.jtag_dev.count,
+        .idle = DAP_Data.transfer.idle_cycles,
+        .paced = jtag_gen_paced,
+        .pacing = jtag_gen_pacing,
+    };
+    if (seen_once && (gen_owner == GEN_OWNER_JTAG) && same_inputs(&now, &seen)) {
+        return built_ok;
+    }
+    const bool ok = regenerate(wire);
+    seen = now;
+    seen.paced = jtag_gen_paced; // regenerate starts pacing again when the configuration changed
+    seen_once = true;
+    return ok;
 }
