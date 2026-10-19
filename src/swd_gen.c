@@ -12,10 +12,10 @@
  *   comes before the fall, as ARM's does.
  * - A bit the target launches on the rising-edge store at cycle R is on the pin for loads from
  *   R + latency until the next rising-edge store plus latency, less one. Up to a period of
- *   latency + SAFE_MARGIN cycles a sample goes in the middle of that window, which can be after
- *   the next rising edge. Those transfers run masked: an interrupt between that edge and the
- *   sample would make it read the next bit. Longer periods sample just before the next rising
- *   edge, where an interrupt only stretches the clock.
+ *   latency + SAFE_MARGIN cycles a sample goes in the middle of that window, the later of two
+ *   middles, which can be after the next rising edge. Those transfers run masked: an interrupt
+ *   between that edge and the sample would make it read the next bit. Longer periods sample just
+ *   before the next rising edge, where an interrupt only stretches the clock.
  * - No clock is ever shorter than the period. Where an instruction needs a cycle a clock would
  *   have used, the clock waits.
  *
@@ -204,7 +204,9 @@ static uint32_t sample(struct sched* s, uint32_t launch, uint32_t end, uint32_t 
     uint32_t best = 0U;
     bool found = false;
     if (c->masked) {
-        // The middle of the window, which the next clocks may not have reached yet.
+        // The middle of the window, which the next clocks may not have reached yet. Of two cycles
+        // with the same margin the later: a bit that arrives later than measured, as some do after
+        // a reset, is the likelier mistake.
         const uint32_t last = end + c->latency - 1U;
         uint32_t best_margin = 0U;
         for (uint32_t cycle = first; cycle <= last; cycle++) {
@@ -214,7 +216,7 @@ static uint32_t sample(struct sched* s, uint32_t launch, uint32_t end, uint32_t 
             const uint32_t early = cycle - first;
             const uint32_t late = last - cycle;
             const uint32_t margin = early < late ? early : late;
-            if (!found || (margin > best_margin)) {
+            if (!found || (margin >= best_margin)) {
                 best = cycle;
                 best_margin = margin;
                 found = true;
