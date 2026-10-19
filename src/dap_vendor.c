@@ -25,6 +25,7 @@
 #endif
 #ifdef JTAG_CODEGEN
 #include "jtag_gen.h"
+#include "jtag_sweep.h"
 #endif
 #include "target_sense.h"
 
@@ -126,19 +127,35 @@
 #define SWD_GEN_MODE_PIN 2U
 #define SWD_GEN_MODE_AUTOMATIC 3U
 
-/** ID_VENDOR_JTAG_GEN takes `two_pin, four_wire`: each wire's cycles from the falling edge that
- * launches TDO to the first load that sees it, 1 to 64, or 0 to leave it as it is. Setting either
- * regenerates the wire in use.
+/** ID_VENDOR_JTAG_GEN takes `two_pin, four_wire, mode`: each wire's cycles from the falling edge
+ * that launches TDO to the first load that sees it, 1 to 64, or 0 to leave it as it is. Setting
+ * either regenerates the wire in use and pins both, as mode 2 does. `mode` is ID_VENDOR_SWD_GEN's,
+ * for the wire in use: 1 measures it now with IDCODE reads of the TAP at the last transfer's chain
+ * index (src/jtag_sweep.h), which leaves that TAP's IR at IDCODE.
  *
  * It answers `status, two_pin, four_wire, masked, ok`, then little-endian u32s: the clock asked for
  * in Hz, the period (a four-wire clock, or a two-pin packet) and a JTAG clock in core cycles, the
  * generated code's size in bytes, and how many configurations were generated and how many could
- * not be. Status is DAP_ERROR for a latency out of range, which is then left unchanged. `ok` is 0
- * when the current configuration could not be generated and the wire runs ARM's own code; its bit
- * 1 says whole transfers were generated too, rather than run as scans, and bit 2 that their data
- * bits are a loop.
+ * not be. Then the last measurement:
+ *
+ *     [30]      1 while the probe measures on its own, 0 once pinned
+ *     [31]      what it found, LATENCY_* (latency.h)
+ *     [32]      the wire it measured, 0 four-wire, 1 two-pin
+ *     [33]      the latency it set, or 0 if it kept the one in use
+ *     [34]      generations it ran reads with, at most 255
+ *     [35]      periods it measured at, the host's included
+ *     [36..39]  the IDCODE that read right
+ *     [40..43]  core cycles it took
+ *     [44..47]  measurements since the probe started
+ *     [48..55]  u64: the latencies every read agrees with, bit n - 1 for latency n
+ *     [56..59]  connections whose first transfer failed and ran right once measured
+ *
+ * Status is DAP_ERROR for a latency or a mode out of range, which change nothing, and for a
+ * measurement asked for while the port is not JTAG, which does not run. `ok` is 0 when the current
+ * configuration could not be generated and the wire runs ARM's own code; its bit 1 says whole
+ * transfers were generated too, rather than run as scans, and bit 2 that their data bits are a
+ * loop.
  */
-#define JTAG_GEN_LATENCY_MAX 64U
 
 /** ID_VENDOR_JTAG_PACING takes `mode`: 0 turns the learned idle clocks off, so the generated wire
  * is ARM's exactly, 1 turns them on (the default), anything else leaves them. It answers `status,
@@ -346,14 +363,31 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
 
 #ifdef JTAG_CODEGEN
     case ID_VENDOR_JTAG_GEN: {
+        const uint32_t two_pin = request[1];
+        const uint32_t four_wire = request[2];
+        const uint32_t mode = request[3];
         response[1] = DAP_OK;
-        const uint32_t wires[] = {JTAG_GEN_TWO_PIN, JTAG_GEN_FOUR_WIRE};
-        for (uint32_t i = 0U; i < 2U; i++) {
-            const uint32_t latency = request[1U + i];
-            if (latency > JTAG_GEN_LATENCY_MAX) {
-                response[1] = DAP_ERROR;
-            } else if (latency != 0U) {
-                jtag_gen_latency[wires[i]] = latency;
+        if ((two_pin > LATENCY_MAX) || (four_wire > LATENCY_MAX) || (mode > SWD_GEN_MODE_AUTOMATIC)) {
+            response[1] = DAP_ERROR;
+        } else {
+            if (two_pin != 0U) {
+                jtag_gen_latency[JTAG_GEN_TWO_PIN] = two_pin;
+                jtag_sweep_automatic = false;
+            }
+            if (four_wire != 0U) {
+                jtag_gen_latency[JTAG_GEN_FOUR_WIRE] = four_wire;
+                jtag_sweep_automatic = false;
+            }
+            if (mode == SWD_GEN_MODE_PIN) {
+                jtag_sweep_automatic = false;
+            } else if (mode == SWD_GEN_MODE_AUTOMATIC) {
+                jtag_sweep_automatic = true;
+            } else if (mode == SWD_GEN_MODE_MEASURE) {
+                if (DAP_Data.debug_port == DAP_PORT_JTAG) {
+                    jtag_sweep();
+                } else {
+                    response[1] = DAP_ERROR;
+                }
             }
         }
         (void)jtag_gen_ready(cJTAG_Active() ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE);
@@ -364,8 +398,22 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
                       (jtag_gen_info.looped ? 4U : 0U);
         const uint32_t fields[] = {jtag_gen_clock_hz,       jtag_gen_info.period, jtag_gen_info.frame,
                                    jtag_gen_info.code_bytes, jtag_gen_builds,      jtag_gen_failures};
-        const uint8_t* out = put_u32s(response + 6, fields, sizeof fields / sizeof fields[0]);
-        return (2U << 16) | (uint32_t)(out - response);
+        uint8_t* out = put_u32s(response + 6, fields, sizeof fields / sizeof fields[0]);
+        const struct latency_result* measured = &jtag_sweep_last.result;
+        *out++ = jtag_sweep_automatic ? 1U : 0U;
+        *out++ = (uint8_t)measured->outcome;
+        *out++ = (uint8_t)jtag_sweep_last.wire;
+        *out++ = (uint8_t)measured->latency;
+        *out++ = (uint8_t)(measured->tries < 255U ? measured->tries : 255U);
+        *out++ = (uint8_t)measured->periods;
+        const uint32_t sweep[] = {measured->word,
+                                  jtag_sweep_last.cycles,
+                                  jtag_sweep_last.runs,
+                                  (uint32_t)measured->consistent,
+                                  (uint32_t)(measured->consistent >> 32),
+                                  jtag_sweep_last.rescues};
+        out = put_u32s(out, sweep, sizeof sweep / sizeof sweep[0]);
+        return (4U << 16) | (uint32_t)(out - response);
     }
 
     case ID_VENDOR_JTAG_PACING:

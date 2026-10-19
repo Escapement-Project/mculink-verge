@@ -388,6 +388,22 @@ class RecordingTap:
             self.updates.append((self.state[3:], self.shift))
 
 
+class IdcodeTap(RecordingTap):
+    """A RecordingTap whose IDCODE instruction captures `idcode`, as a DAP's does."""
+
+    def __init__(self, dr: int, dr_bits: int, idcode: int, ir_bits: int = 4):
+        super().__init__(dr, dr_bits, ir_bits)
+        self.idcode = idcode
+        self.ir = 0
+
+    def clock(self, tms: int, tdi: int = 1) -> None:
+        super().clock(tms, tdi)
+        if self.state == "updir":
+            self.ir = self.shift & ((1 << self.ir_bits) - 1)
+        elif (self.state == "capdr") and (self.ir == JTAG_IR_IDCODE):
+            self.shift = self.idcode
+
+
 class TimedCjtagTarget:
     """A two-pin target (IEEE 1149.7, OScan1) that answers by time.
 
@@ -1362,6 +1378,77 @@ def measure_latency(elf: str, model: Model, latency: int, hz: int) -> list[str]:
     return []
 
 
+JTAG_IR_IDCODE = 0xE
+DAP_IDCODE = 0x4BA00477
+JTAG_WORD = 0xA5A5_5A5A
+ID_VENDOR_JTAG_GEN = 0x8A
+
+
+def timed_idcode_target(elf: str, model: Model, wire: str, latency: int, hz: int) -> "Machine":
+    """A probe connected over `wire`, jtag or cjtag, at `hz` to one TAP whose TDO comes `latency`
+    cycles after each falling edge: a DAP that answers IDCODE, and every DR scan with an OK
+    acknowledge and JTAG_WORD."""
+    probe = Machine(elf, Target([]), restart_at=set(), model=replace(model, engine=True))
+    if "DAP_Setup" in probe.sym:
+        probe.call("DAP_Setup")
+    probe.command(bytes([ID_CONNECT, 2]))
+    probe.command(bytes([ID_SWJ_CLOCK]) + u32(hz))
+    probe.command(bytes([ID_TRANSFER_CONFIG, 0]) + u16(100) + u16(0))
+    if wire == "cjtag":
+        # Framing on without an activation, where a host leaves the wire after driving it.
+        probe.command(bytes([ID_CJTAG_CONTROL, 2]))
+    tap = IdcodeTap(JTAG_DR_OK | (JTAG_WORD << 3), 35, DAP_IDCODE)
+    probe.target = TimedCjtagTarget(tap, latency=latency) if wire == "cjtag" else TimedJtagTarget(tap, latency=latency)
+    return probe
+
+
+def jtag_read_right(probe: "Machine", tag: str) -> list[str]:
+    """A DAP_Transfer AP read, posted and so read twice, with every sample a cycle inside its window."""
+    probe.target.reads = []
+    probe.begin()
+    reply = probe.command(bytes([ID_TRANSFER, 0, 2, AP_DRW_READ, AP_DRW_READ]))
+    probe.end()
+    margins = [r.margin for r in probe.target.reads if r.margin is not None]
+    if reply != bytes([ID_TRANSFER, 2, 1]) + u32(JTAG_WORD) * 2 or not margins or min(margins) < 1:
+        return [f"{tag}: the read after it answered {reply.hex()}, least margin {min(margins, default=None)}"]
+    return []
+
+
+def jtag_measure_latency(elf: str, model: Model, wire: str, latency: int, hz: int) -> list[str]:
+    """Vendor 0x8A's measurement against a TAP whose TDO comes `latency` cycles after each fall."""
+    probe = timed_idcode_target(elf, model, wire, latency, hz)
+    probe.command(bytes([ID_JTAG_CONFIGURE, 1, 4]))
+    probe.begin()
+    reply = probe.command(bytes([ID_VENDOR_JTAG_GEN, 0, 0, 1]))
+    probe.end()
+    tag = f"{wire} latency {latency} at {hz / 1e6:g} MHz"
+    in_use = reply[2] if wire == "cjtag" else reply[3]
+    if reply[1] != 0 or reply[31] != 1 or reply[33] != latency or in_use != latency:
+        return [f"{tag}: measured outcome {reply[31]}, latency {reply[33]}, in use {in_use}"]
+    return jtag_read_right(probe, tag)
+
+
+def jtag_connect(elf: str, model: Model, wire: str, latency: int, hz: int, rescued: bool) -> list[str]:
+    """A host connecting as probe-rs does, DAP_JTAG_Configure then DAP_Transfer, to a TAP the
+    default latency reads wrong. Where the default leaves too little margin the probe measures
+    first; where it does not, the first transfer fails and the probe measures and runs it again.
+    Either way the host's read answers right."""
+    probe = timed_idcode_target(elf, model, wire, latency, hz)
+    probe.command(bytes([ID_JTAG_CONFIGURE, 1, 4]))
+    probe.begin()
+    reply = probe.command(bytes([ID_TRANSFER, 0, 2, AP_DRW_READ, AP_DRW_READ]))
+    probe.end()
+    state = probe.command(bytes([ID_VENDOR_JTAG_GEN, 0, 0, 0]))
+    measurements, rescues = (int.from_bytes(state[i : i + 4], "little") for i in (44, 56))
+    in_use = state[2] if wire == "cjtag" else state[3]
+    tag = f"{wire} connecting at {hz / 1e6:g} MHz to latency {latency}"
+    if reply != bytes([ID_TRANSFER, 2, 1]) + u32(JTAG_WORD) * 2:
+        return [f"{tag}: the first DAP_Transfer answered {reply.hex()}"]
+    if in_use != latency or measurements != 1 or rescues != (1 if rescued else 0):
+        return [f"{tag}: latency {in_use} after {measurements} measurements, {rescues} rescues"]
+    return jtag_read_right(probe, tag)
+
+
 def calibrate(elf: str, wire: str, words: int, cpu_hz: int, model: Model, config: str) -> int:
     """Recover the two constants ARM's clock arithmetic assumes, from what the image actually runs.
 
@@ -1592,6 +1679,13 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
             failures += measure_latency(elf, model, latency, hz)
         failures += connect_measures(elf, model, 11, 37_500_000)
         failures += connect_rescued(elf, model, 12, 25_000_000)
+    # The same on both JTAG wires, with IDCODE reads.
+    if "jtag_sweep_last" in symbols(elf):
+        for wire, latency, hz in (("jtag", 7, 30_000_000), ("jtag", 13, 25_000_000), ("cjtag", 10, 50_000_000)):
+            failures += jtag_measure_latency(elf, model, wire, latency, hz)
+        failures += jtag_connect(elf, model, "jtag", 13, 30_000_000, rescued=False)
+        failures += jtag_connect(elf, model, "cjtag", 10, 50_000_000, rescued=False)
+        failures += jtag_connect(elf, model, "jtag", 16, 10_000_000, rescued=True)
 
     known_path = os.path.join(baseline_dir, "known-overshoot.txt")
     known = set()

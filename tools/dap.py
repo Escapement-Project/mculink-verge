@@ -61,6 +61,7 @@ USB_CORE1_SAMPLE_REQUEST = 0x05  # DAP_SHARED_CORE1_SAMPLE_REQUEST
 DAP_VENDOR_TARGET = 0x86
 DAP_VENDOR_SAMPLE = 0x87
 DAP_VENDOR_SWD_GEN = 0x89
+DAP_VENDOR_JTAG_GEN = 0x8A
 
 INFO_FIELDS = {
     0x01: ("vendor", "str"),
@@ -1024,9 +1025,9 @@ def sample_run(probe: "Probe", low: int, fill: int, at: int, count: int, expecte
 
 
 SWD_GEN_MODE_NONE, SWD_GEN_MODE_MEASURE, SWD_GEN_MODE_PIN, SWD_GEN_MODE_AUTOMATIC = range(4)
-SWD_LATENCY_OUTCOMES = ("never measured", "measured", "two latencies left, the later used",
-                        "several latencies left", "nothing read right",
-                        "no latency agrees with every read")
+LATENCY_OUTCOMES = ("never measured", "measured", "two latencies left, the later used",
+                    "several latencies left", "nothing read right",
+                    "no latency agrees with every read")
 
 
 def swd_gen(probe: "Probe", latency: int = 0, mode: int = SWD_GEN_MODE_NONE) -> dict:
@@ -1050,6 +1051,27 @@ def swd_gen(probe: "Probe", latency: int = 0, mode: int = SWD_GEN_MODE_NONE) -> 
     return state
 
 
+def jtag_gen(probe: "Probe", two_pin: int = 0, four_wire: int = 0, mode: int = SWD_GEN_MODE_NONE) -> dict:
+    """Vendor 0x8A: the generated JTAG paths' state, setting each wire's latency first unless 0,
+    then measuring the wire in use, pinning the latencies or letting the probe measure them on its
+    own (src/dap_vendor.c)."""
+    reply = probe.command(bytes([DAP_VENDOR_JTAG_GEN, two_pin, four_wire, mode]))
+    if reply[0] != DAP_VENDOR_JTAG_GEN:
+        raise RuntimeError("this image does not generate its JTAG paths (no vendor 0x8A)")
+    fields = [int.from_bytes(reply[6 + 4 * i : 10 + 4 * i], "little") for i in range(6)]
+    names = ("hz", "period", "frame", "code_bytes", "builds", "failures")
+    state = {"status": reply[1], "two_pin": reply[2], "four_wire": reply[3], "masked": bool(reply[4]),
+             "ok": reply[5]} | dict(zip(names, fields))
+    if len(reply) >= 60:
+        u32 = [int.from_bytes(reply[36 + 4 * i : 40 + 4 * i], "little") for i in range(6)]
+        state["sweep"] = {
+            "automatic": bool(reply[30]), "outcome": reply[31], "wire": reply[32], "latency": reply[33],
+            "tries": reply[34], "periods": reply[35], "word": u32[0], "cycles": u32[1], "runs": u32[2],
+            "consistent": u32[3] | (u32[4] << 32), "rescues": u32[5],
+        }
+    return state
+
+
 def latencies(mask: int) -> str:
     """Bit n - 1 for latency n, as runs: '5-8,11'."""
     runs, n = [], 1
@@ -1063,14 +1085,16 @@ def latencies(mask: int) -> str:
     return ",".join(runs) or "none"
 
 
-def describe_sweep(sweep: dict, cpu_hz: int = 150_000_000) -> str:
+def describe_sweep(sweep: dict, cpu_hz: int = 150_000_000, word: str = "DPIDR") -> str:
     outcome = sweep["outcome"]
-    text = SWD_LATENCY_OUTCOMES[outcome] if outcome < len(SWD_LATENCY_OUTCOMES) else f"outcome {outcome}"
+    text = LATENCY_OUTCOMES[outcome] if outcome < len(LATENCY_OUTCOMES) else f"outcome {outcome}"
+    if "wire" in sweep and outcome != 0:
+        text = f"{('four-wire', 'two-pin')[sweep['wire']]} {text}"
     if sweep["latency"]:
         text += f": latency {sweep['latency']}"
     if outcome != 0:
-        text += (f"; agrees with {latencies(sweep['consistent'])}; DPIDR 0x{sweep['word']:08x}; "
-                 f"{sweep['tries']} generations at {sweep['periods']} read periods; "
+        text += (f"; agrees with {latencies(sweep['consistent'])}; {word} 0x{sweep['word']:08x}; "
+                 f"{sweep['tries']} generations at {sweep['periods']} periods; "
                  f"{sweep['cycles'] / cpu_hz * 1e3:.2f} ms")
     return (f"{text}; {sweep['runs']} measurements, {sweep['rescues']} connections rescued; "
             f"{'automatic' if sweep['automatic'] else 'pinned'}")
@@ -1140,6 +1164,31 @@ def cmd_gen(args) -> int:
     if "sweep" in state:
         print(f"  last measurement: {describe_sweep(state['sweep'])}")
     return 0 if state["ok"] else 1
+
+
+def cmd_jgen(args) -> int:
+    """The generated JTAG paths: what they were built for, and each wire's read latency.
+
+    `--measure` measures the wire in use, which needs the port already in JTAG with the chain
+    configured and the DAP at the last transfer's index, as a host leaves it.
+    """
+    probe = one(args)
+    print(f"{probe.serial}  {probe.product}")
+    mode = (SWD_GEN_MODE_MEASURE if args.measure else SWD_GEN_MODE_PIN if args.pin
+            else SWD_GEN_MODE_AUTOMATIC if args.automatic else SWD_GEN_MODE_NONE)
+    state = jtag_gen(probe, args.two_pin, args.four_wire, mode)
+    if state["status"] != 0:
+        print(f"  latencies {args.two_pin}/{args.four_wire}, mode {mode} refused")
+    print(
+        f"  clock asked {state['hz'] / 1e6:.3f} MHz: period {state['period']}, JTAG clock {state['frame']} cycles; "
+        f"latency two-pin {state['two_pin']}, four-wire {state['four_wire']}; "
+        f"{'masked' if state['masked'] else 'unmasked'}; {'generated' if state['ok'] & 1 else 'NOT generated'}"
+        f"{', transfers' if state['ok'] & 2 else ''}{', looped' if state['ok'] & 4 else ''}, "
+        f"{state['code_bytes']} bytes; {state['builds']} builds, {state['failures']} failures"
+    )
+    if "sweep" in state:
+        print(f"  last measurement: {describe_sweep(state['sweep'], word='IDCODE')}")
+    return 0 if state["ok"] & 1 else 1
 
 
 def cmd_sample(args) -> int:
@@ -1757,6 +1806,14 @@ def main() -> int:
     gen.add_argument("--pin", action="store_true", help="stop the probe measuring the latency on its own")
     gen.add_argument("--automatic", action="store_true", help="let the probe measure the latency on its own")
     gen.set_defaults(run=cmd_gen)
+
+    jgen = sub.add_parser("jgen", help="the generated JTAG paths: state, latencies, measurement")
+    jgen.add_argument("--two-pin", type=int, default=0, help="set the two-pin latency, in core cycles")
+    jgen.add_argument("--four-wire", type=int, default=0, help="set the four-wire latency, in core cycles")
+    jgen.add_argument("--measure", action="store_true", help="have the probe measure the wire in use")
+    jgen.add_argument("--pin", action="store_true", help="stop the probe measuring the latencies on its own")
+    jgen.add_argument("--automatic", action="store_true", help="let the probe measure the latencies on its own")
+    jgen.set_defaults(run=cmd_jgen)
 
     cjtag = sub.add_parser("cjtag", help="activate OScan1 and read an IDCODE over two pins")
     cjtag.add_argument("--hz", type=int, default=1_000_000, help="TCKC rate to ask for")

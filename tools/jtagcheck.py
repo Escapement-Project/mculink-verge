@@ -105,7 +105,7 @@ def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire
         # where a host leaves it after driving the activation itself.
         probe.command(bytes([cy.ID_CJTAG_CONTROL, 2]))
     if gen_latency:
-        probe.command(bytes([ID_VENDOR_JTAG_GEN, gen_latency if two_pin else 0, 0 if two_pin else gen_latency]))
+        probe.command(bytes([ID_VENDOR_JTAG_GEN, gen_latency if two_pin else 0, 0 if two_pin else gen_latency, 0]))
     tap = cy.RecordingTap(dr, 35)
     target = cy.TimedCjtagTarget(tap, latency=latency) if two_pin else cy.TimedJtagTarget(tap, latency=latency)
     probe.target = target

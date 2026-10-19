@@ -27,7 +27,8 @@
  * fall that starts the TDO packet, on four wires the clock's own fall. On a CC1312R1 two pins
  * measured 8 after either reset; the Cortex-M DAP behind its ICEPick sends four-wire TDO at 7
  * after a pin reset and 11 after a system reset (CJTAGGEN.md), so four wires default to 10, which
- * read both on the bench. */
+ * read both on the bench. The probe measures from these at every DAP_JTAG_Configure where they
+ * leave too little margin (src/jtag_sweep.h). */
 #define JTAG_GEN_LATENCY_DEFAULT 8U
 #define JTAG_GEN_FOUR_WIRE_LATENCY_DEFAULT 10U
 /** A period at which a build for the highest latency the generator takes, 64, samples later

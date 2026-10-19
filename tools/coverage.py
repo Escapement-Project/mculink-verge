@@ -216,7 +216,7 @@ def cmd_exec(args) -> int:
         if args.wire == "swd":
             continue
         # The odd offsets matter in the generated transfers, so say whether they ran.
-        gen = probe.command(bytes([DAP_VENDOR_JTAG_GEN, 0, 0]))
+        gen = probe.command(bytes([DAP_VENDOR_JTAG_GEN, 0, 0, 0]))
         built = int.from_bytes(gen[6:10], "little")
         print(f"    generator: ok {gen[5] & 1}, transfers {gen[5] >> 1 & 1}, looped {gen[5] >> 2 & 1}, "
               f"built for {built / 1e6:g} MHz")

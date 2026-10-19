@@ -37,6 +37,7 @@
 #endif
 #ifdef JTAG_CODEGEN
 #include "jtag_gen.h"
+#include "jtag_sweep.h"
 #endif
 
 extern uint32_t arm_DAP_ProcessCommand(const uint8_t* request, uint8_t* response);
@@ -46,6 +47,9 @@ extern uint32_t arm_DAP_ProcessCommand(const uint8_t* request, uint8_t* response
 __attribute__((noinline)) static uint32_t arm_command(const uint8_t* request, uint8_t* response) {
 #ifdef SWD_CODEGEN
     swd_sweep_watch(request);
+#endif
+#ifdef JTAG_CODEGEN
+    jtag_sweep_watch(request);
 #endif
     return arm_DAP_ProcessCommand(request, response);
 }
@@ -197,7 +201,13 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
 #endif
         }
     }
+#ifdef JTAG_CODEGEN
+    const bool connecting =
+        (*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_JTAG) && jtag_sweep_pending();
+    const uint32_t result = connecting ? jtag_sweep_connect(request, response) : arm_command(request, response);
+#else
     const uint32_t result = arm_command(request, response);
+#endif
     // Generate now rather than in the first transfer, which would carry the time it takes.
     // The two generators share SRAMX, so only the port in use generates.
 #ifdef SWD_CODEGEN
