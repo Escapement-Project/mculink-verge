@@ -107,7 +107,7 @@
  * how many configurations were generated and how many could not be. Then the last measurement:
  *
  *     [29]      1 while the probe measures on its own, 0 once pinned
- *     [30]      what it found, SWD_LATENCY_* (swd_latency.h)
+ *     [30]      what it found, LATENCY_* (latency.h)
  *     [31]      the latency it set, or 0 if it kept the one in use
  *     [32]      generations it ran reads with, at most 255
  *     [33]      read periods it measured at, the host's included
@@ -300,7 +300,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         const uint32_t latency = request[1];
         const uint32_t mode = request[2];
         response[1] = DAP_OK;
-        if ((latency > SWD_LATENCY_MAX) || (mode > SWD_GEN_MODE_AUTOMATIC)) {
+        if ((latency > LATENCY_MAX) || (mode > SWD_GEN_MODE_AUTOMATIC)) {
             response[1] = DAP_ERROR;
         } else {
             if (latency != 0U) {
@@ -324,7 +324,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         response[2] = (uint8_t)swd_gen_latency;
         response[3] = swd_gen_info.masked ? 1U : 0U;
         response[4] = swd_gen_info.ok ? 1U : 0U;
-        const struct swd_latency_result* measured = &swd_sweep_last.result;
+        const struct latency_result* measured = &swd_sweep_last.result;
         const uint32_t fields[] = {swd_gen_clock_hz,         swd_gen_info.write_period, swd_gen_info.read_period,
                                    swd_gen_info.code_bytes, swd_gen_builds,            swd_gen_failures};
         uint8_t* out = put_u32s(response + 5, fields, sizeof fields / sizeof fields[0]);

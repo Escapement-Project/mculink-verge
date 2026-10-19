@@ -1,4 +1,4 @@
-/* src/swd_latency.h's search against the real generator, with a target that answers by latency. */
+/* src/latency.h's search against the real generator, with a target that answers by latency. */
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -7,11 +7,13 @@
 
 #include "DAP.h"
 #include "DAP_config.h"
+#include "latency.h"
 #include "swd_connect.h"
 #include "swd_gen.h"
-#include "swd_latency.h"
 
 DAP_Data_t DAP_Data;
+
+static const struct latency_wire wire = {.safe_period = SWD_GEN_SAFE_PERIOD, .open_below = false};
 
 #define DPIDR 0x6BA02477U
 
@@ -32,7 +34,7 @@ static bool served(const struct swd_gen_config* config, uint32_t latency) {
            (swd_gen_info.write_first <= (int32_t)latency) && ((int32_t)latency <= swd_gen_info.write_last);
 }
 
-static void try_latency(uint32_t period, uint32_t latency, struct swd_latency_try* out, void* context) {
+static void try_latency(uint32_t period, uint32_t latency, struct latency_try* out, void* context) {
     const struct target* t = context;
     const struct swd_gen_config config = {
         .period = period == t->read_period ? t->write_period : period,
@@ -64,13 +66,13 @@ static uint32_t code_hash(void) {
 /** The safe period reads right for every latency the search can find, whatever it is built for. */
 static void test_safe_period(void) {
     for (uint32_t turnaround = 1U; turnaround <= 4U; turnaround++) {
-        for (uint32_t latency = 1U; latency <= SWD_LATENCY_MAX; latency++) {
+        for (uint32_t latency = 1U; latency <= LATENCY_MAX; latency++) {
             const struct swd_gen_config config = {
-                .period = SWD_LATENCY_SAFE_PERIOD, .latency = latency, .turnaround = turnaround, .data_phase = 1U};
+                .period = SWD_GEN_SAFE_PERIOD, .latency = latency, .turnaround = turnaround, .data_phase = 1U};
             swd_gen_fn read;
             swd_gen_fn write;
             assert(swd_gen_build(&config, &read, &write));
-            assert(swd_gen_info.read_first <= 1 && swd_gen_info.read_last >= (int32_t)SWD_LATENCY_MAX);
+            assert(swd_gen_info.read_first <= 1 && swd_gen_info.read_last >= (int32_t)LATENCY_MAX);
         }
     }
 }
@@ -79,7 +81,7 @@ static void test_safe_period(void) {
 static void test_same_below(void) {
     for (uint32_t period = 4U; period <= 160U; period += period < 24U ? 1U : 17U) {
         uint32_t first = 0U;
-        for (uint32_t latency = 1U; latency <= SWD_LATENCY_MAX; latency++) {
+        for (uint32_t latency = 1U; latency <= LATENCY_MAX; latency++) {
             const struct swd_gen_config config = {.period = period, .latency = latency, .turnaround = 1U};
             swd_gen_fn read;
             swd_gen_fn write;
@@ -167,14 +169,14 @@ static void test_connect(void) {
 }
 
 static void test_range(void) {
-    assert(swd_latency_range(1, 64) == ~(uint64_t)0);
-    assert(swd_latency_range(-3, 1) == 1U);
-    assert(swd_latency_range(64, 70) == (uint64_t)1 << 63);
-    assert(swd_latency_range(5, 4) == 0U);
-    assert(swd_latency_range(3, 4) == 0xCU);
-    assert(swd_latency_count(0xF0F0U) == 8U);
-    assert(swd_latency_highest(0x30U) == 6U);
-    assert(swd_latency_highest(0U) == 0U);
+    assert(latency_range(1, 64) == ~(uint64_t)0);
+    assert(latency_range(-3, 1) == 1U);
+    assert(latency_range(64, 70) == (uint64_t)1 << 63);
+    assert(latency_range(5, 4) == 0U);
+    assert(latency_range(3, 4) == 0xCU);
+    assert(latency_count(0xF0F0U) == 8U);
+    assert(latency_highest(0x30U) == 6U);
+    assert(latency_highest(0U) == 0U);
 }
 
 int main(void) {
@@ -201,18 +203,18 @@ int main(void) {
         for (uint32_t latency = 2U; latency <= 40U; latency++) {
             for (uint32_t s = 0U; s < sizeof starts / sizeof starts[0]; s++) {
                 struct target t = {latency, periods[p][0], periods[p][1], 0U};
-                struct swd_latency_result r;
-                swd_latency_measure(t.read_period, starts[s], try_latency, &t, &r);
+                struct latency_result r;
+                latency_measure(&wire, t.read_period, starts[s], try_latency, &t, &r);
                 outcomes[r.outcome]++;
                 most_tries[p] = r.tries > most_tries[p] ? r.tries : most_tries[p];
                 const uint32_t used = r.latency != 0U ? r.latency : starts[s];
                 const struct swd_gen_config production = {
                     .period = t.write_period, .latency = used, .turnaround = 1U, .data_phase = 0U};
                 // Wherever the probe can read this target at all, what it ends on reads it.
-                const bool right = (r.outcome == SWD_LATENCY_MEASURED) ? (r.latency == latency)
-                                   : (r.outcome == SWD_LATENCY_AMBIGUOUS)
+                const bool right = (r.outcome == LATENCY_MEASURED) ? (r.latency == latency)
+                                   : (r.outcome == LATENCY_AMBIGUOUS)
                                        ? ((r.latency == latency) || (r.latency == latency + 1U))
-                                       : (r.outcome == SWD_LATENCY_UNRESOLVED);
+                                       : (r.outcome == LATENCY_UNRESOLVED);
                 if (!right || !served(&production, latency) || (r.word != DPIDR)) {
                     printf("  period %u/%u, latency %u, from %u: outcome %u, latency %u, %u tries, "
                            "left 0x%016llx\n",
@@ -226,14 +228,15 @@ int main(void) {
 
     // No answer: nothing passes, nothing changes, and one generation at the safe period says so.
     struct target silent = {0U, 4U, 4U, 0U};
-    struct swd_latency_result r;
-    swd_latency_measure(4U, 7U, try_latency, &silent, &r);
-    assert(r.outcome == SWD_LATENCY_NO_BAND && r.latency == 0U && r.tries == 1U);
+    struct latency_result r;
+    latency_measure(&wire, 4U, 7U, try_latency, &silent, &r);
+    assert(r.outcome == LATENCY_NO_BAND && r.latency == 0U && r.tries == 1U);
 
-    // Two latencies that read right but read different words cannot both be the target.
+    // A word other than the safe read's is a read gone wrong, however the reads agree. This target
+    // reads it at a latency whose range holds its own, so no latency agrees with every read.
     struct target odd = {7U, 4U, 4U, 6U};
-    swd_latency_measure(4U, 7U, try_latency, &odd, &r);
-    assert(r.outcome == SWD_LATENCY_INCONSISTENT && r.latency == 0U);
+    latency_measure(&wire, 4U, 7U, try_latency, &odd, &r);
+    assert((r.word == DPIDR) && (r.outcome == LATENCY_INCONSISTENT) && (r.latency == 0U));
 
     printf("  outcomes: %u measured, %u ambiguous, %u unresolved, %u no band, %u inconsistent\n", outcomes[1],
            outcomes[2], outcomes[3], outcomes[4], outcomes[5]);

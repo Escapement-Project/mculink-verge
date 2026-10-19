@@ -27,6 +27,10 @@
 /** Cycles from a rising-edge store to the first load that sees the bit it launched. The bench
  * measured 7 on two targets; TIMING.md says why it should be measured per target. */
 #define SWD_GEN_LATENCY_DEFAULT 7U
+/** A read period at which every latency the generator takes, up to 64, generates unmasked,
+ * sampling just before the next rising edge, and so a build for any of them reads right for all
+ * (tools/swd_latency_test.c). */
+#define SWD_GEN_SAFE_PERIOD 72U
 
 struct swd_gen_config {
     uint32_t period;      // core cycles per SWCLK period, for the clocks the probe drives

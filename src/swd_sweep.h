@@ -1,15 +1,15 @@
-/** The SWD read latency, measured on the wire: src/swd_latency.h's search, run with DPIDR reads. */
+/** The SWD read latency, measured on the wire: src/latency.h's search, run with DPIDR reads. */
 #ifndef SWD_SWEEP_H
 #define SWD_SWEEP_H
 
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "latency.h"
 #include "swd_connect.h"
-#include "swd_latency.h"
 
 struct swd_sweep_result {
-    struct swd_latency_result result;
+    struct latency_result result;
     uint32_t cycles;  // the whole sweep, the final generation included
     uint32_t runs;    // sweeps since the probe started
     uint32_t rescues; // connections whose DPIDR read failed and read right once measured
@@ -41,7 +41,7 @@ static inline bool swd_sweep_pending(void) { return swd_sweep_line.reset; }
 uint32_t swd_sweep_connect(const uint8_t* request, uint8_t* response);
 
 /** Measures the latency at the current clock and DAP_Data settings, uses what it found
- * (swd_latency_result.latency, when not 0) and generates for it.
+ * (latency_result.latency, when not 0) and generates for it.
  *
  * Each candidate latency is generated and runs DPIDR reads, the one read every SW-DP has to
  * answer OK whatever its state (ADIv5 B4). They are generated with DAP_Data's data phase on, so

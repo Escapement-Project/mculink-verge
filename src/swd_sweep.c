@@ -1,4 +1,4 @@
-/** The SWD read latency, measured on the wire. See swd_sweep.h and swd_latency.h. */
+/** The SWD read latency, measured on the wire. See swd_sweep.h and latency.h. */
 #include "swd_sweep.h"
 
 #include "DAP_config.h"
@@ -45,7 +45,7 @@ struct sweep_context {
     uint32_t read_period;
 };
 
-static void try_latency(uint32_t period, uint32_t latency, struct swd_latency_try* out, void* context) {
+static void try_latency(uint32_t period, uint32_t latency, struct latency_try* out, void* context) {
     const struct sweep_context* c = context;
     struct swd_gen_config config = c->config;
     config.latency = latency;
@@ -115,8 +115,7 @@ static struct known* known_target(void) {
 static void measure_target(void) {
     swd_sweep();
     const uint32_t outcome = swd_sweep_last.result.outcome;
-    if ((outcome != SWD_LATENCY_MEASURED) && (outcome != SWD_LATENCY_AMBIGUOUS) &&
-        (outcome != SWD_LATENCY_UNRESOLVED)) {
+    if ((outcome != LATENCY_MEASURED) && (outcome != LATENCY_AMBIGUOUS) && (outcome != LATENCY_UNRESOLVED)) {
         return;
     }
     struct known* target = known_target();
@@ -193,7 +192,8 @@ void swd_sweep(void) {
     context.config.data_phase = 1U;
     context.read_period =
         context.config.period < SWD_GEN_READ_PERIOD_MIN ? SWD_GEN_READ_PERIOD_MIN : context.config.period;
-    swd_latency_measure(context.read_period, swd_gen_latency, try_latency, &context, &swd_sweep_last.result);
+    static const struct latency_wire wire = {.safe_period = SWD_GEN_SAFE_PERIOD, .open_below = false};
+    latency_measure(&wire, context.read_period, swd_gen_latency, try_latency, &context, &swd_sweep_last.result);
     if (swd_sweep_last.result.latency != 0U) {
         swd_gen_latency = swd_sweep_last.result.latency;
     }
