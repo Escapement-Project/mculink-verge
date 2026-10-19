@@ -1023,16 +1023,56 @@ def sample_run(probe: "Probe", low: int, fill: int, at: int, count: int, expecte
     }
 
 
-def swd_gen(probe: "Probe", latency: int = 0) -> dict:
-    """Vendor 0x89: the generated SWD paths' state, setting the read latency first unless 0."""
-    reply = probe.command(bytes([DAP_VENDOR_SWD_GEN, latency]))
+SWD_GEN_MODE_NONE, SWD_GEN_MODE_MEASURE, SWD_GEN_MODE_PIN, SWD_GEN_MODE_AUTOMATIC = range(4)
+SWD_LATENCY_OUTCOMES = ("never measured", "measured", "two latencies left, the later used",
+                        "several latencies left", "nothing read right",
+                        "no latency agrees with every read")
+
+
+def swd_gen(probe: "Probe", latency: int = 0, mode: int = SWD_GEN_MODE_NONE) -> dict:
+    """Vendor 0x89: the generated SWD paths' state, setting the read latency first unless 0, then
+    measuring it, pinning it or letting the probe measure it on its own (src/dap_vendor.c)."""
+    reply = probe.command(bytes([DAP_VENDOR_SWD_GEN, latency, mode]))
     if reply[0] != DAP_VENDOR_SWD_GEN:
         raise RuntimeError("this image does not generate its SWD paths (no vendor 0x89)")
     fields = [int.from_bytes(reply[5 + 4 * i : 9 + 4 * i], "little") for i in range(6)]
     names = ("hz", "write_period", "read_period", "code_bytes", "builds", "failures")
-    return {"status": reply[1], "latency": reply[2], "masked": bool(reply[3]), "ok": bool(reply[4])} | dict(
+    state = {"status": reply[1], "latency": reply[2], "masked": bool(reply[3]), "ok": bool(reply[4])} | dict(
         zip(names, fields)
     )
+    if len(reply) >= 54:
+        u32 = [int.from_bytes(reply[34 + 4 * i : 38 + 4 * i], "little") for i in range(5)]
+        state["sweep"] = {
+            "automatic": bool(reply[29]), "outcome": reply[30], "latency": reply[31], "tries": reply[32],
+            "periods": reply[33], "word": u32[0], "cycles": u32[1], "runs": u32[2],
+            "consistent": u32[3] | (u32[4] << 32),
+        }
+    return state
+
+
+def latencies(mask: int) -> str:
+    """Bit n - 1 for latency n, as runs: '5-8,11'."""
+    runs, n = [], 1
+    while mask >> (n - 1):
+        if mask >> (n - 1) & 1:
+            start = n
+            while mask >> n & 1:
+                n += 1
+            runs.append(f"{start}" if start == n else f"{start}-{n}")
+        n += 1
+    return ",".join(runs) or "none"
+
+
+def describe_sweep(sweep: dict, cpu_hz: int = 150_000_000) -> str:
+    outcome = sweep["outcome"]
+    text = SWD_LATENCY_OUTCOMES[outcome] if outcome < len(SWD_LATENCY_OUTCOMES) else f"outcome {outcome}"
+    if sweep["latency"]:
+        text += f": latency {sweep['latency']}"
+    if outcome != 0:
+        text += (f"; agrees with {latencies(sweep['consistent'])}; DPIDR 0x{sweep['word']:08x}; "
+                 f"{sweep['tries']} generations at {sweep['periods']} read periods; "
+                 f"{sweep['cycles'] / cpu_hz * 1e3:.2f} ms")
+    return f"{text}; {sweep['runs']} measurements; {'automatic' if sweep['automatic'] else 'pinned'}"
 
 
 def cmd_gen(args) -> int:
@@ -1077,15 +1117,27 @@ def cmd_gen(args) -> int:
         chosen = (passing[0] + passing[-1] + 1) // 2
         print(f"  passing {passing[0]}..{passing[-1]}: latency {chosen}")
         args.latency = chosen
-    state = swd_gen(probe, args.latency)
+    if args.measure:
+        probe.connect(1)
+        if args.hz:
+            probe.swj_clock(args.hz)
+        try:
+            print(f"  DPIDR 0x{swd_reset(probe):08x} by line reset at the latency in use")
+        except RuntimeError as exc:
+            print(f"  line reset at the latency in use: {exc}")
+    mode = (SWD_GEN_MODE_MEASURE if args.measure else SWD_GEN_MODE_PIN if args.pin
+            else SWD_GEN_MODE_AUTOMATIC if args.automatic else SWD_GEN_MODE_NONE)
+    state = swd_gen(probe, args.latency, mode)
     if state["status"] != 0:
-        print(f"  latency {args.latency} refused")
+        print(f"  latency {args.latency}, mode {mode} refused")
     print(
         f"  clock asked {state['hz'] / 1e6:.3f} MHz: write period {state['write_period']}, "
         f"read period {state['read_period']} cycles; latency {state['latency']}; "
         f"{'masked' if state['masked'] else 'unmasked'}; {'generated' if state['ok'] else 'NOT generated'}, "
         f"{state['code_bytes']} bytes; {state['builds']} builds, {state['failures']} failures"
     )
+    if "sweep" in state:
+        print(f"  last measurement: {describe_sweep(state['sweep'])}")
     return 0 if state["ok"] else 1
 
 
@@ -1699,6 +1751,10 @@ def main() -> int:
     gen.add_argument("--calibrate", action="store_true", help="find the latency with DPIDR reads")
     gen.add_argument("--calibrate-hz", type=int, default=37_500_000, help="clock to calibrate at")
     gen.add_argument("--blocks", type=int, default=8, help="32-word DPIDR blocks per latency")
+    gen.add_argument("--measure", action="store_true", help="have the probe measure the latency itself")
+    gen.add_argument("--hz", type=int, default=0, help="with --measure, the clock to measure at")
+    gen.add_argument("--pin", action="store_true", help="stop the probe measuring the latency on its own")
+    gen.add_argument("--automatic", action="store_true", help="let the probe measure the latency on its own")
     gen.set_defaults(run=cmd_gen)
 
     cjtag = sub.add_parser("cjtag", help="activate OScan1 and read an IDCODE over two pins")

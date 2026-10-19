@@ -21,6 +21,7 @@
 #endif
 #ifdef SWD_CODEGEN
 #include "swd_gen.h"
+#include "swd_sweep.h"
 #endif
 #ifdef JTAG_CODEGEN
 #include "jtag_gen.h"
@@ -92,16 +93,37 @@
 #endif
 #define CJTAG_CAPS_BUILT (CJTAG_CAPS_SWD | CJTAG_CAPS_JTAG)
 
-/** ID_VENDOR_SWD_GEN takes `latency`: the cycles from a rising-edge store to the first load that
- * sees the bit it launched, 1 to 64, or 0 to leave it as it is. Setting it regenerates.
+/** ID_VENDOR_SWD_GEN takes `latency, mode`. `latency` is the cycles from a rising-edge store to
+ * the first load that sees the bit it launched, 1 to 64, or 0 to leave it as it is; setting it
+ * regenerates and pins it, as mode 2 does. `mode` then:
+ *
+ *     0  nothing more
+ *     1  measure the latency now, at the current clock, with DPIDR reads (src/swd_sweep.h)
+ *     2  pin the latency: the probe stops measuring it on its own
+ *     3  let the probe measure it on its own again
  *
  * It answers `status, latency, masked, ok`, then little-endian u32s: the clock asked for in Hz,
  * the write period and the read period in core cycles, the generated code's size in bytes, and
- * how many configurations were generated and how many could not be. Status is DAP_ERROR for a
- * latency out of range, which is then left unchanged. `ok` is 0 when the current configuration
- * could not be generated and transfers run ARM's own code.
+ * how many configurations were generated and how many could not be. Then the last measurement:
+ *
+ *     [29]      1 while the probe measures on its own, 0 once pinned
+ *     [30]      what it found, SWD_LATENCY_* (swd_latency.h)
+ *     [31]      the latency it set, or 0 if it kept the one in use
+ *     [32]      generations it ran reads with, at most 255
+ *     [33]      read periods it measured at, the host's included
+ *     [34..37]  the DPIDR value that read right
+ *     [38..41]  core cycles it took
+ *     [42..45]  measurements since the probe started
+ *     [46..53]  u64: the latencies every read agrees with, bit n - 1 for latency n
+ *
+ * Status is DAP_ERROR for a latency or a mode out of range, which change nothing, and for a
+ * measurement asked for while the port is not plain SWD, which does not run. `ok` is 0 when the
+ * current configuration could not be generated and transfers run ARM's own code.
  */
-#define SWD_GEN_LATENCY_MAX 64U
+#define SWD_GEN_MODE_NONE 0U
+#define SWD_GEN_MODE_MEASURE 1U
+#define SWD_GEN_MODE_PIN 2U
+#define SWD_GEN_MODE_AUTOMATIC 3U
 
 /** ID_VENDOR_JTAG_GEN takes `two_pin, four_wire`: each wire's cycles from the falling edge that
  * launches TDO to the first load that sees it, 1 to 64, or 0 to leave it as it is. Setting either
@@ -147,6 +169,20 @@
 /** Full scale, the probe's own 3V3, and R22/R23 halving pin 1 on its way to the ADC. */
 #define TARGET_FULL_SCALE_MV 3300U
 #define TARGET_DIVIDER 2U
+
+#if defined(SWD_CODEGEN) || defined(JTAG_CODEGEN)
+/** `n` little-endian u32s at `out`; returns the byte after them. */
+static uint8_t* put_u32s(uint8_t* out, const uint32_t* fields, uint32_t n) {
+    for (uint32_t i = 0U; i < n; i++) {
+        out[0] = (uint8_t)fields[i];
+        out[1] = (uint8_t)(fields[i] >> 8);
+        out[2] = (uint8_t)(fields[i] >> 16);
+        out[3] = (uint8_t)(fields[i] >> 24);
+        out += 4;
+    }
+    return out;
+}
+#endif
 
 uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
     const uint8_t id = request[0];
@@ -261,28 +297,45 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
 #ifdef SWD_CODEGEN
     case ID_VENDOR_SWD_GEN: {
         const uint32_t latency = request[1];
+        const uint32_t mode = request[2];
         response[1] = DAP_OK;
-        if (latency > SWD_GEN_LATENCY_MAX) {
+        if ((latency > SWD_LATENCY_MAX) || (mode > SWD_GEN_MODE_AUTOMATIC)) {
             response[1] = DAP_ERROR;
-        } else if (latency != 0U) {
-            swd_gen_latency = latency;
-            swd_gen_changed();
+        } else {
+            if (latency != 0U) {
+                swd_gen_latency = latency;
+                swd_sweep_automatic = false;
+                swd_gen_changed();
+            }
+            if (mode == SWD_GEN_MODE_PIN) {
+                swd_sweep_automatic = false;
+            } else if (mode == SWD_GEN_MODE_AUTOMATIC) {
+                swd_sweep_automatic = true;
+            } else if (mode == SWD_GEN_MODE_MEASURE) {
+                if ((DAP_Data.debug_port == DAP_PORT_SWD) && !cJTAG_Active()) {
+                    swd_sweep();
+                } else {
+                    response[1] = DAP_ERROR;
+                }
+            }
         }
         (void)swd_gen_ready();
         response[2] = (uint8_t)swd_gen_latency;
         response[3] = swd_gen_info.masked ? 1U : 0U;
         response[4] = swd_gen_info.ok ? 1U : 0U;
+        const struct swd_latency_result* measured = &swd_sweep_last.result;
         const uint32_t fields[] = {swd_gen_clock_hz,         swd_gen_info.write_period, swd_gen_info.read_period,
                                    swd_gen_info.code_bytes, swd_gen_builds,            swd_gen_failures};
-        uint8_t* out = response + 5;
-        for (uint32_t i = 0U; i < sizeof fields / sizeof fields[0]; i++) {
-            out[0] = (uint8_t)fields[i];
-            out[1] = (uint8_t)(fields[i] >> 8);
-            out[2] = (uint8_t)(fields[i] >> 16);
-            out[3] = (uint8_t)(fields[i] >> 24);
-            out += 4;
-        }
-        return (2U << 16) | (uint32_t)(out - response);
+        uint8_t* out = put_u32s(response + 5, fields, sizeof fields / sizeof fields[0]);
+        *out++ = swd_sweep_automatic ? 1U : 0U;
+        *out++ = (uint8_t)measured->outcome;
+        *out++ = (uint8_t)measured->latency;
+        *out++ = (uint8_t)(measured->tries < 255U ? measured->tries : 255U);
+        *out++ = (uint8_t)measured->periods;
+        const uint32_t sweep[] = {measured->word, swd_sweep_last.cycles, swd_sweep_last.runs,
+                                  (uint32_t)measured->consistent, (uint32_t)(measured->consistent >> 32)};
+        out = put_u32s(out, sweep, sizeof sweep / sizeof sweep[0]);
+        return (3U << 16) | (uint32_t)(out - response);
     }
 #endif
 
@@ -306,14 +359,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
                       (jtag_gen_info.looped ? 4U : 0U);
         const uint32_t fields[] = {jtag_gen_clock_hz,       jtag_gen_info.period, jtag_gen_info.frame,
                                    jtag_gen_info.code_bytes, jtag_gen_builds,      jtag_gen_failures};
-        uint8_t* out = response + 6;
-        for (uint32_t i = 0U; i < sizeof fields / sizeof fields[0]; i++) {
-            out[0] = (uint8_t)fields[i];
-            out[1] = (uint8_t)(fields[i] >> 8);
-            out[2] = (uint8_t)(fields[i] >> 16);
-            out[3] = (uint8_t)(fields[i] >> 24);
-            out += 4;
-        }
+        const uint8_t* out = put_u32s(response + 6, fields, sizeof fields / sizeof fields[0]);
         return (2U << 16) | (uint32_t)(out - response);
     }
 

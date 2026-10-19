@@ -70,6 +70,9 @@ extern uint32_t swd_gen_failures;
  * cannot be generated: the caller runs ARM's transfer instead. */
 bool swd_gen_ready(void);
 
+/** What swd_gen_ready generates for now: the clock, the latency and DAP_Data's settings. */
+struct swd_gen_config swd_gen_inputs(void);
+
 /** Whatever writes an input of swd_gen_ready calls this afterwards: the clock, the latency, or
  * DAP_Data's turnaround, data phase or idle cycles. Until it does, transfers keep the code
  * generated for the old values. */

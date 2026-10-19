@@ -709,16 +709,20 @@ static uint32_t period_for(uint32_t hz) {
 
 void swd_gen_changed(void) { current = false; }
 
-/** Out of line, so the check every command makes does not pay this frame. */
-static __attribute__((noinline)) bool regenerate(void) {
-    current = true;
-    const struct swd_gen_config want = {
+struct swd_gen_config swd_gen_inputs(void) {
+    return (struct swd_gen_config){
         .period = period_for(swd_gen_clock_hz),
         .latency = swd_gen_latency,
         .turnaround = DAP_Data.swd_conf.turnaround,
         .data_phase = DAP_Data.swd_conf.data_phase,
         .idle_cycles = DAP_Data.transfer.idle_cycles,
     };
+}
+
+/** Out of line, so the check every command makes does not pay this frame. */
+static __attribute__((noinline)) bool regenerate(void) {
+    current = true;
+    const struct swd_gen_config want = swd_gen_inputs();
     if (built_once && (gen_owner == GEN_OWNER_SWD) && (memcmp(&want, &built, sizeof want) == 0)) {
         return built_ok;
     }

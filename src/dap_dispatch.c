@@ -33,6 +33,7 @@
 #include "swd_dp.h"
 #ifdef SWD_CODEGEN
 #include "swd_gen.h"
+#include "swd_sweep.h"
 #endif
 #ifdef JTAG_CODEGEN
 #include "jtag_gen.h"
@@ -43,6 +44,9 @@ extern uint32_t arm_DAP_ProcessCommand(const uint8_t* request, uint8_t* response
 /** ARM's processing, for every command not routed here. Out of line and in flash: inlined into
  *  the SRAM dispatch below it would take all of DAP.c into SRAM with it. */
 __attribute__((noinline)) static uint32_t arm_command(const uint8_t* request, uint8_t* response) {
+#ifdef SWD_CODEGEN
+    swd_sweep_watch(request);
+#endif
     return arm_DAP_ProcessCommand(request, response);
 }
 
@@ -120,6 +124,11 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
     // The single-register command, for the SWD port only. The JTAG and two-pin copies are ARM's
     // because their transfer is reached through a shadowed pin layer, and the win is smaller.
     if ((*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_SWD)) {
+#ifdef SWD_CODEGEN
+        if (swd_sweep_pending()) {
+            swd_sweep_connect(request);
+        }
+#endif
         *response = *request;
         return (1U << 16) + 1U + SWD_TransferCommand(request + 1, response + 1);
     }

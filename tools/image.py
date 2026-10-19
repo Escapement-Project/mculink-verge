@@ -1044,15 +1044,16 @@ def main() -> int:
                     ("serve", "tud_vendor_rx_cb", "tud_vendor_tx_cb", "tud_hid_report_complete_cb"),
                     allow=("__NVIC_SystemReset",))  # the end of a reboot, which clang calls out of line
     check_sram_code(c, args.core1, "CPU 1 waits for work", ("wait_for_mailbox",))
-    # Allowed: ARM's processing of every command not routed in src/dap_dispatch.c, and regenerating
-    # the transfers when an input changed. The generated JTAG path only where it is built.
+    # Allowed: ARM's processing of every command not routed in src/dap_dispatch.c, regenerating
+    # the transfers when an input changed, and the first DAP_Transfer after a line reset, which may
+    # measure the read latency. The generated JTAG path only where it is built.
     jtag_gen = ("jgen_TransferBlock", "block_whole", "jgen_IR", "jtag_gen_ready", "jtag_gen_learn", "jgen_Transfer")
     if not any(name.split(".")[0] == "jtag_gen_ready" for name in symbols_with_size(args.core1)):
         jtag_gen = ()
     check_sram_code(c, args.core1, "CPU 1 runs a command's dispatch",
                     ("serve", "DAP_ExecuteCommand", "DAP_ProcessCommand", "transfer_block", "SWD_TransferBlock",
                      "SWD_TransferCommand", "memcpy") + jtag_gen,
-                    allow=("arm_command", "regenerate"))
+                    allow=("arm_command", "regenerate", "swd_sweep_connect"))
     check_clocks(c, args.elf)
     check_led(c, args.elf, slots)
     check_led_inputs(c, args.core1, slots)

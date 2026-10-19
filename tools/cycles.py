@@ -1282,6 +1282,67 @@ def dap_constants(path: str, cpu_hz: int) -> tuple[int, int, int]:
     return value("CPU_CLOCK", cpu_hz), value("IO_PORT_WRITE_CYCLES"), value("DELAY_SLOW_CYCLES", 3)
 
 
+DPIDR_MSPM0L1306 = 0x6BA02477
+ID_VENDOR_SWD_GEN = 0x89
+
+
+def timed_dpidr_target(elf: str, model: Model, latency: int, hz: int) -> "Machine":
+    """A probe connected over SWD at `hz` to a target that answers DPIDR reads `latency` cycles
+    after each edge, and answers with what the timing puts on the pin."""
+    word = DPIDR_MSPM0L1306
+    pattern = SWD_OK + [(word >> i) & 1 for i in range(32)] + [word.bit_count() & 1]
+    model = replace(model, engine=True, latency=latency)
+    probe = Machine(elf, TimedSwdTarget(pattern, latency, serve="wire", idle=1), restart_at=set(), model=model)
+    probe.resync_on_release = True
+    if "DAP_Setup" in probe.sym:
+        probe.call("DAP_Setup")
+    probe.command(bytes([ID_CONNECT, 1]))
+    probe.command(bytes([ID_SWJ_CLOCK]) + u32(hz))
+    probe.command(bytes([ID_TRANSFER_CONFIG, 0]) + u16(100) + u16(0))
+    probe.command(bytes([ID_SWD_CONFIGURE, 0]))
+    return probe
+
+
+def connect_measures(elf: str, model: Model, latency: int, hz: int) -> list[str]:
+    """A host connecting as probe-rs does, by line reset and DPIDR read, to a target the default
+    latency reads wrong: the probe has to measure on its own and answer the read right, then use
+    what it measured at the next connection rather than measure again."""
+    probe = timed_dpidr_target(elf, model, latency, hz)
+    tag = f"connecting at {hz / 1e6:g} MHz to latency {latency}"
+    for attempt in (1, 2):
+        # The timed target keeps time only while the machine counts.
+        probe.begin()
+        probe.command(bytes([ID_SWJ_SEQUENCE, 54]) + bytes([0xFF] * 6 + [0x07]))  # 51 high, 3 low
+        reply = probe.command(bytes([ID_TRANSFER, 0, 1, 0x02]))
+        probe.end()
+        state = probe.command(bytes([ID_VENDOR_SWD_GEN, 0, 0]))
+        measurements = int.from_bytes(state[42:46], "little")
+        if reply[1:3] != bytes([1, 1]) or int.from_bytes(reply[3:7], "little") != DPIDR_MSPM0L1306:
+            return [f"{tag}, attempt {attempt}: DPIDR read answered {reply[1:7].hex()}"]
+        if state[2] != latency or measurements != 1:
+            return [f"{tag}, attempt {attempt}: latency {state[2]} after {measurements} measurements"]
+    return []
+
+
+def measure_latency(elf: str, model: Model, latency: int, hz: int) -> list[str]:
+    """Vendor 0x89's measurement against a target that answers `latency` cycles after each edge."""
+    word = DPIDR_MSPM0L1306
+    probe = timed_dpidr_target(elf, model, latency, hz)
+    probe.begin()
+    reply = probe.command(bytes([ID_VENDOR_SWD_GEN, 0, 1]))
+    probe.end()
+    tag = f"latency {latency} at {hz / 1e6:g} MHz"
+    if reply[1] != 0 or reply[30] != 1 or reply[31] != latency or reply[2] != latency:
+        return [f"{tag}: measured outcome {reply[30]}, latency {reply[31]}, in use {reply[2]}"]
+    probe.begin()
+    reply = probe.command(bytes([ID_TRANSFER, 0, 1, 0x02]))
+    reads = probe.end().reads
+    margins = [r.margin for r in reads if r.margin is not None]
+    if reply[1:3] != bytes([1, 1]) or int.from_bytes(reply[3:7], "little") != word or not margins or min(margins) < 1:
+        return [f"{tag}: the DPIDR read after it answered {reply[1:7].hex()}, least margin {min(margins, default=None)}"]
+    return []
+
+
 def calibrate(elf: str, wire: str, words: int, cpu_hz: int, model: Model, config: str) -> int:
     """Recover the two constants ARM's clock arithmetic assumes, from what the image actually runs.
 
@@ -1503,6 +1564,14 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
                 failures.append(f"{wire}-{label}.trace: no baseline recorded")
             elif open(path).read() != body:
                 failures.append(f"{wire}-{label}.trace: wire events differ from the baseline")
+
+    # The read latency, measured by the probe against targets that answer later and earlier than
+    # the default: it has to find each one exactly, and leave every sample of the read that follows
+    # inside its window.
+    if "swd_sweep_last" in symbols(elf):
+        for latency, hz in ((6, 37_500_000), (9, 30_000_000)):
+            failures += measure_latency(elf, model, latency, hz)
+        failures += connect_measures(elf, model, 11, 37_500_000)
 
     known_path = os.path.join(baseline_dir, "known-overshoot.txt")
     known = set()
