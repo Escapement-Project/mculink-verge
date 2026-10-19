@@ -20,6 +20,13 @@
 #define VCOM_TXD_PIN 25U
 #define VCOM_PORT 0U
 #define VCOM_PIN_MODE (IOCON_FUNC1 | IOCON_MODE_INACT | IOCON_DIGITAL_EN | IOCON_SLEW_FAST)
+
+/** The board support's logging pins, unconnected on the MCU-Link. Left on Flexcomm 0 they are a
+ *  second RXD and TXD, and the receiver follows P0_29, which reads low: a break that never ends,
+ *  and not one byte from the target. */
+#define BSP_LOG_RXD_PIN 29U
+#define BSP_LOG_TXD_PIN 30U
+#define UNUSED_PIN_MODE (IOCON_FUNC0 | IOCON_MODE_PULLUP | IOCON_DIGITAL_EN)
 #define VCOM_DEFAULT_BAUD 115200U
 
 static uint32_t vcom_clock_hz;
@@ -48,6 +55,8 @@ __attribute__((noinline)) void vcom_init(void) {
     // driver accepts, but at a megabaud and above it is 2.40% out, and a link needs room for the
     // target's error too. A multiplier of zero is a ratio of one.
     CLOCK_SetClkDiv(kCLOCK_DivFlexFrg0, 0U, false);
+    IOCON_PinMuxSet(IOCON, VCOM_PORT, BSP_LOG_RXD_PIN, UNUSED_PIN_MODE);
+    IOCON_PinMuxSet(IOCON, VCOM_PORT, BSP_LOG_TXD_PIN, UNUSED_PIN_MODE);
     IOCON_PinMuxSet(IOCON, VCOM_PORT, VCOM_RXD_PIN, VCOM_PIN_MODE);
     IOCON_PinMuxSet(IOCON, VCOM_PORT, VCOM_TXD_PIN, VCOM_PIN_MODE);
     vcom_clock_hz = CLOCK_GetFlexCommClkFreq(0U);
