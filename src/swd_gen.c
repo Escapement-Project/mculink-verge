@@ -104,6 +104,10 @@ struct sched {
     uint32_t grid_period;
     uint32_t grid_low;
     uint32_t last_load;
+    // Over every sample so far: the fewest cycles after the edge that launched its bit, and the
+    // fewest before the edge that launches the next, negative for a sample after that edge.
+    int32_t after_launch;
+    int32_t before_next;
     struct gen_schedule q;
 };
 
@@ -118,6 +122,8 @@ static void sched_reset(struct sched* s, const struct gen_cfg* cfg) {
     s->last_fall = 0U;
     s->last_rise = 0U;
     s->last_load = 0U;
+    s->after_launch = INT32_MAX;
+    s->before_next = INT32_MAX;
     s->grid_period = cfg->wperiod;
     s->grid_low = cfg->wlow;
 }
@@ -240,6 +246,10 @@ static uint32_t sample(struct sched* s, uint32_t launch, uint32_t end, uint32_t 
     if (best > s->last_load) {
         s->last_load = best;
     }
+    const int32_t after = (int32_t)(best - launch);
+    const int32_t before = (int32_t)(end - best);
+    s->after_launch = after < s->after_launch ? after : s->after_launch;
+    s->before_next = before < s->before_next ? before : s->before_next;
     return best;
 }
 
@@ -535,6 +545,14 @@ static void emit_fail(struct gen_emitter* e, const struct gen_cfg* c, bool read,
     emit_return(e, t_mov(0U, R_ACK));
 }
 
+/** The target latencies, TIMING.md's A, for which every sample the last schedule placed reads
+ * the bit it wants: a sample `after` cycles after its bit's launch and `before` cycles before the
+ * next launch reads it for latencies from 1 - before to after. */
+static void latencies_served(const struct sched* s, int32_t* first, int32_t* last) {
+    *first = 1 - s->before_next;
+    *last = s->after_launch;
+}
+
 /** One function: entry, the transfer loop, and its exits. */
 static bool emit_function(struct gen_emitter* e, const struct gen_cfg* c, bool read) {
     struct sched* s = &sched;
@@ -638,22 +656,25 @@ bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_ge
     struct gen_emitter e = {
         .code = (uint32_t*)SWD_GEN_BASE, .cap = SWD_GEN_SIZE / 4U, .delay_reg = R_DELAY, .filler = FILLER};
 
+    struct swd_gen_info info = {
+        .write_period = c.wperiod,
+        .read_period = c.period,
+        .masked_from = period > SAFE_MARGIN ? period - SAFE_MARGIN : 1U,
+        .masked = c.masked,
+        .ok = true,
+    };
     const uint32_t read_at = e.pos;
     if (!emit_function(&e, &c, true)) {
         return false;
     }
+    latencies_served(&sched, &info.read_first, &info.read_last);
     const uint32_t write_at = e.pos;
     if (!emit_function(&e, &c, false)) {
         return false;
     }
-
-    swd_gen_info = (struct swd_gen_info){
-        .write_period = c.wperiod,
-        .read_period = c.period,
-        .code_bytes = 4U * e.pos,
-        .masked = c.masked,
-        .ok = true,
-    };
+    latencies_served(&sched, &info.write_first, &info.write_last);
+    info.code_bytes = 4U * e.pos;
+    swd_gen_info = info;
     // Only SWCLK and SWDIO answer a masked-port store. Nothing else in the image uses MPIN.
     DBGIF_GPIO->MASK[0] = ~(SWCLK | SWDIO);
     // The code was written as data; the core has to fetch what is there now.

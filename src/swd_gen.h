@@ -80,8 +80,17 @@ struct swd_gen_info {
     uint32_t write_period; // cycles a clock the probe drives
     uint32_t read_period;  // cycles a clock the target drives
     uint32_t code_bytes;   // both functions, out of SWD_GEN_SIZE
-    bool masked;           // transfers run with interrupts masked
-    bool ok;               // the last configuration generated
+    // The target latencies, TIMING.md's A, for which a read samples every bit right, and a
+    // write its acknowledge, in cycles. A build for latency L serves at least L itself.
+    int32_t read_first;
+    int32_t read_last;
+    int32_t write_first;
+    int32_t write_last;
+    // The lowest latency generated masked at this read period. Below it every latency samples
+    // just before the next rising edge, and so generates the same code.
+    uint32_t masked_from;
+    bool masked; // transfers run with interrupts masked
+    bool ok;     // the last configuration generated
 };
 
 extern struct swd_gen_info swd_gen_info;
