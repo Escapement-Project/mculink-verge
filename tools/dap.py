@@ -45,6 +45,13 @@ DAP_SWJ_SEQUENCE = 0x12
 DAP_JTAG_SEQUENCE = 0x14
 DAP_EXECUTE_COMMANDS = 0x7F
 DAP_JTAG_CONFIGURE = 0x15
+DAP_SWO_TRANSPORT = 0x17
+DAP_SWO_MODE = 0x18
+DAP_SWO_BAUDRATE = 0x19
+DAP_SWO_CONTROL = 0x1A
+DAP_SWO_STATUS = 0x1B
+DAP_SWO_DATA = 0x1C
+SWO_ACTIVE, SWO_STREAM_ERROR, SWO_OVERRUN = 0x01, 0x40, 0x80
 DAP_VENDOR_CJTAG_CONTROL = 0x83
 DAP_VENDOR_J8 = 0x84
 DAP_VENDOR_REBOOT = 0x85
@@ -246,6 +253,57 @@ def one(args) -> Probe:
     if drained:
         print(f"  drained {drained} replies left by a run that stopped early")
     return probes[0]
+
+
+def cmd_swo(args) -> int:
+    """Capture SWO with DAP_SWO_Data, polling as fast as the replies come, and save the bytes."""
+    probe = one(args)
+    for request in (bytes([DAP_SWO_CONTROL, 0]), bytes([DAP_SWO_TRANSPORT, 1]), bytes([DAP_SWO_MODE, 1])):
+        status = probe.command(request)[1]
+        if status != 0:
+            sys.exit(f"0x{request[0]:02x} {request[1]} answered {status:#x}")
+    baud = int.from_bytes(probe.command(bytes([DAP_SWO_BAUDRATE]) + args.baud.to_bytes(4, "little"))[1:5], "little")
+    if baud == 0:
+        sys.exit(f"the probe refused {args.baud} baud")
+    if probe.command(bytes([DAP_SWO_CONTROL, 1]))[1] != 0:
+        sys.exit("capture did not start")
+
+    data = bytearray()
+    polls = empty = 0
+    flagged = {SWO_STREAM_ERROR: [], SWO_OVERRUN: []}
+    limit = args.limit.to_bytes(2, "little")
+
+    def poll() -> int:
+        nonlocal polls, empty
+        reply = probe.command(bytes([DAP_SWO_DATA]) + limit)
+        count = int.from_bytes(reply[2:4], "little")
+        polls += 1
+        empty += count == 0
+        for bit, at in flagged.items():
+            if reply[1] & bit:
+                at.append(len(data))
+        data.extend(reply[4:4 + count])
+        return count
+
+    started = time.monotonic()
+    while time.monotonic() - started < args.seconds:
+        poll()
+    elapsed = time.monotonic() - started
+    probe.command(bytes([DAP_SWO_CONTROL, 0]))
+    while poll():
+        pass
+    status = probe.command(bytes([DAP_SWO_STATUS]))
+    probe.command(bytes([DAP_SWO_MODE, 0]))
+    probe.release()
+
+    open(args.out, "wb").write(data)
+    print(f"{baud} baud: {len(data)} bytes in {elapsed:.2f} s, {len(data) / elapsed / 1e3:.1f} KB/s, "
+          f"{polls} polls ({empty} empty), saved to {args.out}")
+    for bit, name in ((SWO_STREAM_ERROR, "stream error"), (SWO_OVERRUN, "overrun")):
+        at = flagged[bit]
+        print(f"  {name}: {len(at)} replies" + (f", first at bytes {at[:8]}" if at else ""))
+    print(f"  after stop: status {status[1]:#04x}, {int.from_bytes(status[2:6], 'little')} bytes left")
+    return 0
 
 
 def cmd_list(args) -> int:
@@ -1615,6 +1673,13 @@ def main() -> int:
     block.add_argument("--queue", type=int, default=0,
                        help="queue this many commands asynchronously instead, so the host never waits")
     block.set_defaults(run=cmd_block)
+
+    swo = sub.add_parser("swo", help="capture SWO through DAP_SWO_Data and save it")
+    swo.add_argument("--baud", type=int, default=1_000_000)
+    swo.add_argument("--seconds", type=float, default=2.0)
+    swo.add_argument("--limit", type=int, default=508, help="bytes to ask for in each DAP_SWO_Data")
+    swo.add_argument("--out", default="swo.bin")
+    swo.set_defaults(run=cmd_swo)
 
     sample = sub.add_parser("sample", help="sweep where a read samples SWDIO, with vendor 0x87")
     sample.add_argument("--hz", type=int, default=1_000_000, help="clock for the line reset only")
