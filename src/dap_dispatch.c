@@ -126,7 +126,7 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
     if ((*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_SWD)) {
 #ifdef SWD_CODEGEN
         if (swd_sweep_pending()) {
-            swd_sweep_connect(request);
+            return swd_sweep_connect(request, response);
         }
 #endif
         *response = *request;

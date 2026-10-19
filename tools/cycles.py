@@ -1324,6 +1324,25 @@ def connect_measures(elf: str, model: Model, latency: int, hz: int) -> list[str]
     return []
 
 
+def connect_rescued(elf: str, model: Model, latency: int, hz: int) -> list[str]:
+    """The same at a clock with margin enough that connecting measures nothing first, to a target
+    the default latency reads wrong all the same: the failed DPIDR read has to be measured and run
+    again, so the host sees it answer."""
+    probe = timed_dpidr_target(elf, model, latency, hz)
+    probe.begin()
+    probe.command(bytes([ID_SWJ_SEQUENCE, 54]) + bytes([0xFF] * 6 + [0x07]))
+    reply = probe.command(bytes([ID_TRANSFER, 0, 1, 0x02]))
+    probe.end()
+    state = probe.command(bytes([ID_VENDOR_SWD_GEN, 0, 0]))
+    measurements, rescues = (int.from_bytes(state[i : i + 4], "little") for i in (42, 54))
+    tag = f"connecting at {hz / 1e6:g} MHz to latency {latency}"
+    if reply[1:3] != bytes([1, 1]) or int.from_bytes(reply[3:7], "little") != DPIDR_MSPM0L1306:
+        return [f"{tag}: DPIDR read answered {reply[1:7].hex()}"]
+    if state[2] != latency or measurements != 1 or rescues != 1:
+        return [f"{tag}: latency {state[2]} after {measurements} measurements, {rescues} rescues"]
+    return []
+
+
 def measure_latency(elf: str, model: Model, latency: int, hz: int) -> list[str]:
     """Vendor 0x89's measurement against a target that answers `latency` cycles after each edge."""
     word = DPIDR_MSPM0L1306
@@ -1572,6 +1591,7 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
         for latency, hz in ((6, 37_500_000), (9, 30_000_000)):
             failures += measure_latency(elf, model, latency, hz)
         failures += connect_measures(elf, model, 11, 37_500_000)
+        failures += connect_rescued(elf, model, 12, 25_000_000)
 
     known_path = os.path.join(baseline_dir, "known-overshoot.txt")
     known = set()

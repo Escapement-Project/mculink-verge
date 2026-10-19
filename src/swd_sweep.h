@@ -10,8 +10,9 @@
 
 struct swd_sweep_result {
     struct swd_latency_result result;
-    uint32_t cycles; // the whole sweep, the final generation included
-    uint32_t runs;   // sweeps since the probe started
+    uint32_t cycles;  // the whole sweep, the final generation included
+    uint32_t runs;    // sweeps since the probe started
+    uint32_t rescues; // connections whose DPIDR read failed and read right once measured
 };
 
 /** The last sweep's, for a host to read back. */
@@ -30,11 +31,14 @@ extern struct swd_connect swd_sweep_line;
 /** Says whether a DAP_Transfer has to go to swd_sweep_connect first: the first since a line reset. */
 static inline bool swd_sweep_pending(void) { return swd_sweep_line.reset; }
 
-/** The first DAP_Transfer after a line reset. If it starts with a DPIDR read, which is how a host
- * connects, and the probe measures on its own: uses what it measured for the same target since the
- * host's DAP_Connect, or measures, where the generated reads leave less than two cycles of margin
- * either side for the latency in use. */
-void swd_sweep_connect(const uint8_t* request);
+/** The first DAP_Transfer after a line reset, run here in place of the usual route; returns what
+ * DAP_ProcessCommand does. If it starts with a DPIDR read, which is how a host connects, and the
+ * probe measures on its own: first uses what it measured for the same target since the host's
+ * DAP_Connect, or measures where the generated reads leave less than two cycles of margin either
+ * side for the latency in use. Then, if the DPIDR read failed and nothing measured yet, measures
+ * and runs the command again when that changed the latency. ARM's transfer loop stops at the
+ * first transfer that does not answer OK, so the command ran nothing but that read. */
+uint32_t swd_sweep_connect(const uint8_t* request, uint8_t* response);
 
 /** Measures the latency at the current clock and DAP_Data settings, uses what it found
  * (swd_latency_result.latency, when not 0) and generates for it.

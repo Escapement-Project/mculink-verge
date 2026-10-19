@@ -61,6 +61,20 @@ static uint32_t code_hash(void) {
     return h;
 }
 
+/** The safe period reads right for every latency the search can find, whatever it is built for. */
+static void test_safe_period(void) {
+    for (uint32_t turnaround = 1U; turnaround <= 4U; turnaround++) {
+        for (uint32_t latency = 1U; latency <= SWD_LATENCY_MAX; latency++) {
+            const struct swd_gen_config config = {
+                .period = SWD_LATENCY_SAFE_PERIOD, .latency = latency, .turnaround = turnaround, .data_phase = 1U};
+            swd_gen_fn read;
+            swd_gen_fn write;
+            assert(swd_gen_build(&config, &read, &write));
+            assert(swd_gen_info.read_first <= 1 && swd_gen_info.read_last >= (int32_t)SWD_LATENCY_MAX);
+        }
+    }
+}
+
 /** What the search skips: below masked_from, every latency generates the same code. */
 static void test_same_below(void) {
     for (uint32_t period = 4U; period <= 160U; period += period < 24U ? 1U : 17U) {
@@ -135,6 +149,14 @@ static void test_connect(void) {
         feed(&short_reset, ((uint64_t)1 << 49) - 1U, 52U, piece);
         assert(!short_reset.reset);
 
+        // What the probe sends when it selects the target again: probe-rs's own form.
+        assert(swd_connect_targetsel(0x01002927U) ==
+               (((uint64_t)__builtin_parity(0x01002927U) << 45) | ((uint64_t)0x01002927U << 13) | 0x1F99U));
+        struct swd_connect again = {0};
+        line_reset(&again, 3U, piece);
+        feed(&again, swd_connect_targetsel(0x01002927U), SWD_CONNECT_TARGETSEL_CLOCKS, piece);
+        assert(again.multidrop && again.targetsel == 0x01002927U);
+
         // JTAG to SWD: a line reset, the select word, a line reset, idle.
         struct swd_connect jtag = {0};
         feed(&jtag, ((uint64_t)1 << 51) - 1U, 51U, piece);
@@ -166,6 +188,7 @@ int main(void) {
     }
     test_range();
     test_same_below();
+    test_safe_period();
     test_connect();
 
     static const uint32_t periods[][2] = {{3, 4},   {4, 4},   {5, 5},   {6, 6},   {7, 7},   {8, 8},  {9, 9},
@@ -201,11 +224,11 @@ int main(void) {
         }
     }
 
-    // No answer: nothing passes, nothing changes.
+    // No answer: nothing passes, nothing changes, and one generation at the safe period says so.
     struct target silent = {0U, 4U, 4U, 0U};
     struct swd_latency_result r;
     swd_latency_measure(4U, 7U, try_latency, &silent, &r);
-    assert(r.outcome == SWD_LATENCY_NO_BAND && r.latency == 0U);
+    assert(r.outcome == SWD_LATENCY_NO_BAND && r.latency == 0U && r.tries == 1U);
 
     // Two latencies that read right but read different words cannot both be the target.
     struct target odd = {7U, 4U, 4U, 6U};

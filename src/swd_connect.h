@@ -69,6 +69,13 @@ static inline void swd_connect_bit(struct swd_connect* c, uint32_t bit) {
     c->ones = 0U;
 }
 
+/** A TARGETSEL write of `value` as probe-rs clocks it, SWD_CONNECT_TARGETSEL_BITS and two idle. */
+#define SWD_CONNECT_TARGETSEL_CLOCKS 48U
+static inline uint64_t swd_connect_targetsel(uint32_t value) {
+    return ((uint64_t)(uint32_t)__builtin_parity(value) << 45) | ((uint64_t)value << 13) | 0x1F00U |
+           SWD_CONNECT_TARGETSEL_REQUEST;
+}
+
 /** DAP_SWJ_Sequence's `count` clocks of `data`, least significant bit first. */
 static inline void swd_connect_sequence(struct swd_connect* c, const uint8_t* data, uint32_t count) {
     for (uint32_t i = 0U; i < count; i++) {

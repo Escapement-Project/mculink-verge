@@ -6,6 +6,7 @@
 #include "DAP.h"
 #include "gen.h"
 #include "swd_connect.h"
+#include "swd_dp.h"
 #include "swd_gen.h"
 
 /** DPIDR reads at each candidate. No sample position on the bench ever gave a mix of right and
@@ -99,33 +100,91 @@ static bool short_margin(void) {
     return false;
 }
 
+/** The target the last line reset selected, among those measured, or NULL. */
+static struct known* known_target(void) {
+    for (uint32_t i = 0U; i < known_count; i++) {
+        if ((known[i].multidrop == swd_sweep_line.multidrop) && (known[i].targetsel == swd_sweep_line.targetsel)) {
+            return &known[i];
+        }
+    }
+    return NULL;
+}
+
+/** Measures for the target the last line reset selected, and keeps what it found. A target that
+ * did not answer is measured again at its next connection. */
+static void measure_target(void) {
+    swd_sweep();
+    const uint32_t outcome = swd_sweep_last.result.outcome;
+    if ((outcome != SWD_LATENCY_MEASURED) && (outcome != SWD_LATENCY_AMBIGUOUS) &&
+        (outcome != SWD_LATENCY_UNRESOLVED)) {
+        return;
+    }
+    struct known* target = known_target();
+    if (target == NULL) {
+        target = &known[known_count < KNOWN_TARGETS ? known_count++ : KNOWN_TARGETS - 1U];
+    }
+    *target = (struct known){swd_sweep_line.multidrop, swd_sweep_line.targetsel, swd_gen_latency};
+}
+
+/** The host's line reset again, and its TARGETSEL on a multidrop wire, in probe-rs's form. A read
+ * whose OK acknowledge the probe misread as WAIT or FAULT, with DAP_Data's data phase off, stops
+ * clocking while the target still sends, and the target is out of step until a line reset. The
+ * reset is longer than a host's: the target can take up to 36 of its clocks as the rest of that
+ * read, the data, parity and turnaround, and a line reset needs 50 high after them. */
+static void reselect(void) {
+    static const uint8_t line_reset[] = {0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU,
+                                         0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0x00U}; // 88 high, 3 low
+    SWJ_Sequence(91U, line_reset);
+    if (swd_sweep_line.multidrop) {
+        const uint64_t bits = swd_connect_targetsel(swd_sweep_line.targetsel);
+        uint8_t targetsel[SWD_CONNECT_TARGETSEL_CLOCKS / 8U];
+        for (uint32_t i = 0U; i < sizeof targetsel; i++) {
+            targetsel[i] = (uint8_t)(bits >> (8U * i));
+        }
+        SWJ_Sequence(SWD_CONNECT_TARGETSEL_CLOCKS, targetsel);
+    }
+}
+
+static uint32_t run_transfer(const uint8_t* request, uint8_t* response) {
+    *response = *request;
+    return (1U << 16) + 1U + SWD_TransferCommand(request + 1, response + 1);
+}
+
 /** Out of line and in flash: inlined, it would take the measurement into SRAM with it. */
-__attribute__((noinline)) void swd_sweep_connect(const uint8_t* request) {
+__attribute__((noinline)) uint32_t swd_sweep_connect(const uint8_t* request, uint8_t* response) {
     swd_sweep_line.reset = false;
     // [1] the DAP index, [2] the transfer count, [3] the first transfer's request.
     if (!swd_sweep_automatic || (request[2] == 0U) || ((request[3] & ~DAP_TRANSFER_TIMESTAMP) != DPIDR_READ)) {
-        return;
+        return run_transfer(request, response);
     }
-    for (uint32_t i = 0U; i < known_count; i++) {
-        if ((known[i].multidrop == swd_sweep_line.multidrop) && (known[i].targetsel == swd_sweep_line.targetsel)) {
-            if (known[i].latency != swd_gen_latency) {
-                swd_gen_latency = known[i].latency;
-                swd_gen_changed();
-            }
-            return;
+    bool measured = false;
+    const struct known* target = known_target();
+    if (target != NULL) {
+        if (target->latency != swd_gen_latency) {
+            swd_gen_latency = target->latency;
+            swd_gen_changed();
         }
+    } else if (short_margin()) {
+        measure_target();
+        measured = true;
     }
-    if (!short_margin()) {
-        return;
+    const uint32_t length = run_transfer(request, response);
+    // [1] the transfers that completed: none, so the DPIDR read did not answer right.
+    if (measured || (response[1] != 0U)) {
+        return length;
     }
-    swd_sweep();
-    const uint32_t outcome = swd_sweep_last.result.outcome;
-    if ((outcome == SWD_LATENCY_MEASURED) || (outcome == SWD_LATENCY_AMBIGUOUS) ||
-        (outcome == SWD_LATENCY_UNRESOLVED)) {
-        // A target that did not answer is measured again at its next connection.
-        const uint32_t slot = known_count < KNOWN_TARGETS ? known_count++ : KNOWN_TARGETS - 1U;
-        known[slot] = (struct known){swd_sweep_line.multidrop, swd_sweep_line.targetsel, swd_gen_latency};
+    // A known target that fails now has moved, as some do after a reset.
+    const uint32_t before = swd_gen_latency;
+    reselect();
+    measure_target();
+    if (swd_gen_latency == before) {
+        return length;
     }
+    const uint32_t again = run_transfer(request, response);
+    if (response[1] != 0U) {
+        swd_sweep_last.rescues++;
+    }
+    return again;
 }
 
 void swd_sweep(void) {

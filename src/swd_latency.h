@@ -13,6 +13,10 @@
  * latencies read right with the same generations there. Where one period leaves them apart it
  * goes on at the next longer ones: reads at a slower clock than the host asked for, which no
  * target minds.
+ *
+ * It starts with one generation at SWD_LATENCY_SAFE_PERIOD, which reads right whatever the
+ * latency. A target that does not answer there does not answer at all, and costs that one
+ * generation rather than one for every latency. What it reads is the word the rest must match.
  */
 #ifndef SWD_LATENCY_H
 #define SWD_LATENCY_H
@@ -26,12 +30,16 @@
 /** Longer read periods tried after the host's, while two latencies or more are left. */
 #define SWD_LATENCY_EXTRA_PERIODS 3U
 
+/** A read period at which every latency up to SWD_LATENCY_MAX generates unmasked, sampling just
+ * before the next rising edge, and so reads right for all of them (tools/swd_latency_test.c). */
+#define SWD_LATENCY_SAFE_PERIOD 72U
+
 /** What a measurement found. */
 #define SWD_LATENCY_NEVER 0U        // none has run
 #define SWD_LATENCY_MEASURED 1U     // one latency agrees with every read
 #define SWD_LATENCY_AMBIGUOUS 2U    // two neighbouring latencies do: the later is used
 #define SWD_LATENCY_UNRESOLVED 3U   // more do: the latency in use is kept if it read right, else the latest
-#define SWD_LATENCY_NO_BAND 4U      // no generation read right
+#define SWD_LATENCY_NO_BAND 4U      // nothing read right at the host's period, or at the safe one
 #define SWD_LATENCY_INCONSISTENT 5U // no latency agrees with every read, or two read different words
 
 /** What one generation's reads said. */
@@ -179,24 +187,30 @@ static inline void swd_latency_measure(uint32_t period, uint32_t start, swd_late
     if ((start < 1U) || (start > SWD_LATENCY_MAX)) {
         start = 1U;
     }
-    for (uint32_t k = 0U; (k <= SWD_LATENCY_EXTRA_PERIODS) && !swd_latency_done(&s); k++) {
+    bool answered = true;
+    if (period < SWD_LATENCY_SAFE_PERIOD) {
+        s.period = SWD_LATENCY_SAFE_PERIOD;
+        result->periods++;
+        answered = swd_latency_passes(&s, start);
+    }
+    for (uint32_t k = 0U; answered && (k <= SWD_LATENCY_EXTRA_PERIODS) && !swd_latency_done(&s); k++) {
         s.period = period + k;
         result->periods++;
         swd_latency_band(&s, start);
         if (k == 0U) {
             s.start_passed = (s.passed & ((uint64_t)1 << (start - 1U))) != 0U;
-        }
-        if (!s.have_word) {
-            // Nothing read right at any latency: no target answered.
-            break;
+            // A slower period cannot say where the host's has to sample.
+            answered = s.passed != 0U;
         }
     }
 
     const uint32_t left = swd_latency_count(result->consistent);
     const uint32_t highest = swd_latency_highest(result->consistent);
-    if (!s.have_word) {
+    if (s.inconsistent) {
+        result->outcome = SWD_LATENCY_INCONSISTENT;
+    } else if (!answered) {
         result->outcome = SWD_LATENCY_NO_BAND;
-    } else if (s.inconsistent || (left == 0U)) {
+    } else if (left == 0U) {
         result->outcome = SWD_LATENCY_INCONSISTENT;
     } else if (left == 1U) {
         result->outcome = SWD_LATENCY_MEASURED;

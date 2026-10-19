@@ -1040,12 +1040,12 @@ def swd_gen(probe: "Probe", latency: int = 0, mode: int = SWD_GEN_MODE_NONE) -> 
     state = {"status": reply[1], "latency": reply[2], "masked": bool(reply[3]), "ok": bool(reply[4])} | dict(
         zip(names, fields)
     )
-    if len(reply) >= 54:
-        u32 = [int.from_bytes(reply[34 + 4 * i : 38 + 4 * i], "little") for i in range(5)]
+    if len(reply) >= 58:
+        u32 = [int.from_bytes(reply[34 + 4 * i : 38 + 4 * i], "little") for i in range(6)]
         state["sweep"] = {
             "automatic": bool(reply[29]), "outcome": reply[30], "latency": reply[31], "tries": reply[32],
             "periods": reply[33], "word": u32[0], "cycles": u32[1], "runs": u32[2],
-            "consistent": u32[3] | (u32[4] << 32),
+            "consistent": u32[3] | (u32[4] << 32), "rescues": u32[5],
         }
     return state
 
@@ -1072,7 +1072,8 @@ def describe_sweep(sweep: dict, cpu_hz: int = 150_000_000) -> str:
         text += (f"; agrees with {latencies(sweep['consistent'])}; DPIDR 0x{sweep['word']:08x}; "
                  f"{sweep['tries']} generations at {sweep['periods']} read periods; "
                  f"{sweep['cycles'] / cpu_hz * 1e3:.2f} ms")
-    return f"{text}; {sweep['runs']} measurements; {'automatic' if sweep['automatic'] else 'pinned'}"
+    return (f"{text}; {sweep['runs']} measurements, {sweep['rescues']} connections rescued; "
+            f"{'automatic' if sweep['automatic'] else 'pinned'}")
 
 
 def cmd_gen(args) -> int:

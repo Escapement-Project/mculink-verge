@@ -115,6 +115,7 @@
  *     [38..41]  core cycles it took
  *     [42..45]  measurements since the probe started
  *     [46..53]  u64: the latencies every read agrees with, bit n - 1 for latency n
+ *     [54..57]  connections whose DPIDR read failed and read right once measured
  *
  * Status is DAP_ERROR for a latency or a mode out of range, which change nothing, and for a
  * measurement asked for while the port is not plain SWD, which does not run. `ok` is 0 when the
@@ -332,8 +333,12 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         *out++ = (uint8_t)measured->latency;
         *out++ = (uint8_t)(measured->tries < 255U ? measured->tries : 255U);
         *out++ = (uint8_t)measured->periods;
-        const uint32_t sweep[] = {measured->word, swd_sweep_last.cycles, swd_sweep_last.runs,
-                                  (uint32_t)measured->consistent, (uint32_t)(measured->consistent >> 32)};
+        const uint32_t sweep[] = {measured->word,
+                                  swd_sweep_last.cycles,
+                                  swd_sweep_last.runs,
+                                  (uint32_t)measured->consistent,
+                                  (uint32_t)(measured->consistent >> 32),
+                                  swd_sweep_last.rescues};
         out = put_u32s(out, sweep, sizeof sweep / sizeof sweep[0]);
         return (3U << 16) | (uint32_t)(out - response);
     }
