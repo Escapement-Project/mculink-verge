@@ -160,9 +160,10 @@ class Probe:
 
     def core1_status(self) -> dict[str, int]:
         """CPU 1's progress and last fault, answered by CPU 0 however CPU 1 is doing."""
-        raw = bytes(self.device.ctrl_transfer(0xC0, USB_CORE1_STATUS_REQUEST, 0, 0, 36, timeout=1000))
-        names = ("commands", "command", "exception", "cfsr", "hfsr", "bfar", "pc", "lr", "xpsr")
-        return dict(zip(names, struct.unpack("<9I", raw)))
+        raw = bytes(self.device.ctrl_transfer(0xC0, USB_CORE1_STATUS_REQUEST, 0, 0, 40, timeout=1000))
+        # Images before the stale count answer 36 bytes, and the dict leaves it out.
+        names = ("commands", "command", "exception", "cfsr", "hfsr", "bfar", "pc", "lr", "xpsr", "stale")
+        return dict(zip(names, struct.unpack(f"<{len(raw) // 4}I", raw)))
 
     def reboot(self, bootloader: bool = False) -> None:
         """Reset through CPU 0's USB control path, without waiting on DAP execution."""
@@ -639,6 +640,8 @@ def cmd_core1(args) -> int:
         return 1
     command = status["command"].to_bytes(4, "little")
     print(f"  {status['commands']} replies published; current or last command {command.hex(' ')}")
+    if "stale" in status:
+        print(f"  {status['stale']} commands from a host that had gone, dropped unrun")
     if status["exception"] == 0:
         print("  no fault recorded")
     else:

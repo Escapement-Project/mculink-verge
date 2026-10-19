@@ -84,7 +84,21 @@ void tud_vendor_rx_cb(uint8_t index, const uint8_t* buffer, uint32_t length) {
     signal_core1();
 }
 
-/** The head reply has left: its slot goes back to CPU 1, which may be waiting for one. */
+/** TinyUSB reports no bus reset to the application. This runs at each configuration the host sets,
+ *  and one follows every reset. The reset ended every transfer TinyUSB had started without a
+ *  completion, so the reply in flight would never leave, and what the last host left queued would
+ *  answer the next one's commands. Each configuration starts a new numbering instead: CPU 1 drops
+ *  older commands unrun, CPU 0 drops their replies unsent, and the abort cuts short the command
+ *  CPU 1 may be running. A command CPU 1 had already found live when the abort landed runs to its
+ *  end, because starting a transfer clears the flag. */
+void tud_mount_cb(void) {
+    dap_shared.first_live_seq = dap_shared.next_request_seq;
+    response_in_flight = false;
+    __DMB();
+    transfer_abort();
+}
+
+/** The head reply has left, or will not: its slot goes back to CPU 1, which may be waiting for one. */
 static void response_sent(void) {
     dap_shared.response_head = dap_usb_slot_release(dap_shared.response_len, dap_shared.response_head, REQUEST_SLOTS);
     response_in_flight = false;
@@ -137,6 +151,10 @@ static void usb_transport_task(void) {
         return;
     }
     __DMB();
+    if (dap_usb_stale(dap_shared.response_seq[head], dap_shared.first_live_seq)) {
+        response_sent();
+        return;
+    }
     (void)dap_usb_start_tx(&response_in_flight, head, length, start_tx, dap_shared.response);
 }
 

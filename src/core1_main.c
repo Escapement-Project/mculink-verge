@@ -86,6 +86,7 @@ static bool dap_task(void) {
     // this one runs.
     bool const use_hid =
         dap_usb_choose_hid(hid_ready, dap_shared.hid_request_seq[hid], bulk_ready, dap_shared.request_seq[bulk]);
+    uint32_t const seq = use_hid ? dap_shared.hid_request_seq[hid] : dap_shared.request_seq[bulk];
     if (use_hid) {
         memcpy(request_copy, dap_shared.hid_request[hid], dap_shared.hid_request_len[hid]);
         __DMB();
@@ -95,6 +96,13 @@ static bool dap_task(void) {
         __DMB();
         dap_shared.request_head = dap_usb_slot_release(dap_shared.request_len, bulk, REQUEST_SLOTS);
         wake_core0();  // to receive into the slot
+    }
+
+    // The last thing before running it, to leave the abort the least room: a gone host's transfer
+    // clears the flag as it starts, and then runs to its end.
+    if (dap_usb_stale(seq, dap_shared.first_live_seq)) {
+        dap_shared.core1.stale++;
+        return true;
     }
 
     uint32_t command;
@@ -115,6 +123,7 @@ static bool dap_task(void) {
     }
     if (produced != 0U) {
         memcpy(dap_shared.response[out], response_copy, produced);
+        dap_shared.response_seq[out] = seq;
         dap_shared.response_transport[out] = use_hid ? DAP_TRANSPORT_HID : DAP_TRANSPORT_BULK;
         __DMB();
         dap_shared.response_len[out] = (uint16_t)produced;

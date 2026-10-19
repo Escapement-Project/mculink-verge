@@ -143,6 +143,38 @@ static void test_request_queue_and_transport_order(void) {
     assert(dap_usb_choose_hid(true, UINT32_MAX, true, 0U));
 }
 
+/** A new configuration's numbering, as tud_mount_cb starts it, across the wrap of the counter:
+ *  CPU 1 runs only the new host's command, and CPU 0 sends only its reply. */
+static void test_new_configuration_drops_the_last_hosts_work(void) {
+    uint32_t const queued[] = {UINT32_MAX - 1U, UINT32_MAX};  // the last host's, not yet run
+    uint32_t const replied = queued[0] - 1U;                  // and a reply it never read
+
+    uint32_t const first_live = queued[1] + 1U;  // the host resets the bus and sets a configuration
+    uint32_t const fresh = first_live;
+
+    uint32_t ran = 0U;
+    uint32_t replies[] = {replied, 0U};
+    uint32_t published = 1U;
+    uint32_t const taken[] = {queued[0], queued[1], fresh};
+    for (uint32_t i = 0U; i < 3U; i++) {
+        if (!dap_usb_stale(taken[i], first_live)) {
+            ran++;
+            replies[published++] = taken[i];
+        }
+    }
+    assert(ran == 1U && published == 2U && replies[1] == fresh);
+
+    uint32_t sent = 0U;
+    for (uint32_t i = 0U; i < published; i++) {
+        if (!dap_usb_stale(replies[i], first_live)) {
+            assert(replies[i] == fresh);
+            sent++;
+        }
+    }
+    assert(sent == 1U);
+    assert(!dap_usb_stale(first_live + 1000U, first_live));
+}
+
 static void test_abort_overtakes_queued_commands(void) {
     volatile uint16_t request_len[SLOT_COUNT] = {64U, 64U, 0U};
     volatile uint8_t transfer_abort = 0U;
@@ -276,6 +308,7 @@ int main(void) {
     test_tx_completion_during_start();
     test_cross_core_response_handoff();
     test_request_queue_and_transport_order();
+    test_new_configuration_drops_the_last_hosts_work();
     test_abort_overtakes_queued_commands();
     test_mailbox_level_handoff();
     test_dap_core_security_attribution();

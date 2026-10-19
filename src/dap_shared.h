@@ -64,6 +64,7 @@ typedef struct {
     uint32_t pc;  // from the fault's stacked frame
     uint32_t lr;
     uint32_t xpsr;
+    uint32_t stale;  // commands from a host that had gone, dropped without running
 } dap_core1_status_t;
 
 /** Which transport response_transport names. */
@@ -86,6 +87,9 @@ typedef struct {
     volatile uint8_t request_tail;
     volatile uint8_t rx_armed_slot;
     volatile uint32_t next_request_seq;
+    // Where this USB configuration's numbering starts. Commands before it, and their replies, are
+    // a gone host's, and both cores drop them (src/main.c, tud_mount_cb).
+    volatile uint32_t first_live_seq;
     // HID requests, the same way. CPU 0 copies each report in, because TinyUSB's HID class receives
     // into a buffer of its own.
     volatile uint16_t hid_request_len[REQUEST_SLOTS];
@@ -95,6 +99,7 @@ typedef struct {
     // Replies, in the order CPU 1 ran their commands: CPU 1 fills, CPU 0 releases once USB has sent
     // the slot. Both transports share the ring and CPU 0 sends from its head only.
     volatile uint16_t response_len[REQUEST_SLOTS];
+    volatile uint32_t response_seq[REQUEST_SLOTS];  // the command's
     volatile uint8_t response_transport[REQUEST_SLOTS];
     volatile uint8_t response_head;
     volatile uint8_t response_tail;

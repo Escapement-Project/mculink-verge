@@ -18,6 +18,12 @@ static inline bool dap_usb_sequence_before(uint32_t left, uint32_t right) {
     return (int32_t)(left - right) < 0;
 }
 
+/** Whether the command numbered `seq`, or its reply, came from a host that has gone: before
+ *  `first_live`, the number the current USB configuration started at. */
+static inline bool dap_usb_stale(uint32_t seq, uint32_t first_live) {
+    return dap_usb_sequence_before(seq, first_live);
+}
+
 /** A slot holds something while its length is non-zero. Whoever fills a slot writes the length
  *  last, and whoever empties it writes zero once it no longer needs the bytes. */
 static inline bool dap_usb_slot_free(volatile uint16_t const* len, uint8_t slot) {
