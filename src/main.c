@@ -42,6 +42,8 @@ static bool disconnect_complete;
 static volatile bool response_in_flight;
 
 static void usb_transport_task(void);
+static void arm_rx(void);
+static void send_head(void);
 static void start_core1(void);
 
 static void signal_core1(void) {
@@ -82,6 +84,7 @@ void tud_vendor_rx_cb(uint8_t index, const uint8_t* buffer, uint32_t length) {
     __DMB();
     dap_shared.request_tail = dap_usb_next_slot(dap_shared.request_tail, REQUEST_SLOTS);
     signal_core1();
+    arm_rx();
 }
 
 /** TinyUSB reports no bus reset to the application. This runs at each configuration the host sets,
@@ -115,6 +118,7 @@ void tud_vendor_tx_cb(uint8_t index, uint32_t sent_bytes) {
     (void)sent_bytes;
     if (head_in_flight_on(DAP_TRANSPORT_BULK)) {
         response_sent();
+        send_head();
     }
 }
 
@@ -133,18 +137,28 @@ static bool start_tx(void* context, uint8_t slot, uint16_t length) {
 
 /** Keep TinyUSB and endpoint ownership on CPU 0. */
 static void usb_transport_task(void) {
-    bool const vendor_mounted = tud_vendor_mounted();
-    if (vendor_mounted) {
-        (void)dap_usb_arm_rx(dap_usb_slot_free(dap_shared.request_len, dap_shared.request_tail),
-                             dap_shared.request_tail, &dap_shared.rx_armed_slot, start_rx, dap_shared.request);
-    }
-
+    arm_rx();
     if (disconnect_requested) {
         tud_disconnect();
         disconnect_complete = true;
         disconnect_requested = false;
     }
+    send_head();
+}
 
+/** Arms the OUT endpoint into the tail request slot if that is free. Arming claims the endpoint,
+ *  so a call while it is armed changes nothing. The receive callback calls it as well, so the
+ *  next request can arrive without the loop coming round. */
+static void arm_rx(void) {
+    if (tud_vendor_mounted()) {
+        (void)dap_usb_arm_rx(dap_usb_slot_free(dap_shared.request_len, dap_shared.request_tail),
+                             dap_shared.request_tail, &dap_shared.rx_armed_slot, start_rx, dap_shared.request);
+    }
+}
+
+/** Starts the head reply if CPU 1 has published it and none is on its way. The completion
+ *  callbacks call it as well, so a reply already waiting leaves without the loop coming round. */
+static void send_head(void) {
     uint8_t const head = dap_shared.response_head;
     uint16_t const length = dap_shared.response_len[head];
     if (length == 0U) {
@@ -269,6 +283,7 @@ void tud_hid_report_complete_cb(uint8_t instance, uint8_t const* report, uint16_
     (void)len;
     if (head_in_flight_on(DAP_TRANSPORT_HID)) {
         response_sent();
+        send_head();
     }
 }
 
