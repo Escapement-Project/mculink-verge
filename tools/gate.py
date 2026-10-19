@@ -31,6 +31,8 @@ HOST_CHECKS = (
     ("SWO ring and baud arithmetic: sanitizers, both compilers", ["uv", "run", "tools/swo_ring_test.py"]),
     ("SWD latency measurement against the generator: sanitizers, both compilers",
      ["uv", "run", "tools/swd_latency_test.py"]),
+    ("JTAG latency measurement against the generator, both wires: sanitizers, both compilers",
+     ["uv", "run", "tools/jtag_latency_test.py"]),
     ("generators: sanitizers, both compilers, QEMU", ["uv", "run", "tools/gen_host.py"]),
 )
 IMAGES = [(toolchain, codegen) for toolchain in ("gcc", "clang") for codegen in (False, True)]

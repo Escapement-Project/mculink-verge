@@ -123,6 +123,8 @@ struct block {
     uint32_t consume_lag; // the same for the sample a block folds in
     uint32_t sample;      // the sample's cycle within its block
     bool masked;          // the whole call runs masked
+    uint32_t offset;      // the sample's cycles after the fall that launched its bit
+    bool bound;           // the latency decided where something went
 };
 
 static struct gen_schedule layout;
@@ -188,18 +190,30 @@ static bool try_four_wire(struct block* b, uint32_t cycles, uint32_t at) {
     b->consume_lag = b->lag + (previous ? 1U : 0U);
     b->sample = sample;
     b->masked = b->lag != 0U;
+    b->offset = at;
     return finish(b, cycles);
 }
 
 /** A four-wire clock. The shortest clock that fits wins. Within one, a sample before the next
  * fall, which no interrupt can overtake, as late as possible; failing that, a masked one after
  * it, as near the middle of the window as fits. The window is [fall + latency, next fall +
- * FOUR_WIRE_HOLD], less MARGIN at each end. */
-static bool layout_four_wire(struct block* b, uint32_t period, uint32_t latency) {
+ * FOUR_WIRE_HOLD], less MARGIN at each end. With `earliest`, the sample goes as early in it as fits. */
+static bool layout_four_wire(struct block* b, uint32_t period, uint32_t latency, bool earliest) {
     const uint32_t first = latency + MARGIN;
-    for (uint32_t cycles = later(period, 5U); cycles <= later(period, 5U) + first; cycles++) {
+    // Only the first clock length's unmasked search, from the latest cycle down, is the same at a
+    // lower latency.
+    b->bound = true;
+    for (uint32_t cycles = later(period, 5U); earliest && (cycles <= later(period, 5U) + first); cycles++) {
+        for (uint32_t at = first; at <= cycles + FOUR_WIRE_HOLD - MARGIN; at++) {
+            if (try_four_wire(b, cycles, at)) {
+                return true;
+            }
+        }
+    }
+    for (uint32_t cycles = later(period, 5U); !earliest && (cycles <= later(period, 5U) + first); cycles++) {
         for (uint32_t at = cycles - 1U; (at >= first) && (at < cycles); at--) {
             if (try_four_wire(b, cycles, at)) {
+                b->bound = cycles != later(period, 5U);
                 return true;
             }
         }
@@ -219,7 +233,7 @@ static bool layout_four_wire(struct block* b, uint32_t period, uint32_t latency)
 }
 
 /** A two-pin frame, from the fall that ends the last frame's TDO packet. */
-static bool layout_two_pin(struct block* b, uint32_t period, uint32_t latency) {
+static bool layout_two_pin(struct block* b, uint32_t period, uint32_t latency, bool earliest) {
     const uint32_t p = period;
     const uint32_t low = p == 3U ? 2U : p / 2U;
     const uint32_t high = p - low;
@@ -254,14 +268,23 @@ static bool layout_two_pin(struct block* b, uint32_t period, uint32_t latency) {
         place(f2 + 3U, UINT32_MAX, S_UNMASK);
     }
     place(f2 + 3U, UINT32_MAX, S_DATA);
-    place(f2 + 3U, UINT32_MAX, S_CONSUME);
+    const uint32_t consume = place(f2 + 3U, UINT32_MAX, S_CONSUME);
     // The sample goes in the block's last cycle, just before the next block's fall. That fall
     // ends the TDO packet, which is a whole period with a whole high phase, and the next frame's
     // first rising edge comes a whole period after this one's last.
     const uint32_t used = layout.ev[layout.n - 1U].cycle;
-    uint32_t cycles = later(f2 + latency + MARGIN + 1U, used + 2U);
-    cycles = later(later(cycles, f2 + p), later(r3 + high, r3 + p - r1));
+    const uint32_t otherwise = later(later(used + 2U, f2 + p), later(r3 + high, r3 + p - r1));
+    const uint32_t cycles = later(f2 + latency + MARGIN + 1U, otherwise);
+    b->bound = earliest || (cycles != otherwise);
     b->sample = cycles - 1U;
+    if (earliest) {
+        // As early as the latency allows, and after this block's fold-in of the last one's.
+        b->sample = later(f2 + latency + MARGIN, consume + 1U);
+        while (gen_taken(&layout, b->sample)) {
+            b->sample++;
+        }
+    }
+    b->offset = b->sample - f2;
     put(b->sample, S_SAMPLE);
     b->lag = 0U;
     b->consume_lag = 1U;
@@ -481,6 +504,9 @@ struct xfer {
     uint32_t chain;   // the last fold-in, which the next one follows
     uint32_t busy[2]; // the fold-in of each sample register's last sample
     uint32_t branch;
+    uint32_t tdo_fall; // two-pin: the fall that starts the last frame's TDO packet
+    uint32_t offset;   // the fewest cycles any sample comes after the fall that launched its bit
+    bool bound;        // the latency decided where something went
 };
 
 static struct xfer xs;
@@ -551,6 +577,8 @@ static void x_take(struct xfer* x, uint32_t at) {
         x->q.failed = true;
     }
     gen_put(&x->q, at, t_ldrb(reg, X_GPIO, x->two_pin ? OFF_B_TMS : OFF_B_TDO));
+    const uint32_t offset = at - (x->two_pin ? x->tdo_fall : x->pend_at);
+    x->offset = offset < x->offset ? offset : x->offset;
     x->chain = x_side(x, later(at + 2U, x->chain + 1U), fold(x, x->pend_dst, x->pend_bit, reg));
     x->busy[x->sreg] = x->chain;
     if (!x->two_pin) {
@@ -674,10 +702,9 @@ static void fx_transfer(struct xfer* x, bool read, uint32_t before, uint32_t aft
             // Before the next clock falls, which already carries the next TMS, and otherwise as
             // late as the decision allows, as every other sample is.
             const uint32_t first = x->fall + x->latency + MARGIN;
-            uint32_t at = later(first, x->fall + x->p - FOUR_WIRE_DECIDE);
-            if (!x->masked) {
-                at = later(at, first + FOUR_WIRE_DECIDE_SLACK);
-            }
+            const uint32_t decide = x->fall + x->p - FOUR_WIRE_DECIDE;
+            const uint32_t at = later(decide, x->masked ? first : first + FOUR_WIRE_DECIDE_SLACK);
+            x->bound = x->bound || (at != decide);
             x_take(x, x_free(x, at, false));
             x_decide(x);
         }
@@ -781,10 +808,12 @@ static void cx_frame(struct xfer* x, uint32_t ntdi, uint32_t tms, bool decide) {
     // The next frame starts once this TDO packet has a whole period, a whole high phase and the
     // latency the sample in its last cycle needs, and its first rising edge comes a whole period
     // after this frame's last. The sample's cycle has to be free.
-    x->t = later(later(f2 + x->latency + MARGIN + 1U, f2 + p), later(r3 + x->high, r3 + p - later(4U, x->low)));
-    x->t = later(x->t, last + 2U);
+    const uint32_t otherwise = later(later(f2 + p, last + 2U), later(r3 + x->high, r3 + p - later(4U, x->low)));
+    x->t = later(f2 + x->latency + MARGIN + 1U, otherwise);
+    x->bound = x->bound || (x->t != otherwise);
     x->d1 = d1;
     x->rise = r3;
+    x->tdo_fall = f2;
 }
 
 static void cx_transfer(struct xfer* x, bool read, uint32_t before, uint32_t after, uint32_t idle) {
@@ -959,7 +988,8 @@ static void x_patch(struct xfer* x, uint32_t cycle, uint32_t insn) {
 /** Lays out one transfer in `xs` with a four-wire clock or two-pin packet of `p` cycles. */
 static bool lay_xfer(const struct xfer_cfg* c, bool read, uint32_t p) {
     struct xfer* x = &xs;
-    *x = (struct xfer){.two_pin = c->two_pin, .latency = c->latency, .first = UINT32_MAX, .uniform = c->loop};
+    *x = (struct xfer){
+        .two_pin = c->two_pin, .latency = c->latency, .first = UINT32_MAX, .uniform = c->loop, .offset = UINT32_MAX};
     gen_schedule_reset(&x->q, xfer_events, sizeof xfer_events / sizeof xfer_events[0]);
     x->p = p;
     if (c->two_pin) {
@@ -968,6 +998,8 @@ static bool lay_xfer(const struct xfer_cfg* c, bool read, uint32_t p) {
     } else {
         x->low = p / 2U;
         x->masked = p <= c->latency + MARGIN + 1U;
+        // A masked four-wire clock samples from the latency on, after the next fall.
+        x->bound = x->masked;
     }
     x->high = p - x->low;
     if (c->two_pin) {
@@ -993,6 +1025,7 @@ static bool emit_xfer(struct gen_emitter* e, const struct xfer_cfg* c, bool read
             return false;
         }
     }
+    x->bound = x->bound || (p != shortest);
     struct span loop = {0U, 0U, 0U};
     if (x->uniform) {
         if (!find_loop(x, &loop) || (loop.count > 255U)) {
@@ -1122,8 +1155,12 @@ bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan
     }
     const bool two_pin = config->wire == JTAG_GEN_TWO_PIN;
     static struct block b;
-    if (!(two_pin ? layout_two_pin(&b, config->period, config->latency)
-                  : layout_four_wire(&b, config->period, config->latency))) {
+    const bool earliest = config->earliest != 0U;
+    if (earliest && (read != NULL)) {
+        return false;
+    }
+    if (!(two_pin ? layout_two_pin(&b, config->period, config->latency, earliest)
+                  : layout_four_wire(&b, config->period, config->latency, earliest))) {
         return false;
     }
     struct gen_emitter e = {
@@ -1146,13 +1183,17 @@ bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan
     uint32_t read_at = scan_end;
     uint32_t write_at = scan_end;
     bool transfers = false;
+    uint32_t read_offset = 0U;
+    bool read_bound = false;
     // Unrolled where that fits, which leaves the fastest clocks the fewest instructions.
-    for (uint32_t loop = 0U; (loop < 2U) && !transfers; loop++) {
+    for (uint32_t loop = 0U; (read != NULL) && (loop < 2U) && !transfers; loop++) {
         xc.loop = loop != 0U;
         e.pos = scan_end;
         e.failed = false;
         read_at = e.pos;
         transfers = emit_xfer(&e, &xc, true);
+        read_offset = xs.offset;
+        read_bound = xs.bound;
         write_at = e.pos;
         transfers = transfers && emit_xfer(&e, &xc, false);
     }
@@ -1169,13 +1210,22 @@ bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan
         .ok = true,
         .transfers = transfers,
         .looped = transfers && xc.loop,
+        // Without transfers, ARM's run as scans.
+        .scan_last = (int32_t)b.offset,
+        .read_last = (int32_t)(transfers ? read_offset : b.offset),
+        .write_last = (int32_t)(transfers ? xs.offset : b.offset),
+        // Transfers that did not fit at this latency might at a lower one.
+        .same_below =
+            (!b.bound && ((read == NULL) || (transfers && !read_bound && !xs.bound))) ? config->latency + 1U : 0U,
     };
     // The code was written as data; the core has to fetch what is there now.
     __DSB();
     __ISB();
     *scan = (jtag_gen_scan_fn)(JTAG_GEN_BASE + 4U * scan_at + 1U);
-    *read = transfers ? (jtag_gen_xfer_fn)(JTAG_GEN_BASE + 4U * read_at + 1U) : NULL;
-    *write = transfers ? (jtag_gen_xfer_fn)(JTAG_GEN_BASE + 4U * write_at + 1U) : NULL;
+    if (read != NULL) {
+        *read = transfers ? (jtag_gen_xfer_fn)(JTAG_GEN_BASE + 4U * read_at + 1U) : NULL;
+        *write = transfers ? (jtag_gen_xfer_fn)(JTAG_GEN_BASE + 4U * write_at + 1U) : NULL;
+    }
     return true;
 }
 
@@ -1215,9 +1265,9 @@ COMMAND_PATH void jtag_gen_learn(uint32_t wire) {
     waited = false;
 }
 
-/** Out of line, so the check every transfer command makes does not pay its frame or its divide. */
-static __attribute__((noinline)) bool regenerate(uint32_t wire) {
-    struct jtag_gen_config want = {
+/** The configuration the host asked for, before pacing. */
+static struct jtag_gen_config host_config(uint32_t wire) {
+    return (struct jtag_gen_config){
         .wire = wire,
         .period = period_for(jtag_gen_clock_hz),
         .latency = jtag_gen_latency[wire == JTAG_GEN_TWO_PIN ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE],
@@ -1227,11 +1277,24 @@ static __attribute__((noinline)) bool regenerate(uint32_t wire) {
                      : 0U,
         .idle = DAP_Data.transfer.idle_cycles,
     };
+}
+
+static uint32_t paced_idle(uint32_t idle) { return idle + jtag_gen_paced > 255U ? 255U : idle + jtag_gen_paced; }
+
+struct jtag_gen_config jtag_gen_inputs(uint32_t wire) {
+    struct jtag_gen_config config = host_config(wire);
+    config.idle = paced_idle(config.idle);
+    return config;
+}
+
+/** Out of line, so the check every transfer command makes does not pay its frame or its divide. */
+static __attribute__((noinline)) bool regenerate(uint32_t wire) {
+    struct jtag_gen_config want = host_config(wire);
     if (!jtag_gen_pacing || (built_once && (memcmp(&want, &asked, sizeof want) != 0))) {
         jtag_gen_paced = 0U;
     }
     asked = want;
-    want.idle = want.idle + jtag_gen_paced > 255U ? 255U : want.idle + jtag_gen_paced;
+    want.idle = paced_idle(want.idle);
     if (built_once && (gen_owner == GEN_OWNER_JTAG) && (memcmp(&want, &built, sizeof want) == 0)) {
         return built_ok;
     }

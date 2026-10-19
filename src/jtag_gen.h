@@ -24,11 +24,16 @@
 /** Longer periods leave the cycle counts of one frame near 32 bits; ARM's path runs them. */
 #define JTAG_GEN_PERIOD_MAX (1U << 24)
 /** Cycles from the falling edge that launches TDO to the first load that sees it: on two pins the
- * fall that starts the TDO packet, on four wires the clock's own fall. The bench measured 8 for
- * both on a CC1312R1 after a pin reset. After a system reset the Cortex-M DAP behind its ICEPick
- * sends TDO about 2 cycles later, so four wires default to 10 (CJTAGGEN.md). */
+ * fall that starts the TDO packet, on four wires the clock's own fall. On a CC1312R1 two pins
+ * measured 8 after either reset; the Cortex-M DAP behind its ICEPick sends four-wire TDO at 7
+ * after a pin reset and 11 after a system reset (CJTAGGEN.md), so four wires default to 10, which
+ * read both on the bench. */
 #define JTAG_GEN_LATENCY_DEFAULT 8U
 #define JTAG_GEN_FOUR_WIRE_LATENCY_DEFAULT 10U
+/** A period at which a build for the highest latency the generator takes, 64, samples later
+ * than that on both wires, with `earliest` too, and so reads right for every latency
+ * (tools/jtag_latency_test.c). */
+#define JTAG_GEN_SAFE_PERIOD 72U
 /** The most frames one call clocks. */
 #define JTAG_GEN_FRAMES_MAX 32U
 
@@ -36,12 +41,13 @@
 #define JTAG_GEN_TWO_PIN 1U
 
 struct jtag_gen_config {
-    uint32_t wire;    // JTAG_GEN_FOUR_WIRE or JTAG_GEN_TWO_PIN
-    uint32_t period;  // core cycles per TCK clock or TCKC packet
-    uint32_t latency; // see JTAG_GEN_LATENCY_DEFAULT
-    uint32_t before;  // the transfers' bypass bits before the DAP: its index in the chain
-    uint32_t after;   // and after it
-    uint32_t idle;    // Run-Test/Idle clocks after each transfer
+    uint32_t wire;     // JTAG_GEN_FOUR_WIRE or JTAG_GEN_TWO_PIN
+    uint32_t period;   // core cycles per TCK clock or TCKC packet
+    uint32_t latency;  // see JTAG_GEN_LATENCY_DEFAULT
+    uint32_t before;   // the transfers' bypass bits before the DAP: its index in the chain
+    uint32_t after;    // and after it
+    uint32_t idle;     // Run-Test/Idle clocks after each transfer
+    uint32_t earliest; // 1: every sample as early as the latency allows, to measure it; scans only
 };
 
 /** Clocks `count` JTAG clocks, 1 to JTAG_GEN_FRAMES_MAX, with TMS held at `tms` (0 or 1) and TDI
@@ -59,8 +65,9 @@ typedef uint32_t (*jtag_gen_scan_fn)(uint32_t tdi, uint32_t count, uint32_t tms)
 typedef uint64_t (*jtag_gen_xfer_fn)(uint32_t request, uint8_t* words, uint32_t count, uint32_t tdi);
 
 /** Generates for `config` into SRAMX: the scan function, then the read and write transfers if they
- * fit, NULL where they do not. False if the configuration is out of range or the scan function does
- * not fit, in which case nothing generated earlier is usable either. */
+ * fit, NULL where they do not. With `read` and `write` NULL, the scan function alone. False if the
+ * configuration is out of range or the scan function does not fit, in which case nothing generated
+ * earlier is usable either. */
 bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan, jtag_gen_xfer_fn* read,
                     jtag_gen_xfer_fn* write);
 
@@ -82,6 +89,9 @@ extern uint32_t jtag_gen_failures;
  * changed since the last call. Only one wire's code exists at a time. False when it cannot be
  * generated: the caller runs ARM's path instead. */
 bool jtag_gen_ready(uint32_t wire);
+
+/** What jtag_gen_ready generates `wire` for now, learned idle clocks included. */
+struct jtag_gen_config jtag_gen_inputs(uint32_t wire);
 
 /** Run-Test/Idle clocks the generated transfers add to the host's after each transfer, learned from
  * the target's WAITs: one more after each command that met one, up to JTAG_GEN_PACED_MAX, and none
@@ -105,6 +115,17 @@ struct jtag_gen_info {
     bool ok;             // the last configuration generated
     bool transfers;      // and its transfers too
     bool looped;         // with their data bits in a loop, where unrolled they did not fit
+    // The real latencies the scans, the read transfers and the write transfers read right for:
+    // every one up to these, the fewest cycles any of their samples comes after the fall that
+    // launched its bit. The other end of the window is taken as fixed: on four wires TDO holds at
+    // least FOUR_WIRE_HOLD cycles past the next fall, which no sample passes, and on two pins
+    // every sample comes before it.
+    int32_t scan_last;
+    int32_t read_last;
+    int32_t write_last;
+    // Every latency below this one generates the same code in this configuration, or 0 when the
+    // latency decided where something went.
+    uint32_t same_below;
 };
 
 extern struct jtag_gen_info jtag_gen_info;
