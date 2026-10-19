@@ -760,20 +760,23 @@ BRANCH = re.compile(r"^\s*([0-9a-f]+):\s+(bl|blx|b(?:eq|ne|cs|cc|hs|lo|mi|pl|vs|
 
 
 def check_sram_code(c: Checker, elf: str, what: str, names: tuple[str, ...], allow: tuple[str, ...] = ()) -> None:
-    """Both cores wait for work from SRAM, and CPU 0 runs each command's USB work from there too:
-    a core fetching from flash slows the other's command code (src/main.c), and CPU 1's wait polls
-    a level instead of sleeping (src/core1_main.c). A dropped section attribute, or a call the
+    """Both cores wait for work from SRAM and run each command's own code from there: a core
+    fetching from flash slows the other's command code (src/main.c), and CPU 1's wait polls a
+    level instead of sleeping (src/core1_main.c). A dropped section attribute, or a call the
     compiler adds back into flash, would undo that and change nothing else checked here.
 
     `allow` names flash functions a branch may reach anyway, ones that run once rather than per
-    command or per wait, matched without the suffix LTO adds to a local symbol's name."""
+    command or per wait, matched without the suffix LTO adds to a local symbol's name. A call
+    through a register is not checked: on these paths it goes to the generated code in SRAMX."""
     sym = symbols_with_size(elf)
     sram = range(0x2000_0000, 0x3000_0000)
     before = len(c.problems)
     for name in names:
-        if not c.check(name in sym, f"{name} is not in the image ({what})"):
+        # A local function can carry the suffix LTO gives it.
+        found = name if name in sym else next((k for k in sym if k.split(".")[0] == name), None)
+        if not c.check(found is not None, f"{name} is not in the image ({what})"):
             continue
-        at, size = sym[name]
+        at, size = sym[found]
         if not c.check(at in sram, f"{name} is at {at:#x}, not in SRAM"):
             continue
         listing = subprocess.run(
@@ -781,7 +784,7 @@ def check_sram_code(c: Checker, elf: str, what: str, names: tuple[str, ...], all
              f"--stop-address={at + size:#x}", elf], capture_output=True, text=True, check=True).stdout
         for line in listing.splitlines():
             m = BRANCH.match(line)
-            if not m:
+            if not m or (m.group(2) == "blx" and not m.group(3)):
                 continue
             target = int(m.group(3), 16) if m.group(3) else None
             # A call out of range gets a linker veneer, placed next to the caller in SRAM. What
@@ -1041,6 +1044,15 @@ def main() -> int:
                     ("serve", "tud_vendor_rx_cb", "tud_vendor_tx_cb", "tud_hid_report_complete_cb"),
                     allow=("__NVIC_SystemReset",))  # the end of a reboot, which clang calls out of line
     check_sram_code(c, args.core1, "CPU 1 waits for work", ("wait_for_mailbox",))
+    # Allowed: ARM's processing of every command not routed in src/dap_dispatch.c, and regenerating
+    # the transfers when an input changed. The generated JTAG path only where it is built.
+    jtag_gen = ("jgen_TransferBlock", "block_whole", "jgen_IR", "jtag_gen_ready", "jtag_gen_learn", "jgen_Transfer")
+    if not any(name.split(".")[0] == "jtag_gen_ready" for name in symbols_with_size(args.core1)):
+        jtag_gen = ()
+    check_sram_code(c, args.core1, "CPU 1 runs a command's dispatch",
+                    ("serve", "DAP_ExecuteCommand", "DAP_ProcessCommand", "transfer_block", "SWD_TransferBlock",
+                     "SWD_TransferCommand", "memcpy") + jtag_gen,
+                    allow=("arm_command", "regenerate"))
     check_clocks(c, args.elf)
     check_led(c, args.elf, slots)
     check_led_inputs(c, args.core1, slots)

@@ -16,6 +16,7 @@
 #include "dap_core.h"
 #include "dap_dispatch.h"
 #include "dap_shared.h"
+#include "hot.h"
 #include "led.h"
 #include "marker.h"
 #include "reboot.h"
@@ -172,13 +173,8 @@ __attribute__((noinline, section(".data_core1_wait"))) static void wait_for_mail
     }
 }
 
-/** Bring the DAP up, then wait for CPU 0 to publish another request. */
-__attribute__((noreturn)) void core1_main(void) {
-    board_timestamp_init();
-    DAP_Setup();
-    target_sense_init();
-    dap_shared.transfer_abort = &DAP_TransferAbort;
-
+/** Run each request CPU 0 publishes, and wait for the next. */
+__attribute__((noreturn)) COMMAND_PATH static void serve(void) {
     for (;;) {
         if (dap_task()) {
             continue;
@@ -190,4 +186,13 @@ __attribute__((noreturn)) void core1_main(void) {
             wait_for_mailbox();
         }
     }
+}
+
+/** Bring the DAP up, then wait for CPU 0 to publish another request. */
+__attribute__((noreturn)) void core1_main(void) {
+    board_timestamp_init();
+    DAP_Setup();
+    target_sense_init();
+    dap_shared.transfer_abort = &DAP_TransferAbort;
+    serve();
 }

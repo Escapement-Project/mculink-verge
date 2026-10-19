@@ -19,6 +19,7 @@
 
 #include "DAP.h"
 #include "cjtag.h"
+#include "hot.h"
 #include "jtag_block.h"
 #include "jtag_dp.h"
 #include "jtag_gen.h"
@@ -57,7 +58,7 @@ static void hold(uint32_t count, uint32_t tms) {
 
 /** The data register's last bit, then the bypass bits after it, then Exit1-DR. ARM leaves TDI at
  * the last bit through the bypass. */
-static uint32_t last_bit(uint32_t tdi) {
+COMMAND_PATH static uint32_t last_bit(uint32_t tdi) {
     const uint32_t after = DAP_Data.jtag_dev.count - DAP_Data.jtag_dev.index - 1U;
     if (after == 0U) {
         return frames(tdi, 1U, 1U) & 1U;
@@ -93,7 +94,7 @@ void jgen_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo) {
     }
 }
 
-void jgen_IR(uint32_t ir) {
+COMMAND_PATH void jgen_IR(uint32_t ir) {
     const uint32_t index = DAP_Data.jtag_dev.index;
     hold(2U, 1U); // Select-DR-Scan, Select-IR-Scan
     hold(2U, 0U); // Capture-IR, Shift-IR
@@ -164,7 +165,7 @@ static uint8_t transfer_one(uint32_t request, uint32_t* data) {
     return (uint8_t)ack;
 }
 
-uint8_t jgen_Transfer(uint32_t request, uint32_t* data) {
+COMMAND_PATH uint8_t jgen_Transfer(uint32_t request, uint32_t* data) {
     if (jtag_gen_read != NULL) {
         return transfer_one(request, data);
     }
@@ -205,7 +206,7 @@ JTAG_BLOCK_FUNCTION(jgen_BlockImpl, jgen_Transfer, jgen_IR)
 
 /** `count` transfers of `request`, each retried on WAIT as ARM's block loop retries it. Returns the
  * last acknowledge, and in `done` how many completed. */
-static uint32_t transfer_words(uint32_t request, uint8_t* words, uint32_t count, uint32_t* done) {
+COMMAND_PATH static uint32_t transfer_words(uint32_t request, uint8_t* words, uint32_t count, uint32_t* done) {
     const jtag_gen_xfer_fn fn = (request & DAP_TRANSFER_RnW) != 0U ? jtag_gen_read : jtag_gen_write;
     uint32_t ack = DAP_TRANSFER_OK;
     uint32_t n = 0U;
@@ -306,7 +307,7 @@ end:
 }
 
 /** The same return shape DAP.c's own DAP_TransferBlock produces. */
-uint32_t jgen_TransferBlock(const uint8_t* request, uint8_t* response) {
+COMMAND_PATH uint32_t jgen_TransferBlock(const uint8_t* request, uint8_t* response) {
     uint32_t num = block_whole(request, response);
 
     if ((*(request + 3) & DAP_TRANSFER_RnW) != 0U) {

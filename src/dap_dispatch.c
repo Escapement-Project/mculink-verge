@@ -28,6 +28,7 @@
 #include "DAP.h"
 #include "cjtag.h"
 #include "dap_dispatch.h"
+#include "hot.h"
 #include "jtag_dp.h"
 #include "swd_dp.h"
 #ifdef SWD_CODEGEN
@@ -38,6 +39,12 @@
 #endif
 
 extern uint32_t arm_DAP_ProcessCommand(const uint8_t* request, uint8_t* response);
+
+/** ARM's processing, for every command not routed here. Out of line and in flash: inlined into
+ *  the SRAM dispatch below it would take all of DAP.c into SRAM with it. */
+__attribute__((noinline)) static uint32_t arm_command(const uint8_t* request, uint8_t* response) {
+    return arm_DAP_ProcessCommand(request, response);
+}
 
 /** Words a block reply fits: the command id, the two count bytes and the status, then the data. */
 #define DAP_BLOCK_WORD_LIMIT ((DAP_PACKET_SIZE - 4U) / 4U)
@@ -79,7 +86,7 @@ static bool sequence_fits(const uint8_t* request, bool swd) {
     return true;
 }
 
-static uint32_t transfer_block(const uint8_t* request, uint8_t* response) {
+COMMAND_PATH static uint32_t transfer_block(const uint8_t* request, uint8_t* response) {
     if (DAP_Data.debug_port == DAP_PORT_SWD) {
         return SWD_TransferBlock(request, response);
     }
@@ -100,7 +107,7 @@ static uint32_t transfer_block(const uint8_t* request, uint8_t* response) {
     return cjtag_TransferBlock(request, response);
 }
 
-uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* response) {
+COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* response) {
     if ((*request == ID_DAP_Delay) && (request[1] == 0U) && (request[2] == 0U)) {
         // ARM's pacing loop decrements before it tests, so a count of zero runs 2^32 times:
         // about ninety seconds with the probe answering nothing and the host waiting. A zero
@@ -181,7 +188,7 @@ uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* response) {
 #endif
         }
     }
-    const uint32_t result = arm_DAP_ProcessCommand(request, response);
+    const uint32_t result = arm_command(request, response);
     // Generate now rather than in the first transfer, which would carry the time it takes.
     // The two generators share SRAMX, so only the port in use generates.
 #ifdef SWD_CODEGEN
@@ -205,13 +212,13 @@ uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* response) {
 #endif
     return result;
 #else
-    return arm_DAP_ProcessCommand(request, response);
+    return arm_command(request, response);
 #endif
 }
 
 /** Kept out of line. It runs once per USB packet, so the call costs nothing, and being a symbol
  * is what lets tools/cycles.py and tools/equiv.py drive the firmware the way main() does. */
-__attribute__((noinline)) uint32_t DAP_ExecuteCommand(const uint8_t* request, uint8_t* response) {
+__attribute__((noinline)) COMMAND_PATH uint32_t DAP_ExecuteCommand(const uint8_t* request, uint8_t* response) {
     uint32_t cnt;
     uint32_t num;
     uint32_t n;

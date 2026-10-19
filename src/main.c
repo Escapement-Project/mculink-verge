@@ -175,9 +175,10 @@ __attribute__((section(".ramfunc"))) static void send_head(void) {
 /** CPU 0 waits here between events, running from SRAM with interrupts masked, so that one pending
  *  shows in ISPR instead of being taken.
  *
- * CPU 1's per-command code runs from flash, and CPU 0 fetching its own loop from flash slowed it by
- * 20 us in a 126-word block read: 270 us of execution against 250. CPU 0 reading USB SRAM cost
- * nothing. Sleeping in WFE instead kept the same gain but added 5 us to waking for each request.
+ * Measured while CPU 1's per-command code ran from flash: CPU 0 fetching its own loop from flash
+ * slowed it by 20 us in a 126-word block read, 270 us of execution against 250. CPU 1 still runs
+ * every command it does not route from flash. CPU 0 reading USB SRAM cost nothing. Sleeping in WFE
+ * instead kept the same gain but added 5 us to waking for each request.
  */
 __attribute__((section(".ramfunc"), noinline)) static void wait_for_work(void) {
     for (;;) {

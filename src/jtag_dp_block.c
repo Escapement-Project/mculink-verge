@@ -25,6 +25,7 @@
 #include "DAP_config.h"
 
 #include "DAP.h"
+#include "hot.h"
 #include "jtag_block.h"
 #include "jtag_dp.h"
 
@@ -185,7 +186,7 @@ JTAG_BLOCK_FUNCTION(JTAG_TransferBlockSlow, jtag4_TransferSlow, jtag4_IR)
 }
 
 /** The same return shape DAP.c's own DAP_TransferBlock produces. */
-uint32_t JTAG_TransferBlock(const uint8_t* request, uint8_t* response) {
+COMMAND_PATH uint32_t JTAG_TransferBlock(const uint8_t* request, uint8_t* response) {
     uint32_t num;
 
     if (DAP_Data.fast_clock) {

@@ -81,7 +81,7 @@ def main() -> int:
         if shutil.which(tool) is None:
             raise SystemExit(f"{tool} is not installed")
     with tempfile.TemporaryDirectory() as work:
-        for name in ("swd_gen.c", "swd_gen.h", "jtag_gen.c", "jtag_gen.h", "gen.c", "gen.h", "thumb.h"):
+        for name in ("swd_gen.c", "swd_gen.h", "jtag_gen.c", "jtag_gen.h", "gen.c", "gen.h", "hot.h", "thumb.h"):
             shutil.copy(os.path.join(SRC, name), work)
         for name in os.listdir(HARNESS):
             shutil.copy(os.path.join(HARNESS, name), work)

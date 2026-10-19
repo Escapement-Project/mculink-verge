@@ -21,6 +21,7 @@
 
 #include "DAP.h"
 #include "cjtag.h"
+#include "hot.h"
 #include "jtag_dp.h"
 
 // Which frame this copy drives, and what its entry points are called. src/cjtag_jtag_dp_fast.c
@@ -97,7 +98,7 @@ JTAG_BLOCK_FUNCTION(CJTAG_NAME(BlockImpl), CJTAG_NAME(Transfer), CJTAG_NAME(IR))
 // clang-format on
 
 /** The same return shape DAP.c's own DAP_TransferBlock produces. */
-uint32_t CJTAG_NAME(TransferBlock)(const uint8_t* request, uint8_t* response) {
+COMMAND_PATH uint32_t CJTAG_NAME(TransferBlock)(const uint8_t* request, uint8_t* response) {
     uint32_t num = CJTAG_NAME(BlockImpl)(request, response);
 
     if ((*(request + 3) & DAP_TRANSFER_RnW) != 0U) {

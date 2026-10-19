@@ -319,7 +319,7 @@ SWD_TRANSFER_FUNCTION(SWD_TransferCommandFast, SWD_XFER_FAST)
 SWD_TRANSFER_FUNCTION(SWD_TransferCommandSlow, SWD_XFER_SLOW)
 // clang-format on
 
-uint32_t SWD_TransferCommand(const uint8_t* request, uint8_t* response) {
+COMMAND_PATH uint32_t SWD_TransferCommand(const uint8_t* request, uint8_t* response) {
     if (DAP_Data.fast_clock) {
         return SWD_TransferCommandFast(request, response);
     }
@@ -445,7 +445,7 @@ static uint32_t SWD_TransferBlockSlow(const uint8_t* request, uint8_t* response)
 SWD_TransferBlockFunction(Fast) SWD_TransferBlockFunction(Slow)
 
     /** The same return shape DAP.c's own DAP_TransferBlock produces. */
-    uint32_t SWD_TransferBlock(const uint8_t* request, uint8_t* response) {
+    COMMAND_PATH uint32_t SWD_TransferBlock(const uint8_t* request, uint8_t* response) {
     uint32_t num;
 
     if (DAP_Data.fast_clock) {
@@ -584,7 +584,7 @@ static uint32_t SWD_TransferCommandGen(const uint8_t* request, uint8_t* response
 SWD_TRANSFER_FUNCTION(SWD_TransferCommandGen, SWD_XFER_GEN)
 // clang-format on
 
-uint32_t SWD_TransferCommand(const uint8_t* request, uint8_t* response) {
+COMMAND_PATH uint32_t SWD_TransferCommand(const uint8_t* request, uint8_t* response) {
     command_fns = transfer_fns();
     return SWD_TransferCommandGen(request, response);
 }
@@ -650,7 +650,7 @@ end:
 }
 
 /** The same return shape DAP.c's own DAP_TransferBlock produces. */
-uint32_t SWD_TransferBlock(const uint8_t* request, uint8_t* response) {
+COMMAND_PATH uint32_t SWD_TransferBlock(const uint8_t* request, uint8_t* response) {
     const struct transfer_fns fns = transfer_fns();
     uint32_t num = SWD_TransferBlockGen(&fns, request, response);
 

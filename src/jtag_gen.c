@@ -31,6 +31,7 @@
 
 #include "DAP.h"
 #include "gen.h"
+#include "hot.h"
 #include "thumb.h"
 
 /* What the generated function keeps in registers. */
@@ -1204,9 +1205,9 @@ uint32_t jtag_gen_paced;
 bool jtag_gen_pacing = true;
 static bool waited;
 
-void jtag_gen_waited(void) { waited = true; }
+COMMAND_PATH void jtag_gen_waited(void) { waited = true; }
 
-void jtag_gen_learn(uint32_t wire) {
+COMMAND_PATH void jtag_gen_learn(uint32_t wire) {
     if (waited && jtag_gen_pacing && (jtag_gen_paced < JTAG_GEN_PACED_MAX)) {
         jtag_gen_paced++;
         (void)jtag_gen_ready(wire);
@@ -1269,7 +1270,7 @@ static inline bool same_inputs(const struct jtag_gen_inputs* a, const struct jta
            (a->count == b->count) && (a->idle == b->idle) && (a->paced == b->paced) && (a->pacing == b->pacing);
 }
 
-bool jtag_gen_ready(uint32_t wire) {
+COMMAND_PATH bool jtag_gen_ready(uint32_t wire) {
     const struct jtag_gen_inputs now = {
         .wire = wire,
         .hz = jtag_gen_clock_hz,
