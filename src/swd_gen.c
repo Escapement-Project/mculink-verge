@@ -673,6 +673,8 @@ swd_gen_fn swd_gen_write;
 static struct swd_gen_config built;
 static bool built_once;
 static bool built_ok;
+/** Cleared by swd_gen_changed: until then the inputs are the ones `built` was made from. */
+static bool current;
 uint32_t swd_gen_builds;
 uint32_t swd_gen_failures;
 
@@ -682,7 +684,11 @@ static uint32_t period_for(uint32_t hz) {
     return period < SWD_GEN_PERIOD_MIN ? SWD_GEN_PERIOD_MIN : period;
 }
 
-bool swd_gen_ready(void) {
+void swd_gen_changed(void) { current = false; }
+
+/** Out of line, so the check every command makes does not pay this frame. */
+static __attribute__((noinline)) bool regenerate(void) {
+    current = true;
     const struct swd_gen_config want = {
         .period = period_for(swd_gen_clock_hz),
         .latency = swd_gen_latency,
@@ -704,4 +710,11 @@ bool swd_gen_ready(void) {
         swd_gen_failures++;
     }
     return built_ok;
+}
+
+bool swd_gen_ready(void) {
+    if (current && (gen_owner == GEN_OWNER_SWD)) {
+        return built_ok;
+    }
+    return regenerate();
 }

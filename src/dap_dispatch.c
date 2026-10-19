@@ -185,10 +185,12 @@ uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* response) {
     // Generate now rather than in the first transfer, which would carry the time it takes.
     // The two generators share SRAMX, so only the port in use generates.
 #ifdef SWD_CODEGEN
-    if (((*request == ID_DAP_SWJ_Clock) || (*request == ID_DAP_SWD_Configure) ||
-         (*request == ID_DAP_TransferConfigure)) &&
-        (DAP_Data.debug_port != DAP_PORT_JTAG)) {
-        (void)swd_gen_ready();
+    if ((*request == ID_DAP_SWJ_Clock) || (*request == ID_DAP_SWD_Configure) ||
+        (*request == ID_DAP_TransferConfigure)) {
+        swd_gen_changed();
+        if (DAP_Data.debug_port != DAP_PORT_JTAG) {
+            (void)swd_gen_ready();
+        }
     }
 #endif
 #ifdef JTAG_CODEGEN

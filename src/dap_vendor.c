@@ -266,6 +266,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             response[1] = DAP_ERROR;
         } else if (latency != 0U) {
             swd_gen_latency = latency;
+            swd_gen_changed();
         }
         (void)swd_gen_ready();
         response[2] = (uint8_t)swd_gen_latency;

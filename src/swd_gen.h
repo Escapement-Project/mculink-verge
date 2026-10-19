@@ -66,8 +66,14 @@ extern uint32_t swd_gen_builds;
 extern uint32_t swd_gen_failures;
 
 /** Generates for the current clock, latency and DAP_Data settings if they changed since the
- * last call. False when they cannot be generated: the caller runs ARM's transfer instead. */
+ * last call, which only swd_gen_changed tells it, or if JTAG's code took SRAMX. False when they
+ * cannot be generated: the caller runs ARM's transfer instead. */
 bool swd_gen_ready(void);
+
+/** Whatever writes an input of swd_gen_ready calls this afterwards: the clock, the latency, or
+ * DAP_Data's turnaround, data phase or idle cycles. Until it does, transfers keep the code
+ * generated for the old values. */
+void swd_gen_changed(void);
 
 /** What the last build produced, for a host to read back. */
 struct swd_gen_info {

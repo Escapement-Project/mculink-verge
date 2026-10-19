@@ -496,7 +496,7 @@ static uint64_t arm_words(uint32_t packet, uint8_t* words, uint32_t count) {
  *
  * Nothing inside one command can change what the generator built for: the clock, the turnaround
  * and the idle cycles each come from a command of their own. Asking `swd_gen_ready` once per
- * transfer cost a configuration compare from flash every time. */
+ * transfer cost a call into flash every time. */
 struct transfer_fns {
     swd_gen_fn read;
     swd_gen_fn write;

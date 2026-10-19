@@ -37,6 +37,7 @@ void sweep(void) {
         DAP_Data.transfer.idle_cycles = (uint8_t)idle;
         swd_gen_latency = lat;
         swd_gen_clock_hz = hz[i];
+        swd_gen_changed();
         const bool ok = swd_gen_ready();
         uint32_t h = 2166136261U;
         const uint8_t* code = (const uint8_t*)SWD_GEN_BASE;
