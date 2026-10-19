@@ -177,6 +177,21 @@ static void idle(void) {
     __enable_irq();
 }
 
+/** The startup file's vector table names it, weakly; this is the strong definition. */
+void DMA0_IRQHandler(void);
+
+/** DMA0 has finished one of SWO capture's ring segments. Counting them is all of SWO that runs on
+ *  CPU 0; src/swo.c on CPU 1 turns the count into a position. The completion is cleared before the
+ *  count moves, so CPU 1 can read the pair one segment short but never long. */
+__attribute__((section(".ramfunc"))) void DMA0_IRQHandler(void) {
+    uint32_t const done = DMA0->COMMON[0].INTA & SWO_DMA_MASK;
+    if (done != 0U) {
+        DMA0->COMMON[0].INTA = done;
+        __DMB();
+        dap_shared.swo_segments++;
+    }
+}
+
 bool usb_transport_reply_in_flight(void) { return response_in_flight; }
 
 bool usb_transport_response_idle(void) {
@@ -280,6 +295,10 @@ int main(void) {
     MAILBOX->MBOXIRQ[0].IRQCLR = UINT32_MAX;
     dap_shared_init(&dap_shared);
     dap_core_security_init();
+    // The highest priority, so nothing comes between DMA0_IRQHandler reading a completion and
+    // counting it, which src/swo.c's capture start waits out.
+    NVIC_SetPriority(DMA0_IRQn, 0U);
+    NVIC_EnableIRQ(DMA0_IRQn);
     start_core1();
 
     board_init_after_tusb();

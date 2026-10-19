@@ -36,6 +36,9 @@ __attribute__((noinline)) void board_timestamp_init(void) {
 /** Function 10 hands a port 0 pin to the secure GPIO block, which is DBGIF_GPIO. */
 #define DEBUG_PIN_MODE (IOCON_FUNC10 | PIN_MODE)
 
+/** P0_3's only receive function: Flexcomm 3's RXD. */
+#define SWO_PIN_MODE (IOCON_FUNC1 | PIN_MODE)
+
 void board_debug_pins_init(void) {
     CLOCK_EnableClock(kCLOCK_Iocon);
     CLOCK_EnableClock(kCLOCK_Gpio_Sec);
@@ -75,4 +78,8 @@ void board_debug_pins_init(void) {
     GPIO->CLR[J8_PORT] = J8_PIN_MASK;
     GPIO->DIRSET[J8_PORT] = J8_PIN_MASK;
 #endif
+}
+
+void board_swo_pin(bool capture) {
+    IOCON_PinMuxSet(IOCON, DBGIF_PORT, DBGIF_TDO_SWO_PIN, capture ? SWO_PIN_MODE : DEBUG_PIN_MODE);
 }

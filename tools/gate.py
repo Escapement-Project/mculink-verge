@@ -28,6 +28,7 @@ HOST_CHECKS = (
     ("Thumb-2 encoders against gas", ["uv", "run", "tools/thumb_test.py"]),
     ("memcpy at every length and offset", ["uv", "run", "tools/mem_test.py"]),
     ("CPU0-to-CPU1 DAP handoff simulator: sanitizers, both compilers", ["uv", "run", "tools/dap_usb_slots_test.py"]),
+    ("SWO ring and baud arithmetic: sanitizers, both compilers", ["uv", "run", "tools/swo_ring_test.py"]),
     ("generators: sanitizers, both compilers, QEMU", ["uv", "run", "tools/gen_host.py"]),
 )
 IMAGES = [(toolchain, codegen) for toolchain in ("gcc", "clang") for codegen in (False, True)]

@@ -18,6 +18,7 @@
 
 #include "dap_usb_slots.h"
 #include "reboot.h"
+#include "swo_ring.h"
 
 #ifndef REQUEST_SLOTS
 #define REQUEST_SLOTS 3U
@@ -30,6 +31,12 @@
 
 #define DAP_SHARED_ALIGN __attribute__((aligned(DAP_USB_BUFFER_ALIGN)))
 
+/** SWO capture's DMA descriptors, four words each: the ring's, then DMA0 channel 8's table entry.
+ *  SRAMBASE points at the first, so the ring's sit in the table entries of channels 0 to 7, which
+ *  nothing enables. A table starts on 512 bytes. */
+#define DAP_SHARED_SWO_DMA_WORDS ((SWO_SEGMENTS + 1U) * 4U)
+#define DAP_SHARED_SWO_DMA_ALIGN __attribute__((aligned(512)))
+
 /** The HID report size, which CPU 0 checks against CFG_TUD_HID_EP_BUFSIZE. */
 #define DAP_SHARED_HID_REPORT_SIZE 64U
 
@@ -38,6 +45,8 @@
  *  CPU 1 is in. */
 #define DAP_SHARED_CORE1_STATUS_REQUEST 0x04U
 #define DAP_SHARED_QUEUE_STATUS 1U
+/** With wValue DAP_SHARED_SWO_STATUS: SWO capture's hardware as CPU 0 reads it (src/usb_descriptors.c). */
+#define DAP_SHARED_SWO_STATUS 2U
 
 /** USB control request (vendor, host to device): stop CPU 1 where it is and record it. CPU 0
  *  routes a mailbox interrupt to CPU 1's NMI and raises it, so CPU 1's fault record (above) gets
@@ -101,12 +110,19 @@ typedef struct {
     volatile uint8_t led_activity;
     volatile uint8_t led_connected;
 
+    /** SWO ring segments DMA0 has completed, counted by CPU 0's DMA interrupt for src/swo.c. */
+    volatile uint32_t swo_segments;
+
     volatile dap_core1_status_t core1;
 
     DAP_SHARED_ALIGN uint8_t request[REQUEST_SLOTS][DAP_SHARED_PACKET_SIZE];
     // A reply is never more than a packet: CPU 1 builds it in its own buffer and copies a packet out.
     DAP_SHARED_ALIGN uint8_t response[REQUEST_SLOTS][DAP_SHARED_PACKET_SIZE];
     DAP_SHARED_ALIGN uint8_t hid_request[REQUEST_SLOTS][DAP_SHARED_HID_REPORT_SIZE];
+
+    // In USB SRAM so that a streaming endpoint can send trace from where DMA0 wrote it.
+    DAP_SHARED_SWO_DMA_ALIGN volatile uint32_t swo_dma[DAP_SHARED_SWO_DMA_WORDS];
+    DAP_SHARED_ALIGN volatile uint8_t swo_ring[SWO_RING_BYTES];
 } dap_shared_t;
 
 extern dap_shared_t dap_shared;

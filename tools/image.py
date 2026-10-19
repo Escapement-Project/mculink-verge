@@ -306,11 +306,7 @@ SWO_COMMANDS = (0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1E)
 
 def nxp_baudrate(src: int, want: int) -> tuple[int, int, bool]:
     """NXP's USART_SetBaudRate search, transcribed: oversampling 15 down to 4, 3% allowed error.
-
-    It refuses a rate it cannot reach, and SWO.c clamps every request down to the configured
-    maximum before asking, so a maximum the part cannot produce fails every request at or above
-    it -- including rates the part can hit exactly.
-    """
+    The console's driver; SWO has its own search (swo_rate)."""
     best_diff, best_osr, best_brg = 1 << 32, 0xF, (1 << 32) - 1
     allowed = (want // 100) * 3
     for osr in range(0xF, 3, -1):
@@ -327,23 +323,33 @@ def nxp_baudrate(src: int, want: int) -> tuple[int, int, bool]:
     return actual, best_osr, best_diff <= allowed
 
 
+def swo_rate(clock: int, want: int) -> tuple[int, int, float]:
+    """swo_uart_divisors in src/swo_ring.h, by brute force: the rate, its oversampling and its
+    error. The C is tested against the same search on the host (tools/swo_ring_test.c)."""
+    periods = {o * d: o for o in range(5, 17) for d in range(1, 65537)
+               if abs(clock / (o * d) - want) <= want * 0.05}
+    period = min(periods, key=lambda p: (abs(clock / p - want), -periods[p]))
+    oversampling = max(o for o in range(5, 17) if period % o == 0 and period // o <= 65536)
+    return clock // period, oversampling, abs(clock / period - want) / want
+
+
 def check_swo_baudrate(c: Checker, config: str, clock: int) -> None:
+    """SWO_Baudrate clamps every request to SWO_UART_MAX_BAUDRATE and refuses a rate more than 3%
+    from any it can make, so a maximum it cannot make fails every request at or above it."""
     m = re.search(r"^#define\s+SWO_UART_MAX_BAUDRATE\s+(\d+)U?", open(config).read(), re.M)
     if not m:
         c.note("SWO_UART_MAX_BAUDRATE not found; the SWO rate not checked")
         return
     want = int(m.group(1))
-    actual, osr, ok = nxp_baudrate(clock, want)
+    actual, oversampling, error = swo_rate(clock, want)
     c.check(
-        ok,
-        f"SWO's maximum of {want} Hz is {abs(actual - want) / want * 100:.2f}% from anything a"
+        error <= 0.03,
+        f"SWO's maximum of {want} Hz is {error * 100:.2f}% from anything a"
         f" {clock // 1_000_000} MHz Flexcomm can produce, so every request at or above it fails",
     )
-    c.check(osr >= 8, f"SWO's maximum needs an oversampling ratio of {osr + 1}, below NXP's own floor")
-    c.note(
-        f"SWO maximum {want / 1e6:g} MHz -> {actual / 1e6:g} MHz,"
-        f" {'within' if ok else 'outside'} the driver's 3%, oversampling {osr + 1}"
-    )
+    c.check(oversampling >= 8, f"SWO's maximum needs an oversampling ratio of {oversampling}")
+    c.note(f"SWO maximum {want / 1e6:g} MHz -> {actual / 1e6:g} MHz, {error * 100:.2f}% out,"
+           f" oversampling {oversampling}")
 
 
 # Where the cycle counter and its two enables live, from the ARMv8-M core definitions.
@@ -377,11 +383,10 @@ def check_timestamp(c: Checker, elf: str) -> None:
 def check_commands(c: Checker, elf: str, code_lab: bool, swo: bool) -> None:
     """Every command in COMMANDS has to answer. The claim is that none is a downgrade.
 
-    One caveat worth keeping honest. This runs before the clock setup, so the four SWO commands
-    reach a Flexcomm with no clock and NXP's driver returns early rather than configuring
-    anything. They answer, which is what is being checked, but nothing here says SWO works. With
-    a real clock the driver waits on a status bit the register model never sets, so the emulator
-    cannot take that path at all: SWO is a bench item. A build without SWO has to refuse them.
+    One caveat worth keeping honest. CPU 0's clock setup never runs here, so Flexcomm 3 reads as
+    0 Hz and SWO_Baudrate answers 0, and capture never starts. The SWO commands answer, which is
+    what is being checked, but nothing here says SWO works: that is tools/swo_ring_test.c for the
+    arithmetic and the bench for the rest. A build without SWO has to refuse them.
     """
     probe = Machine(elf, Target([0] * 64), restart_at=set(), model=Model())
     answered = 0
@@ -411,7 +416,7 @@ def check_commands(c: Checker, elf: str, code_lab: bool, swo: bool) -> None:
             c.problems.append(f"command {cmd:#04x} should answer ID_DAP_Invalid")
     c.note(
         f"{answered} of {len(commands)} commands answered, unimplemented ids rejected"
-        + (" (the SWO four with the clock still off; see the note above)" if swo else ", SWO not built")
+        + (" (SWO with Flexcomm 3 unclocked; see the note above)" if swo else ", SWO not built")
     )
 
 
@@ -966,18 +971,8 @@ def check_clocks(c: Checker, elf: str) -> None:
             return
 
     probe.call("board_clocks_init")
-    swo = None
-    if "board_swo_pin_init" in probe.sym and "USART3_GetFreq" in probe.sym:
-        probe.call("board_swo_pin_init")
-        swo = probe.call("USART3_GetFreq")
-        c.check(swo != 0, "SWO's Flexcomm has no clock, so it would never reach a baud rate")
-        c.check(
-            swo == 96_000_000,
-            f"SWO's Flexcomm reads {swo} Hz, wanted the 96 MHz FRO_HF through a divider of one",
-        )
-
     probe.call("vcom_init")
-    # Kept out of line only while something other than the console calls it, which SWO does.
+    # SWO's Flexcomm is CPU 1's and attaches to the same FRO_HF_DIV, so this is its check too.
     if "CLOCK_GetFlexCommClkFreq" not in probe.sym:
         c.note("CLOCK_GetFlexCommClkFreq was inlined away; the console clock not checked")
         return
@@ -987,8 +982,7 @@ def check_clocks(c: Checker, elf: str) -> None:
         console == 96_000_000,
         f"the console Flexcomm reads {console} Hz; the fractional divider is not back to one",
     )
-    c.note(f"after boot: SWO Flexcomm {'not built' if swo is None else f'{swo / 1e6:g} MHz'},"
-           f" console Flexcomm {console / 1e6:g} MHz")
+    c.note(f"after boot: console Flexcomm {console / 1e6:g} MHz, from the FRO_HF_DIV SWO uses as well")
 
     # What a host can actually ask the console for. The driver accepts anything within 3%, which
     # leaves a link no room for the other end's error, so check the rates against a tighter bound.

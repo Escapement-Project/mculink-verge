@@ -114,18 +114,12 @@ This information includes:
 
 /// Indicate that UART Serial Wire Output (SWO) trace is available.
 /// This information is returned by the command \ref DAP_Info as part of <b>Capabilities</b>.
-/// Off while capture moves to CPU 0: on CPU 1 its USART interrupt would be the only interrupt there.
-#define SWO_UART                0               ///< SWO UART:  1 = available, 0 = not available.
-
-/// USART Driver instance number for the UART SWO.
-#define SWO_UART_DRIVER         3               ///< USART Driver instance number (Driver_USART#).
+/// Captured by DMA, not by ARM's SWO.c over a USART driver: see src/swo.c.
+#define SWO_UART                1               ///< SWO UART:  1 = available, 0 = not available.
 
 /// Maximum SWO UART Baudrate.
-/// 8 MHz, not ARM's 9. SWO.c clamps any request down to this and then asks NXP's driver for it,
-/// and the driver refuses a rate it cannot reach within 3%. From a 96 MHz Flexcomm the closest to
-/// 9 MHz is 8.727 MHz, which is 3.03% out, so every request at or above 9 MHz failed and took
-/// rates the part can hit exactly down with it. 8 MHz is exact, at an oversampling ratio of 12
-/// that keeps the sampling point where NXP wants it.
+/// Requests above it are clamped to it. 8 MHz is exact from Flexcomm 3's 96 MHz at an oversampling
+/// ratio of 12. Higher rates are reachable (12 MHz at 8) but not yet measured.
 #define SWO_UART_MAX_BAUDRATE   8000000U        ///< SWO UART Maximum Baudrate in Hz.
 
 /// Indicate that Manchester Serial Wire Output (SWO) trace is available.
@@ -133,7 +127,8 @@ This information includes:
 #define SWO_MANCHESTER          0               ///< SWO Manchester:  1 = available, 0 = not available.
 
 /// SWO Trace Buffer Size.
-#define SWO_BUFFER_SIZE         8192U           ///< SWO Trace Buffer Size in bytes (must be 2^n).
+/// What a host can leave unread: SWO_USABLE_BYTES in src/swo_ring.h, one segment short of the ring.
+#define SWO_BUFFER_SIZE         7168U           ///< SWO Trace Buffer Size in bytes.
 
 /// SWO Streaming Trace.
 #define SWO_STREAM              0               ///< SWO Streaming Trace: 1 = available, 0 = not available.

@@ -9,6 +9,8 @@
 #ifndef BOARD_PINS_H
 #define BOARD_PINS_H
 
+#include <stdbool.h>
+
 /** Every signal below is on port 0, which is what lets the init code write them a port at a time.
  * board_pins.c holds a static assertion for it. */
 #define DBGIF_PORT 0U
@@ -82,5 +84,8 @@ void board_timestamp_init(void);
  * Called from DAP_SETUP, so it runs before any host command can reach the pin layer.
  */
 void board_debug_pins_init(void);
+
+/** CPU 1: give TDO/SWO to Flexcomm 3 for SWO capture, or back to the secure GPIO as JTAG's TDO. */
+void board_swo_pin(bool capture);
 
 #endif

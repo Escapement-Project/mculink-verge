@@ -151,6 +151,7 @@ target_sources(${CORE1} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_dispatch.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_dp_block.c
   ${DAP_SRC}/JTAG_DP.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/swo.c
   )
 
 target_include_directories(${CORE1} PRIVATE
@@ -179,8 +180,7 @@ set(UPSTREAM_RELAX
   )
 
 set_source_files_properties(
-  ${DAP_SRC}/DAP.c ${DAP_SRC}/SW_DP.c ${DAP_SRC}/JTAG_DP.c ${DAP_SRC}/SWO.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/external/lpc55s69-sdk/fsl_usart_cmsis.c
+  ${DAP_SRC}/DAP.c ${DAP_SRC}/SW_DP.c ${DAP_SRC}/JTAG_DP.c
   ${LPC55_DEVICE}/LPC55S69/drivers/fsl_clock.c
   ${LPC55_DEVICE}/LPC55S69/drivers/fsl_reset.c
   PROPERTIES COMPILE_OPTIONS "${UPSTREAM_RELAX}"
@@ -375,11 +375,6 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${CMAKE_CURRENT_SOURCE_DIR}/external/CMSIS-DAP/Firmware/Include
   ${DAP_SRC}
-  ${CMAKE_CURRENT_SOURCE_DIR}/external/lpc55s69-sdk
-  ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/lib/CMSIS_6/CMSIS/Driver/Include
-  # fsl_usart_cmsis.c reaches fsl_usart_dma.h through the usart header whether or not DMA is
-  # enabled, and that wants fsl_dma.h. Headers only: no DMA source is compiled.
-  ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcuxsdk-core/drivers/lpc_dma
   )
 
 # The ADC driver's calibration waits spin on a status bit for ever unless these are set. A probe

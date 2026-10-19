@@ -144,6 +144,13 @@ class Probe:
             [p[k] for p in per] for k in range(4))
         return state
 
+    def swo_status(self) -> dict[str, int]:
+        """SWO capture's DMA and USART registers as CPU 0 reads them (DAP_SHARED_SWO_STATUS)."""
+        raw = bytes(self.device.ctrl_transfer(0xC0, USB_CORE1_STATUS_REQUEST, 2, 0, 64, timeout=1000))
+        names = ("segments", "dma_ctrl", "enableset", "active", "busy", "inta", "errint", "cfg", "ctlstat",
+                 "xfercfg", "pselid", "usart_cfg", "usart_stat", "fifocfg", "fifostat", "iocon_p0_3")
+        return dict(zip(names, struct.unpack("<16I", raw)))
+
     def core1_status(self) -> dict[str, int]:
         """CPU 1's progress and last fault, answered by CPU 0 however CPU 1 is doing."""
         raw = bytes(self.device.ctrl_transfer(0xC0, USB_CORE1_STATUS_REQUEST, 0, 0, 36, timeout=1000))
@@ -588,6 +595,8 @@ def cmd_core1(args) -> int:
         print(f"  replies:       head {q['response_head']} tail {q['response_tail']}, lengths {q['response_len']}, "
               f"transports {q['response_transport']}, head in flight {bool(q['reply_in_flight'])}")
         print(f"  mailbox:       CPU 1's register {q['mailbox_cpu1']:#04x}, CPU 0's {q['mailbox_cpu0']:#04x}")
+    if args.swo:
+        print("  SWO: " + ", ".join(f"{k} {v:#x}" for k, v in probe.swo_status().items()))
     probe.release()
     return 0
 
@@ -1584,6 +1593,7 @@ def main() -> int:
 
     core1 = sub.add_parser("core1", help="CPU 1's progress and last fault, from CPU 0")
     core1.add_argument("--queues", action="store_true", help="also the shared queues' state")
+    core1.add_argument("--swo", action="store_true", help="also SWO capture's DMA and USART registers")
     core1.add_argument("--sample", action="store_true",
                        help="stop CPU 1 with an NMI to record where it is; reset the probe afterwards")
     core1.set_defaults(run=cmd_core1)

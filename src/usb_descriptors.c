@@ -177,7 +177,7 @@ TU_VERIFY_STATIC(sizeof(desc_ms_os_20) == MS_OS_20_DESC_LEN, "MS OS 2.0 descript
 
 bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_request_t const* request) {
     if (request->bRequest == DAP_SHARED_CORE1_STATUS_REQUEST) {
-        if (request->bmRequestType != 0xC0U || request->wValue > DAP_SHARED_QUEUE_STATUS || request->wIndex != 0U) {
+        if (request->bmRequestType != 0xC0U || request->wValue > DAP_SHARED_SWO_STATUS || request->wIndex != 0U) {
             return false;
         }
         if (stage != CONTROL_STAGE_SETUP) {
@@ -210,6 +210,37 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
                 *out++ = dap_shared.response_transport[i];
             }
             return tud_control_xfer(rhport, request, queues, (uint16_t)TU_MIN(sizeof(queues), request->wLength));
+        }
+        if (request->wValue == DAP_SHARED_SWO_STATUS) {
+            // Words: the segment count, DMA0's CTRL, ENABLESET, ACTIVE, BUSY, INTA and ERRINT, channel
+            // 8's CFG, CTLSTAT and XFERCFG, Flexcomm 3's PSELID, the USART's CFG, STAT, FIFOCFG and
+            // FIFOSTAT, then P0_3's IOCON word: what tools/dap.py core1 --swo prints. A peripheral
+            // whose clock is off reads as zeros rather than being touched.
+            static uint32_t swo[16];
+            for (uint32_t i = 0U; i < 16U; i++) {
+                swo[i] = 0U;
+            }
+            swo[0] = dap_shared.swo_segments;
+            if ((SYSCON->AHBCLKCTRL.AHBCLKCTRL0 & SYSCON_AHBCLKCTRL0_DMA0_MASK) != 0U) {
+                swo[1] = DMA0->CTRL;
+                swo[2] = DMA0->COMMON[0].ENABLESET;
+                swo[3] = DMA0->COMMON[0].ACTIVE;
+                swo[4] = DMA0->COMMON[0].BUSY;
+                swo[5] = DMA0->COMMON[0].INTA;
+                swo[6] = DMA0->COMMON[0].ERRINT;
+                swo[7] = DMA0->CHANNEL[SWO_DMA_CHANNEL].CFG;
+                swo[8] = DMA0->CHANNEL[SWO_DMA_CHANNEL].CTLSTAT;
+                swo[9] = DMA0->CHANNEL[SWO_DMA_CHANNEL].XFERCFG;
+            }
+            if ((SYSCON->AHBCLKCTRL.AHBCLKCTRL1 & SYSCON_AHBCLKCTRL1_FC3_MASK) != 0U) {
+                swo[10] = FLEXCOMM3->PSELID;
+                swo[11] = USART3->CFG;
+                swo[12] = USART3->STAT;
+                swo[13] = USART3->FIFOCFG;
+                swo[14] = USART3->FIFOSTAT;
+            }
+            swo[15] = IOCON->PIO[0][3];
+            return tud_control_xfer(rhport, request, swo, (uint16_t)TU_MIN(sizeof(swo), request->wLength));
         }
         // A snapshot, so the reply is one consistent read of what CPU 1 last wrote.
         static dap_core1_status_t status;
