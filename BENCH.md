@@ -241,7 +241,7 @@ only the build string, and nothing needs reflashing to carry on measuring.
 
 
 **Steps 6 to 10 are untouched**: the console, SWO, cJTAG activation on a CC13xx, the two-pin data
-read, and the HID parity question. The open optimisation work includes moving
+read, and the HID parity question. (SWO since done: §7.) The open optimisation work includes moving
 the two-pin block paths to SRAM the way the SWD ones went.
 
 
@@ -736,7 +736,8 @@ the option on by default means re-blessing those five traces.
 **What holds it back from the default.** A transfer stays masked for its whole length: 3 us at
 16.67 MHz, 46 us at 1 MHz, longer below. SWO receives by interrupt into a 16-entry FIFO
 (`RTE_USART3_DMA_EN 0`), which fills in about 20 us at its 8 MHz maximum. So SWO streamed fast
-alongside slow SWD would drop bytes, where today it does not. VCOM is polled from the main loop
+alongside slow SWD would drop bytes, where today it does not. (No longer: SWO is captured by DMA
+since 2026-10-19, which a mask cannot hold up.) VCOM is polled from the main loop
 and is not affected. The right shape is after the edge with a mask at the fast settings and
 before the edge, unmasked, at the slow ones. That is a second copy of the delayed path, and as
 unrolled C it does not fit in SRAM. Generating the bit paths makes it free, and
@@ -779,6 +780,8 @@ specialisation work above is aimed at.
 
 ## 6. The console
 
+Done 2026-10-19, after a fix: it had never received a byte.
+
 Open the CDC port and talk to a target's UART at a few baud rates, including 921600 and above.
 
 Proves `vcom_init` took Flexcomm 0 back from the board support, and that the fractional divider
@@ -789,11 +792,28 @@ from probe-rs.
 
 Ask for SWO at 8 MHz and below, and capture.
 
-The emulator cannot reach this path at all: with a real clock NXP's driver waits on a status bit
-no register model sets, so the four SWO commands only answer in emulation because the clock is
-off. Nothing currently says SWO works. One thing is settled in advance — `SWO_UART_MAX_BAUDRATE`
-is 8 MHz rather than ARM's 9, because 9 is 3.03% away from anything a 96 MHz Flexcomm can produce
-and the driver refuses it.
+**Done 2026-10-19, on the dual-core image's DMA capture (`src/swo.c`).** Target:
+LAUNCHXL-CC1312R1 over two-pin cJTAG, running `tools/swo_target/itm_counter.c`, which sends a
+counter on ITM port 0 out of DIO16 (TDO) as fast as the port takes it, so every byte is checkable
+and the target drops nothing. The analyser on the line read 1.0000 and 7.9999 Mbaud from
+back-to-back frames, saturated, counter unbroken.
+
+| through | rate | captured | counter |
+| --- | --- | --- | --- |
+| `dap.py swo`, 2 s | 1 MHz | 200,008 bytes, 100.0 KB/s | 40,000 words, no break |
+| `dap.py swo`, 3 s, twice | 8 MHz | 2,400,064 and 2,400,049 bytes, 800.0 KB/s | 480,011 and 480,009 words, no break |
+| `probe-rs itm swo`, debug build, 0.5 s | 1 MHz | 10,067 words after the decoder locked | no break |
+| `probe-rs itm swo`, release build, 3 s | 8 MHz | 117,871 words decoded | one three-word blip, no reply lost |
+
+`dap.py` polls with DAP_SWO_Data back to back: about 14,000 polls a second, each under the
+508-byte maximum, so the host keeps ahead of the line. probe-rs decodes and prints every packet,
+which in a debug build manages about 70 KB/s; behind that the probe overruns, says so, and the
+stream resumes after the gap. probe-rs ignores the overrun bit and fails a read on the stream-error
+bit, which a capture that starts mid-frame sets once.
+
+The emulator still cannot run capture: CPU 0's clock setup never runs there, so Flexcomm 3 reads
+0 Hz and SWO_Baudrate answers 0. The ring and rate arithmetic is tested on the host instead
+(`tools/swo_ring_test.py`, in the gate).
 
 ## 8. cJTAG activation on a CC13xx, with the analyser
 
@@ -1543,6 +1563,8 @@ The gate missed it because it measures blocks. It also hid the next problem: onc
 image by that function's symbol, judged the clang image against the default build's baselines.
 
 ## What the bench has sized, and what is left
+
+Ranked, with the items here that are since done marked as such, in BACKLOG.md.
 
 - **MCU-Link Pro support.** Stock runs one image on every LPC55S69 MCU-Link, the Pro
   included, and picks features at runtime.

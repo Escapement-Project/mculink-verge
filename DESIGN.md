@@ -59,7 +59,7 @@ analog behaviour, timing margin or whether a real target tolerates any of it. It
 protocol logic has been exercised rather than only read.
 
 Implemented: CMSIS-DAP v2 on a vendor interface and v1 on HID, a CDC console bridged to Flexcomm 0,
-SWO capture on Flexcomm 3, the MCU-Link pin layer, the serial number, ARM's DAP, SW_DP and JTAG_DP
+SWO capture on Flexcomm 3 by DMA (`src/swo.c`), the MCU-Link pin layer, the serial number, ARM's DAP, SW_DP and JTAG_DP
 compiled unchanged, and the cJTAG activation sequence and frame primitive behind two vendor
 commands. All five JTAG entry points are routed.
 
@@ -179,7 +179,8 @@ the device simply fails to bind. A `TU_VERIFY_STATIC` checks the total at compil
 | target console TXD | P0_25, Flexcomm 0 |
 
 SWO arrives on P0_3 as `FC3_RXD`, `IOCON_FUNC1`. That pin is JTAG's TDO as well, so only one of
-the two configurations is live at a time and the mux follows the USART driver's lifecycle.
+the two configurations is live at a time: `src/swo.c` hands the pin to Flexcomm 3 while capture
+runs and back to the secure GPIO when it stops.
 
 TinyUSB's board support claims Flexcomm 0 for its own debug logging on different pins, so
 `vcom_init` runs after `board_init` and takes the peripheral back. The probe has no console of its
@@ -202,8 +203,7 @@ from that number.
 (UM11126: `ENA_96MHZCLK` resets to 0) and the board support only ever asks for the 12 MHz one,
 because the core runs off PLL1. `FROHFDIV`'s HALT bit resets to 1 as well (UM11126 table 104). Both
 the console and SWO clock off `FRO_HF_DIV`: with either missing, `CLOCK_GetFroHfFreq` reports 0 Hz,
-`USART_Init` rejects the baud rate it cannot reach, and the peripheral stays silent without
-reporting anything. `board_clocks_init` starts both. Anything else added here that attaches to
+`USART_Init` rejects the console's baud rate and `SWO_Baudrate` answers 0, and neither says why. `board_clocks_init` starts both. Anything else added here that attaches to
 `FRO_HF_DIV` depends on that call.
 
 **DWT is dormant until it is told otherwise.** `TIMESTAMP_GET` reads `DWT->CYCCNT`, which does not
@@ -344,15 +344,9 @@ is the summary.
    --table` is the prediction to check against.
 3. Settle the two bench questions parity depends on: whether stock answers DAP over HID, and
    whether stock maps CDC line state to anything.
-   **SWO is a bench item too**: its four commands answer in emulation only because the Flexcomm
-   has no clock and NXP's driver returns early, and with a clock the driver waits on a status bit
-   no register model sets. Nothing here says SWO works.
-
-   One thing about it is settled. `SWO_UART_MAX_BAUDRATE` was ARM's 9 MHz, SWO.c clamps every
-   request down to it, and NXP's driver refuses a rate it cannot reach within 3%: from a 96 MHz
-   Flexcomm the closest to 9 MHz is 8.727 MHz, 3.03% out. So **every SWO request at or above
-   9 MHz would have failed**, taking 12 MHz with it, which the part hits exactly. It is 8 MHz
-   now, which is exact at an oversampling ratio of 12.
+   SWO was a bench item too. It works since 2026-10-19, on our own DMA capture rather than ARM's
+   SWO.c over NXP's USART driver. The 8 MHz maximum stays, exact at an
+   oversampling ratio of 12; 9 MHz is 3.03% from anything a 96 MHz Flexcomm makes.
 4. Then, and only then, throughput, starting with the clock calibration.
 
 ### Open questions
@@ -424,8 +418,8 @@ both, and the only difference is two TDI bits in that table.
 ### In this repo
 
 - `external/tinyusb` — pinned at 0.21.0.
-- `external/CMSIS-DAP` — pinned at v2.1.2. `Firmware/Source` has DAP.c, SW_DP.c, JTAG_DP.c, SWO.c,
-  UART.c and DAP_vendor.c; `Firmware/Examples/MCU-LINK/` has the board headers this started from.
+- `external/CMSIS-DAP` — pinned at v2.1.2. `Firmware/Source` has DAP.c, SW_DP.c, JTAG_DP.c, SWO.c
+  (not built: `src/swo.c` replaces it), UART.c and DAP_vendor.c; `Firmware/Examples/MCU-LINK/` has the board headers this started from.
 
 ## Bench notes
 
