@@ -31,11 +31,6 @@
 
 static uint32_t vcom_clock_hz;
 
-/** What vcom_task left behind: bytes from USB the UART had no room for, and bytes from the UART
- *  CDC had no room for. Room for the second arrives with a USB event, which ends the wait anyway. */
-static volatile bool usb_bytes_waiting;
-static volatile bool cdc_full;
-
 static uint32_t vcom_clock(void) { return vcom_clock_hz; }
 
 static void vcom_configure(uint32_t baud, uint8_t stop_bits, uint8_t parity, uint8_t data_bits) {
@@ -84,19 +79,21 @@ void vcom_task(void) {
         }
         USART_WriteByte(VCOM_USART, byte);
     }
-    usb_bytes_waiting = tud_cdc_available() != 0U;
 
     // Target to USB.
     while ((USART_GetStatusFlags(VCOM_USART) & kUSART_RxFifoNotEmptyFlag) && tud_cdc_write_available() > 0U) {
         uint8_t byte = USART_ReadByte(VCOM_USART);
         tud_cdc_write(&byte, 1);
     }
-    cdc_full = tud_cdc_write_available() == 0U;
+    // With a transfer in flight this sends nothing, and TinyUSB sends the rest when it completes:
+    // this task does not run again until there are bytes to move.
     tud_cdc_write_flush();
 }
 
+/** vcom_task's two loop conditions, which have to stay the same as its own. The FIFO counts are
+ *  TinyUSB's, in SRAM, which tools/image.py checks. */
 __attribute__((section(".ramfunc"), noinline)) bool vcom_ready(void) {
     uint32_t const status = USART_GetStatusFlags(VCOM_USART);
-    return (((status & kUSART_RxFifoNotEmptyFlag) != 0U) && !cdc_full) ||
-           (usb_bytes_waiting && ((status & kUSART_TxFifoNotFullFlag) != 0U));
+    return (((status & kUSART_RxFifoNotEmptyFlag) != 0U) && (tud_cdc_write_available() > 0U)) ||
+           (((status & kUSART_TxFifoNotFullFlag) != 0U) && (tud_cdc_available() > 0U));
 }

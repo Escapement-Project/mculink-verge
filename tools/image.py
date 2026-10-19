@@ -1027,7 +1027,8 @@ def main() -> int:
     slots = args.packet_count
     swo = bool(config_value(args.config, "SWO_UART"))
     check_core1_image(c, args.elf, args.core1, slots)
-    check_sram_wait(c, args.elf, "CPU 0", ("wait_for_work", "vcom_ready"))
+    check_sram_wait(c, args.elf, "CPU 0", ("wait_for_work", "vcom_ready", "tud_cdc_n_available",
+                                           "tud_cdc_n_write_available", "tu_edpt_stream_write_available"))
     check_sram_wait(c, args.core1, "CPU 1", ("wait_for_mailbox",))
     check_clocks(c, args.elf)
     check_led(c, args.elf, slots)

@@ -9,7 +9,8 @@ void vcom_init(void);
 /** Move bytes between the USB CDC interface and the target's UART. */
 void vcom_task(void);
 
-/** Whether vcom_task has bytes it could move now. Runs from SRAM, for CPU 0's wait in main.c. */
+/** Whether vcom_task has bytes it could move now, the only time CPU 0's loop runs it. Runs from
+ *  SRAM, for CPU 0's wait in main.c. */
 bool vcom_ready(void);
 
 #endif

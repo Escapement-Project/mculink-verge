@@ -331,7 +331,9 @@ int main(void) {
     for (;;) {
         tud_task();
         usb_transport_task();
-        vcom_task();
+        if (vcom_ready()) {
+            vcom_task();
+        }
         reboot_poll();
         idle();
     }
