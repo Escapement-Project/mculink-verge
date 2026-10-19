@@ -303,8 +303,9 @@ at P = 8, 12, 16).
 
 ## Open questions for the generator
 
-- A calibration at connect (A sweep) vs a fixed A with margin. Margin at P=4 is only 1 either
-  side even when centred. `swd_gen_latency` exists; nothing sets it from the host yet.
+- A calibration at connect (A sweep) vs a fixed A with margin: answered, measured at connect
+  (src/swd_sweep.c). Margin at P=4 is still only 1
+  on one side.
 - Reads above 37.5 MHz: done in a lab prototype with a timer-made clock (below); not in the
   generator. Without a peripheral: not in software. A read clock is 2 edge stores + 1 load + 1 use, and the
   core pairs nothing but a 16-bit NOP or b<cc>: the corpus timed `ldr sp/adds`, `adds/ldr sp`,

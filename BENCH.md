@@ -1588,8 +1588,8 @@ Ranked, with the items here that are since done marked as such, in BACKLOG.md.
   already in SRAM and 112 KB still free.
 - **Make the generated SWD paths the default.** The equivalence, the gate and the MSPM0L1306 pass.
   A target with a memory access port that answers WAIT has not run them yet.
-- **Measure the read latency per target.** The generator places samples for a latency of 7 cycles,
-  which two targets measured. At 37.5 MHz that leaves one cycle either side, so a slower target or
-  a longer cable needs its own number, measured at connect.
+- **Measure the read latency per target.** Done for SWD: the probe measures it at
+  connect at 37.5 and 50 MHz. JTAG and two-pin still use
+  fixed latencies.
 - **Generate the JTAG and two-pin paths the same way.** They are 80 KB of SRAM and are still
   paced by ARM's delay loop.

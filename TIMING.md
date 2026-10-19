@@ -131,7 +131,8 @@ register. The data then has half a period before the rising edge and half a peri
 ## Rules for placing a sample
 
 - **Put it in the middle of its window,** d = A + (P - 1) / 2, which leaves (P - 1) / 2 cycles
-  either side.
+  either side. Of two middles, the later: a bit that arrives later than measured is the likelier
+  mistake.
 - **A sample that comes after the next rising edge needs interrupts masked.** An interrupt between
   that edge and the sample makes the sample late, and it reads the next bit. A sample before the
   next rising edge is safe: an interrupt there stretches the clock and nothing else. With A = 7
@@ -140,6 +141,9 @@ register. The data then has half a period before the rising edge and half a peri
 - **Measure A for each target,** and recompute the placement when the clock changes. Sweep the
   sample delay on DPIDR reads at a period of 8 or more: A is the shortest delay that reads
   correctly, and the window is P cycles wide from there. The bench found A = 7 at P = 8, 12 and 16.
+  The probe now does this itself for SWD (src/swd_sweep.c), with generated reads whose windows the
+  generator reports. At P = 4 a sample can only go on every other cycle, so one period cannot tell
+  A from A + 1; it reads at P = 5 to 7 as well.
 - **Remember the second turnaround.** After the acknowledge of a write, and after the parity of a
   read, comes one more clock before the probe drives again. Leave it out and the target loses step
   and stops answering.
