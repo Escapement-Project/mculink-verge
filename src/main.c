@@ -46,7 +46,7 @@ static void arm_rx(void);
 static void send_head(void);
 static void start_core1(void);
 
-static void signal_core1(void) {
+__attribute__((section(".ramfunc"))) static void signal_core1(void) {
     MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU1].IRQSET = DAP_CORE_MAILBOX_WAKE_MASK;
     __DSB();
 }
@@ -55,7 +55,7 @@ static void signal_core1(void) {
  *  not wait behind it. Before CPU 1 has published the flag there is no transfer to abort. A
  *  faulting CPU 1 can leave anything in the pointer, and a stray write would take CPU 0 and the
  *  way back to the bootloader with it. */
-static void transfer_abort(void) {
+__attribute__((section(".ramfunc"))) static void transfer_abort(void) {
     uintptr_t const abort = (uintptr_t)dap_shared.transfer_abort;
     if ((abort >= CORE1_RAM_ORIGIN) && (abort < CORE1_RAM_ORIGIN + CORE1_RAM_LENGTH)) {
         *(volatile uint8_t*)abort = 1U;
@@ -65,7 +65,7 @@ static void transfer_abort(void) {
 }
 
 /** One received packet, which is one command. This callback runs on CPU 0. */
-void tud_vendor_rx_cb(uint8_t index, const uint8_t* buffer, uint32_t length) {
+__attribute__((section(".ramfunc"))) void tud_vendor_rx_cb(uint8_t index, const uint8_t* buffer, uint32_t length) {
     (void)index;
     if ((length == 0U) || (length > DAP_PACKET_SIZE)) {
         return;
@@ -102,18 +102,18 @@ void tud_mount_cb(void) {
 }
 
 /** The head reply has left, or will not: its slot goes back to CPU 1, which may be waiting for one. */
-static void response_sent(void) {
+__attribute__((section(".ramfunc"))) static void response_sent(void) {
     dap_shared.response_head = dap_usb_slot_release(dap_shared.response_len, dap_shared.response_head, REQUEST_SLOTS);
     response_in_flight = false;
     __DMB();
     signal_core1();
 }
 
-static bool head_in_flight_on(uint8_t transport) {
+__attribute__((section(".ramfunc"))) static bool head_in_flight_on(uint8_t transport) {
     return response_in_flight && (dap_shared.response_transport[dap_shared.response_head] == transport);
 }
 
-void tud_vendor_tx_cb(uint8_t index, uint32_t sent_bytes) {
+__attribute__((section(".ramfunc"))) void tud_vendor_tx_cb(uint8_t index, uint32_t sent_bytes) {
     (void)index;
     (void)sent_bytes;
     if (head_in_flight_on(DAP_TRANSPORT_BULK)) {
@@ -122,12 +122,12 @@ void tud_vendor_tx_cb(uint8_t index, uint32_t sent_bytes) {
     }
 }
 
-static bool start_rx(void* context, uint8_t slot) {
+__attribute__((section(".ramfunc"))) static bool start_rx(void* context, uint8_t slot) {
     uint8_t (*buffers)[DAP_PACKET_SIZE] = context;
     return tud_vendor_read_xfer_buf(buffers[slot]);
 }
 
-static bool start_tx(void* context, uint8_t slot, uint16_t length) {
+__attribute__((section(".ramfunc"))) static bool start_tx(void* context, uint8_t slot, uint16_t length) {
     uint8_t (*buffers)[DAP_PACKET_SIZE] = context;
     if (dap_shared.response_transport[slot] == DAP_TRANSPORT_BULK) {
         return tud_vendor_write_xfer(buffers[slot], length) == length;
@@ -136,7 +136,7 @@ static bool start_tx(void* context, uint8_t slot, uint16_t length) {
 }
 
 /** Keep TinyUSB and endpoint ownership on CPU 0. */
-static void usb_transport_task(void) {
+__attribute__((section(".ramfunc"))) static void usb_transport_task(void) {
     arm_rx();
     if (disconnect_requested) {
         tud_disconnect();
@@ -149,7 +149,7 @@ static void usb_transport_task(void) {
 /** Arms the OUT endpoint into the tail request slot if that is free. Arming claims the endpoint,
  *  so a call while it is armed changes nothing. The receive callback calls it as well, so the
  *  next request can arrive without the loop coming round. */
-static void arm_rx(void) {
+__attribute__((section(".ramfunc"))) static void arm_rx(void) {
     if (tud_vendor_mounted()) {
         (void)dap_usb_arm_rx(dap_usb_slot_free(dap_shared.request_len, dap_shared.request_tail),
                              dap_shared.request_tail, &dap_shared.rx_armed_slot, start_rx, dap_shared.request);
@@ -158,7 +158,7 @@ static void arm_rx(void) {
 
 /** Starts the head reply if CPU 1 has published it and none is on its way. The completion
  *  callbacks call it as well, so a reply already waiting leaves without the loop coming round. */
-static void send_head(void) {
+__attribute__((section(".ramfunc"))) static void send_head(void) {
     uint8_t const head = dap_shared.response_head;
     uint16_t const length = dap_shared.response_len[head];
     if (length == 0U) {
@@ -196,7 +196,7 @@ __attribute__((section(".ramfunc"), noinline)) static void wait_for_work(void) {
  *  the mailbox when it frees a request slot, publishes a reply or asks for a reboot, and the
  *  console through vcom_ready. The mailbox is cleared before the checks, so a write CPU 1 makes
  *  after them still ends the wait. */
-static void idle(void) {
+__attribute__((section(".ramfunc"))) static void idle(void) {
     MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQCLR = DAP_CORE_MAILBOX_WAKE_MASK;
     __DSB();
     bool const reply_waiting =
@@ -248,8 +248,9 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_t
     return 0;
 }
 
-void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t const* buffer,
-                           uint16_t bufsize) {
+__attribute__((section(".ramfunc"))) void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
+                                                                hid_report_type_t report_type, uint8_t const* buffer,
+                                                                uint16_t bufsize) {
     (void)instance;
     (void)report_id;
     (void)report_type;
@@ -277,7 +278,8 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
     signal_core1();
 }
 
-void tud_hid_report_complete_cb(uint8_t instance, uint8_t const* report, uint16_t len) {
+__attribute__((section(".ramfunc"))) void tud_hid_report_complete_cb(uint8_t instance, uint8_t const* report,
+                                                                     uint16_t len) {
     (void)instance;
     (void)report;
     (void)len;
@@ -288,8 +290,8 @@ void tud_hid_report_complete_cb(uint8_t instance, uint8_t const* report, uint16_
 }
 
 /** TinyUSB reports a failed OUT report here too, and that is no reply of ours. */
-void tud_hid_report_failed_cb(uint8_t instance, hid_report_type_t report_type,
-                              uint8_t const* report, uint16_t xferred_bytes) {
+__attribute__((section(".ramfunc"))) void tud_hid_report_failed_cb(uint8_t instance, hid_report_type_t report_type,
+                                                                   uint8_t const* report, uint16_t xferred_bytes) {
     (void)instance;
     (void)report;
     (void)xferred_bytes;
@@ -314,6 +316,21 @@ __attribute__((noinline, used)) void dap_core_security_init(void) {
     dap_core_security_apply((volatile uint32_t*)0x500AC000U);
     __DSB();
     __ISB();
+}
+
+/** CPU 0's loop. It and everything a command passes through on CPU 0 run from SRAM: from flash
+ *  they were the limit on short commands. tools/image.py checks that none of it branches back
+ *  into flash. */
+__attribute__((section(".ramfunc"), noinline, noreturn)) static void serve(void) {
+    for (;;) {
+        tud_task();
+        usb_transport_task();
+        if (vcom_ready()) {
+            vcom_task();
+        }
+        reboot_poll();
+        idle();
+    }
 }
 
 int main(void) {
@@ -343,13 +360,5 @@ int main(void) {
     __DMB();
     __enable_irq();
 
-    for (;;) {
-        tud_task();
-        usb_transport_task();
-        if (vcom_ready()) {
-            vcom_task();
-        }
-        reboot_poll();
-        idle();
-    }
+    serve();
 }

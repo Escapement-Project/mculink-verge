@@ -759,16 +759,19 @@ BRANCH = re.compile(r"^\s*([0-9a-f]+):\s+(bl|blx|b(?:eq|ne|cs|cc|hs|lo|mi|pl|vs|
                     r"\s+([0-9a-f]+)?(?: <(\S+)>)?")
 
 
-def check_sram_wait(c: Checker, elf: str, who: str, names: tuple[str, ...]) -> None:
-    """Both cores wait for work from SRAM: a core fetching from flash slows the other's command
-    code (src/main.c), and CPU 1's wait polls a level instead of sleeping (src/core1_main.c). A
-    dropped section attribute, or a call the compiler adds back into flash, would undo that and
-    change nothing else checked here."""
+def check_sram_code(c: Checker, elf: str, what: str, names: tuple[str, ...], allow: tuple[str, ...] = ()) -> None:
+    """Both cores wait for work from SRAM, and CPU 0 runs each command's USB work from there too:
+    a core fetching from flash slows the other's command code (src/main.c), and CPU 1's wait polls
+    a level instead of sleeping (src/core1_main.c). A dropped section attribute, or a call the
+    compiler adds back into flash, would undo that and change nothing else checked here.
+
+    `allow` names flash functions a branch may reach anyway, ones that run once rather than per
+    command or per wait, matched without the suffix LTO adds to a local symbol's name."""
     sym = symbols_with_size(elf)
     sram = range(0x2000_0000, 0x3000_0000)
     before = len(c.problems)
     for name in names:
-        if not c.check(name in sym, f"{name} is not in {who}'s image"):
+        if not c.check(name in sym, f"{name} is not in the image ({what})"):
             continue
         at, size = sym[name]
         if not c.check(at in sram, f"{name} is at {at:#x}, not in SRAM"):
@@ -786,10 +789,13 @@ def check_sram_wait(c: Checker, elf: str, who: str, names: tuple[str, ...]) -> N
             veneer = re.fullmatch(r"__(.+)_veneer", m.group(4) or "")
             if veneer and veneer.group(1) in sym:
                 target = sym[veneer.group(1)][0]
+            callee = veneer.group(1) if veneer else (m.group(4) or "")
+            if callee.split(".")[0] in allow:
+                continue
             c.check(target is not None and target in sram,
                     f"{name} branches out of SRAM at {m.group(1)}: {m.group(2)} {m.group(4) or m.group(3)}")
     if len(c.problems) == before:
-        c.note(f"{who} waits for work from SRAM: {' and '.join(names)}, and every branch they take")
+        c.note(f"{what} from SRAM: {' and '.join(names)}, and every branch they take")
 
 
 def check_core1_image(c: Checker, elf: str, core1: str, request_slots: int) -> None:
@@ -1027,9 +1033,14 @@ def main() -> int:
     slots = args.packet_count
     swo = bool(config_value(args.config, "SWO_UART"))
     check_core1_image(c, args.elf, args.core1, slots)
-    check_sram_wait(c, args.elf, "CPU 0", ("wait_for_work", "vcom_ready", "tud_cdc_n_available",
-                                           "tud_cdc_n_write_available", "tu_edpt_stream_write_available"))
-    check_sram_wait(c, args.core1, "CPU 1", ("wait_for_mailbox",))
+    check_sram_code(c, args.elf, "CPU 0 waits for work", ("wait_for_work", "vcom_ready", "tud_cdc_n_available",
+                                                         "tud_cdc_n_write_available", "tu_edpt_stream_write_available"))
+    # The HID report callback is left out: it copies with the library's memcpy, in flash, and
+    # HID is the transport for hosts that cannot use the bulk one.
+    check_sram_code(c, args.elf, "CPU 0 runs a command's USB work",
+                    ("serve", "tud_vendor_rx_cb", "tud_vendor_tx_cb", "tud_hid_report_complete_cb"),
+                    allow=("__NVIC_SystemReset",))  # the end of a reboot, which clang calls out of line
+    check_sram_code(c, args.core1, "CPU 1 waits for work", ("wait_for_mailbox",))
     check_clocks(c, args.elf)
     check_led(c, args.elf, slots)
     check_led_inputs(c, args.core1, slots)

@@ -69,7 +69,7 @@ void tud_cdc_line_coding_cb(uint8_t itf, cdc_line_coding_t const* coding) {
     vcom_configure(coding->bit_rate, coding->stop_bits, coding->parity, coding->data_bits);
 }
 
-void vcom_task(void) {
+__attribute__((section(".ramfunc"))) void vcom_task(void) {
     // USB to target. Only take what the UART can accept now, so a target that is not reading cannot
     // stall the whole firmware -- the DAP interface has to keep answering either way.
     while (tud_cdc_available() && (USART_GetStatusFlags(VCOM_USART) & kUSART_TxFifoNotFullFlag)) {

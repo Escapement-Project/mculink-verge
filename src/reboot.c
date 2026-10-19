@@ -35,7 +35,7 @@ void reboot_request_from_usb(uint8_t mode) {
     usb_pending = mode;
 }
 
-void reboot_poll(void) {
+__attribute__((section(".ramfunc"))) void reboot_poll(void) {
     if (usb_pending != REBOOT_NONE) {
         active_mode = usb_pending;
         usb_pending = REBOOT_NONE;

@@ -165,7 +165,7 @@ __attribute__((noreturn, used)) void core1_fault(const uint32_t* frame) {
  * missed. The interrupt stays disabled: the generated transfers clear PRIMASK.
  *
  * In SRAM after the bit paths (src/sample_probe.c says why there), so the spin fetches nothing
- * from flash while CPU 0 runs from it.
+ * from flash.
  */
 __attribute__((noinline, section(".data_core1_wait"))) static void wait_for_mailbox(void) {
     while ((MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU1].IRQ & DAP_CORE_MAILBOX_WAKE_MASK) == 0U) {
