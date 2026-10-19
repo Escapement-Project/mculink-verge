@@ -683,6 +683,8 @@ def cmd_block(args) -> int:
     the probe's own transfer loop and nothing else.
 
     RDBUFF is the register to pick: reading it has no side effects on the debug port's state.
+    `--register abort` writes zero to ABORT instead, which sets none of its bits: the write path's
+    instrument, with the data in the request and a four-byte reply.
     """
     probe = one(args)
     print(f"{probe.serial}  {probe.product}")
@@ -692,16 +694,21 @@ def cmd_block(args) -> int:
     print(f"  DAP_SWJ_Clock {args.hz} Hz -> {'OK' if probe.swj_clock(args.hz) == 0 else 'failed'}")
     idcode = swd_reset(probe)
     print(f"  DPIDR 0x{idcode:08x}")
-    request = 0x0E if args.register == "rdbuff" else 0x02
+    request = {"rdbuff": 0x0E, "dpidr": 0x02, "abort": 0x00}[args.register]
+    data = bytes(4) if args.register == "abort" else b""
     if args.command == "transfer":
-        # The same reads as DAP_Transfer, one request byte each, which is what a host sends for
+        # The same transfers as DAP_Transfer, one request byte each, which is what a host sends for
         # a run too short for a block of its own.
         if args.words > 127 or args.queue:
             print("  DAP_Transfer: at most 127 words, and no --queue")
             return 2
-        payload = bytes([DAP_TRANSFER, 0, args.words]) + bytes([request]) * args.words
+        payload = bytes([DAP_TRANSFER, 0, args.words]) + (bytes([request]) + data) * args.words
     else:
         payload = bytes([DAP_TRANSFER_BLOCK, 0]) + args.words.to_bytes(2, "little") + bytes([request])
+        payload += data * args.words
+    if len(payload) > probe.out_ep.wMaxPacketSize:
+        print(f"  {len(payload)} bytes of request do not fit a {probe.out_ep.wMaxPacketSize}-byte packet")
+        return 2
     if args.queue:
         queued_blocks(probe, payload, args.blocks, args.queue, args.words)
         return 0
@@ -1522,11 +1529,12 @@ def main() -> int:
     reboot.add_argument("--bootloader", action="store_true", help="come back in ISP mode, not the firmware")
     reboot.set_defaults(run=cmd_reboot)
 
-    block = sub.add_parser("block", help="repeat a DP read with DAP_TransferBlock")
+    block = sub.add_parser("block", help="repeat a DP read, or an ABORT write, with DAP_TransferBlock")
     block.add_argument("--hz", type=int, default=10000000)
     block.add_argument("--words", type=int, default=64, help="transfers per block command")
     block.add_argument("--blocks", type=int, default=200)
-    block.add_argument("--register", choices=("rdbuff", "dpidr"), default="rdbuff")
+    block.add_argument("--register", choices=("rdbuff", "dpidr", "abort"), default="rdbuff",
+                       help="abort writes zero to DP ABORT")
     block.add_argument("--command", choices=("block", "transfer"), default="block",
                        help="DAP_TransferBlock, or the same reads as one DAP_Transfer")
     block.add_argument("--pipeline", type=int, default=1,
