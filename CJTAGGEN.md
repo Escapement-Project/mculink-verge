@@ -396,6 +396,20 @@ than the adapter wants swallows the next command scans.
 - Fix in probe-rs `icepick.rs`: `SD_TAP_JOIN_CLOCKS` 10 -> 256 (over 5 us up to 50 MHz).
   Uncommitted in probe-rs's tree.
 
+## Measured again, 2026-10-19
+
+- TDO windows on the dual-core image, IDCODE reads, 10 repeats: four-wire DAP [7, next fall + 6]
+  after nRESET and [11, next fall + 8] after SYSRESET (10 marginal); ICEPick [6, next fall + 5]
+  and [10, next fall + 7 or 8]; two-pin [8, at least next fall + 7] for both TAPs in both states.
+  The figures below (8 and 10) came from DPACC reads of `0x00000002`, which read right early or
+  late, and from the single-core image.
+- A misread OK acknowledge is not harmless on JTAG. The probe leaves Shift-DR after 3 + 1 + index
+  shifts, and the Update-DR makes an access spelled by the last captured data. At a stale latency
+  (7 against 11) ROM block reads at 50 MHz answered mostly OK and left the AHB-AP's CSW at
+  `0x01000040`. Hidden traffic has to be IDCODE scans, not DPACC reads.
+- The probe now measures the latency at every `DAP_JTAG_Configure`; the defaults below stay the
+  starting point.
+
 ## Four-wire on this part (measured 2026-10-17)
 
 - After a pin reset the adapter is two-pin JScan: TDO is not driven. Four-wire needs probe-rs
