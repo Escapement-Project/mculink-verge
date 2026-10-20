@@ -521,6 +521,13 @@ class TimedJtagTarget:
     def restart(self) -> None:
         pass
 
+    def elapse(self, cycles: int) -> None:
+        """Moves everything recorded `cycles` into the past, for a cycle count that starts again:
+        what one command left on TDO was launched before the next began."""
+        self.launches = [(at - cycles, bit) for at, bit in self.launches]
+        for read, _ in self._open:
+            read.cycle -= cycles
+
     def fall(self, cycle: int) -> None:
         last = len(self.launches) - 1
         for read, k in self._open:
@@ -623,6 +630,12 @@ def branch_kind(mnemonic: str, writes_pc: bool) -> str:
     if writes_pc or base in ("bx", "blx", "tbb", "tbh"):
         return "indirect"
     return ""
+
+
+# Cycles between two counted commands, which the count does not see. The probe spends about 15 us
+# between commands (BENCH.md), over 2,000 cycles; any gap past the longest latency and hold leaves
+# the same windows.
+BETWEEN_COMMANDS = 2_000
 
 
 class Machine:
@@ -1059,6 +1072,8 @@ class Machine:
         return bytes(self.uc.mem_read(response_at, max(produced, 1)))
 
     def begin(self):
+        if isinstance(self.target, TimedJtagTarget):
+            self.target.elapse(self.cycle + BETWEEN_COMMANDS)
         self.counts = Counts()
         self.cycle = 0
         self.counting = True
