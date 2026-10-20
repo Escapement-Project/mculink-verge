@@ -60,7 +60,7 @@ The rest of the Pro's pins, from schematic page 1:
 | --- | --- |
 | LEDs, active low | LED1 USB PIO1_12, LED2 SWO PIO1_13, LED3 status P0_5 (red), LED4 VCOM PIO1_15, LED5 FUNC PIO1_16, LED6 SIO PIO1_17, LED7 NRG PIO1_18 |
 | target supply | P0_8 TARGET_PWR_EN enables a TPS73601; its output reaches the target only through J6, at the voltage J5 picks |
-| second VCOM (J26) | Flexcomm 1: RXD PIO1_10, TXD PIO1_11 |
+| second VCOM (J26) | Flexcomm 1: RXD PIO1_10, TXD PIO1_11. J26 is a 1x6 header labelled "firmware debug console" in the FTDI TTL-232R-3V3 cable's order (page 3): 1 GND, 4 the cable's TXD into PIO1_10 through 499R, 5 PIO1_11 out to the cable's RXD through 499R, 2, 3 and 6 not connected. ESD diodes, no level shifter: 3.3 V only. So a target's TXD goes to pin 4 and its RXD to pin 5; UM11673 section 4.3 says the reverse, which the schematic contradicts. Check on the bench before wiring a target |
 | USB-SIO SPI | the high-speed SPI: SSEL0 P0_20, MOSI P0_26, SCK PIO1_2, MISO PIO1_3, each also a GPIO (DIO0 to DIO3); level-shifter directions IO_DIR1 PIO1_1 and IO_DIR2 PIO1_25 |
 | USB-SIO I2C | Flexcomm 3: SDA P0_4, SCL P0_21. SWO's UART is Flexcomm 3 too, so the two exclude each other |
 | energy measurement | voltage ADC0_0 on P0_23; current ADC0_8 on P0_16 and ACMP0_IN_D on PIO1_14; CURR_RANGE_SET ADC0_4 on PIO1_8; CTRL_HIGH_CURR on P0_15 (ADC0_2) and P0_30 (input); CTRL_HIGH_CURR_EN P0_17; CTRL_HIGH_CURR_DIS P0_29 (CMP0_OUT); calibration CTRL_CAL_R1 to R4 on PIO1_22, PIO1_23, PIO1_26, PIO1_29 and CTRL_CAL_DISC on PIO1_24 |
@@ -145,13 +145,14 @@ Phase 2, the extras (needs decisions b and c below):
 ## Decisions
 
 a. The schematic: done, `references/docs/MCU-LINK-PRO-SCH.pdf`.
-b. How the extras reach a host: the standard class where one exists (CDC for the second VCOM);
-   NXP's protocol where it is public (LIBUSBSIO); our own vendor commands on the CMSIS-DAP
-   interface, with probe-rs support, for target supply and energy
-   measurement. MCUXpresso IDE's energy view speaks a protocol NXP has not published, so matching
-   it would mean reading the stock image, which item 9 rules out.
-c. Which extras come before publishing: all of phase 2, or phases 0 and 1 with the second VCOM and
-   the rest after.
-d. Whether to honour the feature jumpers (J13/J14/J15 on the Pro, J4/J5 on the plain board) as
-   stock does. Ours reads none of them today.
-e. The product string per board, decided with item 9's change to it.
+b. How the extras reach a host: the second VCOM as a standard CDC interface;
+   USB-SIO in NXP's public LIBUSBSIO protocol, so NXP's tools and library work; target supply and
+   energy measurement as vendor commands on the CMSIS-DAP interface, with probe-rs support.
+c. Before publishing: phases 0 and 1 and the second VCOM. USB-SIO, the target
+   supply, energy measurement, the analog input and the LPC804 come after publishing.
+d. The feature jumpers: honour them as stock does, read once at boot. Pro J13
+   (SWD and SWO off), J14 (VCOM off), J15 (USB-SIO off); plain J5 (SWD) and J4 (VCOM). On the Pro
+   J13 also turns U5 round in hardware.
+e. The product string: it names the board, as stock adds "Pro", in the form item
+   9 chooses once "MCU-Link" comes out. CPU 0 then reads the straps before USB starts, so the
+   detection in `src/board_pins.c` moves where both cores can use it.
