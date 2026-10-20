@@ -156,8 +156,14 @@ straps, in `board_debug_pins_init`.
 Constraints found while planning:
 - USB1, the high-speed controller, has six logical endpoints counting control (UM11126 §43.2): five
   IN and five OUT. In use: IN 0x81 0x82 0x83 0x84, OUT 0x01 0x03 0x04. A second CDC needs two more
-  INs (notification and data), so with the HID v1 interface it does not fit. Stock fits two VCOMs
-  and three HID functions on the Pro somehow; how is a question for its descriptors (step 0).
+  INs (notification and data), so with the HID v1 interface it does not fit.
+- Stock on the Pro (observed 2026-10-20):
+  seven interfaces and no HID v1. EP1 to EP5 carry data in both directions (CMSIS-DAP v2, a HID
+  for trace and power, the two VCOMs' data, the LPCSIO HID), and the two CDC notification
+  endpoints are EP6 IN and EP7 IN, numbers USB1 does not have, polled every 4.1 s. On Linux an
+  open VCOM's notification read stays pending with no error. TinyUSB's IP3511 driver does not
+  bounds-check endpoint numbers, so doing the same needs our TinyUSB fork to keep the CDC class
+  from opening them.
 - PIO1_10 and PIO1_11 (Flexcomm 1, J26) are not bonded on the plain board's 64-pin package, so the
   second VCOM exists on the Pro only.
 - The BSP muxes PIO1_30 (the Pro's HW_VER_2) to USB1_OVERCURRENTN; reading straps needs each pin
@@ -169,8 +175,8 @@ Constraints found while planning:
   run time.
 
 Steps:
-0. Observe stock, over USB only (decision 6c of item 9: observed behaviour): `lsusb -v` of the Pro on
-   stock V3.172 with no jumpers, then with J14 (VCOM off) and with J13 (SWD off); the same on the
+0. Observe stock, over USB only (decision 6c of item 9: observed behaviour). Done with no jumpers
+   (above). Left: with J14 (VCOM off) and with J13 (SWD off); the same on the
    plain board with J4 and J5. Record the interfaces and endpoints, what `DAP_Info` and
    `DAP_Connect` answer with SWD off, and whether J14 removes both VCOMs. Needs the Pro on USB and
    jumpers moved by hand.
