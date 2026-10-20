@@ -161,7 +161,8 @@ Constraints found while planning:
   seven interfaces and no HID v1. EP1 to EP5 carry data in both directions (CMSIS-DAP v2, a HID
   for trace and power, the two VCOMs' data, the LPCSIO HID), and the two CDC notification
   endpoints are EP6 IN and EP7 IN, numbers USB1 does not have, polled every 4.1 s. On Linux an
-  open VCOM's notification read stays pending with no error. TinyUSB's IP3511 driver does not
+  open VCOM's notification read stays pending with no error, also with both VCOMs looped back
+  at 3 Mbaud at once (clean on both). TinyUSB's IP3511 driver does not
   bounds-check endpoint numbers, so doing the same needs our TinyUSB fork to keep the CDC class
   from opening them.
 - PIO1_10 and PIO1_11 (Flexcomm 1, J26) are not bonded on the plain board's 64-pin package, so the
