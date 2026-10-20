@@ -190,18 +190,21 @@ Steps:
    on EP1 (the MS OS 2.0 descriptor names interface 0, and hosts find CMSIS-DAP by its string); the
    CDC drops out with VCOM off; on the Pro a second CDC on Flexcomm 1. Endpoints per the decision
    below. `CFG_TUD_CDC` becomes 2.
-3. The product string names the board, from one table both cores read through `dap_shared`, for USB
+3. One image for both boards, as stock: it declares the boards it supports in a
+   form `verge` reads from the file before flashing (UPDATE-TOOL.md decision 12), so an older image
+   that declares nothing is never put on a Pro.
+4. The product string names the board, from one table both cores read through `dap_shared`, for USB
    and for `DAP_Info` 0x02. Until item 9 picks the form, "MCU-Link Pro Verge CMSIS-DAP" on a Pro.
-4. SWD off: CPU 1 refuses `DAP_Connect` (and whatever else step 0 shows stock refusing).
-5. `src/vcom.c` serves two instances: Flexcomm 0 as now, Flexcomm 1 (PIO1_10 RXD, PIO1_11 TXD,
+5. SWD off: CPU 1 refuses `DAP_Connect` (and whatever else step 0 shows stock refusing).
+6. `src/vcom.c` serves two instances: Flexcomm 0 as now, Flexcomm 1 (PIO1_10 RXD, PIO1_11 TXD,
    function 2) on the Pro.
-6. Checks: `tools/image.py` builds the descriptors for every board and jumper state and holds each
+7. Checks: `tools/image.py` builds the descriptors for every board and jumper state and holds each
    to its totals and endpoint budget, models CPU 0's strap read as `check_board` models CPU 1's,
    and requires `DAP_Info` 0x02 to match the USB product string per board. The gate on both
    compilers. On the bench plain probe: enumeration, the console, J4 and J5 by hand (check first
    whether either is fitted today), and 1-word commands at 8 queued with and without the change,
    through a run-time flag.
-7. On the Pro (phase 1): flash, enumerate, both VCOMs looped back, the jumpers.
+8. On the Pro (phase 1): flash, enumerate, both VCOMs looped back, the jumpers.
 
 Decided 2026-10-20: both boards have the same endpoints; the plain MCU-Link is a Pro with
 features disabled. Every CDC notification endpoint is declared at EP6 IN or EP7 IN, as stock does
