@@ -35,6 +35,10 @@ DHCSR = 0xE000_EDF0
 VTOR = 0xE000_ED08
 ICEPICK_IDCODE = 0x3BB4_102F
 MSPM0_DPIDR = 0x6BA0_2477
+# Deep sleep switches off PD1, and an MSPM0's AHB-AP with it. TI's debug setting for PWR-AP (AP 4)
+# DPREC0 keeps the part out of it: INHIBITSLEEP, DEBUGPOWER, halt on reset and FORCEACTIVE.
+MSPM0_PWR_AP_SELECT = 0x0400_0000
+MSPM0_DPREC0_DEBUG = 0x0019_0008
 DAP_TRANSFER_ABORT = 0x07
 DAP_TRANSFER_CONFIGURE = 0x04
 DAP_VENDOR_JTAG_GEN = 0x8A
@@ -59,13 +63,16 @@ def connect(probe: dap.Probe, wire: str) -> int:
     return attach_swd(probe) if wire == "swd" else attach_icepick(probe, wire == "cjtag")
 
 
-def power_up_and_halt(probe: dap.Probe, index: int) -> None:
+def wait_powered(probe: dap.Probe, index: int) -> None:
     for _ in range(100):
         reply = probe.command(bytes([dap.DAP_TRANSFER, index, 1, 0x06]))
         if int.from_bytes(reply[3:7], "little") & 0xA000_0000 == 0xA000_0000:
-            break
-    else:
-        raise RuntimeError("the DAP did not power up")
+            return
+    raise RuntimeError("the DAP did not power up")
+
+
+def power_up_and_halt(probe: dap.Probe, index: int) -> None:
+    wait_powered(probe, index)
     steps = bytes([0x08]) + le(0) + bytes([0x01]) + le(CSW)
     steps += bytes([0x05]) + le(DHCSR) + bytes([0x0D]) + le(0xA05F_0003) + bytes([0x05]) + le(DHCSR) + bytes([0x0F])
     reply = probe.command(bytes([dap.DAP_TRANSFER, index, 6]) + steps)
@@ -83,6 +90,9 @@ def attach_swd(probe: dap.Probe) -> int:
     if dpidr != MSPM0_DPIDR:
         raise RuntimeError(f"DPIDR 0x{dpidr:08x}, not an MSPM0")
     probe.command(bytes([dap.DAP_TRANSFER, 0, 2, 0x00]) + le(0x1E) + bytes([0x04]) + le(0x5000_0000))
+    wait_powered(probe, 0)
+    probe.command(bytes([dap.DAP_TRANSFER, 0, 3, 0x08]) + le(MSPM0_PWR_AP_SELECT) + bytes([0x01])
+                  + le(MSPM0_DPREC0_DEBUG) + bytes([0x08]) + le(0))
     power_up_and_halt(probe, 0)
     return 0
 
