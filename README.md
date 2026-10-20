@@ -77,7 +77,7 @@ for t in Release MinSizeRel; do for l in ON OFF; do
 done; done
 ```
 
-The transfer paths are generated at run time by default. `-DSWD_CODEGEN=OFF -DJTAG_CODEGEN=OFF`
+The transfer paths are generated at runtime by default. `-DSWD_CODEGEN=OFF -DJTAG_CODEGEN=OFF`
 builds ARM's paths alone, and the check holds that build to `tools/baseline-armwire/` instead. It
 finds ARM's paths clocking SWD and both JTAG wires faster than asked at 10 and 20 MHz, and
 four-wire JTAG at 50 MHz too. That directory's `known-overshoot.txt` records them; see
@@ -104,7 +104,7 @@ would notice.
 - `BENCH.md` -- the reference to keep open at the bench, and what the probe measured on real
   targets.
 - `TIMING.md` -- the timing rules the generated paths are placed by, each from a bench measurement.
-- `CODEGEN.md` and `CJTAGGEN.md` -- how the SWD and JTAG paths are generated at run time.
+- `CODEGEN.md` and `CJTAGGEN.md` -- how the SWD and JTAG paths are generated at runtime.
 - `TIMERGEN.md` -- a design, not built, for SWD reads above 37.5 MHz with the clock made by a timer.
 - `PACING.md` -- how ARM's paths pace the wire clock, and what is wrong with it. Only the build with
   generation off still uses them.

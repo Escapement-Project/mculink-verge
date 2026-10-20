@@ -1596,7 +1596,7 @@ today, and nothing runs faster than asked.
 
 TIMING.md has the rules these give a generator. CODEGEN.md is the context for implementing it.
 
-### The transfers are generated at run time, and the wire runs at every period from three cycles
+### The transfers are generated at runtime, and the wire runs at every period from three cycles
 
 **What it is.** A build with `SWD_CODEGEN` on, the default since 2026-10-20, writes its SWD
 transfer code into SRAMX whenever the host changes the clock, the turnaround, the data phase or

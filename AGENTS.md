@@ -7,7 +7,7 @@ generated transfers.
 
 **Timing-critical code is assembly or generated, never C left to an optimiser.** Anything that sets
 the phase or the length of a wire cycle goes in assembly (inline or a `.S` file) or is emitted at
-run time by `src/swd_gen.c` through `src/thumb.h`. A C compiler is free to reorder, reallocate
+runtime by `src/swd_gen.c` through `src/thumb.h`. A C compiler is free to reorder, reallocate
 and re-schedule, and does so differently across versions and vendors, so C timing is a property of
 one compiler build, not of the source. `src/hot.h` records a change that left the instruction
 stream identical and still cost a cycle on every data bit.

@@ -9,7 +9,7 @@ All three come from one number, `DAP_Data.clock_delay`, being calculated once fo
 one of the three wires actually has.
 
 This is ARM's pacing. Only the build with generation off still uses it; the default build
-generates its paths at run time (`CODEGEN.md`, `CJTAGGEN.md`).
+generates its paths at runtime (`CODEGEN.md`, `CJTAGGEN.md`).
 
 Everything below was worked out on the emulator's cost model, before the bench. The bench has
 since measured the delay loop at three cycles an iteration, which the six-cycle steps rest on,

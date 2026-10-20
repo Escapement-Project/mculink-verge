@@ -112,7 +112,7 @@ On this target a write needs nothing more than its SWDIO store kept off the cycl
 
 ## What the generator does with it
 
-The firmware now writes its SWD transfer code at run time, for the clock the host asks for
+The firmware now writes its SWD transfer code at runtime, for the clock the host asks for
 (`src/swd_gen.c`, the default build since 2026-10-20). Each clock period is a whole number of cycles
 from 3 up, and no period is ever shorter than the host asked for.
 

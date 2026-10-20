@@ -1,4 +1,4 @@
-# Generating the JTAG and two-pin (OScan1) paths at run time
+# Generating the JTAG and two-pin (OScan1) paths at runtime
 
 Plan, written 2026-10-17 after two-pin first worked on hardware. Read CODEGEN.md
 first: the SWD generator is the template, and its timing model, scheduler, register
