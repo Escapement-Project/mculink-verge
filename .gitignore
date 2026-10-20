@@ -2,3 +2,4 @@ build/
 references/
 __pycache__/
 build-*/
+tools/swd-throughput/target/
