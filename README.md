@@ -97,6 +97,26 @@ fix; and every block case sent two words, while the loops derive the reply's wor
 response pointer. Both gaps were found by asking what a change could break that nothing here
 would notice.
 
+## Jumpers
+
+The function jumpers work as they do with NXP's firmware. Each one turns a function off. The probe
+reads them once when it starts, so fit or remove one with the probe unplugged.
+
+| function | plain MCU-Link | MCU-Link Pro | with the jumper fitted |
+| --- | --- | --- | --- |
+| VCOM | J4 | J14 | no target serial port. The Pro's second one, on J26, stays |
+| SWD | J5 | J13 | no CMSIS-DAP interface, so no debugger can use the probe |
+| USB-SIO | | J15 | nothing yet: this firmware has no USB-SIO bridge |
+
+A function that is off is left out of the USB configuration, not shown as an interface that does
+nothing. The interfaces after it are numbered down. CMSIS-DAP v2 is always interface 0 when it is
+there, so the probe selector `probe-rs list` prints still works. A selector you wrote for the
+CMSIS-DAP v1 interface, such as `1fc9:0143-3:<serial>`, stops matching once the VCOM jumper
+moves that interface to 1.
+
+With the SWD jumper fitted the probe still restarts into its bootloader when asked over USB, so
+it can still be updated.
+
 ## Releases
 
 `.github/workflows/release.yml` publishes a release when a tag starting with `v` is pushed. It
