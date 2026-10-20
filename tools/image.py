@@ -37,6 +37,7 @@ sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from cycles import (  # noqa: E402
     HW_VER_BYTES,
     ORDINARY_GPIO,
+    RETURN_MAGIC,
     SCRATCH,
     SRAM,
     Machine,
@@ -47,7 +48,7 @@ from cycles import (  # noqa: E402
     u16,
     u32,
 )
-from unicorn.arm_const import UC_ARM_REG_R0  # noqa: E402
+from unicorn.arm_const import UC_ARM_REG_PC, UC_ARM_REG_R0  # noqa: E402
 
 UUID_ADDRESS = 0x0009FC70
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -1035,6 +1036,33 @@ def check_led_inputs(c: Checker, core1: str, request_slots: int) -> None:
         c.note("LED inputs: DAP_HostStatus sets and clears led_connected in dap_shared")
 
 
+SYSCON = 0x40000000
+# SYSCON's SET and CLR registers change the register they name, PRESETCTRLn at 0x100 and
+# AHBCLKCTRLn at 0x200, rather than hold what was written (UM11126 chapter 4). A driver that resets
+# a peripheral waits for PRESETCTRL to show it, so in plain memory it waits for ever.
+SET_CLEAR = {0x120 + 4 * n: 0x100 + 4 * n for n in range(3)} | {0x220 + 4 * n: 0x200 + 4 * n for n in range(3)}
+
+
+def model_syscon(probe: Machine) -> None:
+    """Give SYSCON's page SET and CLR behaviour, for code that resets or clocks a peripheral."""
+    page = bytearray(probe.uc.mem_read(SYSCON, 0x1000))
+    probe.uc.mem_unmap(SYSCON, 0x1000)
+
+    def read(uc, offset, size, data):
+        return int.from_bytes(page[offset : offset + size], "little")
+
+    def write(uc, offset, size, value, data):
+        for set_at, target in SET_CLEAR.items():
+            if offset in (set_at, set_at + 0x20):
+                word = int.from_bytes(page[target : target + 4], "little")
+                word = word | value if offset == set_at else word & ~value
+                page[target : target + 4] = word.to_bytes(4, "little")
+                return
+        page[offset : offset + size] = value.to_bytes(size, "little")
+
+    probe.uc.mmio_map(SYSCON, 0x1000, read, None, write, None)
+
+
 def check_clocks(c: Checker, elf: str) -> None:
     """Run the boot-time clock setup and ask the clock driver what came out.
 
@@ -1042,6 +1070,8 @@ def check_clocks(c: Checker, elf: str) -> None:
     of reset and the board support never enables it, and FROHFDIV is halted as well, so a Flexcomm
     attached to FRO_HF_DIV gets nothing and a UART with no clock reports no error -- it just never
     reaches a baud rate. Running it against the register model says what the driver would read.
+    The model gives SYSCON its SET and CLR registers, or vcom_init's peripheral resets wait for
+    ever.
     """
     probe = Machine(elf, Target([]), restart_at=set(), model=Model())
     for name in ("board_clocks_init", "vcom_init"):
@@ -1049,8 +1079,12 @@ def check_clocks(c: Checker, elf: str) -> None:
             c.note(f"{name} was inlined away; the clock setup not checked")
             return
 
+    model_syscon(probe)
     probe.call("board_clocks_init")
-    probe.call("vcom_init")
+    probe.call("vcom_init", timeout_insns=1_000_000)
+    if not c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC,
+                   "vcom_init did not return; a driver waits on a register the model lacks"):
+        return
     # SWO's Flexcomm is CPU 1's and attaches to the same FRO_HF_DIV, so this is its check too.
     if "CLOCK_GetFlexCommClkFreq" not in probe.sym:
         c.note("CLOCK_GetFlexCommClkFreq was inlined away; the console clock not checked")
