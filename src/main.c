@@ -314,7 +314,9 @@ static void start_core1(void) {
 }
 
 __attribute__((noinline, used)) void dap_core_security_init(void) {
-    dap_core_security_apply((volatile uint32_t*)0x500AC000U);
+    // The controller denies non-secure accesses, and the manual addresses it at its secure alias,
+    // bit 28 set (UM11126 Table 873). The SDK names that alias only in builds with -mcmse.
+    dap_core_security_apply((volatile uint32_t*)(AHB_SECURE_CTRL_BASE | 0x10000000U));
     __DSB();
     __ISB();
 }
