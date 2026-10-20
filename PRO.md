@@ -197,7 +197,7 @@ Steps:
 7. On the Pro (phase 1): flash, enumerate, both VCOMs looped back, the jumpers.
 
 Decision needed before step 2: the Pro's endpoint budget. Options: drop the CMSIS-DAP v1 HID
-interface on the Pro only (probe-rs, pyOCD and OpenOCD all use v2), which frees IN 0x84 for the
+interface on the Pro only (probe-rs, pyOCD and OpenOCD all speak v2), which frees IN 0x84 for the
 second CDC's notification; drop it on both boards; or follow whatever step 0 shows stock doing.
 Cross-boundary: none for probe-rs if the vendor interface keeps its number and string; `verge`
 learns the Pro's product string (it identifies ours by 0x82 already).
