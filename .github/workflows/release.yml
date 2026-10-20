@@ -4,11 +4,17 @@
 #   mculink-verge-<tag>.s19          the image, as objcopy -O srec writes it
 #   mculink-verge-<tag>.s19.sha256   sha256sum's line for it
 #   mculink-verge-<tag>.s19.minisig  minisign's signature; its trusted comment names the file
+#                                    and the tag
 #
-# Needs the repository secret MINISIGN_SECRET_KEY: the whole secret key file from
-# `minisign -G -W`, which has no password. The repository variable MINISIGN_PUBLIC_KEY, the
-# base64 line of the matching .pub file, is optional; when set, the signature is checked against
-# it before anything is uploaded.
+# The secret key never shares a machine with code the build fetched and ran. `build` has no
+# secret, and hands the image and its checksum on as an artifact. `sign` runs only minisign, in
+# the `release` environment, which holds the key and waits for a required reviewer. `publish`
+# attaches the three files, without the key.
+#
+# The `release` environment needs the secret MINISIGN_SECRET_KEY: the whole secret key file from
+# `minisign -G -W`, which has no password. Its variable MINISIGN_PUBLIC_KEY, the base64 line of the
+# matching .pub file, is optional; when set, the signature is checked against it before it leaves
+# the job.
 
 name: release
 
@@ -17,20 +23,18 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
     # Arch's arm-none-eabi-gcc is the compiler the bench builds with.
     container: archlinux:latest
-    env:
-      GH_REPO: ${{ github.repository }}
     steps:
       - name: Install the toolchain
         run: >
           pacman -Syu --noconfirm --needed
-          git python cmake ninja uv minisign github-cli
+          git python cmake ninja uv
           arm-none-eabi-gcc arm-none-eabi-newlib arm-none-eabi-binutils
 
       - uses: actions/checkout@v7
@@ -53,34 +57,79 @@ jobs:
       - name: Check the image in the emulator
         run: ninja -C build check
 
-      - name: Name, checksum and sign
+      - name: Name and checksum
+        run: |
+          set -eu
+          name="mculink-verge-${GITHUB_REF_NAME}.s19"
+          mkdir out
+          arm-none-eabi-objcopy -O srec build/mculink_cjtag.elf "out/$name"
+          (cd out && sha256sum "$name" > "$name.sha256")
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: image
+          path: out/
+          if-no-files-found: error
+
+  sign:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: image
+          path: out
+
+      - name: Install minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
+
+      - name: Sign
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
           MINISIGN_PUBLIC_KEY: ${{ vars.MINISIGN_PUBLIC_KEY }}
         run: |
           set -eu
           if [ -z "$MINISIGN_SECRET_KEY" ]; then
-            echo "the MINISIGN_SECRET_KEY secret is not set; nothing is published unsigned" >&2
+            echo "the release environment has no MINISIGN_SECRET_KEY; nothing is published unsigned" >&2
             exit 1
           fi
           name="mculink-verge-${GITHUB_REF_NAME}.s19"
-          arm-none-eabi-objcopy -O srec build/mculink_cjtag.elf "$name"
-          sha256sum "$name" > "$name.sha256"
           key="$RUNNER_TEMP/minisign.key"
           (umask 077 && printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key")
-          minisign -S -s "$key" -m "$name" -t "file:$name tag:$GITHUB_REF_NAME"
+          minisign -S -s "$key" -m "out/$name" -x "out/$name.minisig" \
+            -t "file:$name tag:$GITHUB_REF_NAME"
           rm -f "$key"
           if [ -n "$MINISIGN_PUBLIC_KEY" ]; then
-            minisign -V -P "$MINISIGN_PUBLIC_KEY" -m "$name"
+            minisign -V -P "$MINISIGN_PUBLIC_KEY" -m "out/$name" -x "out/$name.minisig"
           fi
-          echo "NAME=$name" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: signature
+          path: out/*.minisig
+          if-no-files-found: error
+
+  publish:
+    needs: sign
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: out
+          merge-multiple: true
 
       - name: Attach to the release
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
+          name="mculink-verge-${GITHUB_REF_NAME}.s19"
           if ! gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes ""
           fi
-          gh release upload "$GITHUB_REF_NAME" --clobber "$NAME" "$NAME.sha256" "$NAME.minisig"
+          gh release upload "$GITHUB_REF_NAME" --clobber \
+            "out/$name" "out/$name.sha256" "out/$name.minisig"
