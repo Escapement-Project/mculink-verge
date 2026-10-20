@@ -38,7 +38,7 @@ void target_sense_init(void) {
  * over 8 is 12 MHz. VDDA and VREFP are tied together on this board, so either reference is the
  * probe's own supply, and a reading is only as absolute as that regulator.
  */
-static bool adc_init(void) {
+static target_sense_status_t adc_init(void) {
     CLOCK_SetClkDiv(kCLOCK_DivAdcAsyncClk, 8U, true);
     CLOCK_AttachClk(kFRO_HF_to_ADC_CLK);
     POWER_DisablePD(kPDRUNCFG_PD_LDOGPADC);
@@ -53,12 +53,12 @@ static bool adc_init(void) {
     // Both return kStatus_Timeout rather than spinning, because CMakeLists.txt sets the driver's
     // timeout options. Without them these are unbounded waits on a status bit.
     if (LPADC_DoOffsetCalibration(ADC0) != kStatus_Success) {
-        return false;
+        return TARGET_SENSE_OFFSET_CALIBRATION;
     }
     // DoAutoCalibration is the same two calls with the status thrown away.
     LPADC_PrepareAutoCalibration(ADC0);
     if (LPADC_FinishAutoCalibration(ADC0) != kStatus_Success) {
-        return false;
+        return TARGET_SENSE_GAIN_CALIBRATION;
     }
 
     lpadc_conv_trigger_config_t trigger;
@@ -66,15 +66,16 @@ static bool adc_init(void) {
     trigger.targetCommandId = SENSE_COMMAND_ID;
     trigger.enableHardwareTrigger = false;
     LPADC_SetConvTriggerConfig(ADC0, SENSE_TRIGGER, &trigger);
-    return true;
+    return TARGET_SENSE_OK;
 }
 
-bool target_sense_convert(uint8_t channel, bool side_b, uint16_t* code) {
+target_sense_status_t target_sense_convert(uint8_t channel, bool side_b, uint16_t* code) {
     if (!adc_ready) {
-        adc_ready = adc_init();
-        if (!adc_ready) {
-            return false;
+        target_sense_status_t const status = adc_init();
+        if (status != TARGET_SENSE_OK) {
+            return status;
         }
+        adc_ready = true;
     }
 
     lpadc_conv_command_config_t command;
@@ -91,10 +92,10 @@ bool target_sense_convert(uint8_t channel, bool side_b, uint16_t* code) {
     for (uint32_t i = 0U; i < SENSE_RESULT_POLLS; i++) {
         if (LPADC_GetConvResult(ADC0, &result, 0U)) {
             *code = result.convValue;
-            return true;
+            return TARGET_SENSE_OK;
         }
     }
-    return false;
+    return TARGET_SENSE_NO_RESULT;
 }
 
 bool target_sense_detected(void) {

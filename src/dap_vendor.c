@@ -305,9 +305,13 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         const bool side_b = supply ? TARGET_SUPPLY_SIDE_B : ((request[2] & TARGET_CHANNEL_SIDE_B) != 0U);
         uint16_t code = 0U;
         uint32_t mv = 0U;
-        if (request[1] > TARGET_MODE_CHANNEL || !target_sense_convert(channel, side_b, &code)) {
+        target_sense_status_t status = TARGET_SENSE_OK;
+        if (request[1] <= TARGET_MODE_CHANNEL) {
+            status = target_sense_convert(channel, side_b, &code);
+        }
+        if (request[1] > TARGET_MODE_CHANNEL || status != TARGET_SENSE_OK) {
             response[1] = DAP_ERROR;
-            code = 0U;
+            code = (uint16_t)status;
         } else {
             response[1] = DAP_OK;
             mv = ((uint32_t)code * TARGET_FULL_SCALE_MV) >> 16;

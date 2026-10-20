@@ -21,9 +21,18 @@
  *  stays off until a host asks for a reading. */
 void target_sense_init(void);
 
-/** Convert one ADC0 channel, side A or B, to a 16-bit code against the probe's own supply.
- *  Returns false if the converter could not be brought up or did not answer in time. */
-bool target_sense_convert(uint8_t channel, bool side_b, uint16_t* code);
+/** Why a reading failed. Vendor 0x86 reports it in an error reply's code field, where 0 is a
+ *  mode the probe does not know. */
+typedef enum {
+    TARGET_SENSE_OK = 0,
+    TARGET_SENSE_OFFSET_CALIBRATION = 1,
+    TARGET_SENSE_GAIN_CALIBRATION = 2,
+    TARGET_SENSE_NO_RESULT = 3,
+} target_sense_status_t;
+
+/** Convert one ADC0 channel, side A or B, to a 16-bit code against the probe's own supply. A
+ *  converter that failed to come up is brought up again on the next call. */
+target_sense_status_t target_sense_convert(uint8_t channel, bool side_b, uint16_t* code);
 
 /** True while something grounds J6 pin 9, which a standard target header does. */
 bool target_sense_detected(void);

@@ -511,7 +511,9 @@ def read_target(probe, mode: int, channel: int = 0) -> tuple[int, int, int]:
     if len(reply) < 7 or reply[0] != DAP_VENDOR_TARGET:
         raise RuntimeError(f"vendor 0x86 answered {reply.hex()}; is this our firmware?")
     if reply[1] != 0:
-        raise RuntimeError("the probe's ADC did not answer")
+        # Images from before the step was reported answer 0 for every failure.
+        step = {1: "offset calibration", 2: "gain calibration", 3: "conversion"}.get(reply[2])
+        raise RuntimeError(f"the probe's ADC did not answer{f' (its {step} timed out)' if step else ''}")
     return int.from_bytes(reply[2:4], "little"), int.from_bytes(reply[4:6], "little"), reply[6]
 
 
