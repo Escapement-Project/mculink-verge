@@ -11,10 +11,11 @@
 # the `release` environment, which holds the key and waits for a required reviewer. `publish`
 # attaches the three files, without the key.
 #
-# The `release` environment needs the secret MINISIGN_SECRET_KEY: the whole secret key file from
-# `minisign -G -W`, which has no password. Its variable MINISIGN_PUBLIC_KEY, the base64 line of the
-# matching .pub file, is optional; when set, the signature is checked against it before it leaves
-# the job.
+# The `release` environment needs a required reviewer, which `sign` checks first, and the secret
+# MINISIGN_SECRET_KEY: the whole secret key file from `minisign -G -W`, which has no password. Its
+# variable MINISIGN_PUBLIC_KEY, the base64 line of the matching .pub file, is optional; when set,
+# the signature is checked against it before it leaves the job. README.md, "Releases", has the
+# settings this relies on.
 
 name: release
 
@@ -80,7 +81,23 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     environment: release
+    permissions:
+      actions: read
     steps:
+      # GitHub creates an environment named in a workflow on first use, with no protection. This
+      # catches that, not a hostile tag: a tag's own workflow decides this job's steps.
+      - name: Refuse an environment nobody has to approve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          reviewers=$(gh api "repos/$GITHUB_REPOSITORY/environments/release" --jq \
+            '[.protection_rules[]? | select(.type == "required_reviewers") | .reviewers[]?] | length')
+          if [ "$reviewers" -eq 0 ]; then
+            echo "the release environment has no required reviewer; nothing is signed" >&2
+            exit 1
+          fi
+
       - uses: actions/download-artifact@v8
         with:
           name: image
