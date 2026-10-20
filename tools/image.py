@@ -649,6 +649,22 @@ def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
     c.note(f"identity: vendor 0x82 magic CJTAG v{version} flags {flags:#04x}, build {build!r}")
 
 
+def check_unconnected_block(c: Checker, elf: str) -> None:
+    """A transfer block with no port connected moves no pin and answers no transfers, as ARM's
+    does. An oversized read used to be clamped and run on the JTAG path whatever the port; with a
+    chain configured, which needs no port, that clocked it."""
+    probe = Machine(elf, Target([0] * 64), restart_at=set(), model=Model())
+    probe.call("board_debug_pins_init")
+    probe.command(bytes([0x11]) + (1_000_000).to_bytes(4, "little"))  # DAP_SWJ_Clock, so delays end
+    probe.command(bytes([0x15, 1, 4]))  # DAP_JTAG_Configure: one device, a 4-bit IR
+    still = (probe.level, probe.dir)
+    reply = probe.command(bytes([0x06, 0, 200, 0, 0x02]))  # a 200-word read of DP register 0
+    c.check(reply[:4] == bytes([0x06, 0, 0, 0]), f"a block with no port connected answered {reply[:8].hex()}")
+    c.check((probe.level, probe.dir) == still,
+            f"a block with no port connected moved the debug port: levels {probe.level:#x}, directions {probe.dir:#x}")
+    c.note("a transfer block with no port connected answers none and moves no pin")
+
+
 def check_board(c: Checker, elf: str) -> None:
     """Only the plain MCU-Link lets the marker or two-pin cJTAG near its pins (PRO.md).
 
@@ -1117,6 +1133,7 @@ def main() -> int:
     check_request_bounds(c, args.core1)
     check_identity(c, args.core1, args.code_lab)
     check_board(c, args.core1)
+    check_unconnected_block(c, args.core1)
     check_sample_probe(c, args.core1)
     check_timestamp(c, args.core1)
     if swo:

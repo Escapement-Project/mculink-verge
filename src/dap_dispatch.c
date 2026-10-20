@@ -166,7 +166,8 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
             return ((devices + 2U) << 16) | 2U;
         }
     }
-    if (*request == ID_DAP_TransferBlock) {
+    if ((*request == ID_DAP_TransferBlock) &&
+        ((DAP_Data.debug_port == DAP_PORT_SWD) || (DAP_Data.debug_port == DAP_PORT_JTAG))) {
         // The word count is sixteen bits and a read block's request is five bytes whatever it
         // says, so a host can ask for 65535 words into a response buffer that holds 127 and the
         // reply runs off the end of SRAM through the stack. A write block carries its data in the
@@ -182,10 +183,8 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
                 return (1U << 16) + 1U + transfer_block(clamped, response + 1);
             }
         }
-        if ((DAP_Data.debug_port == DAP_PORT_SWD) || (DAP_Data.debug_port == DAP_PORT_JTAG)) {
-            *response = *request;
-            return (1U << 16) + 1U + transfer_block(request + 1, response + 1);
-        }
+        *response = *request;
+        return (1U << 16) + 1U + transfer_block(request + 1, response + 1);
     }
 #if defined(SWD_CODEGEN) || defined(JTAG_CODEGEN)
     if (*request == ID_DAP_SWJ_Clock) {
