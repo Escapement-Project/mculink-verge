@@ -106,6 +106,7 @@ would notice.
 - `TIMING.md` -- the timing rules the generated paths are placed by, each from a bench measurement.
 - `CODEGEN.md` and `CJTAGGEN.md` -- how the SWD and JTAG paths are generated at runtime.
 - `TIMERGEN.md` -- a design, not built, for SWD reads above 37.5 MHz with the clock made by a timer.
+- `PRO.md` -- a plan, not built, for MCU-Link Pro support, and why today's image must not go on one.
 - `PACING.md` -- how ARM's paths pace the wire clock, and what is wrong with it. Only the build with
   generation off still uses them.
 - `OPTIMISATIONS.md` -- what was done to ARM's paths for throughput, and what was tried and
