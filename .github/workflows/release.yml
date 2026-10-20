@@ -1,0 +1,86 @@
+# Builds the firmware for a version tag, checks it in the emulator, signs it, and attaches it to
+# the tag's release in the layout the verge update tool reads (its core/src/release.rs):
+#
+#   mculink-verge-<tag>.s19          the image, as objcopy -O srec writes it
+#   mculink-verge-<tag>.s19.sha256   sha256sum's line for it
+#   mculink-verge-<tag>.s19.minisig  minisign's signature; its trusted comment names the file
+#
+# Needs the repository secret MINISIGN_SECRET_KEY: the whole secret key file from
+# `minisign -G -W`, which has no password. The repository variable MINISIGN_PUBLIC_KEY, the
+# base64 line of the matching .pub file, is optional; when set, the signature is checked against
+# it before anything is uploaded.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Arch's arm-none-eabi-gcc is the compiler the bench builds with.
+    container: archlinux:latest
+    env:
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Install the toolchain
+        run: >
+          pacman -Syu --noconfirm --needed
+          git python cmake ninja uv minisign github-cli
+          arm-none-eabi-gcc arm-none-eabi-newlib arm-none-eabi-binutils
+
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          # The firmware's version is `git describe --tags`, so the tag has to be here.
+          fetch-depth: 0
+
+      - name: Let git work in a checkout another user owns
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Fetch TinyUSB's NXP dependencies
+        run: python external/tinyusb/tools/get_deps.py lpc55
+
+      - name: Build
+        run: |
+          cmake -B build -G Ninja -DBOARD=mcu_link -DTOOLCHAIN=gcc .
+          ninja -C build
+
+      - name: Check the image in the emulator
+        run: ninja -C build check
+
+      - name: Name, checksum and sign
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PUBLIC_KEY: ${{ vars.MINISIGN_PUBLIC_KEY }}
+        run: |
+          set -eu
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            echo "the MINISIGN_SECRET_KEY secret is not set; nothing is published unsigned" >&2
+            exit 1
+          fi
+          name="mculink-verge-${GITHUB_REF_NAME}.s19"
+          arm-none-eabi-objcopy -O srec build/mculink_cjtag.elf "$name"
+          sha256sum "$name" > "$name.sha256"
+          key="$RUNNER_TEMP/minisign.key"
+          (umask 077 && printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key")
+          minisign -S -s "$key" -m "$name" -t "file:$name tag:$GITHUB_REF_NAME"
+          rm -f "$key"
+          if [ -n "$MINISIGN_PUBLIC_KEY" ]; then
+            minisign -V -P "$MINISIGN_PUBLIC_KEY" -m "$name"
+          fi
+          echo "NAME=$name" >> "$GITHUB_ENV"
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          if ! gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes ""
+          fi
+          gh release upload "$GITHUB_REF_NAME" --clobber "$NAME" "$NAME.sha256" "$NAME.minisig"
