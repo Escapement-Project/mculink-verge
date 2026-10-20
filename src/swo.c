@@ -300,8 +300,9 @@ uint32_t SWO_Baudrate(const uint8_t* request, uint8_t* response) {
     }
     uint32_t actual = 0U;
     if (mode == DAP_SWO_UART) {
-        uint32_t osrval;
-        uint32_t brgval;
+        // Set whenever the rate is not 0, which gcc cannot see without LTO.
+        uint32_t osrval = 0U;
+        uint32_t brgval = 0U;
         actual = swo_uart_divisors(CLOCK_GetFlexCommClkFreq(SWO_FLEXCOMM), baudrate, &osrval, &brgval);
         if (actual != 0U) {
             uint32_t const cfg = SWO_USART->CFG;
