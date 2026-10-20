@@ -280,10 +280,23 @@ That script is also the recovery path from a bad image of ours, so the sequence 
 plug in, flash, unplug, remove the jumper, plug in.
 
 `uv run tools/flash.py` writes our image the same way and verifies it; `--check` says what every
-attached unit is running without touching any of them. **Each reflash costs a pair of hands**,
-which is the one step in a measure-change-measure loop that cannot be scripted. A vendor command
-that re-enters the ROM bootloader would remove it, and the jumper stays the
-recovery route for an image that will not enumerate.
+attached unit is running, ours with its build or stock with its version, without touching any of
+them.
+
+**Neither direction needs the jumper any more** (2026-10-20). `tools/flash.py --cycle --image
+<ELF or S-record>` reboots the running firmware into the bootloader, flashes, and resets:
+- Ours takes a USB control request that CPU 0 answers.
+- Stock V3.172 takes what LinkServer's own `probe <serial> update` sends, captured with usbmon:
+  vendor command 0x81 with argument 0x01, answered `81 00 01`, then `DAP_Disconnect`. The unit
+  drops off the bus about 2.1 s later and enumerates as `1fc9:0021` about 0.3 s after that.
+  NXP's tooling offers the jumper-free update from V3.122.
+- LinkServer's own update needs `-i /opt/linkserver/MCU-LINK` on this install, which keeps the
+  firmware there rather than in `MCU-LINK_installer`. Its flashing step then fails when its
+  bundled libraries break `/bin/bash` (`undefined symbol: rl_trim_arg_from_keyseq`), which leaves
+  the unit in the bootloader for `tools/flash.py` to flash.
+
+So stock and ours swap with no hands. The jumper stays the recovery route for an image that will
+not enumerate.
 
 **Reading flash back to verify stops at the last fully programmed page.** Erased flash on this
 part has no valid ECC, so a read that runs past the image fails with `FLASH Driver: ECC Error` and
@@ -776,6 +789,53 @@ does not model at all and which decides how much of the wire-time advantage surv
 Sweep the requested clock across the steps — 8, 10, 14, 16, 20, 30, 40, 50 MHz — rather than
 picking one. The steps are the prediction most worth checking, because they are what the
 specialisation work above is aimed at.
+
+### Measured 2026-10-20: ours with gcc and clang against stock V3.172
+
+`tools/throughput.py`, matrix `swd-1`, on the MSPM0L1306, one probe flashed in turn with each image
+by the script itself; results in `bench/throughput/2026-10-20-{gcc,clang,stock}.json`, which carry
+identical hashes of the measuring code. Our images are `4a7ca13`. Retake with the same three
+commands (the script's docstring) once the firmware is feature-complete and optimised.
+
+Full-packet block commands through the AP, KiB/s (127-word reads, 126-word writes):
+
+| asked | depth | gcc read | clang read | stock read | gcc write | clang write | stock write |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 MHz | 1 | 82 | 83 | 77 | 82 | 82 | 77 |
+| 5 MHz | 1 | 392 | 393 | 293 | 389 | 392 | 296 |
+| 10 MHz | 1 | 722 | 728 | 503 | 731 | 730 | 521 |
+| 10 MHz | 8 | 817 | 818 | 536 | 823 | 824 | 555 |
+| 20 MHz | 1 | 1186 | 1231 | 654 | 1214 | 1222 | 653 |
+| 20 MHz | 8 | 1470 | 1473 | 711 | 1502 | 1504 | 719 |
+| 50 MHz | 1 | 1947 | 1947 | 702 | 2249 | 2254 | 733 |
+| 50 MHz | 8 | 2676 | 2686 | failed | 3239 | 3248 | failed |
+
+probe-rs, 4 KiB at a time, attach excluded, KiB/s:
+
+| asked | gcc read32 | clang | stock | gcc write32 | clang | stock |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 MHz | 82 | 80 | 76 | 82 | 82 | 77 |
+| 5 MHz | 383 | 386 | 287 | 389 | 392 | 296 |
+| 10 MHz | 707 | 698 | 491 | 739 | 721 | 520 |
+| 20 MHz | 1127 | 1164 | 634 | 1195 | 1170 | 664 |
+| 30 MHz | 1575 | 1591 | 661 | 1606 | 1777 | 733 |
+| 50 MHz | 1657 | 1548 | failed | 2266 | 2283 | failed |
+
+- Ours is ahead at every clock through probe-rs: 6 to 8% at 1 MHz, 1.4x at 10 MHz and 1.8x at
+  20 MHz. Past 20 MHz asked stock gains little (reads 634 to 661 KiB/s at 30, writes 664 to 733),
+  while ours keeps climbing to 50.
+- A single-word round trip costs the same on all three, 68 to 69 us from 10 MHz up: that is the
+  host and USB, not the probe.
+- Stock at 50 MHz asked misreads acknowledges (3 or 6, neither valid) partway through runs whenever
+  commands are pipelined or queued: 55 and 56 of 480 cases in two runs, all at depths 2 and 8,
+  none at depth 1. probe-rs fails there too, and once of two runs at 30 MHz.
+- gcc and clang are within a few percent of each other everywhere but one place: 1-word commands
+  at 8 queued at 50 MHz, where gcc falls off the CPU 0 cliff (21,586 against 36,473 commands/s for
+  a 1-word AP read through DAP_Transfer) and clang mostly does not. At 10 MHz both run about 51k.
+- probe-rs's 4 KiB reads barely rise from 30 to 50 MHz on ours (1575 to 1657) while writes do (1606
+  to 2266): something on the read path other than the wire binds there.
+- What each firmware puts on the wire for each requested clock is the next measurement, with the
+  analyser, after these: an analyser capture slows the probe.
 
 ## 6. The console
 
