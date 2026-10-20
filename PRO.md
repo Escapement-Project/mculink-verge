@@ -1,6 +1,6 @@
 # MCU-Link Pro support: plan (BACKLOG.md item 10)
 
-Written 2026-10-20. Nothing here is built.
+Written 2026-10-20. Phase 0 is built (`268458f`); the rest is not.
 
 Goal (BACKLOG item 10): one image for the plain MCU-Link and the Pro, with the Pro's extras (second
 VCOM, SPI/I2C/GPIO bridge, energy measurement, target supply) reachable from probe-rs, and the LEDs
@@ -90,7 +90,11 @@ The rest of the Pro's pins, from schematic page 1:
 
 ## Plan
 
-Phase 0, no Pro needed:
+Phase 0, no Pro needed. Done 2026-10-20 (`268458f`): the gate's `check_board` runs the detection
+with each board's straps, break-tested three ways; on the plain bench probe 0x82 answers format 3,
+flags 0x3d, board 0. Today's image (`1cde223` on) is safe to flash on a Pro as far as J8 goes; the
+P0_30 check below is still open.
+
 
 1. Board detection on CPU 0 at boot, before USB: the strap pins read once into `dap_shared` for
    CPU 1.
