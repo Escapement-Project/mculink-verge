@@ -254,9 +254,8 @@ the two-pin block paths to SRAM the way the SWD ones went.
   without a pair of hands. Export the raw digital CSV and
   read it with `tools/clockscope.py`.
 - **Run `ninja -C build check` before flashing.** It refuses a build that clocks any wire faster
-  than the host asked for, beyond the two cases already recorded in
-  `tools/baseline/known-overshoot.txt`. Two of the four build configurations fail it, so the one
-  you flash matters.
+  than the host asked for, beyond what `tools/baseline/known-overshoot.txt` records: nothing for
+  the default build. ARM's paths alone (`+armwire`) have theirs in `tools/baseline-armwire/`.
 
 ## Flashing, ISP mode and getting back to stock
 
@@ -970,8 +969,8 @@ only reads today.
 **It found a real overshoot.** The model now says SWD and the two-pin path clock faster than asked
 at 10 and 20 MHz, where before it said SWD at 10 MHz was comfortably under. The analyser agrees:
 five bit positions measured 10.28 to 10.30 MHz for a 10 MHz request. Those are recorded in
-`tools/baseline/known-overshoot.txt` as known rather than new, because they are a property the code
-always had and the calibration merely made visible.
+`tools/baseline-armwire/known-overshoot.txt` as known rather than new, because they are a
+property the code always had and the calibration merely made visible.
 
 ### Taken: the core now runs at 150 MHz
 
@@ -1424,11 +1423,11 @@ TIMING.md has the rules these give a generator. CODEGEN.md is the context for im
 
 ### The transfers are generated at run time, and the wire runs at every period from three cycles
 
-**What it is.** A build with `-DSWD_CODEGEN=ON` writes its SWD transfer code into SRAMX whenever
-the host changes the clock, the turnaround, the data phase or the idle cycles. Every edge, data
-store and sample sits at a cycle the timing model chose. ARM's command logic stays in C around
-it: posted reads, the RDBUFF reads and WAIT retries. `src/swd_gen.c` has the details and
-CODEGEN.md the reasoning.
+**What it is.** A build with `SWD_CODEGEN` on, the default since 2026-10-20, writes its SWD
+transfer code into SRAMX whenever the host changes the clock, the turnaround, the data phase or
+the idle cycles. Every edge, data store and sample sits at a cycle the timing model chose. ARM's
+command logic stays in C around it: posted reads, the RDBUFF reads and WAIT retries.
+`src/swd_gen.c` has the details and CODEGEN.md the reasoning.
 
 **The host now gets the rate it asks for, to one cycle.** The period is the shortest whole number
 of cycles that is no faster than the request. Clocks the probe drives go down to 3 cycles, 50 MHz.
@@ -1586,10 +1585,11 @@ Ranked, with the items here that are since done marked as such, in BACKLOG.md.
 - **The two-pin and four-wire JTAG block paths are still in flash** and will have the same stall
   the SWD paths had. `cjtag_BlockImpl` and `cjtagf_BlockImpl` are 67 KB together, against 79 KB
   already in SRAM and 112 KB still free.
-- **Make the generated SWD paths the default.** The equivalence, the gate and the MSPM0L1306 pass.
-  A target with a memory access port that answers WAIT has not run them yet.
-- **Measure the read latency per target.** Done for SWD: the probe measures it at
-  connect at 37.5 and 50 MHz. JTAG and two-pin still use
-  fixed latencies.
+- **Make the generated SWD paths the default.** Done 2026-10-20, with the JTAG paths, once the
+  MSPM0L1306 had run the SWD ones with its access port answering WAIT.
+- **Measure the read latency per target.** Done on all three wires: the probe measures it
+  at connect where the
+  default leaves under two cycles, SWD at 37.5 and 50 MHz, four-wire from 12.5 MHz and two-pin from
+  15 MHz on the CC1312R1.
 - **Generate the JTAG and two-pin paths the same way.** They are 80 KB of SRAM and are still
   paced by ARM's delay loop.

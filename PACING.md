@@ -91,8 +91,8 @@ request, 72 MHz for 50. The two-pin frame does far more, and borrows the same nu
 anything ever telling `Set_Clock_Delay` what a packet costs. It lands on 14 or 15 cycles for a
 10 MHz request, against the 14.4 it needs, and the compiler decides which.
 
-`tools/baseline/known-overshoot.txt` records `jtag@10MHz` and `jtag@50MHz` so the gate fails on a
-*new* overshoot rather than on these two.
+`tools/baseline-armwire/known-overshoot.txt` records `jtag@10MHz` and `jtag@50MHz` so the gate
+fails on a *new* overshoot rather than on these two.
 
 ## The steps, which may be worth more than the overshoot
 

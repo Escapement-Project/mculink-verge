@@ -21,7 +21,7 @@ the evidence.
   Gate: `ninja -C build check`.
   Never put LED or other work in a bit path. Fix unbounded accesses when found.
 
-## The generator as built (src/swd_gen.c, behind SWD_CODEGEN, off by default)
+## The generator as built (src/swd_gen.c, behind SWD_CODEGEN, on by default since 2026-10-20)
 
 - `swd_gen_build(config)` writes two functions into SRAMX 0x0400_0000..0x0400_3FFF (lab arena is
   the upper 16 KB): read and write, each `uint64_t fn(packet, words, count)`. Runs `count`
@@ -65,8 +65,9 @@ the evidence.
   DAP_Transfer at 50/37.5/10/1. `tools/gencheck.py` (engine + timed target serving the wire):
   every P 3..40, 75, 150, 1500 clean; margins P4:1 P5-6:2 P8:3 P9-10:4 P11-13:5 P>=15:7. Running
   block cycles a transfer vs floor (8 packet clocks at the write period, 38 at the read period):
-  P3 read 203/176 write 164/143; P4 210/184, 197/184; from P = 29 exactly the floor. Gate: codegen
-  images run on the engine against `tools/baseline-codegen` (S positions differ from ARM's).
+  P3 read 203/176 write 164/143; P4 210/184, 197/184; from P = 29 exactly the floor. Gate: generated
+  images run on the engine against `tools/baseline`, ARM's against `tools/baseline-armwire` (S
+  positions differ).
   Hardware (L1306): see Bench state.
 
 ## Timer-clocked SWCLK (lab prototype, 2026-10-16)
@@ -315,5 +316,6 @@ at P = 8, 12, 16).
 - Overhead left at the top: P4 read 26 cycles a transfer over the floor (release 2, decision ~3,
   settle ~4, gap ~14: unmask, 8-instruction parity check, store, loop). The read parity fold
   could move into the settle wait.
-- Default on: equiv and gate pass and the L1306 passes; U575 (memory AP, WAIT) not run yet.
+- Default on since 2026-10-20: equiv and gate pass, and the L1306 passes with
+  its AP answering WAIT.
 - Timed TAP model for JTAG/two-pin (TDO window after the falling edge) not built.
