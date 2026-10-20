@@ -21,14 +21,19 @@
 
 #define CFG_TUD_ENDPOINT0_SIZE 64
 
-#define CFG_TUD_CDC 1
+// VCOM and, on the Pro, VCOM2 (src/vcom.c).
+#define CFG_TUD_CDC 2
 
-// The target console. 512 each way matches the bulk packet size, so a full USB packet never has to
+// The target consoles. 512 each way matches the bulk packet size, so a full USB packet never has to
 // be split across a FIFO wrap.
 #define CFG_TUD_CDC_RX_BUFSIZE 512
 #define CFG_TUD_CDC_TX_BUFSIZE 512
 #define CFG_TUD_CDC_EP_BUFSIZE 512
 #define CFG_TUD_MSC 0
+
+// The CDC notification endpoints are declared at numbers the controller lacks and never opened
+// (src/usb_descriptors.c), which TinyUSB allows only for registered placeholders.
+#define CFG_TUD_EDPT_PLACEHOLDER 1
 #define CFG_TUD_HID 1
 
 // CMSIS-DAP v1 carries one command per HID report, and a report is capped by the interrupt

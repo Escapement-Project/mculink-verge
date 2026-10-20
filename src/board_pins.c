@@ -4,6 +4,7 @@
 #include "fsl_device_registers.h"
 #include "fsl_iocon.h"
 
+#include "dap_shared.h"
 #include "marker.h"
 
 _Static_assert(DBGIF_TCK_SWCLK_PORT == DBGIF_PORT && DBGIF_TDI_PORT == DBGIF_PORT &&
@@ -41,37 +42,12 @@ __attribute__((noinline)) void board_timestamp_init(void) {
 /** P0_3's only receive function: Flexcomm 3's RXD. */
 #define SWO_PIN_MODE (IOCON_FUNC1 | PIN_MODE)
 
-/** The two hardware-version straps that tell the boards apart (DAPLink's lpc55xx IO_Config.h):
- *  HW_VER_4 low says a board id is fitted, and HW_VER_3 is that id, high on a Pro. */
-#define HW_VER_PORT 1U
-#define HW_VER_3_PIN 4U
-#define HW_VER_4_PIN 5U
-
-/** Loop iterations for the pull-ups to charge the strap pins: at two cycles or more each, at least
- *  40 us at 150 MHz. */
-#define HW_VER_SETTLE 3000U
-
 uint8_t board_kind = BOARD_KIND_PLAIN;
-
-/** The plain MCU-Link's 64-pin package bonds neither strap pin, so with their pull-ups both read
- *  high there. The pull-ups stay on: DAPLink leaves them on too. */
-static uint8_t board_detect(void) {
-    CLOCK_EnableClock(kCLOCK_Gpio1);
-    IOCON_PinMuxSet(IOCON, HW_VER_PORT, HW_VER_3_PIN, IOCON_FUNC0 | IOCON_MODE_PULLUP | IOCON_DIGITAL_EN);
-    IOCON_PinMuxSet(IOCON, HW_VER_PORT, HW_VER_4_PIN, IOCON_FUNC0 | IOCON_MODE_PULLUP | IOCON_DIGITAL_EN);
-    GPIO->DIRCLR[HW_VER_PORT] = (1UL << HW_VER_3_PIN) | (1UL << HW_VER_4_PIN);
-    for (volatile uint32_t i = 0U; i < HW_VER_SETTLE; i++) {
-    }
-    if (GPIO->B[HW_VER_PORT][HW_VER_4_PIN] != 0U) {
-        return BOARD_KIND_PLAIN;
-    }
-    return (GPIO->B[HW_VER_PORT][HW_VER_3_PIN] != 0U) ? BOARD_KIND_PRO : BOARD_KIND_ON_BOARD;
-}
 
 __attribute__((noinline)) void board_debug_pins_init(void) {
     CLOCK_EnableClock(kCLOCK_Iocon);
     CLOCK_EnableClock(kCLOCK_Gpio_Sec);
-    board_kind = board_detect();
+    board_kind = dap_shared.board;
 
     // The secure GPIO's state first, while the pins still belong to the ordinary GPIO, so each pin
     // goes straight to its final level when IOCON hands it over. Buffers off, then the pins they
@@ -102,6 +78,7 @@ __attribute__((noinline)) void board_debug_pins_init(void) {
 #ifdef MARKER_PINS
     // J8 is on port 1, which the secure GPIO does not reach, so it stays on the ordinary GPIO.
     if (board_kind == BOARD_KIND_PLAIN) {
+        CLOCK_EnableClock(kCLOCK_Gpio1);
         for (uint32_t pin = 0U; pin < 4U; pin++) {
             IOCON_PinMuxSet(IOCON, J8_PORT, pin, IOCON_FUNC0 | PIN_MODE);
         }

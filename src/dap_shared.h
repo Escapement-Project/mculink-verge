@@ -115,6 +115,10 @@ typedef struct {
     volatile uint8_t led_activity;
     volatile uint8_t led_connected;
 
+    /** BOARD_KIND_* and BOARD_JUMPER_* (board_straps.h), written by CPU 0 before CPU 1 starts. */
+    volatile uint8_t board;
+    volatile uint8_t jumpers;
+
     /** SWO ring segments DMA0 has completed, counted by CPU 0's DMA interrupt for src/swo.c. */
     volatile uint32_t swo_segments;
 

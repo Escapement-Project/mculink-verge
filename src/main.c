@@ -14,6 +14,7 @@
 #include "tusb.h"
 
 #include "board_pins.h"
+#include "board_straps.h"
 #include "core_clock.h"
 #include "dap_core.h"
 #include "dap_core_security.h"
@@ -21,6 +22,7 @@
 #include "dap_usb_slots.h"
 #include "led.h"
 #include "reboot.h"
+#include "usb_descriptors.h"
 #include "usb_transport.h"
 #include "vcom.h"
 
@@ -341,12 +343,13 @@ int main(void) {
     reboot_clear_boot_mode();
     board_core_clock_init();
     board_clocks_init();
+    dap_shared_init(&dap_shared);
+    board_read_straps();
     led_init();
     vcom_init();
     CLOCK_EnableClock(kCLOCK_Mailbox);
     RESET_PeripheralReset(kMAILBOX_RST_SHIFT_RSTn);
     MAILBOX->MBOXIRQ[0].IRQCLR = UINT32_MAX;
-    dap_shared_init(&dap_shared);
     dap_core_security_init();
     // The highest priority, so nothing comes between DMA0_IRQHandler reading a completion and
     // counting it, which src/swo.c's capture start waits out.
@@ -355,6 +358,7 @@ int main(void) {
     start_core1();
 
     board_init_after_tusb();
+    usb_descriptors_init();
     tusb_rhport_init_t const init = {
         .role = TUSB_ROLE_DEVICE,
         .speed = TUSB_SPEED_AUTO,

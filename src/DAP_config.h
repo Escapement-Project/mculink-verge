@@ -193,6 +193,15 @@ static const char TargetBoardName    [] = TARGET_BOARD_NAME;
 /// in the product string so somebody holding an unfamiliar probe can still tell what it is.
 #define DAP_VENDOR_NAME         "Escapement Project"
 #define DAP_PRODUCT_NAME        "MCU-Link Verge CMSIS-DAP"
+/// The product names the board, as stock adds "Pro" (PRO.md decision e), until BACKLOG item 9
+/// picks the form the names take without "MCU-Link".
+#define DAP_PRODUCT_NAME_PRO    "MCU-Link Pro Verge CMSIS-DAP"
+
+/// The product string for a board (BOARD_KIND_*): the USB string on CPU 0 and DAP_Info's on
+/// CPU 1, which a host reads both of.
+__STATIC_INLINE const char *DAP_ProductName (uint8_t board) {
+  return (board == BOARD_KIND_PRO) ? DAP_PRODUCT_NAME_PRO : DAP_PRODUCT_NAME;
+}
 
 /** Get Vendor Name string.
 \param str Pointer to buffer to store the string (max 60 characters).
@@ -208,8 +217,9 @@ __STATIC_INLINE uint8_t DAP_GetVendorString (char *str) {
 \return String length (including terminating NULL character) or 0 (no string).
 */
 __STATIC_INLINE uint8_t DAP_GetProductString (char *str) {
-  strcpy(str, DAP_PRODUCT_NAME);
-  return ((uint8_t)(sizeof(DAP_PRODUCT_NAME)));
+  const char *name = DAP_ProductName(board_kind);
+  strcpy(str, name);
+  return ((uint8_t)(strlen(name) + 1U));
 }
 
 /** Get Serial Number string.

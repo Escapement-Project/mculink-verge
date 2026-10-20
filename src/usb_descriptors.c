@@ -14,8 +14,10 @@
 // live there, so the USB strings and DAP_Info cannot drift apart.
 #include "DAP_config.h"
 
+#include "board_straps.h"
 #include "dap_core.h"
 #include "dap_shared.h"
+#include "usb_descriptors.h"
 #include "usb_transport.h"
 #include "ser_num.h"
 #include "reboot.h"
@@ -24,38 +26,114 @@
 
 #define USB_VID 0x1FC9 // NXP
 #define USB_PID 0x0143 // MCU-Link CMSIS-DAP
-#define USB_BCD 0x0210 // 2.1, which is what makes the host ask for the BOS descriptor
 
-static const tusb_desc_device_t desc_device = {
+/** 2.1 makes the host ask for the BOS, which carries the MS OS 2.0 descriptor that binds WinUSB to
+ *  the CMSIS-DAP interface. Without that interface there is no BOS, and a device of 2.1 or later
+ *  must have one, so it is 2.0. */
+#define USB_BCD_BOS 0x0210
+#define USB_BCD_NO_BOS 0x0200
+
+static tusb_desc_device_t desc_device = {
     .bLength = sizeof(tusb_desc_device_t),
     .bDescriptorType = TUSB_DESC_DEVICE,
-    .bcdUSB = USB_BCD,
     .bDeviceClass = 0x00,
     .bDeviceSubClass = 0x00,
     .bDeviceProtocol = 0x00,
     .bMaxPacketSize0 = CFG_TUD_ENDPOINT0_SIZE,
     .idVendor = USB_VID,
     .idProduct = USB_PID,
-    .bcdDevice = 0x0100,
     .iManufacturer = 0x01,
     .iProduct = 0x02,
     .iSerialNumber = 0x03,
     .bNumConfigurations = 0x01,
 };
 
-uint8_t const* tud_descriptor_device_cb(void) { return (uint8_t const*)&desc_device; }
+/** The functions this board and its jumpers leave (board_straps.h), as bits: what the
+ *  configuration holds, and the low byte of bcdDevice. */
+#define FUNCTION_DEBUG (1U << 0)
+#define FUNCTION_VCOM (1U << 1)
+#define FUNCTION_VCOM2 (1U << 2)
 
-enum { ITF_NUM_VENDOR = 0, ITF_NUM_CDC, ITF_NUM_CDC_DATA, ITF_NUM_HID, ITF_NUM_TOTAL };
+static uint32_t functions(void) {
+    uint8_t const board = dap_shared.board;
+    uint8_t const jumpers = dap_shared.jumpers;
+    return (board_has_debug(board, jumpers) ? FUNCTION_DEBUG : 0U) |
+           (board_has_vcom(board, jumpers) ? FUNCTION_VCOM : 0U) |
+           (board_has_vcom2(board, jumpers) ? FUNCTION_VCOM2 : 0U);
+}
 
+/** Windows keeps what it learnt about a device by VID, PID and bcdDevice, so each set of
+ *  functions gets a bcdDevice of its own, as stock's does for each jumper state. */
+uint8_t const* tud_descriptor_device_cb(void) {
+    uint32_t const present = functions();
+    desc_device.bcdUSB = ((present & FUNCTION_DEBUG) != 0U) ? USB_BCD_BOS : USB_BCD_NO_BOS;
+    desc_device.bcdDevice = (uint16_t)(0x0100U | present);
+    return (uint8_t const*)&desc_device;
+}
+
+/** One endpoint layout for both boards: the plain MCU-Link is a Pro with
+ *  functions removed. A function a board lacks, or a jumper turns off, is left out of the
+ *  configuration, never declared as an interface that does nothing, as stock leaves it out. Its
+ *  endpoint numbers stay reserved for it, and the interfaces after it renumber. CMSIS-DAP v2 is
+ *  interface 0 on EP1 whenever it is there: the MS OS 2.0 descriptor names interface 0. */
+#define ITF_NUM_VENDOR 0
 #define EPNUM_VENDOR_OUT 0x01
 #define EPNUM_VENDOR_IN 0x81
-#define EPNUM_CDC_NOTIF 0x82
-#define EPNUM_CDC_OUT 0x03
-#define EPNUM_CDC_IN 0x83
+// EP2 is the Pro's LPCSIO HID, once USB-SIO exists.
+#define EPNUM_VCOM_OUT 0x03
+#define EPNUM_VCOM_IN 0x83
 #define EPNUM_HID_OUT 0x04
 #define EPNUM_HID_IN 0x84
+#define EPNUM_VCOM2_OUT 0x05
+#define EPNUM_VCOM2_IN 0x85
+/** The notification endpoints are numbers USB1 does not have (it has EP0 to EP5), declared as
+ *  NXP's stock firmware declares them on the Pro and never opened: this firmware sends no
+ *  notification, and the boards wire no modem lines. */
+#define EPNUM_VCOM_NOTIF 0x86
+#define EPNUM_VCOM2_NOTIF 0x87
 
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_VENDOR_DESC_LEN + TUD_CDC_DESC_LEN + TUD_HID_INOUT_DESC_LEN)
+TU_VERIFY_STATIC(CFG_TUD_EDPT_PLACEHOLDER, "the notification endpoints are placeholders");
+
+void usb_descriptors_init(void) {
+    tud_configure_edpt_placeholder_t const placeholders = {
+        .bm_in = TU_BIT(tu_edpt_number(EPNUM_VCOM_NOTIF)) | TU_BIT(tu_edpt_number(EPNUM_VCOM2_NOTIF)),
+        .bm_out = 0U,
+    };
+    (void)tud_configure(BOARD_TUD_RHPORT, TUD_CFGID_EDPT_PLACEHOLDER, &placeholders);
+}
+
+#define STRID_VENDOR_ITF 4
+#define STRID_VCOM 5
+#define STRID_HID 6
+#define STRID_VCOM2 7
+
+/** TUD_CDC_DESCRIPTOR, with the notification endpoint as stock declares it: room for a whole
+ *  SERIAL_STATE notification, polled every 2^15 microframes rather than every one. */
+#define VCOM_NOTIF_SIZE 16
+#define VCOM_NOTIF_INTERVAL 16
+// clang-format off: one descriptor a line, as TinyUSB's own template lays it out.
+#define VCOM_DESCRIPTOR(_itfnum, _stridx, _ep_notif, _epout, _epin) \
+    /* Interface Associate */ \
+    8, TUSB_DESC_INTERFACE_ASSOCIATION, _itfnum, 2, TUSB_CLASS_CDC, CDC_COMM_SUBCLASS_ABSTRACT_CONTROL_MODEL, CDC_COMM_PROTOCOL_NONE, 0, \
+    /* CDC Control Interface */ \
+    9, TUSB_DESC_INTERFACE, _itfnum, 0, 1, TUSB_CLASS_CDC, CDC_COMM_SUBCLASS_ABSTRACT_CONTROL_MODEL, CDC_COMM_PROTOCOL_NONE, _stridx, \
+    /* CDC Header */ \
+    5, TUSB_DESC_CS_INTERFACE, CDC_FUNC_DESC_HEADER, U16_TO_U8S_LE(0x0120), \
+    /* CDC Call */ \
+    5, TUSB_DESC_CS_INTERFACE, CDC_FUNC_DESC_CALL_MANAGEMENT, 0, (uint8_t)((_itfnum) + 1), \
+    /* CDC ACM: support line request + send break */ \
+    4, TUSB_DESC_CS_INTERFACE, CDC_FUNC_DESC_ABSTRACT_CONTROL_MANAGEMENT, 6, \
+    /* CDC Union */ \
+    5, TUSB_DESC_CS_INTERFACE, CDC_FUNC_DESC_UNION, _itfnum, (uint8_t)((_itfnum) + 1), \
+    /* Endpoint Notification */ \
+    7, TUSB_DESC_ENDPOINT, _ep_notif, TUSB_XFER_INTERRUPT, U16_TO_U8S_LE(VCOM_NOTIF_SIZE), VCOM_NOTIF_INTERVAL, \
+    /* CDC Data Interface */ \
+    9, TUSB_DESC_INTERFACE, (uint8_t)((_itfnum) + 1), 0, 2, TUSB_CLASS_CDC_DATA, 0, 0, 0, \
+    /* Endpoint Out */ \
+    7, TUSB_DESC_ENDPOINT, _epout, TUSB_XFER_BULK, U16_TO_U8S_LE(512), 0, \
+    /* Endpoint In */ \
+    7, TUSB_DESC_ENDPOINT, _epin, TUSB_XFER_BULK, U16_TO_U8S_LE(512), 0
+// clang-format on
 
 /** A vendor-defined report pair, 64 bytes each way: what CMSIS-DAP v1 is. */
 static uint8_t const desc_hid_report[] = {
@@ -67,16 +145,46 @@ uint8_t const* tud_hid_descriptor_report_cb(uint8_t instance) {
     return desc_hid_report;
 }
 
-static uint8_t const desc_configuration[] = {
-    TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, 0x00, 100),
-    TUD_VENDOR_DESCRIPTOR(ITF_NUM_VENDOR, 4, EPNUM_VENDOR_OUT, EPNUM_VENDOR_IN, 512),
-    TUD_CDC_DESCRIPTOR(ITF_NUM_CDC, 5, EPNUM_CDC_NOTIF, 8, EPNUM_CDC_OUT, EPNUM_CDC_IN, 512),
-    TUD_HID_INOUT_DESCRIPTOR(ITF_NUM_HID, 6, HID_ITF_PROTOCOL_NONE, sizeof(desc_hid_report), EPNUM_HID_OUT,
-                             EPNUM_HID_IN, CFG_TUD_HID_EP_BUFSIZE, 1),
-};
+#define CONFIG_MAX_LEN (TUD_CONFIG_DESC_LEN + TUD_VENDOR_DESC_LEN + TUD_HID_INOUT_DESC_LEN + 2U * TUD_CDC_DESC_LEN)
 
+static uint8_t desc_configuration[CONFIG_MAX_LEN];
+
+static uint8_t* append(uint8_t* out, uint8_t const* descriptor, size_t length) {
+    memcpy(out, descriptor, length);
+    return out + length;
+}
+
+/** Built on each request from the functions present, in PRO.md's interface order: CMSIS-DAP v2,
+ *  VCOM, CMSIS-DAP v1, VCOM2. src/vcom.c numbers its CDC instances by the same rule. */
 uint8_t const* tud_descriptor_configuration_cb(uint8_t index) {
     (void)index;
+    uint32_t const present = functions();
+    uint8_t* out = desc_configuration + TUD_CONFIG_DESC_LEN;
+    uint8_t itf = 0U;
+    if ((present & FUNCTION_DEBUG) != 0U) {
+        uint8_t const vendor[] = {
+            TUD_VENDOR_DESCRIPTOR(ITF_NUM_VENDOR, STRID_VENDOR_ITF, EPNUM_VENDOR_OUT, EPNUM_VENDOR_IN, 512)};
+        out = append(out, vendor, sizeof(vendor));
+        itf++;
+    }
+    if ((present & FUNCTION_VCOM) != 0U) {
+        uint8_t const vcom[] = {VCOM_DESCRIPTOR(itf, STRID_VCOM, EPNUM_VCOM_NOTIF, EPNUM_VCOM_OUT, EPNUM_VCOM_IN)};
+        out = append(out, vcom, sizeof(vcom));
+        itf += 2U;
+    }
+    if ((present & FUNCTION_DEBUG) != 0U) {
+        uint8_t const hid[] = {TUD_HID_INOUT_DESCRIPTOR(itf, STRID_HID, HID_ITF_PROTOCOL_NONE, sizeof(desc_hid_report),
+                                                        EPNUM_HID_OUT, EPNUM_HID_IN, CFG_TUD_HID_EP_BUFSIZE, 1)};
+        out = append(out, hid, sizeof(hid));
+        itf++;
+    }
+    if ((present & FUNCTION_VCOM2) != 0U) {
+        uint8_t const vcom2[] = {VCOM_DESCRIPTOR(itf, STRID_VCOM2, EPNUM_VCOM2_NOTIF, EPNUM_VCOM2_OUT, EPNUM_VCOM2_IN)};
+        out = append(out, vcom2, sizeof(vcom2));
+        itf += 2U;
+    }
+    uint8_t const header[] = {TUD_CONFIG_DESCRIPTOR(1, itf, 0, (uint16_t)(out - desc_configuration), 0x00, 100)};
+    (void)append(desc_configuration, header, sizeof(header));
     return desc_configuration;
 }
 
@@ -85,11 +193,12 @@ uint8_t const* tud_descriptor_configuration_cb(uint8_t index) {
 static char const* string_desc[] = {
     [0] = (const char[]){0x09, 0x04}, // English (US)
     [1] = DAP_VENDOR_NAME,
-    [2] = DAP_PRODUCT_NAME,
-    [3] = NULL,           // serial, filled in from the part's unique id
-    [4] = "CMSIS-DAP v2", // the prefix host tools match on
-    [5] = "MCU-Link VCOM",
-    [6] = "CMSIS-DAP v1", // the same prefix, on the HID interface
+    [2] = NULL,                          // the product, which names the board: DAP_ProductName
+    [3] = NULL,                          // serial, filled in from the part's unique id
+    [STRID_VENDOR_ITF] = "CMSIS-DAP v2", // the prefix host tools match on
+    [STRID_VCOM] = "MCU-Link VCOM",
+    [STRID_HID] = "CMSIS-DAP v1", // the same prefix, on the HID interface
+    [STRID_VCOM2] = "MCU-Link VCOM2",
 };
 
 static uint16_t string_buffer[32];
@@ -105,7 +214,9 @@ uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
         if (index >= TU_ARRAY_SIZE(string_desc)) {
             return NULL;
         }
-        char const* text = (index == 3) ? GetSerialNum() : string_desc[index];
+        char const* text = (index == 2)   ? DAP_ProductName(dap_shared.board)
+                           : (index == 3) ? GetSerialNum()
+                                          : string_desc[index];
         count = strlen(text);
         if (count > TU_ARRAY_SIZE(string_buffer) - 1) {
             count = TU_ARRAY_SIZE(string_buffer) - 1;
@@ -131,7 +242,7 @@ static uint8_t const desc_bos[] = {
     TUD_BOS_MS_OS_20_DESCRIPTOR(MS_OS_20_DESC_LEN, VENDOR_REQUEST_MICROSOFT),
 };
 
-uint8_t const* tud_descriptor_bos_cb(void) { return desc_bos; }
+uint8_t const* tud_descriptor_bos_cb(void) { return ((functions() & FUNCTION_DEBUG) != 0U) ? desc_bos : NULL; }
 
 // clang-format off: the layout mirrors the descriptor structure, which is the only thing that
 // makes these bytes readable.

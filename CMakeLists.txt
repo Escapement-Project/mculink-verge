@@ -105,6 +105,7 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/mem.S
   ${CMAKE_CURRENT_SOURCE_DIR}/src/usb_descriptors.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/ser_num.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/board_straps.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/board_clocks.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/reboot.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/led.c
@@ -409,6 +410,10 @@ rewrite_ld("(m_data +\\(RW\\) +: ORIGIN = 0x20000000, LENGTH = )0x[0-9A-Fa-f]+ -
 rewrite_ld("(m_usb_sram +\\(RW\\) +: ORIGIN = 0x40100000, LENGTH = )0x[0-9A-Fa-f]+"
            "\\1${CORE0_USB_LENGTH}\n  m_dap_shared (RW) : ORIGIN = ${DAP_SHARED_ORIGIN}, LENGTH = ${DAP_SHARED_LENGTH}"
            "the m_usb_sram region")
+# The boards this image runs on, for verge to read from the file (src/board_straps.c), right after
+# the vector table.
+rewrite_ld("(KEEP\\(\\*\\(\\.isr_vector\\)\\)[^\n]*\n)"
+           "\\1    KEEP(*(.image_boards))\n" "the vector table's KEEP")
 rewrite_ld("(\n  m_usb_global \\(NOLOAD\\) :)"
            "\n  .dap_shared (NOLOAD) :\n  {\n    KEEP(*(.dap_shared))\n  } > m_dap_shared\n\\1"
            "the m_usb_global section")

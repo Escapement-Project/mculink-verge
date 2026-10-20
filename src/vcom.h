@@ -3,10 +3,11 @@
 
 #include <stdbool.h>
 
-/** Bring up the target console UART. Call after board_init, which also claims Flexcomm 0. */
+/** Bring up the target consoles that exist on this board (board_straps.h). Call after board_init, which
+ *  also claims Flexcomm 0, and after board_read_straps. */
 void vcom_init(void);
 
-/** Move bytes between the USB CDC interface and the target's UART. */
+/** Move bytes between each console's USB CDC interface and its UART. */
 void vcom_task(void);
 
 /** Whether vcom_task has bytes it could move now, the only time CPU 0's loop runs it. Runs from

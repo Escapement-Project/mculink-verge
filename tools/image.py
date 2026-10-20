@@ -35,8 +35,8 @@ import tempfile
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 
 from cycles import (  # noqa: E402
-    HW_VER_BYTES,
     ORDINARY_GPIO,
+    REG_B0,
     RETURN_MAGIC,
     SCRATCH,
     SRAM,
@@ -44,6 +44,8 @@ from cycles import (  # noqa: E402
     Model,
     Target,
     build,
+    load_address,
+    sections,
     symbols,
     u16,
     u32,
@@ -157,13 +159,16 @@ class Checker:
         self.notes.append(message)
 
 
-def check_device(c: Checker, d: bytes) -> None:
+def check_device(c: Checker, d: bytes, bos: bool = True) -> None:
     if not c.check(len(d) == 18, f"device descriptor is {len(d)} bytes, wanted 18"):
         return
     c.check(d[0] == 18, f"device descriptor bLength is {d[0]}, wanted 18")
     c.check(d[1] == 0x01, f"device descriptor bDescriptorType is {d[1]:#x}, wanted 0x01")
     (bcd_usb,) = struct.unpack_from("<H", d, 2)
-    c.check(bcd_usb >= 0x0210, f"bcdUSB is {bcd_usb:#06x}; the BOS descriptor needs 0x0210 or more")
+    if bos:
+        c.check(bcd_usb >= 0x0210, f"bcdUSB is {bcd_usb:#06x}; the BOS descriptor needs 0x0210 or more")
+    else:
+        c.check(bcd_usb < 0x0201, f"bcdUSB is {bcd_usb:#06x} with no BOS, which 2.01 and later must have")
     c.check(d[7] in (8, 16, 32, 64), f"bMaxPacketSize0 is {d[7]}, not a legal control size")
     vid, pid = struct.unpack_from("<HH", d, 8)
     c.check(d[17] == 1, f"bNumConfigurations is {d[17]}, wanted 1")
@@ -650,6 +655,161 @@ def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
     c.note(f"identity: vendor 0x82 magic CJTAG v{version} flags {flags:#04x}, build {build!r}")
 
 
+# The straps CPU 0 reads (src/board_straps.c), as byte registers of the ordinary GPIO: each reads
+# 1 with its pull-up, 0 when the board or a jumper pulls it low.
+STRAPS = {"HW_VER_2": (1, 30), "HW_VER_3": (1, 4), "HW_VER_4": (1, 5), "HW_VER_6": (0, 18), "HW_VER_7": (0, 27)}
+# What each board's straps read, and its BOARD_KIND_*: high and high on the plain board, whose
+# package leaves both unbonded; HW_VER_3 high and HW_VER_4 low on a Pro; both low on an MCU-Link
+# built into an evaluation board.
+BOARDS = (("plain", {}, 0), ("Pro", {"HW_VER_4": 0}, 1), ("on-board", {"HW_VER_3": 0, "HW_VER_4": 0}, 2))
+# The jumpers, by the strap each pulls low, and its BOARD_JUMPER_* bit.
+JUMPERS = (("VCOM off", "HW_VER_6", 1), ("SWD off", "HW_VER_7", 2), ("USB-SIO off", "HW_VER_2", 4))
+BOARD_PRO = 1
+# The boards the image declares for verge (src/board_straps.c). The Pro joins once its support is
+# complete.
+IMAGE_BOARDS = 1 << 0
+
+
+def board_states():
+    """Every board with every combination of jumpers: its name, the strap levels, the board and
+    the jumper bits CPU 0 should read from them."""
+    for name, board_straps, board in BOARDS:
+        for fitted in range(1 << len(JUMPERS)):
+            levels = {strap: 1 for strap in STRAPS} | board_straps
+            jumpers, labels = 0, []
+            for i, (label, strap, bit) in enumerate(JUMPERS):
+                if fitted & (1 << i):
+                    levels[strap] = 0
+                    jumpers |= bit
+                    labels.append(label)
+            yield f"{name}{', ' if labels else ''}{', '.join(labels)}", levels, board, jumpers
+
+
+def set_straps(probe: Machine, levels: dict[str, int]) -> None:
+    for strap, (port, pin) in STRAPS.items():
+        probe.uc.mem_write(ORDINARY_GPIO + REG_B0 + 32 * port + pin, bytes([levels[strap]]))
+
+
+def usb_string(probe: Machine, index: int) -> str:
+    at = probe.call("tud_descriptor_string_cb", index, 0x0409)
+    length = probe.uc.mem_read(at, 1)[0]
+    return bytes(probe.uc.mem_read(at + 2, length - 2)).decode("utf-16-le")
+
+
+def expected_layout(board: int, jumpers: int) -> tuple[int, set[int], int]:
+    """Interfaces, endpoints and functions of PRO.md's one layout: CMSIS-DAP v2 on EP1 and v1 on EP4,
+    VCOM on EP3 with its notification at 0x86, VCOM2 on EP5 with its notification at 0x87. A
+    function the board lacks or a jumper turns off is left out: the SWD jumper takes both CMSIS-DAP
+    interfaces, as stock's does. The functions are bcdDevice's low byte: 1 debug, 2 VCOM, 4 VCOM2."""
+    interfaces, endpoints, functions = 0, set(), 0
+    if not jumpers & 2:
+        interfaces += 2
+        endpoints |= {0x01, 0x81, 0x04, 0x84}
+        functions |= 1
+    if not jumpers & 1:
+        interfaces += 2
+        endpoints |= {0x03, 0x83, 0x86}
+        functions |= 2
+    if board == BOARD_PRO:
+        interfaces += 2
+        endpoints |= {0x05, 0x85, 0x87}
+        functions |= 4
+    return interfaces, endpoints, functions
+
+
+def check_straps(c: Checker, elf: str, core1: str, request_slots: int) -> None:
+    """CPU 0 reads the board and the jumpers, and everything that follows from them: the USB
+    configuration, and the product string USB and DAP_Info both give.
+
+    Each board's straps with every combination of jumpers. The configuration has to be well formed,
+    give every function its own endpoints in the one layout, and keep the notification endpoints at
+    numbers the controller does not have, declared and never opened, polled every 2^15 microframes.
+    """
+    probe = Machine(elf, Target([]), restart_at=set(), model=Model())
+    for name in ("board_read_straps", "tud_descriptor_configuration_cb", "tud_descriptor_string_cb"):
+        if name not in probe.sym:
+            c.problems.append(f"no {name} symbol, so the board's USB cannot be run")
+            return
+    shared0 = shared_offsets(request_slots, "board", "jumpers", small_enums=short_enums(elf))
+    shared1 = shared_offsets(request_slots, "board", "jumpers", small_enums=short_enums(core1))
+    at = probe.sym["dap_shared"]
+    products = {}
+    layouts = set()
+    for state, levels, board, jumpers in board_states():
+        set_straps(probe, levels)
+        probe.call("board_read_straps")
+        read = probe.uc.mem_read(at + shared0["board"], 1)[0], probe.uc.mem_read(at + shared0["jumpers"], 1)[0]
+        if not c.check(read == (board, jumpers), f"{state}: CPU 0 read board {read[0]}, jumpers {read[1]:#x}"):
+            continue
+
+        interfaces, endpoints, functions = expected_layout(board, jumpers)
+        device = bytes(probe.uc.mem_read(probe.call("tud_descriptor_device_cb"), 18))
+        inner = Checker()
+        check_device(inner, device, bos=bool(functions & 1))
+        c.problems += [f"{state}: {p}" for p in inner.problems]
+        (bcd_device,) = struct.unpack_from("<H", device, 12)
+        c.check(bcd_device == 0x0100 | functions, f"{state}: bcdDevice {bcd_device:#06x}, wanted {0x0100 | functions:#06x}")
+        bos = probe.call("tud_descriptor_bos_cb")
+        c.check((bos != 0) == bool(functions & 1), f"{state}: the BOS is {'there' if bos else 'missing'}")
+
+        config = probe.call("tud_descriptor_configuration_cb", 0)
+        (total,) = struct.unpack("<H", probe.uc.mem_read(config + 2, 2))
+        d = bytes(probe.uc.mem_read(config, total))
+        inner = Checker()
+        check_configuration(inner, d)
+        c.problems += [f"{state}: {p}" for p in inner.problems]
+        found, notifications = set(), {}
+        i = 0
+        while i + 1 < len(d) and d[i] >= 2:
+            if d[i + 1] == 0x05:
+                found.add(d[i + 2])
+                if d[i + 3] & 3 == 3:
+                    notifications[d[i + 2]] = d[i + 6]
+            i += d[i]
+        c.check(d[4] == interfaces, f"{state}: {d[4]} interfaces, the layout has {interfaces}")
+        c.check(found == endpoints, f"{state}: endpoints {sorted(map(hex, found))}, the layout has {sorted(map(hex, endpoints))}")
+        real = {e & 0x7F for e in found} - {e & 0x7F for e in notifications if e in (0x86, 0x87)}
+        c.check(max(real, default=0) <= 5, f"{state}: endpoint {max(real, default=0)} carries data, and USB1 stops at EP5")
+        if functions & 1:
+            c.check(len(d) > 9 + 5 and d[9 + 2] == 0 and d[9 + 5] == 0xFF,
+                    f"{state}: interface 0 is not CMSIS-DAP v2, which MS OS 2.0 names")
+        for address, interval in notifications.items():
+            if address in (0x86, 0x87):
+                c.check(interval == 16, f"{state}: notification {address:#04x} is polled at interval {interval}")
+        layouts.add((d[4], len(d), bcd_device))
+        products.setdefault(board, usb_string(probe, 2))
+
+    for name, _, board in BOARDS:
+        cpu1 = Machine(core1, Target([0] * 64), restart_at=set(), model=Model())
+        cpu1.uc.mem_write(cpu1.sym["dap_shared"] + shared1["board"], bytes([board]))
+        cpu1.call("board_debug_pins_init")
+        reply = cpu1.command(bytes([0x00, DAP_ID_PRODUCT]))
+        info = bytes(reply[2 : 2 + reply[1]]).rstrip(b"\x00").decode("ascii", "replace")
+        c.check(info == products.get(board), f"{name} board: DAP_Info names {info!r}, USB names {products.get(board)!r}")
+        c.check("CMSIS-DAP" in info, f"{name} board: the product {info!r} lacks CMSIS-DAP, which v1 hosts match on")
+    c.check("Pro" in products.get(BOARD_PRO, ""), f"the Pro's product {products.get(BOARD_PRO)!r} does not name it")
+    c.note(f"board: {len(list(board_states()))} strap states read; configurations of "
+           f"{', '.join(f'{n} interfaces in {b} bytes (bcdDevice {v:#06x})' for n, b, v in sorted(layouts))}")
+    c.note(f"board: products {', '.join(repr(p) for _, p in sorted(products.items()))}, the same on USB and DAP_Info")
+
+
+def check_image_boards(c: Checker, elf: str) -> None:
+    """The record verge reads to know which boards the image runs on: exactly
+    one in the whole image, CPU 1's embedded one included, right after the vector table."""
+    flash = binary(elf)
+    base = load_address(elf)
+    found = [m.start() for m in re.finditer(b"VERGEIMG", flash)]
+    if not c.check(len(found) == 1, f"the image has {len(found)} VERGEIMG records, wanted one"):
+        return
+    at = found[0]
+    vectors = sections(elf)[".interrupts"]
+    c.check(at % 4 == 0 and base + at < 0x200, f"the record is at {base + at:#x}, not just after the vector table")
+    fmt, length, zero, boards = struct.unpack_from("<BBHI", flash, at + 8)
+    c.check((fmt, length, zero) == (1, 16, 0), f"the record reads format {fmt}, length {length}, {zero:#x}")
+    c.check(boards == IMAGE_BOARDS, f"the image declares boards {boards:#x}, wanted {IMAGE_BOARDS:#x}")
+    c.note(f"image: declares boards {boards:#x} for verge, at {base + at:#x} in {vectors[0]:#x} bytes of vectors")
+
+
 def check_unconnected_block(c: Checker, elf: str) -> None:
     """A transfer block with no port connected moves no pin and answers no transfers, as ARM's
     does. An oversized read used to be clamped and run on the JTAG path whatever the port; with a
@@ -666,22 +826,21 @@ def check_unconnected_block(c: Checker, elf: str) -> None:
     c.note("a transfer block with no port connected answers none and moves no pin")
 
 
-def check_board(c: Checker, elf: str) -> None:
+def check_board(c: Checker, elf: str, request_slots: int) -> None:
     """Only the plain MCU-Link lets the marker or two-pin cJTAG near its pins (PRO.md).
 
     On a Pro the J8 pins are the analog trace input, a level shifter's direction and two SPI lines,
-    so driving them fights other drivers. Each board is modelled by what its two strap pins read
-    at boot: high and high on the plain board, whose package leaves them unbonded; HW_VER_3 high and
-    HW_VER_4 low on a Pro; both low on an MCU-Link built into an evaluation board.
+    so driving them fights other drivers. CPU 1 takes the board from dap_shared, as CPU 0 read it.
     """
     j8_dir = ORDINARY_GPIO + 0x2380 + 4  # DIRSET[1]
     j8_set = ORDINARY_GPIO + 0x2200 + 4  # SET[1]
-    for name, straps, board in (("plain", (1, 1), 0), ("Pro", (1, 0), 1), ("on-board", (0, 0), 2)):
+    offset = shared_offsets(request_slots, "board", small_enums=short_enums(elf))["board"]
+    for name, _, board in BOARDS:
         probe = Machine(elf, Target([0] * 64), restart_at=set(), model=Model())
         if "board_debug_pins_init" not in probe.sym:
-            c.problems.append("no board_debug_pins_init symbol, so the board detection cannot be run")
+            c.problems.append("no board_debug_pins_init symbol, so the board's pin setup cannot be run")
             return
-        probe.uc.mem_write(HW_VER_BYTES, bytes(straps))
+        probe.uc.mem_write(probe.sym["dap_shared"] + offset, bytes([board]))
         probe.call("board_debug_pins_init")
         reply = probe.command(bytes([0x82]))
         flags, length = reply[7], reply[8]
@@ -703,7 +862,7 @@ def check_board(c: Checker, elf: str) -> None:
             c.problems.append(f"{name} board: vendor 0x83 mode 2 answered {enter.hex()}")
         if bool(driven & 0x0F) != plain:
             c.problems.append(f"{name} board: J8's pins were {'not ' if plain else ''}driven ({driven:#x})")
-    c.note("board: plain, Pro and on-board straps each read as their board; J8 and two-pin on the plain one only")
+    c.note("board: CPU 1 reports each board as CPU 0 read it; J8 and two-pin on the plain one only")
 
 
 def check_sample_probe(c: Checker, elf: str) -> None:
@@ -1063,42 +1222,46 @@ def model_syscon(probe: Machine) -> None:
     probe.uc.mmio_map(SYSCON, 0x1000, read, None, write, None)
 
 
-def check_clocks(c: Checker, elf: str) -> None:
-    """Run the boot-time clock setup and ask the clock driver what came out.
+def check_clocks(c: Checker, elf: str, request_slots: int) -> None:
+    """Run the boot-time clock setup and read the clock each console's UART was set up with.
 
     This is the fix that would be invisible on the bench: the 96 MHz output of FRO192M is off out
     of reset and the board support never enables it, and FROHFDIV is halted as well, so a Flexcomm
     attached to FRO_HF_DIV gets nothing and a UART with no clock reports no error -- it just never
-    reaches a baud rate. Running it against the register model says what the driver would read.
-    The model gives SYSCON its SET and CLR registers, or vcom_init's peripheral resets wait for
-    ever.
+    reaches a baud rate. Running it against the register model says what the driver would read,
+    and src/vcom.c keeps what it read for each console. On the plain board that is VCOM alone; on
+    the Pro VCOM2 too, Flexcomm 1.
     """
-    probe = Machine(elf, Target([]), restart_at=set(), model=Model())
-    for name in ("board_clocks_init", "vcom_init"):
-        if name not in probe.sym:
-            c.note(f"{name} was inlined away; the clock setup not checked")
-            return
+    board = shared_offsets(request_slots, "board", small_enums=short_enums(elf))["board"]
+    for name, kind, consoles in (("plain", 0, 1), ("Pro", 1, 2)):
+        probe = Machine(elf, Target([]), restart_at=set(), model=Model())
+        for symbol in ("board_clocks_init", "vcom_init", "vcom", "vcom_count"):
+            if symbol not in probe.sym:
+                c.note(f"{symbol} was inlined away; the console clocks not checked")
+                return
+        probe.uc.mem_write(probe.sym["dap_shared"] + board, bytes([kind]))
+        model_syscon(probe)
+        probe.call("board_clocks_init")
+        probe.call("vcom_init", timeout_insns=1_000_000)
+        if not c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC,
+                       f"{name} board: vcom_init did not return; a driver waits on a register the model lacks"):
+            continue
+        count = int.from_bytes(probe.uc.mem_read(probe.sym["vcom_count"], 4), "little")
+        if not c.check(count == consoles, f"{name} board: {count} consoles started, wanted {consoles}"):
+            continue
+        # SWO's Flexcomm is CPU 1's and attaches to the same FRO_HF_DIV, so this is its check too.
+        clocks = [int.from_bytes(probe.uc.mem_read(probe.sym["vcom"] + 8 * i + 4, 4), "little") for i in range(count)]
+        for i, clock in enumerate(clocks):
+            c.check(
+                clock == 96_000_000,
+                f"{name} board: console {i} has {clock} Hz; its fractional divider is not back to one",
+            )
+        c.note(f"after boot, {name} board: console Flexcomms at {', '.join(f'{k / 1e6:g}' for k in clocks)} MHz, "
+               "from the FRO_HF_DIV SWO uses as well")
 
-    model_syscon(probe)
-    probe.call("board_clocks_init")
-    probe.call("vcom_init", timeout_insns=1_000_000)
-    if not c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC,
-                   "vcom_init did not return; a driver waits on a register the model lacks"):
-        return
-    # SWO's Flexcomm is CPU 1's and attaches to the same FRO_HF_DIV, so this is its check too.
-    if "CLOCK_GetFlexCommClkFreq" not in probe.sym:
-        c.note("CLOCK_GetFlexCommClkFreq was inlined away; the console clock not checked")
-        return
-    console = probe.call("CLOCK_GetFlexCommClkFreq", 0)
-    c.check(console != 0, "the console Flexcomm has no clock")
-    c.check(
-        console == 96_000_000,
-        f"the console Flexcomm reads {console} Hz; the fractional divider is not back to one",
-    )
-    c.note(f"after boot: console Flexcomm {console / 1e6:g} MHz, from the FRO_HF_DIV SWO uses as well")
-
-    # What a host can actually ask the console for. The driver accepts anything within 3%, which
+    # What a host can actually ask a console for. The driver accepts anything within 3%, which
     # leaves a link no room for the other end's error, so check the rates against a tighter bound.
+    console = 96_000_000
     worst = max(
         (abs(nxp_baudrate(console, r)[0] - r) / r, r) for r in (9600, 115200, 921600, 1_000_000, 3_000_000)
     )
@@ -1123,14 +1286,12 @@ def main() -> int:
     args = ap.parse_args()
 
     sym = symbols_with_size(args.elf)
-    missing = [n for n in ("desc_device", "desc_configuration", "desc_bos") if n not in sym]
+    missing = [n for n in ("desc_bos",) if n not in sym]
     if missing:
         print(f"  cannot check: {', '.join(missing)} not in the image")
         return 1
 
     c = Checker()
-    check_device(c, _read_at(args.elf, *sym["desc_device"]))
-    check_configuration(c, _read_at(args.elf, *sym["desc_configuration"]))
     ms_os = next((v for k, v in sym.items() if k.startswith("desc_ms_os_20")), None)
     if ms_os:
         check_bos(c, _read_at(args.elf, *sym["desc_bos"]), ms_os[1])
@@ -1159,15 +1320,17 @@ def main() -> int:
                     ("serve", "DAP_ExecuteCommand", "DAP_ProcessCommand", "transfer_block", "SWD_TransferBlock",
                      "SWD_TransferCommand", "memcpy") + jtag_gen,
                     allow=("arm_command", "regenerate", "swd_sweep_connect", "jtag_sweep_connect"))
-    check_clocks(c, args.elf)
+    check_clocks(c, args.elf, slots)
     check_led(c, args.elf, slots)
     check_led_inputs(c, args.core1, slots)
     check_commands(c, args.core1, args.code_lab, swo)
     check_response_bounds(c, args.core1, args.packet_size)
     check_request_bounds(c, args.core1)
     check_identity(c, args.core1, args.code_lab)
-    check_board(c, args.core1)
+    check_board(c, args.core1, slots)
+    check_straps(c, args.elf, args.core1, slots)
     check_unconnected_block(c, args.core1)
+    check_image_boards(c, args.elf)
     check_sample_probe(c, args.core1)
     check_timestamp(c, args.core1)
     if swo:
