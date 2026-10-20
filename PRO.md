@@ -20,17 +20,19 @@ Public sources only (item 9).
 - DAPLink, Apache-2.0, `references/DAPLink/source/hic_hal/nxp/lpc55xx/IO_Config.h` and
   `source/board/mcu-link.c`: one image for both boards, the strap pins, the Pro test, the Pro's LED
   pins.
-- Missing: the Pro's schematic, "MCU-Link Pro Schematics" in the design files on nxp.com's
-  MCU-LINK-PRO page, behind a sign-in. UM11673 cites its page 5 for the level shifters and target
-  power. Everything in phase 2, and the hazard below, waits for it.
+- `references/docs/MCU-LINK-PRO-SCH.pdf`, the Pro's schematic, rev A (EAGLE, 8 pages; text in
+  `extracted/`), and the rev A design files (`MCU-LINK-PRO-DESIGN-FILES/`: gerbers, assembly,
+  DXF), from nxp.com's MCU-LINK-PRO page. Page 1 is the LPC55S69 pin table the
+  map below comes from; page 5 has the debug interface and the target supply.
 
 ## What the two boards share
 
-- The debug interface pins. DAPLink drives both boards from one pin header, and NXP ships one image:
-  P0_0 SWCLK, P0_1 TDI, P0_2 SWDIO, P0_3 TDO/SWO, P0_13 RESET_TXEN, P0_19 nRESET, P0_22 detect,
-  P0_28 SWDIO_TXEN, P0_31 VREF. DAPLink only proves the SWD subset reaches J7. UM11673 mentions
-  only SWD and SWO, so whether TDI and TDO reach J7 is a schematic question; two-pin cJTAG needs
-  neither.
+- The debug interface pins: P0_0 SWCLK, P0_1 TDI, P0_2 SWDIO, P0_3 TDO/SWO, P0_13 RESET_TXEN,
+  P0_14 the target's ISP-EN, P0_19 nRESET, P0_22 detect, P0_28 SWDIO_TXEN, P0_31 VREF (schematic
+  page 1). Four-wire JTAG reaches J7: TMS 2, TCK 4, TDO 6, TDI 8, nRESET 10, ISP-EN 7, detect 9
+  (page 5). TCK and TDI share one 74LVC2T45 whose direction pin is HW_VER_7, so with J13 fitted
+  neither is driven at all, whatever the firmware does. The reference-voltage follower is the
+  plain board's, with a 30K1 pull-up for its 33K.
 - VCOM on Flexcomm 0, P0_24/P0_25; the status LED on P0_5 (LED3, red, on the Pro); the 16 MHz
   crystal (DAPLink `hic_init.c`); the high-speed USB port.
 
@@ -52,21 +54,39 @@ neither PIO1_4 nor PIO1_5 (`LPC55S6x.pdf` Table 3), so with their pull-ups both 
 Pro. HW_VER_4 low
 with HW_VER_3 low is an on-board MCU-Link, which this firmware does not support.
 
-Pro LEDs, all active low: LED1 USB PIO1_12, LED2 SWO PIO1_13, LED3 status P0_5, LED4 VCOM PIO1_15,
-LED5 FUNC PIO1_16, LED6 SIO PIO1_17, LED7 NRG PIO1_18.
+The rest of the Pro's pins, from schematic page 1:
+
+| what | pins |
+| --- | --- |
+| LEDs, active low | LED1 USB PIO1_12, LED2 SWO PIO1_13, LED3 status P0_5 (red), LED4 VCOM PIO1_15, LED5 FUNC PIO1_16, LED6 SIO PIO1_17, LED7 NRG PIO1_18 |
+| target supply | P0_8 TARGET_PWR_EN enables a TPS73601; its output reaches the target only through J6, at the voltage J5 picks |
+| second VCOM (J26) | Flexcomm 1: RXD PIO1_10, TXD PIO1_11 |
+| USB-SIO SPI | the high-speed SPI: SSEL0 P0_20, MOSI P0_26, SCK PIO1_2, MISO PIO1_3, each also a GPIO (DIO0 to DIO3); level-shifter directions IO_DIR1 PIO1_1 and IO_DIR2 PIO1_25 |
+| USB-SIO I2C | Flexcomm 3: SDA P0_4, SCL P0_21. SWO's UART is Flexcomm 3 too, so the two exclude each other |
+| energy measurement | voltage ADC0_0 on P0_23; current ADC0_8 on P0_16 and ACMP0_IN_D on PIO1_14; CURR_RANGE_SET ADC0_4 on PIO1_8; CTRL_HIGH_CURR on P0_15 (ADC0_2) and P0_30 (input); CTRL_HIGH_CURR_EN P0_17; CTRL_HIGH_CURR_DIS P0_29 (CMP0_OUT); calibration CTRL_CAL_R1 to R4 on PIO1_22, PIO1_23, PIO1_26, PIO1_29 and CTRL_CAL_DISC on PIO1_24 |
+| triggers | SYNC_TRIG P0_6, SYNC_LEAD P0_7 (J2), MEAS_TRIG PIO1_7 |
+| analog trace input | ANALOG_IN1, ADC0_11 on PIO1_0, behind a voltage follower |
+| LPC804 | reset PIO1_9, ISP enable PIO1_31, its ISP UART on Flexcomm 4: TXD PIO1_20, RXD PIO1_21 |
 
 ## Hazard: do not flash today's image on a Pro
 
 - `MARKER` is on by default (`CMakeLists.txt:40`). It drives PIO1_0 to PIO1_3 push-pull, high during
   every command (`src/marker.h`, `src/board_pins.c`), and `ID_VENDOR_J8` hands them to the host. On
-  the plain board they reach only J8. The Pro's 100-pin package bonds them too, and what they
-  connect to there is unknown until the schematic.
+  the plain board they reach only J8. On the Pro they are the analog trace input (the follower's
+  output), IO_DIR1 (a level shifter's direction toward J19) and the USB-SIO SPI's SCK and MISO:
+  the marker would drive against the follower and MISO, and turn a buffer round toward the
+  target.
 - TinyUSB's `BOARD_InitBootPins` (the `mcu_link` board) muxes port 1 pins to peripheral functions
   with pull-ups: USB host PORTPWRN and OVERCURRENTN on PIO1_12, PIO1_29, PIO1_30; Flexcomm 6 and
   CTimer on PIO1_13 and PIO1_16; Flexcomm 4 on PIO1_20/21; MCLK on PIO1_31. On the Pro PIO1_12,
   PIO1_13 and PIO1_16 are LEDs and PIO1_30 is HW_VER_2. Those peripherals are not started, so
   nothing should drive. The board layer should still set every port 1 pin it owns per board rather
   than inherit that mux.
+- The same BSP puts Flexcomm 0 on P0_29 and P0_30 for its log console, and `src/vcom.c` later makes
+  both pull-up inputs. On the Pro P0_29 is CTRL_HIGH_CURR_DIS, which the LPC55S69 drives from its
+  comparator, and P0_30 is CTRL_HIGH_CURR, an input from the measurement circuit; if the BSP's
+  console ever transmits, its TXD on P0_30 drives against that circuit. Check before the first
+  boot on a Pro.
 
 ## Plan
 
@@ -95,7 +115,8 @@ Phase 1, the Pro as a probe (needs the Pro on USB, a target on J7, and hands for
 5. Flash ours with `verge`: jumper-free from stock V3.122 or later, J4 otherwise.
 6. Identify, `DAP_Info`, SWD on the L1306 through J7, then the `swd-1` and `wire-1` matrices. The
    latency measurement at connect covers different level shifters.
-7. Four-wire JTAG and two-pin cJTAG on J7, once the schematic says what reaches it.
+7. Four-wire JTAG and two-pin cJTAG on J7. Both are wired (schematic page 5); the two-pin buffer
+   turnaround is the part to check, since bit 4 stays clear until it has worked.
 8. The LEDs, reworked: a fade that looks linear to the eye, new timing, a better
    activity marker. A fade on more than P0_5 needs a timer match or SCT output on each LED pin:
    PIO1_12 has CTIMER1_MAT1 and PIO1_16 CTIMER1_MAT3 (from the BSP's pin table); check the rest in
@@ -103,11 +124,11 @@ Phase 1, the Pro as a probe (needs the Pro on USB, a target on J7, and hands for
 9. The probe's own LPC55S69 through the Pro's J3, debugged by the plain MCU-Link: a bring-up aid for
    faults on the Pro.
 
-Phase 2, the extras (needs the schematic and decisions a to c below):
+Phase 2, the extras (needs decisions b and c below):
 
 10. The second VCOM on J26 (unbuffered, 3.3 V at most): a second CDC ACM interface.
-11. Target supply: J6 enables it and J5 picks 1.8 or 3.3 V, both by jumper. Whether firmware also
-    switches it is a schematic question.
+11. Target supply: P0_8 enables the regulator, J6 joins its output to the target and J5 picks
+    1.8 or 3.3 V. Firmware switches it; the jumpers decide whether that reaches the target.
 12. Energy measurement: the ADC front end at up to 100 kS/s; per configuration, two ranges that
     hardware switches up and firmware switches back down on a monitor interrupt; self-calibration
     at power-up behind isolating transistors.
@@ -117,7 +138,7 @@ Phase 2, the extras (needs the schematic and decisions a to c below):
 
 ## Decisions
 
-a. The schematic: download it from nxp.com into `references/docs/`.
+a. The schematic: done, `references/docs/MCU-LINK-PRO-SCH.pdf`.
 b. How the extras reach a host: the standard class where one exists (CDC for the second VCOM);
    NXP's protocol where it is public (LIBUSBSIO); our own vendor commands on the CMSIS-DAP
    interface, with probe-rs support, for target supply and energy

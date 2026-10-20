@@ -349,7 +349,7 @@ Everything the probe says about itself. In a listing it reads
 | `DAP_Info` 0x04 | `2.1.2` | ARM's CMSIS-DAP protocol version from the pinned submodule, not ours |
 | `DAP_Info` 0x05..0x08 | nothing | `TARGET_FIXED` is 0, so the four target strings are compiled out. They are for a probe soldered to a known target; this one has a connector |
 | `DAP_Info` 0x09 | `git describe` of the build | ours, `src/DAP_config.h:276` |
-| vendor `0x82` | `CJTAG`, format 2, capability flags, build string | `src/dap_vendor.c` |
+| vendor `0x82` | `CJTAG`, format 3, capability flags, build string, board | `src/dap_vendor.c` |
 
 `DAP_Info` also reports 512-byte packets, three of them (`REQUEST_SLOTS`), and the capabilities
 SWD, JTAG, SWO UART, atomic commands and timestamps.
@@ -365,15 +365,20 @@ The vendor `0x82` reply, after the echoed id:
 
 ```
 [0..4]  "CJTAG"                magic
-[5]     format version         2
+[5]     format version         3
 [6]     capability flags       bit 0 OScan1 supported, bit 1 OScan1 active now,
-                               bit 2 target sense, bit 3 generated SWD, bit 4 0x83 mode 2
+                               bit 2 target sense, bit 3 generated SWD, bit 4 0x83 mode 2,
+                               bit 5 generated JTAG
 [7]     build string length n
 [8..]   build string, n bytes, not terminated
+[8+n]   board                  0 MCU-Link, 1 MCU-Link Pro, 2 on-board; format 3 on
 ```
 
 Check the magic to know it is us, the flags to know what may be used, the string to know which
-image. A flag is how a later feature arrives without every host learning a new version.
+image. A flag is how a later feature arrives without every host learning a new version. Fields
+are only appended, and a field is read only at the format that added it (`src/dap_vendor.c`).
+On any board but the plain MCU-Link, bits 0 and 4 are clear and `0x83` refuses modes 1 and 2
+(PRO.md).
 
 ## The two units on the bench
 
