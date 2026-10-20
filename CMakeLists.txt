@@ -438,11 +438,17 @@ endif()
 # clang means picolibc and redefines FILE, stdin, stdout and stderr on that basis, which does not
 # compile against the newlib that an arm-none-eabi clang finds here. Dropping the file is what
 # makes the two toolchains build the same sources rather than one of them needing another libc.
-# It arrives as PUBLIC, so it is on both properties and both have to lose it.
+#
+# The board's peripherals.c goes too. Inside board_init it starts Flexcomm 0 as a log console on
+# P0_29 and P0_30, and on the Pro P0_30 is an input from the energy measurement circuit, which the
+# console's idle TXD would drive against until vcom_init took the pin back. src/vcom.c has the
+# empty BOARD_InitBootPeripherals that board_init calls instead.
+#
+# Both arrive as PUBLIC, so they are on both properties and both have to lose them.
 foreach(_property SOURCES INTERFACE_SOURCES)
   get_target_property(_sources ${PROJECT_NAME} ${_property})
   if(_sources)
-    list(FILTER _sources EXCLUDE REGEX "/board\\.c$")
+    list(FILTER _sources EXCLUDE REGEX "/(board|peripherals)\\.c$")
     set_property(TARGET ${PROJECT_NAME} PROPERTY ${_property} ${_sources})
   endif()
 endforeach()

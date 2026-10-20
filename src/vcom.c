@@ -12,6 +12,7 @@
 #include "fsl_iocon.h"
 #include "fsl_usart.h"
 
+#include "board/peripherals.h"
 #include "tusb.h"
 #include "vcom.h"
 
@@ -28,6 +29,11 @@
 #define BSP_LOG_TXD_PIN 30U
 #define UNUSED_PIN_MODE (IOCON_FUNC0 | IOCON_MODE_PULLUP | IOCON_DIGITAL_EN)
 #define VCOM_DEFAULT_BAUD 115200U
+
+/** board_init calls this in place of the board support's, which CMakeLists.txt leaves out: that one
+ *  starts Flexcomm 0 as a log console on P0_29 and P0_30, which on the Pro are energy measurement
+ *  signals. */
+void BOARD_InitBootPeripherals(void) {}
 
 static uint32_t vcom_clock_hz;
 
