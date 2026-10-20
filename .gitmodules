@@ -1,6 +1,6 @@
 [submodule "external/tinyusb"]
 	path = external/tinyusb
-	url = https://github.com/hathach/tinyusb.git
+	url = https://github.com/CordlessCoder/tinyusb.git
 [submodule "external/CMSIS-DAP"]
 	path = external/CMSIS-DAP
 	url = https://github.com/ARM-software/CMSIS-DAP.git
