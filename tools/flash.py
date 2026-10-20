@@ -92,7 +92,7 @@ def check() -> int:
             else:
                 print(f"{probe.serial}: stock V{firmware_version(probe)} -- {probe.product}")
         except RuntimeError:
-            # Stock may answer 0x82 with ID_DAP_Invalid, which command() reports as out of step.
+            # Stock V3.172 echoes a bare 0x82; a firmware answering ID_DAP_Invalid lands here.
             print(f"{probe.serial}: stock V{firmware_version(probe)} -- {probe.product}")
         except Exception as error:
             print(f"{probe.serial}: did not answer vendor 0x82 ({error})")
@@ -145,7 +145,7 @@ def cycle(elf: pathlib.Path, serial: str | None) -> int:
     probe = probes[0]
     try:
         ours = probe.command(bytes([0x82]))[1:6] == b"CJTAG"
-    except RuntimeError:  # stock may answer 0x82 with ID_DAP_Invalid
+    except RuntimeError:  # a firmware answering 0x82 with ID_DAP_Invalid
         ours = False
     if not ours:
         version = firmware_version(probe)

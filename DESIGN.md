@@ -129,10 +129,10 @@ the same three packets the same way, with TCK resting low between them.
 
 | id | | |
 | --- | --- | --- |
-| 0x82 | `CJTAG_INFO` | answers "CJTAG", a format version, a capability bitmap and the build string. Read-only, so a host may send it blindly: stock firmware answers `ID_DAP_Invalid`, which is how a host tells the two images apart. `BENCH.md` has the byte layout. |
+| 0x82 | `CJTAG_INFO` | answers "CJTAG", a format version, a capability bitmap and the build string. Read-only, so a host may send it blindly: stock V3.172 echoes the command with nothing after it, which is how a host tells the two images apart. `BENCH.md` has the byte layout. |
 | 0x83 | `CJTAG_CONTROL` | one byte: 0 returns to four-wire framing, 1 drives OpenOCD's activation and frames as OScan1, 2 frames as OScan1 after an activation the host drove. Anything else answers `DAP_ERROR`. |
 
-Anything else in 0x80..0x9F answers `ID_DAP_Invalid` here too. `DAP_ProcessCommand` returns what
+Anything else in 0x80..0x9F answers `ID_DAP_Invalid` here. `DAP_ProcessCommand` returns what
 `DAP_ProcessVendorCommand` returns without inspecting it, so the rejection has to be written by the
 default case rather than left to the caller.
 
