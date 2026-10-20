@@ -10,6 +10,7 @@
 #define BOARD_PINS_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 /** Every signal below is on port 0, which is what lets the init code write them a port at a time.
  * board_pins.c holds a static assertion for it. */
@@ -64,6 +65,20 @@
 #define J8_PORT 1U
 #define J8_PIN_MASK 0x0FU
 
+/** The board CPU 1 runs on, read from the hardware-version straps once at boot (PRO.md).
+ *
+ * The values are vendor 0x82's board byte, so they never change meaning. Only the plain MCU-Link
+ * has run this firmware. On the others the marker stays off and two-pin cJTAG is refused: their
+ * 100-pin package bonds the J8 pins to nets this firmware does not know, and nobody has framed
+ * OScan1 through their buffers. */
+#define BOARD_KIND_PLAIN 0U
+#define BOARD_KIND_PRO 1U
+/** An MCU-Link built into an evaluation board. */
+#define BOARD_KIND_ON_BOARD 2U
+
+/** CPU 1: which board this is, set by board_debug_pins_init. */
+extern uint8_t board_kind;
+
 /** CPU 0: start the clocks the peripherals here depend on.
  *
  * Kept out of line, like the other two things that run once at boot and bring a peripheral up.
@@ -79,9 +94,10 @@ void board_clocks_init(void);
  *  runs on the core that reads it. Call before the first host command. */
 void board_timestamp_init(void);
 
-/** CPU 1: put the debug interface pins into their idle state.
+/** CPU 1: find which board this is, and put the debug interface pins into their idle state.
  *
- * Called from DAP_SETUP, so it runs before any host command can reach the pin layer.
+ * Called from DAP_SETUP, so it runs before any host command can reach the pin layer. Out of line,
+ * so tools/image.py can run it with each board's straps.
  */
 void board_debug_pins_init(void);
 

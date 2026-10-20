@@ -12,6 +12,7 @@
 #include "DAP_config.h"
 
 #include "DAP.h"
+#include "board_pins.h"
 #include "cjtag.h"
 #include "marker.h"
 #include "reboot.h"
@@ -55,22 +56,29 @@
  * The reply, after the echoed command id:
  *
  *     [0..4]  "CJTAG"                 magic
- *     [5]     format version          this layout is 2
+ *     [5]     format version          this layout is 3
  *     [6]     capability flags        CJTAG_CAP_*
  *     [7]     build string length n
  *     [8..]   build string, n bytes, not terminated
+ *     [8+n]   board                   BOARD_KIND_* (board_pins.h); format 3 on
  *
  * A host checks the magic to know it is us, the flags to know what it may use, and the build
  * string to know which image it is talking to. The capability flags are what makes this worth
  * having over a version number alone: a feature can arrive without every host learning a new
  * version, and a host can refuse to use something an older image does not have.
  *
+ * Fields are only ever appended. probe-rs reads every format as format 2 and ignores what follows
+ * the build string, so a field that moved would be misread without a word. A host reads a field
+ * only at the format that added it: a v1 HID reply is padded, so a format 2 image has a byte after
+ * the build string too.
+ *
  * Version 1 had no flags and no build string, and existed only in images that were never flashed.
  */
 #define CJTAG_INFO_MAGIC "CJTAG"
-#define CJTAG_INFO_VERSION 2U
+#define CJTAG_INFO_VERSION 3U
 
-/// Two-pin OScan1 JTAG is implemented. The reason this firmware exists, so always set for now.
+/// Two-pin OScan1 JTAG is implemented. Cleared on an on-board MCU-Link, where nobody has framed
+/// OScan1 through the buffers yet.
 #define CJTAG_CAP_OSCAN1 (1U << 0)
 /// OScan1 framing is on right now, which is ID_VENDOR_CJTAG_CONTROL's state.
 #define CJTAG_CAP_OSCAN1_ACTIVE (1U << 1)
@@ -79,6 +87,7 @@
 /// The SWD paths are generated at run time, and ID_VENDOR_SWD_GEN is implemented.
 #define CJTAG_CAP_SWD_CODEGEN (1U << 3)
 /// ID_VENDOR_CJTAG_CONTROL takes mode 2: framing on, with the activation left to the host.
+/// Cleared with CJTAG_CAP_OSCAN1; it is the one bit probe-rs checks before running cJTAG.
 #define CJTAG_CAP_OSCAN1_ENTER (1U << 4)
 /// Two-pin frames are generated at run time, and ID_VENDOR_JTAG_GEN is implemented.
 #define CJTAG_CAP_JTAG_CODEGEN (1U << 5)
@@ -214,14 +223,15 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         memcpy(out, CJTAG_INFO_MAGIC, sizeof(CJTAG_INFO_MAGIC) - 1U);
         out += sizeof(CJTAG_INFO_MAGIC) - 1U;
         *out++ = (uint8_t)CJTAG_INFO_VERSION;
-        *out++ = (uint8_t)(CJTAG_CAP_OSCAN1 | CJTAG_CAP_OSCAN1_ENTER | CJTAG_CAP_TARGET_SENSE |
-                           CJTAG_CAPS_BUILT |
+        const uint32_t two_pin = (board_kind == BOARD_KIND_PLAIN) ? (CJTAG_CAP_OSCAN1 | CJTAG_CAP_OSCAN1_ENTER) : 0U;
+        *out++ = (uint8_t)(two_pin | CJTAG_CAP_TARGET_SENSE | CJTAG_CAPS_BUILT |
                            (cJTAG_Active() ? CJTAG_CAP_OSCAN1_ACTIVE : 0U));
         // The same string DAP_Info's product firmware version reports, so a host that knows
         // nothing about this command can still tell two builds apart.
         *out++ = (uint8_t)(sizeof(FIRMWARE_VERSION) - 1U);
         memcpy(out, FIRMWARE_VERSION, sizeof(FIRMWARE_VERSION) - 1U);
         out += sizeof(FIRMWARE_VERSION) - 1U;
+        *out++ = board_kind;
         return (1U << 16) | (uint32_t)(out - response);
     }
 
@@ -235,10 +245,14 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             cJTAG_Deactivate();
             break;
         case 1U:
-            cJTAG_Activate();
-            break;
         case 2U:
-            cJTAG_Enter();
+            if (board_kind != BOARD_KIND_PLAIN) {
+                response[1] = DAP_ERROR;
+            } else if (request[1] == 1U) {
+                cJTAG_Activate();
+            } else {
+                cJTAG_Enter();
+            }
             break;
         default:
             response[1] = DAP_ERROR;
@@ -257,6 +271,11 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         // request[1] names the pins the host takes, request[2] the levels to drive them to. The
         // marker keeps whatever the host did not take, so handing it one pin leaves the other
         // three marking commands as usual. A mask of zero gives all four back.
+        if (board_kind != BOARD_KIND_PLAIN) {
+            response[1] = DAP_ERROR;
+            response[2] = 0U;
+            return (3U << 16) | 3U;
+        }
         const uint32_t taken = (uint32_t)request[1] & J8_PIN_MASK;
         const uint32_t levels = (uint32_t)request[2] & taken;
         marker_mask = J8_PIN_MASK & ~taken;

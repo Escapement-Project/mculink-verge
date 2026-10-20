@@ -34,7 +34,19 @@ import tempfile
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 
-from cycles import SCRATCH, SRAM, Machine, Model, Target, build, symbols, u16, u32  # noqa: E402
+from cycles import (  # noqa: E402
+    HW_VER_BYTES,
+    ORDINARY_GPIO,
+    SCRATCH,
+    SRAM,
+    Machine,
+    Model,
+    Target,
+    build,
+    symbols,
+    u16,
+    u32,
+)
 from unicorn.arm_const import UC_ARM_REG_R0  # noqa: E402
 
 UUID_ADDRESS = 0x0009FC70
@@ -566,8 +578,10 @@ def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
     build = reply[9 : 9 + length].decode("ascii", "replace")
     if magic != b"CJTAG":
         c.problems.append(f"vendor 0x82 magic is {magic!r}, wanted b'CJTAG'")
-    if version != 2:
-        c.problems.append(f"vendor 0x82 format version is {version}, wanted 2")
+    if version != 3:
+        c.problems.append(f"vendor 0x82 format version is {version}, wanted 3")
+    if reply[9 + length : 10 + length] != bytes([0]):
+        c.problems.append(f"vendor 0x82 ends {reply[9 + length :].hex()!r}, wanted the plain board's 00")
     if not flags & 0x01:
         c.problems.append(f"vendor 0x82 flags {flags:#04x} do not claim OScan1, which is the point")
     if flags & 0x02:
@@ -633,6 +647,46 @@ def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
             c.problems.append(f"vendor 0x84 {mask:#04x}/{levels:#04x} answered {reply.hex()}")
 
     c.note(f"identity: vendor 0x82 magic CJTAG v{version} flags {flags:#04x}, build {build!r}")
+
+
+def check_board(c: Checker, elf: str) -> None:
+    """Only the plain MCU-Link lets the marker or two-pin cJTAG near its pins (PRO.md).
+
+    On a Pro the J8 pins are the analog trace input, a level shifter's direction and two SPI lines,
+    so driving them fights other drivers. Each board is modelled by what its two strap pins read
+    at boot: high and high on the plain board, whose package leaves them unbonded; HW_VER_3 high and
+    HW_VER_4 low on a Pro; both low on an MCU-Link built into an evaluation board.
+    """
+    j8_dir = ORDINARY_GPIO + 0x2380 + 4  # DIRSET[1]
+    j8_set = ORDINARY_GPIO + 0x2200 + 4  # SET[1]
+    for name, straps, board in (("plain", (1, 1), 0), ("Pro", (1, 0), 1), ("on-board", (0, 0), 2)):
+        probe = Machine(elf, Target([0] * 64), restart_at=set(), model=Model())
+        if "board_debug_pins_init" not in probe.sym:
+            c.problems.append("no board_debug_pins_init symbol, so the board detection cannot be run")
+            return
+        probe.uc.mem_write(HW_VER_BYTES, bytes(straps))
+        probe.call("board_debug_pins_init")
+        reply = probe.command(bytes([0x82]))
+        flags, length = reply[7], reply[8]
+        reported = reply[9 + length] if len(reply) > 9 + length else None
+        j8 = probe.command(bytes([0x84, 0x0F, 0x0F]))
+        enter = probe.command(bytes([0x83, 2]))
+        probe.command(bytes([0x83, 0]))
+        driven = int.from_bytes(probe.uc.mem_read(j8_dir, 4), "little") | int.from_bytes(
+            probe.uc.mem_read(j8_set, 4), "little"
+        )
+        plain = board == 0
+        if reported != board:
+            c.problems.append(f"{name} board: vendor 0x82 reports board {reported}, wanted {board}")
+        if bool(flags & 0x11) != plain:
+            c.problems.append(f"{name} board: vendor 0x82 flags {flags:#04x} get two-pin cJTAG wrong")
+        if (j8[1] == 0) != plain:
+            c.problems.append(f"{name} board: vendor 0x84 answered {j8.hex()}")
+        if (enter[1] == 0) != plain:
+            c.problems.append(f"{name} board: vendor 0x83 mode 2 answered {enter.hex()}")
+        if bool(driven & 0x0F) != plain:
+            c.problems.append(f"{name} board: J8's pins were {'not ' if plain else ''}driven ({driven:#x})")
+    c.note("board: plain, Pro and on-board straps each read as their board; J8 and two-pin on the plain one only")
 
 
 def check_sample_probe(c: Checker, elf: str) -> None:
@@ -1062,6 +1116,7 @@ def main() -> int:
     check_response_bounds(c, args.core1, args.packet_size)
     check_request_bounds(c, args.core1)
     check_identity(c, args.core1, args.code_lab)
+    check_board(c, args.core1)
     check_sample_probe(c, args.core1)
     check_timestamp(c, args.core1)
     if swo:

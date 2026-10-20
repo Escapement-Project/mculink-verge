@@ -56,6 +56,11 @@ REG_NOT = 0x2300
 REG_DIRSET = 0x2380
 REG_DIRCLR = 0x2400
 
+# The ordinary GPIO, and in it the byte registers of PIO1_4 and PIO1_5: HW_VER_3 and HW_VER_4, the
+# straps that tell the boards apart (src/board_pins.c).
+ORDINARY_GPIO = 0x4008C000
+HW_VER_BYTES = ORDINARY_GPIO + REG_B0 + 32 + 4
+
 PIN_TCK = 0
 PIN_TDI = 1
 PIN_SWDIO = 2
@@ -711,6 +716,8 @@ class Machine:
         size, vma, lma = secs[".data"]
         if size:
             self.uc.mem_write(vma, bytes(self.uc.mem_read(lma, size)))
+        # The plain MCU-Link: its package bonds neither strap pin, so their pull-ups read high.
+        self.uc.mem_write(HW_VER_BYTES, bytes([1, 1]))
 
         # The only hook. unicorn 2.1.4 runs an IT block wrongly when a memory hook fires on a load
         # or store inside it, and has the next branch's target skip its first instruction, so

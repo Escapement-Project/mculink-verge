@@ -347,6 +347,10 @@ def cmd_info(args) -> int:
     return 0
 
 
+# Vendor 0x82's board byte, as src/board_pins.h numbers it.
+BOARDS = {0: "MCU-Link", 1: "MCU-Link Pro", 2: "on-board MCU-Link"}
+
+
 def cmd_identify(args) -> int:
     probe = one(args)
     print(f"{probe.serial}  {probe.vendor} / {probe.product}")
@@ -368,6 +372,10 @@ def cmd_identify(args) -> int:
     print(f"  magic CJTAG, format {version}, flags 0x{flags:02x}")
     print(f"  OScan1 supported {supported}, active now {active}")
     print(f"  build {build!r}")
+    # Format 3 adds the board. Read it at that format only: a v1 HID reply is padded.
+    if version >= 3 and len(body) > 8 + length:
+        board = body[8 + length]
+        print(f"  board {BOARDS.get(board, f'unknown ({board})')}")
     probe.release()
     return 0
 
