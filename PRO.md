@@ -203,9 +203,18 @@ Steps:
    through a run-time flag.
 7. On the Pro (phase 1): flash, enumerate, both VCOMs looped back, the jumpers.
 
-Decision needed before step 2: the Pro's endpoint budget. Options: drop the CMSIS-DAP v1 HID
-interface on the Pro only (probe-rs, pyOCD and OpenOCD all speak v2), which frees IN 0x84 for the
-second CDC's notification; drop it on both boards; or follow whatever step 0 shows stock doing.
+Decided 2026-10-20: both boards have the same endpoints; the plain MCU-Link is a Pro with
+features disabled. Every CDC notification endpoint is declared at EP6 IN or EP7 IN, as stock does
+on the Pro, with interval 16, and never opened: the firmware sends no notifications today
+(`CFG_TUD_CDC_NOTIFY` 0), the boards wire no modem lines, and a never-armed real endpoint looks the
+same to a host. The layout: EP1 CMSIS-DAP v2, EP2 the LPCSIO HID (Pro, after publishing), EP3 VCOM
+data, EP4 HID v1, EP5 VCOM2 data (Pro), EP6 and EP7 the notifications. This moves the plain board's
+notification off its real EP2, which the host polls every 125 us today (TinyUSB's
+`TUD_CDC_DESCRIPTOR` uses interval 1). The TinyUSB fork needs the CDC class not to open the
+notification endpoint when notifications are compiled out, and, as a fix in its own right, the
+IP3511 driver to refuse endpoint numbers beyond the controller's six. Open: whether a disabled
+function's interface is absent (stock removes a jumper-disabled VCOM, and later interface numbers
+shift) or present and inert.
 Cross-boundary: none for probe-rs if the vendor interface keeps its number and string; `verge`
 learns the Pro's product string (it identifies ours by 0x82 already).
 
