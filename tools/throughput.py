@@ -387,7 +387,9 @@ def cmd_compare(args) -> int:
     matrices = {r["matrix"] for r in records}
     if len(matrices) != 1:
         raise SystemExit(f"results from different matrices: {sorted(matrices)}")
+    # A retake measures the same labels again, so a label that repeats carries its date.
     labels = [r["label"] for r in records]
+    labels = [f"{r['label']} {r['taken'][:10]}" if labels.count(r["label"]) > 1 else r["label"] for r in records]
     metric = "kib_per_s" if args.metric == "kib" else "commands_per_s"
     unit = "KiB/s" if args.metric == "kib" else "commands/s"
 
