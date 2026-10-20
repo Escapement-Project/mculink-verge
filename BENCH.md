@@ -1577,19 +1577,17 @@ Ranked, with the items here that are since done marked as such, in BACKLOG.md.
   USB and the host at 19.6% of a block read, not 34%, so the ceiling on this is a fifth rather
   than a third, and two commands in flight has already taken 11% of it. It deviates from stock, so
   check pyOCD and OpenOCD before changing what `DAP_Info` reports.
-- **Framed replies, so more than two packets can be in flight.** Needs the bulk endpoints driven
-  directly rather than through TinyUSB's vendor FIFO, which cannot keep a packet boundary.
+- **Framed replies, so more than two packets can be in flight.** Dropped: TinyUSB's vendor class
+  without its FIFO keeps each packet whole (`src/tusb_config.h`), and three commands run in flight.
 - **Clocks 44 and 45 of every transfer**, 51.9 and 66.1 cycles against a 15-cycle data bit. 89
   extra cycles once per word and 12.9% of a transfer, but one attempt at them already came out
   worse by disturbing the data phase. See the rejected change above before trying again.
-- **The two-pin and four-wire JTAG block paths are still in flash** and will have the same stall
-  the SWD paths had. `cjtag_BlockImpl` and `cjtagf_BlockImpl` are 67 KB together, against 79 KB
-  already in SRAM and 112 KB still free.
+- **Running the two-pin and four-wire JTAG block paths from SRAM.** Done in `ecaec8a`.
 - **Make the generated SWD paths the default.** Done 2026-10-20, with the JTAG paths, once the
   MSPM0L1306 had run the SWD ones with its access port answering WAIT.
 - **Measure the read latency per target.** Done on all three wires: the probe measures it
   at connect where the
   default leaves under two cycles, SWD at 37.5 and 50 MHz, four-wire from 12.5 MHz and two-pin from
   15 MHz on the CC1312R1.
-- **Generate the JTAG and two-pin paths the same way.** They are 80 KB of SRAM and are still
-  paced by ARM's delay loop.
+- **Generate the JTAG and two-pin paths the same way.** Done in `e291163`, and the default with
+  the SWD ones.

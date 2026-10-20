@@ -8,8 +8,14 @@ and 13.1 MHz there is nothing at all.
 All three come from one number, `DAP_Data.clock_delay`, being calculated once for a bit that only
 one of the three wires actually has.
 
-Everything below is the emulator's cost model. **No analyser has checked it.** Read the last
-section first if you are about to change a constant.
+This is ARM's pacing. Only the build with generation off still uses it; the default build
+generates its paths at run time (`CODEGEN.md`, `CJTAGGEN.md`).
+
+Everything below was worked out on the emulator's cost model, before the bench. The bench has
+since measured the delay loop at three cycles an iteration, which the six-cycle steps rest on,
+and calibrated the model against the wire (`BENCH.md`). The calibrated model finds SWD and the
+two-pin path running fast too, and the analyser agrees for SWD at 10 MHz. The last two sections
+were written before that calibration.
 
 ## Where the number is set
 
@@ -91,8 +97,8 @@ request, 72 MHz for 50. The two-pin frame does far more, and borrows the same nu
 anything ever telling `Set_Clock_Delay` what a packet costs. It lands on 14 or 15 cycles for a
 10 MHz request, against the 14.4 it needs, and the compiler decides which.
 
-`tools/baseline-armwire/known-overshoot.txt` records `jtag@10MHz` and `jtag@50MHz` so the gate
-fails on a *new* overshoot rather than on these two.
+`tools/baseline-armwire/known-overshoot.txt` records the overshoots the gate accepts: four-wire
+JTAG at 10, 20 and 50 MHz, and SWD and two-pin at 10 and 20 MHz. The gate fails on a *new* one.
 
 ## The steps, which may be worth more than the overshoot
 

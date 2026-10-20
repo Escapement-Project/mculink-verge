@@ -17,8 +17,9 @@ and USB driver, and ARM's CMSIS-DAP supplies the protocol.
 
 ## Check
 
-Nothing here has run on hardware. What stands in for that is an emulated Cortex-M33 running the
-built image, driven through the real DAP command layer against a modelled target.
+These checks need no hardware. An emulated Cortex-M33 runs the built image, driven through the
+real DAP command layer against a modelled target. What the probe measured on real targets is in
+`BENCH.md`.
 
 ```
 ninja -C build check                      # the gate, against what was just built
@@ -98,11 +99,15 @@ would notice.
 
 ## Where to read next
 
-- `DESIGN.md` -- why this exists, the pin map, and the open risks.
-- `OPTIMISATIONS.md` -- what was done for throughput, what was tried and rejected with its numbers,
-  and what is left.
-- `BENCH.md` -- the reference to keep open at the bench, and the ordered plan for the first
-  session: what to test, in what order, and what each result unlocks.
-- `PACING.md` -- how the wire clock is paced, traced through the source, and the three things wrong
-  with it: four-wire JTAG runs fast, the two-pin path has no margin, and the achievable rate goes
-  up in steps with a gap between 13 and 29 MHz.
+- `DESIGN.md` -- why this exists, the board, and where every reference
+  lives.
+- `BENCH.md` -- the reference to keep open at the bench, and what the probe measured on real
+  targets.
+- `TIMING.md` -- the timing rules the generated paths are placed by, each from a bench measurement.
+- `CODEGEN.md` and `CJTAGGEN.md` -- how the SWD and JTAG paths are generated at run time.
+- `TIMERGEN.md` -- a design, not built, for SWD reads above 37.5 MHz with the clock made by a timer.
+- `PACING.md` -- how ARM's paths pace the wire clock, and what is wrong with it. Only the build with
+  generation off still uses them.
+- `OPTIMISATIONS.md` -- what was done to ARM's paths for throughput, and what was tried and
+  rejected. Its figures predate the bench.
+- `AGENTS.md` -- the rules for changing this code.
