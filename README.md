@@ -97,6 +97,56 @@ fix; and every block case sent two words, while the loops derive the reply's wor
 response pointer. Both gaps were found by asking what a change could break that nothing here
 would notice.
 
+## Releases
+
+`.github/workflows/release.yml` publishes a release when a tag starting with `v` is pushed. It
+attaches three files in the layout verge, the update tool, reads: the image as an S-record, its
+checksum, and a minisign signature whose trusted comment names the file and the tag. verge's
+README says what it checks. The workflow has never run, and cannot until this repository is
+public.
+
+It has three jobs, so that the secret key never sits on a machine that ran code the build fetched:
+
+- `build` makes the image and its checksum, and runs `ninja -C build check` on it. It has no
+  secret. It runs in an Arch Linux container, which has the compiler the bench uses. The
+  container is pinned by digest, and its packages come from Arch's archive for one day. The
+  compiler changes only when a commit moves both.
+- `sign` first checks that the `release` environment has a required reviewer, and stops if it has
+  none. Then it signs the image. It is the only job that sees the key.
+- `publish` attaches the three files to the tag's release, creating the release if there is none.
+  It has no secret either.
+
+To make the key pair:
+
+```
+minisign -G -W -p verge.pub -s verge.key
+```
+
+`-W` leaves the secret key without a password, which the workflow needs. Keep `verge.key` out of
+every repository. The second line of `verge.pub` is verge's `RELEASE_KEY`.
+
+The repository needs these settings before the first tag:
+
+- **The `release` environment** (Settings, Environments). At least one required reviewer, who
+  approves each signing. The environment secret `MINISIGN_SECRET_KEY`, holding the whole of
+  `verge.key`; keep it out of the repository's own secrets, where any job could read it. Without
+  it the workflow fails rather than publish an unsigned image. Optionally the variable
+  `MINISIGN_PUBLIC_KEY`, the second line of `verge.pub`; when it is set, the signature is checked
+  before it leaves the signing job. And deployments limited to tags matching `v*`, so that no
+  other ref reaches the key.
+- **A tag ruleset** (Settings, Rules, Rulesets) on `refs/tags/v*`. Restrict creation, updates and
+  deletion, with only the maintainers on the bypass list. A tag's own copy of the workflow decides
+  what the signing job runs, so whoever can push a `v*` tag can change it. The reviewer is the last
+  check: approve only a tag you know.
+
+To make the files by hand instead:
+
+```
+arm-none-eabi-objcopy -O srec build/mculink_cjtag.elf mculink-verge-v0.3.0.s19
+sha256sum mculink-verge-v0.3.0.s19 > mculink-verge-v0.3.0.s19.sha256
+minisign -S -s verge.key -m mculink-verge-v0.3.0.s19 -t "file:mculink-verge-v0.3.0.s19 tag:v0.3.0"
+```
+
 ## Where to read next
 
 - `DESIGN.md` -- why this exists, the board, and where every reference
@@ -112,3 +162,5 @@ would notice.
 - `OPTIMISATIONS.md` -- what was done to ARM's paths for throughput, and what was tried and
   rejected. Its figures predate the bench.
 - `AGENTS.md` -- the rules for changing this code.
+- verge, the flash and update tool, as a command line and a window, is a repository of its own:
+  https://github.com/Escapement-Project/verge.
