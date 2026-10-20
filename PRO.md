@@ -70,6 +70,10 @@ The rest of the Pro's pins, from schematic page 1:
 
 ## Hazard: do not flash today's image on a Pro
 
+Resolved by the board-aware USB round (2026-10-20, below): the board is read on CPU 0 and was
+read as a Pro on the bench, J8 stays off there, and the board support's console no longer starts
+on P0_29 and P0_30. The image still declares the plain MCU-Link only until phase 1 runs.
+
 - `MARKER` is on by default (`CMakeLists.txt:40`). It drives PIO1_0 to PIO1_3 push-pull, high during
   every command (`src/marker.h`, `src/board_pins.c`), and `ID_VENDOR_J8` hands them to the host. On
   the plain board they reach only J8. On the Pro they are the analog trace input (the follower's
@@ -142,15 +146,38 @@ Phase 2, the extras (needs decisions b and c below):
     be met from public source (check that library's licence first).
 14. The analog trace input (J19 pin 12) and the LPC804's ISP and reset lines: last.
 
-## Next round: board-aware USB (plan, not started)
+## Next round: board-aware USB (in progress)
 
 Written 2026-10-20. It covers decisions d and e and the second
 VCOM from c, and needs no Pro until step 7. Phase 1's probe work on J7 (items 5 to 9 above) follows
 it.
 
-What the code does today: `src/usb_descriptors.c` has one static configuration (vendor interface 0
-on EP1, CDC on 0x82 and EP3, HID v1 on EP4), the product string is `DAP_PRODUCT_NAME` in
-`src/DAP_config.h`, read by CPU 0 for USB and by CPU 1 for `DAP_Info`, and CPU 1 alone reads the
+Progress (2026-10-20, uncommitted): steps 0 to 8 have run. The emulator checks pass (step 7's
+`tools/image.py` part, break-tested) with the gate, and both boards ran the image in every
+jumper state, with TinyUSB's IP3511 bounds fix and placeholder endpoints applied uncommitted to
+the submodule. Left: commit
+TinyUSB's changes on the fork and pin the firmware to them; the 1-word A/B, which needs a run-time
+flag (the emulator puts the console loop at +14 cycles a pass on the plain board, +28 on the Pro);
+declaring the Pro in the image once phase 1 has run a target on J7. Found on the way:
+- The board support started Flexcomm 0 as a log console inside `board_init`, on P0_29 and P0_30.
+  On the Pro P0_30 is the Q output of U18, the energy measurement's 74LVC1G175, so the console's
+  idle TXD drove against a push-pull output from `board_init` until `vcom_init`. The build now
+  leaves out the board's `peripherals.c` and `src/vcom.c` supplies an empty
+  `BOARD_InitBootPeripherals`. On the Pro `vcom_init` leaves P0_29 (U18's reset) and P0_30 without
+  a pull; on the plain board they keep their pull-ups. This was the hazard section's open P0_30
+  check.
+- The register model treats SYSCON as plain memory, so a driver that resets a peripheral waits
+  for ever on PRESETCTRL. `check_clocks` had been timing out silently inside `vcom_init`; it now
+  models SYSCON's SET and CLR registers and fails if `vcom_init` does not return.
+- An oversized `DAP_TransferBlock` read was clamped and run on whatever path `transfer_block`
+  picked, connected or not; with no port it now goes to ARM's handler, which answers it empty.
+- With J4 and J5 both fitted the plain board has no function left, and ours offers a configuration
+  of no interfaces, which still answers the EP0 reboot request. Stock was not observed that way,
+  and no host has seen ours that way.
+
+What the code did before this round: `src/usb_descriptors.c` had one static configuration (vendor interface 0
+on EP1, CDC on 0x82 and EP3, HID v1 on EP4), the product string was `DAP_PRODUCT_NAME` in
+`src/DAP_config.h`, read by CPU 0 for USB and by CPU 1 for `DAP_Info`, and CPU 1 alone read the
 straps, in `board_debug_pins_init`.
 
 Constraints found while planning:
@@ -162,9 +189,11 @@ Constraints found while planning:
   for trace and power, the two VCOMs' data, the LPCSIO HID), and the two CDC notification
   endpoints are EP6 IN and EP7 IN, numbers USB1 does not have, polled every 4.1 s. On Linux an
   open VCOM's notification read stays pending with no error, also with both VCOMs looped back
-  at 3 Mbaud at once (clean on both). TinyUSB's IP3511 driver does not
-  bounds-check endpoint numbers, so doing the same needs our TinyUSB fork to keep the CDC class
-  from opening them.
+  at 3 Mbaud at once (clean on both). TinyUSB refuses such numbers before its IP3511 driver
+  sees them: `CFG_TUD_ENDPPOINT_MAX` is 6 on the LPC55 and cannot be raised (`tusb_option.h`),
+  `usbd_edpt_open` asserts below it, and so does the driver binding that walks every endpoint a
+  class's descriptors name, opened or not (upstream #3828, September 2026). The IP3511 driver's
+  missing bound is reachable only at EP5 on a controller with five pairs.
 - PIO1_10 and PIO1_11 (Flexcomm 1, J26) are not bonded on the plain board's 64-pin package, so the
   second VCOM exists on the Pro only.
 - The BSP muxes PIO1_30 (the Pro's HW_VER_2) to USB1_OVERCURRENTN; reading straps needs each pin
@@ -176,20 +205,22 @@ Constraints found while planning:
   run time.
 
 Steps:
-0. Observe stock, over USB only (decision 6c of item 9: observed behaviour). Done with no jumpers
-   (above). Left: with J14 (VCOM off) and with J13 (SWD off); the same on the
-   plain board with J4 and J5. Record the interfaces and endpoints, what `DAP_Info` and
-   `DAP_Connect` answer with SWD off, and whether J14 removes both VCOMs. Needs the Pro on USB and
-   jumpers moved by hand.
+0. Observe stock, over USB only (decision 6c of item 9: observed behaviour). Done 2026-10-20 for
+   every single jumper on both boards:
+   each jumper removes its function's interfaces; J14 removes VCOM and keeps VCOM2; the SWD jumper
+   (J13, J5) removes the CMSIS-DAP interface itself, and the trace half of the Pro's HID; stock
+   packs its endpoints per state rather than keep them fixed; bcdDevice changes with every state;
+   the "rXXX" in the product string is the straps.
 1. Read the straps on CPU 0: the board (HW_VER_3, HW_VER_4) and the feature jumpers (HW_VER_6 VCOM
-   off, HW_VER_7 SWD off; HW_VER_2 USB-SIO off is read but means nothing until USB-SIO exists). A
-   source both images compile replaces `board_detect` in `src/board_pins.c`; CPU 0 writes the board
-   and the jumpers into `dap_shared` before `start_core1`, and CPU 1 reads them there rather than
-   reading the pins again.
+   off, HW_VER_7 SWD off; HW_VER_2 USB-SIO off is read but means nothing until USB-SIO exists).
+   `src/board_straps.c` on CPU 0 writes the board and the jumpers into `dap_shared` before
+   `start_core1`, and CPU 1 takes the board from there rather than reading the pins again.
 2. Descriptors built at boot from the board and the jumpers: the vendor interface stays interface 0
    on EP1 (the MS OS 2.0 descriptor names interface 0, and hosts find CMSIS-DAP by its string); the
    CDC drops out with VCOM off; on the Pro a second CDC on Flexcomm 1. Endpoints per the decision
-   below. `CFG_TUD_CDC` becomes 2.
+   below. `CFG_TUD_CDC` becomes 2. bcdDevice is 0x01NN, NN the functions present (1 the CMSIS-DAP
+   interfaces, 2 VCOM, 4 VCOM2): Windows keeps what it learnt about a device by VID, PID and
+   bcdDevice, and stock gives each jumper state its own.
 3. One image for both boards, as stock: it declares the boards it supports in a
    form `verge` reads from the file before flashing (UPDATE-TOOL.md decision 12), so an older image
    that declares nothing is never put on a Pro. The form (decided 2026-10-20): sixteen bytes right
@@ -200,22 +231,19 @@ Steps:
    The Pro's bit is set once this round's Pro support is complete.
 4. The product string names the board, from one table both cores read through `dap_shared`, for USB
    and for `DAP_Info` 0x02. Until item 9 picks the form, "MCU-Link Pro Verge CMSIS-DAP" on a Pro.
-5. SWD off: CPU 1 answers `DAP_Connect` with port 0, and no command moves a target pin (the spec
-   does not make any wait for `DAP_Connect`, and ARM's reference runs them unconnected).
-   `DAP_SWJ_Sequence`, `DAP_JTAG_Sequence`, `DAP_ResetTarget` (Execute 0), the vendor pin programs
-   and 0x83 answer `DAP_ERROR` without touching the port. `DAP_SWJ_Pins` has no status in its
-   reply, which is the pin levels, so it ignores Pin Output and Pin Select, skips the wait, and
-   answers the levels it reads. `DAP_Info` keeps the SWD and JTAG
-   capability bits: clearing them makes probe-rs say the probe lacks SWD, which is wrong. The
-   CMSIS-DAP interfaces stay: the one deliberate exception to removing a disabled function, since
-   identification and `verge` go through them. Then whatever else step 0 shows stock refusing.
+5. SWD off (decided 2026-10-20, after step 0): as stock, the SWD jumper removes both
+   CMSIS-DAP interfaces, so no host can send a command and nothing reaches CPU 1. The BOS goes with
+   them, since its MS OS 2.0 descriptor names the vendor interface, and with no BOS the device is
+   USB 2.0. The VCOMs stay, and the EP0 reboot request still works, so `verge` can update the unit;
+   it can identify it only by its USB product string. (Planned before step 0, and dropped: keeping
+   the interfaces and refusing every command that moves a pin.)
 6. `src/vcom.c` serves two instances: Flexcomm 0 as now, Flexcomm 1 (PIO1_10 RXD, PIO1_11 TXD,
    function 2) on the Pro.
 7. Checks: `tools/image.py` builds the descriptors for every board and jumper state and holds each
    to its totals and endpoint budget, models CPU 0's strap read as `check_board` models CPU 1's,
    and requires `DAP_Info` 0x02 to match the USB product string per board. The gate on both
-   compilers. On the bench plain probe: enumeration, the console, J4 and J5 by hand (check first
-   whether either is fitted today), the never-opened notification endpoint under usbmon with the
+   compilers. On the bench plain probe: enumeration, the console, J4 and J5 by hand (neither is
+   fitted day to day), the never-opened notification endpoint under usbmon with the
    VCOM open, and 1-word commands at 8 queued with and without the change, through a run-time flag.
 8. On the Pro (phase 1): flash, enumerate, both VCOMs looped back, the jumpers.
 
@@ -245,6 +273,19 @@ to them, each tested on the bench (the gate never runs the USB stack):
   notification endpoint without opening it, for a device that declares the endpoint but never
   sends on it (as NXP's own MCU-Link firmware does at endpoint numbers its controller lacks). It
   has meaning only with `CFG_TUD_CDC_NOTIFY` 0.
+- Neither gets EP6 or EP7 past usbd's binding check (constraints above). Decided 2026-10-20:
+  not by skipping endpoints past the limit, which would let a likely mistake through
+  silently, but with an API by which the application registers the endpoints it declares and the
+  controller lacks. The design, decided the same day: "placeholder"
+  endpoints, registered as IN and OUT bitmaps through TinyUSB's existing `tud_configure()` before
+  `tusb_init`, behind `CFG_TUD_EDPT_PLACEHOLDER`. usbd never opens a placeholder on the controller,
+  skips it at binding, refuses transfers on it, and answers a host's GET_STATUS and SET or
+  CLEAR_FEATURE on it with a Request Error. Stock answers those with "not halted" instead;
+  whether Windows' usbser clears halt
+  on the notification endpoint when a port opens is for the Windows check. ISO placeholders are
+  refused. The CDC setting above is dropped: CDC opens the notification endpoint as usual and usbd
+  answers. "Phantom" was the working word; TinyUSB already uses it for audio phantom power.
+TinyUSB style: the CDC commit is `cdc:`.
 Before writing them: look upstream for prior art (issues, pull requests, discussions about an
 optional or unopened CDC notification endpoint), read TinyUSB's contributing guide and CI, and add a
 unit test wherever their harness (`test/unit-test`) reaches.
@@ -258,8 +299,11 @@ points from it, adopted:
 - A probe selector can carry an interface number (`VID:PID-IF:SERIAL`). `probe-rs list` shows the
   v2 entry (`-0`), which never moves, but a hand-written HID selector `-3` stops matching when the
   VCOM jumper moves the HID interface to 1. The jumper documentation says so.
-- With the SWD jumper fitted, probe-rs sends `DAP_Connect` first and reports port 0 as an
-  initialisation failure. Step 5 is the firmware's half.
+- With the SWD jumper fitted there is no CMSIS-DAP interface, so probe-rs finds no probe.
+  probe-rs sets one
+  condition: no HID other than CMSIS-DAP v1 on an image whose product string contains
+  "CMSIS-DAP", since probe-rs takes any HID of such a device as v1 (it does so with stock's power
+  and LPCSIO HIDs, a probe-rs bug). USB-SIO's HID will need this settled first.
 - Stock's pending notification read was observed on the Pro. Whether a host sees a NAK (pending) or
   no handshake (transaction errors, and xHCI halts the endpoint) depends on the controller's answer
   to an endpoint it lacks: check it with usbmon on the plain board running ours before relying on
