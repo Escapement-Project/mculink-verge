@@ -330,8 +330,10 @@ def provenance(elf: str | None) -> dict:
     except Exception:  # the version is a note, not a requirement
         pass
     if elf:
+        full = os.path.abspath(elf)
         record["image"] = {
-            "path": os.path.relpath(os.path.abspath(elf), REPO),
+            # Outside the repo a path names nothing a reader has; the hash identifies the image.
+            "path": os.path.relpath(full, REPO) if os.path.commonpath([full, REPO]) == REPO else os.path.basename(full),
             "sha256": hashlib.sha256(open(elf, "rb").read()).hexdigest(),
         }
         if not elf.endswith(".s19"):
