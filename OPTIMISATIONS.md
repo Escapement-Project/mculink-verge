@@ -521,6 +521,8 @@ contention. Measure before keeping.
 
 ### 7. DAP packet size above 512
 
+Decided against on 2026-10-20: BACKLOG.md item 13 has the reasons and what would reopen it.
+
 512 is the USB 2.0 ceiling for a high-speed **bulk endpoint**, and it is not tunable. It is not the
 ceiling for a DAP packet: `DAP_Info` reports packet size as a 16-bit value, a bulk transfer spans as
 many endpoint packets as it needs, and probe-rs sizes its buffer from the reported value
