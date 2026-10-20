@@ -21,6 +21,7 @@ times out. Nothing here sends it.
 """
 
 import argparse
+import dataclasses
 import struct
 import sys
 import time
@@ -827,8 +828,8 @@ def cmd_block(args) -> int:
     if args.command == "transfer":
         # The same transfers as DAP_Transfer, one request byte each, which is what a host sends for
         # a run too short for a block of its own.
-        if args.words > 127 or args.queue:
-            print("  DAP_Transfer: at most 127 words, and no --queue")
+        if args.words > 127:
+            print("  DAP_Transfer: at most 127 words")
             return 2
         payload = bytes([DAP_TRANSFER, 0, args.words]) + (bytes([request]) + data) * args.words
     else:
@@ -838,46 +839,75 @@ def cmd_block(args) -> int:
         print(f"  {len(payload)} bytes of request do not fit a {probe.out_ep.wMaxPacketSize}-byte packet")
         return 2
     if args.queue:
-        queued_blocks(probe, payload, args.blocks, args.queue, args.words)
+        run = queued_blocks(probe, payload, args.blocks, args.queue, args.words)
+        if run.error is not None:
+            print(f"  stopped after {run.done} blocks: {run.error}")
+        print(f"  {run.done} blocks x {args.words} words, {args.queue} queued, in {run.seconds * 1e3:.1f} ms")
+        print(f"  {run.words * 4 / run.seconds / 1024:.1f} KiB/s, {run.done / run.seconds:.0f} commands/s, "
+              f"host CPU {100 * run.cpu / run.seconds:.0f}% of the run")
         return 0
-    started = time.perf_counter()
-    words = 0
-    # `--pipeline N` keeps N commands in flight instead of waiting for each reply before sending
-    # the next. CMSIS-DAP v2 allows it -- DAP_Info reports how many packets the probe will hold --
-    # and it is the one thing that separates a gap the firmware owns from a gap the host owns.
-    inflight = max(1, args.pipeline)
-    sent = 0
-    done = 0
-    while done < args.blocks:
-        while sent < args.blocks and sent - done < inflight:
-            probe.out_ep.write(payload, 2000)
-            sent += 1
-        reply = bytes(probe.in_ep.read(probe.in_ep.wMaxPacketSize, 2000))
-        done += 1
-        if args.command == "transfer":
-            count, ack = reply[1], reply[2]
-        else:
-            count, ack = int.from_bytes(reply[1:3], "little"), reply[3]
-        if count != args.words or ack != 1:
-            print(f"  stopped: {args.command} returned {count} words, ack {ack}")
-            break
-        words += count
-    elapsed = time.perf_counter() - started
-    print(f"  {args.blocks} commands x {args.words} words = {words} transfers in {elapsed * 1e3:.1f} ms,"
-          f" {elapsed / args.blocks * 1e6:.1f} us each")
-    print(f"  {words * 4 / elapsed / 1024:.1f} KiB/s end to end, including USB")
+    run = pipelined_blocks(probe, payload, args.blocks, max(1, args.pipeline), args.words)
+    if run.error is not None:
+        print(f"  stopped: {run.error}")
+    print(f"  {args.blocks} commands x {args.words} words = {run.words} transfers in {run.seconds * 1e3:.1f} ms,"
+          f" {run.seconds / args.blocks * 1e6:.1f} us each")
+    print(f"  {run.words * 4 / run.seconds / 1024:.1f} KiB/s end to end, including USB")
     probe.release()
     return 0
 
 
-def queued_blocks(probe: Probe, payload: bytes, blocks: int, depth: int, words: int) -> None:
+@dataclasses.dataclass
+class Run:
+    """What one timed run of a repeated command came to."""
+
+    done: int  # commands answered with every transfer OK
+    words: int  # the transfers those carried
+    seconds: float
+    cpu: float  # host CPU time over the run
+    error: str | None  # why the run stopped early, if it did
+
+
+def transfer_counts(payload: bytes, reply: bytes) -> tuple[int, int]:
+    """The transfer count and last acknowledge of a DAP_Transfer or DAP_TransferBlock reply."""
+    if payload[0] == DAP_TRANSFER:
+        return reply[1], reply[2]
+    return int.from_bytes(reply[1:3], "little"), reply[3]
+
+
+def pipelined_blocks(probe: Probe, payload: bytes, blocks: int, inflight: int, words: int) -> Run:
+    """Run `blocks` copies of one command with `inflight` of them sent ahead of their replies.
+
+    CMSIS-DAP v2 allows that -- DAP_Info reports how many packets the probe will hold -- and it is
+    the one thing that separates a gap the firmware owns from a gap the host owns. A run that stops
+    early leaves replies queued, which the next run would read as its own: drain before going on.
+    """
+    started = time.perf_counter()
+    cpu = time.process_time()
+    sent = done = moved = 0
+    error = None
+    while done < blocks:
+        while sent < blocks and sent - done < inflight:
+            probe.out_ep.write(payload, 2000)
+            sent += 1
+        reply = bytes(probe.in_ep.read(probe.in_ep.wMaxPacketSize, 2000))
+        count, ack = transfer_counts(payload, reply)
+        if reply[0] != payload[0] or count != words or ack != 1:
+            error = f"command 0x{payload[0]:02x} returned {count} words, ack {ack}"
+            break
+        done += 1
+        moved += count
+    return Run(done, moved, time.perf_counter() - started, time.process_time() - cpu, error)
+
+
+def queued_blocks(probe: Probe, payload: bytes, blocks: int, depth: int, words: int) -> Run:
     """Run `blocks` copies of one command with `depth` of them queued in the host controller.
 
-    The synchronous loop in `cmd_block` cannot go deeper than the probe's request slots: a write
-    the probe refuses blocks the only thread, which then never reads the reply that would free a
-    slot. libusb's asynchronous API queues the writes and keeps `depth` reads posted, so the probe
-    takes the next command the moment a slot frees and never waits on the host. That makes this
-    the ceiling any host could reach through the current USB path.
+    The synchronous loop in `pipelined_blocks` cannot go deeper than the probe's request slots: a
+    write the probe refuses blocks the only thread, which then never reads the reply that would free
+    a slot. libusb's asynchronous API queues the writes and keeps `depth` reads posted, so the probe
+    takes the next command the moment a slot frees and never waits on the host. That makes this the
+    ceiling any host could reach through the current USB path. It releases `probe`; find the probe
+    again to go on.
     """
     import usb1
 
@@ -934,10 +964,10 @@ def queued_blocks(probe: Probe, payload: bytes, blocks: int, depth: int, words: 
                 if transfer.getStatus() != usb1.TRANSFER_COMPLETED:
                     state["error"] = state["error"] or f"read status {transfer.getStatus()}"
                     return
-                reply = transfer.getBuffer()[: transfer.getActualLength()]
-                count = int.from_bytes(reply[1:3], "little")
-                if reply[0] != payload[0] or count != words or reply[3] != 1:
-                    state["error"] = state["error"] or f"reply {bytes(reply[:4]).hex()} to block {state['done']}"
+                reply = bytes(transfer.getBuffer()[: transfer.getActualLength()])
+                count, ack = transfer_counts(payload, reply)
+                if reply[0] != payload[0] or count != words or ack != 1:
+                    state["error"] = state["error"] or f"reply {reply[:4].hex()} to block {state['done']}"
                     return
                 state["done"] += 1
                 state["words"] += count
@@ -961,11 +991,8 @@ def queued_blocks(probe: Probe, payload: bytes, blocks: int, depth: int, words: 
                         transfer.cancel()
                     except usb1.USBError:
                         pass
-                print(f"  stopped after {state['done']} blocks: {state['error']}")
-            print(f"  {state['done']} blocks x {words} words, {depth} queued, in {elapsed * 1e3:.1f} ms")
-            print(f"  {state['words'] * 4 / elapsed / 1024:.1f} KiB/s, {state['done'] / elapsed:.0f} commands/s, "
-                  f"host CPU {100 * cpu / elapsed:.0f}% of the run")
         handle.close()
+    return Run(state["done"], state["words"], elapsed, cpu, state["error"])
 
 
 SAMPLE_BEFORE_EDGE = 0xFF
