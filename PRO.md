@@ -152,13 +152,16 @@ Written 2026-10-20. It covers decisions d and e and the second
 VCOM from c, and needs no Pro until step 7. Phase 1's probe work on J7 (items 5 to 9 above) follows
 it.
 
-Progress (2026-10-20, uncommitted): steps 0 to 8 have run. The emulator checks pass (step 7's
-`tools/image.py` part, break-tested) with the gate, and both boards ran the image in every
-jumper state, with TinyUSB's IP3511 bounds fix and placeholder endpoints applied uncommitted to
-the submodule. Left: commit
-TinyUSB's changes on the fork and pin the firmware to them; the 1-word A/B, which needs a run-time
-flag (the emulator puts the console loop at +14 cycles a pass on the plain board, +28 on the Pro);
-declaring the Pro in the image once phase 1 has run a target on J7. Found on the way:
+Progress (2026-10-20, committed in `8e4033a`..`0ccc436`): steps 0 to 8 have run. The emulator
+checks pass (step 7's `tools/image.py` part, break-tested) with the gate, and both boards ran the
+image in every jumper state.
+TinyUSB's changes are local commits on our fork: `dcd(ip3511): refuse endpoint numbers past
+the controller's own list` on `ip3511-edpt-bounds` (its host test on `ip3511-edpt-bounds-test`)
+and `usbd: add placeholder endpoints` on `usbd-edpt-placeholder`, both from upstream `782f0f1cd`;
+the firmware's submodule is pinned to `mculink-verge`, `10d1941fe` with both on top. Nothing is
+pushed, and no pull request is open. Left: the 1-word A/B, which needs a run-time flag (the
+emulator puts the console loop at +14 cycles a pass on the plain board, +28 on the Pro); declaring
+the Pro in the image once phase 1 has run a target on J7. Found on the way:
 - The board support started Flexcomm 0 as a log console inside `board_init`, on P0_29 and P0_30.
   On the Pro P0_30 is the Q output of U18, the energy measurement's 74LVC1G175, so the console's
   idle TXD drove against a push-pull output from `board_init` until `vcom_init`. The build now
