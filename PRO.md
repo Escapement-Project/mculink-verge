@@ -192,18 +192,31 @@ Steps:
    below. `CFG_TUD_CDC` becomes 2.
 3. One image for both boards, as stock: it declares the boards it supports in a
    form `verge` reads from the file before flashing (UPDATE-TOOL.md decision 12), so an older image
-   that declares nothing is never put on a Pro.
+   that declares nothing is never put on a Pro. The form (decided 2026-10-20): sixteen bytes right
+   after CPU 0's vector table, little-endian: the ASCII magic `VERGEIMG`, a format byte (1), the
+   record's length (16), two zero bytes, then a 32-bit mask with bit n set for each board the image
+   runs on, numbered as 0x82's board byte. Fields are only appended. verge finds it by the magic,
+   not the address; the signed release image carries it, so the release layout does not change.
+   The Pro's bit is set once this round's Pro support is complete.
 4. The product string names the board, from one table both cores read through `dap_shared`, for USB
    and for `DAP_Info` 0x02. Until item 9 picks the form, "MCU-Link Pro Verge CMSIS-DAP" on a Pro.
-5. SWD off: CPU 1 refuses `DAP_Connect` (and whatever else step 0 shows stock refusing).
+5. SWD off: CPU 1 answers `DAP_Connect` with port 0, and no command moves a target pin (the spec
+   does not make any wait for `DAP_Connect`, and ARM's reference runs them unconnected).
+   `DAP_SWJ_Sequence`, `DAP_JTAG_Sequence`, `DAP_ResetTarget` (Execute 0), the vendor pin programs
+   and 0x83 answer `DAP_ERROR` without touching the port. `DAP_SWJ_Pins` has no status in its
+   reply, which is the pin levels, so it ignores Pin Output and Pin Select, skips the wait, and
+   answers the levels it reads. `DAP_Info` keeps the SWD and JTAG
+   capability bits: clearing them makes probe-rs say the probe lacks SWD, which is wrong. The
+   CMSIS-DAP interfaces stay: the one deliberate exception to removing a disabled function, since
+   identification and `verge` go through them. Then whatever else step 0 shows stock refusing.
 6. `src/vcom.c` serves two instances: Flexcomm 0 as now, Flexcomm 1 (PIO1_10 RXD, PIO1_11 TXD,
    function 2) on the Pro.
 7. Checks: `tools/image.py` builds the descriptors for every board and jumper state and holds each
    to its totals and endpoint budget, models CPU 0's strap read as `check_board` models CPU 1's,
    and requires `DAP_Info` 0x02 to match the USB product string per board. The gate on both
    compilers. On the bench plain probe: enumeration, the console, J4 and J5 by hand (check first
-   whether either is fitted today), and 1-word commands at 8 queued with and without the change,
-   through a run-time flag.
+   whether either is fitted today), the never-opened notification endpoint under usbmon with the
+   VCOM open, and 1-word commands at 8 queued with and without the change, through a run-time flag.
 8. On the Pro (phase 1): flash, enumerate, both VCOMs looped back, the jumpers.
 
 Decided 2026-10-20: both boards have the same endpoints; the plain MCU-Link is a Pro with
@@ -235,8 +248,22 @@ to them, each tested on the bench (the gate never runs the USB stack):
 Before writing them: look upstream for prior art (issues, pull requests, discussions about an
 optional or unopened CDC notification endpoint), read TinyUSB's contributing guide and CI, and add a
 unit test wherever their harness (`test/unit-test`) reaches.
-Cross-boundary: none for probe-rs if the vendor interface keeps its number and string; `verge`
-learns the Pro's product string (it identifies ours by 0x82 already).
+Cross-boundary: `verge` learns the Pro's product string (it identifies ours by 0x82 already) and
+reads the image's declaration. Checked against probe-rs 2026-10-20 (`wip-cmsisdap-cjtag`
+`7b17871e1`, upstream `cd181bec4`): probe-rs finds v2 by an interface string containing
+"CMSIS-DAP" with class 0xFF/0x00 and takes the endpoints in descriptor order, and v1 by a HID
+interface on a device whose product string contains "CMSIS-DAP"; no interface number, endpoint
+address, VID:PID or `DAP_Info` string is hard-coded, so the layout changes nothing for it. Three
+points from it, adopted:
+- A probe selector can carry an interface number (`VID:PID-IF:SERIAL`). `probe-rs list` shows the
+  v2 entry (`-0`), which never moves, but a hand-written HID selector `-3` stops matching when the
+  VCOM jumper moves the HID interface to 1. The jumper documentation says so.
+- With the SWD jumper fitted, probe-rs sends `DAP_Connect` first and reports port 0 as an
+  initialisation failure. Step 5 is the firmware's half.
+- Stock's pending notification read was observed on the Pro. Whether a host sees a NAK (pending) or
+  no handshake (transaction errors, and xHCI halts the endpoint) depends on the controller's answer
+  to an endpoint it lacks: check it with usbmon on the plain board running ours before relying on
+  it (step 7).
 
 ## Decisions
 
