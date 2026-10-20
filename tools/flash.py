@@ -34,6 +34,10 @@ OBJCOPY = "arm-none-eabi-objcopy"
 ISP = ("1fc9", "0021")
 MINI_ISP = ("1fc9", "0022")
 PROBE = ("1fc9", "0143")
+# Stock's way into the bootloader, as LinkServer's `probe update` drives it on V3.172; versions
+# before V3.122 have no jumper-free update.
+STOCK_ISP = 0x81
+STOCK_ISP_ACCEPTED = bytes([0x81, 0x00, 0x01])
 
 
 def read(device: pathlib.Path, name: str) -> str:
@@ -84,11 +88,19 @@ def check() -> int:
                 flags = body[6]
                 print(f"{probe.serial}: ours, build {build}, flags 0x{flags:02x}")
             else:
-                print(f"{probe.serial}: stock -- {probe.product}")
+                print(f"{probe.serial}: stock V{firmware_version(probe)} -- {probe.product}")
+        except RuntimeError:
+            # Stock may answer 0x82 with ID_DAP_Invalid, which command() reports as out of step.
+            print(f"{probe.serial}: stock V{firmware_version(probe)} -- {probe.product}")
         except Exception as error:
             print(f"{probe.serial}: did not answer vendor 0x82 ({error})")
         probe.release()
     return 0
+
+
+def firmware_version(probe) -> str:
+    """DAP_Info's product firmware version, which stock fills with its release number."""
+    return probe.info(0x09).rstrip(b"\x00").decode(errors="replace")
 
 
 def wait_for(ids: tuple[str, str], seconds: float = 15.0) -> list[pathlib.Path]:
@@ -103,11 +115,14 @@ def wait_for(ids: tuple[str, str], seconds: float = 15.0) -> list[pathlib.Path]:
 
 
 def cycle(elf: pathlib.Path, serial: str | None) -> int:
-    """Reboot a unit running ours into the bootloader, flash, reset, and say what came back.
+    """Reboot a unit running ours or stock into the bootloader, flash, reset, and say what came back.
 
-    No jumper and no hands: a USB control request asks CPU 0 to enter the ROM bootloader, without
-    relying on CPU 1's DAP worker. The ROM clears the boot mode on entry so `rblhost reset` returns
-    the unit to its firmware rather than to the bootloader again.
+    No jumper and no hands. Ours takes a USB control request that asks CPU 0 to enter the ROM
+    bootloader, without relying on CPU 1's DAP worker. Stock takes what LinkServer's own jumper-free
+    update sends, seen on the bus with usbmon: vendor command 0x81 with 0x01, then DAP_Disconnect,
+    after which the unit re-enumerates as the bootloader about two seconds later. The ROM clears the
+    boot mode on entry, so `rblhost reset` returns the unit to its firmware rather than to the
+    bootloader again.
     """
     sys.path.insert(0, str(pathlib.Path(__file__).parent))
     import dap  # noqa: PLC0415
@@ -117,12 +132,22 @@ def cycle(elf: pathlib.Path, serial: str | None) -> int:
         names = ", ".join(p.serial for p in dap.find())
         sys.exit(f"need exactly one probe to reflash; attached: {names or 'none'}. Use --serial")
     probe = probes[0]
-    print(f"{probe.serial}: asking for the ROM bootloader")
     try:
-        probe.reboot(bootloader=True)
+        ours = probe.command(bytes([0x82]))[1:6] == b"CJTAG"
+    except RuntimeError:  # stock answers 0x82 with ID_DAP_Invalid
+        ours = False
+    print(f"{probe.serial}: asking {'our' if ours else 'the stock'} firmware for the ROM bootloader")
+    try:
+        if ours:
+            probe.reboot(bootloader=True)
+        else:
+            reply = probe.command(bytes([STOCK_ISP, 0x01]))
+            if reply[:3] != STOCK_ISP_ACCEPTED:
+                raise RuntimeError(f"answered {reply[:3].hex()}, not {STOCK_ISP_ACCEPTED.hex()}")
+            probe.disconnect()
     except Exception as error:
         probe.release()
-        sys.exit(f"the probe did not accept the CPU0 USB reboot request ({error}). Use the ISP jumper")
+        sys.exit(f"the probe did not accept the request ({error}). Use the ISP jumper")
     probe.release()
 
     if not wait_for(ISP):
@@ -149,7 +174,9 @@ def rblhost(*args: str) -> subprocess.CompletedProcess[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--elf", type=pathlib.Path, default=pathlib.Path("build/mculink_cjtag.elf"))
+    parser.add_argument("--elf", "--image", dest="elf", type=pathlib.Path,
+                        default=pathlib.Path("build/mculink_cjtag.elf"),
+                        help="our ELF, or an S-record such as LinkServer's stock image")
     parser.add_argument("--check", action="store_true", help="report, flash nothing")
     parser.add_argument("--cycle", action="store_true",
                         help="reboot a unit already running ours, flash it, reset it: no jumper")
@@ -184,8 +211,11 @@ def flash(elf: pathlib.Path) -> int:
         sys.exit(f"{len(waiting)} units in ISP mode ({names}); rblhost cannot tell them apart")
     port = waiting[0].name
 
-    srec = elf.with_suffix(".s19")
-    subprocess.run([OBJCOPY, "-O", "srec", str(elf), str(srec)], check=True)
+    # An S-record goes as it is, which is how LinkServer's stock image arrives.
+    srec = elf
+    if elf.suffix != ".s19":
+        srec = elf.with_suffix(".s19")
+        subprocess.run([OBJCOPY, "-O", "srec", str(elf), str(srec)], check=True)
     print(f"{port}: flashing {srec} ({srec.stat().st_size} bytes of S-record)")
 
     # The bootloader enumerates before it will answer, so this is a poll and not a single ask.
