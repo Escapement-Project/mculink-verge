@@ -11,6 +11,7 @@ whole sequence is: fit the jumper, plug in, run this, unplug, remove the jumper,
 
     uv run tools/flash.py                    # flash build/mculink_cjtag.elf
     uv run tools/flash.py --check            # just say what every attached unit is running
+    uv run tools/flash.py --cycle --image /opt/linkserver/MCU-LINK/probe_firmware/MCU-LINK_CMSIS-DAP_V3_172.s19
 
 rblhost takes S-record only, so the ELF is converted on the way through. It also addresses a probe
 by VID:PID alone, which is why this refuses to run with two units in ISP mode at once -- it cannot
@@ -134,7 +135,7 @@ def cycle(elf: pathlib.Path, serial: str | None) -> int:
     probe = probes[0]
     try:
         ours = probe.command(bytes([0x82]))[1:6] == b"CJTAG"
-    except RuntimeError:  # stock answers 0x82 with ID_DAP_Invalid
+    except RuntimeError:  # stock may answer 0x82 with ID_DAP_Invalid
         ours = False
     print(f"{probe.serial}: asking {'our' if ours else 'the stock'} firmware for the ROM bootloader")
     try:
@@ -179,7 +180,7 @@ def main() -> int:
                         help="our ELF, or an S-record such as LinkServer's stock image")
     parser.add_argument("--check", action="store_true", help="report, flash nothing")
     parser.add_argument("--cycle", action="store_true",
-                        help="reboot a unit already running ours, flash it, reset it: no jumper")
+                        help="reboot a unit running ours or stock, flash it, reset it: no jumper")
     parser.add_argument("--serial", help="pick one unit when several are attached")
     args = parser.parse_args()
 
