@@ -110,6 +110,8 @@ P0_30 check below is still open.
    - Bit 4 (`CJTAG_CAP_OSCAN1_ENTER`) is all probe-rs checks before running cJTAG, so the Pro image
      clears it until OScan1 framing, the buffer turnaround within a frame included, has worked on
      the Pro's pins.
+     Confirmed in probe-rs's code (`wip-cmsisdap-cjtag` at `7b17871e1`): with bit 4
+     clear, selecting cJTAG fails as an unsupported protocol and probe-rs sends no 0x83 at all.
    `verge` gains the Pro as a batch `--board` and recognises stock's `MCU-LINK Pro` product string.
 4. `tools/image.py` runs the boot setup against the register model with both strap states, and
    requires a Pro to leave PIO1_0 to PIO1_3 alone.
