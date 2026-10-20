@@ -173,6 +173,8 @@ minisign -S -s verge.key -m mculink-verge-v0.3.0.s19 -t "file:mculink-verge-v0.3
   lives.
 - `BENCH.md` -- the reference to keep open at the bench, and what the probe measured on real
   targets.
+- mculink-bench and mculink-stock-notes, beside this repository: throughput and the wire clock
+  against stock, and what stock does as seen from outside.
 - `TIMING.md` -- the timing rules the generated paths are placed by, each from a bench measurement.
 - `CODEGEN.md` and `CJTAGGEN.md` -- how the SWD and JTAG paths are generated at runtime.
 - `TIMERGEN.md` -- a design, not built, for SWD reads above 37.5 MHz with the clock made by a timer.
