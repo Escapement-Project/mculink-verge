@@ -142,6 +142,66 @@ Phase 2, the extras (needs decisions b and c below):
     be met from public source (check that library's licence first).
 14. The analog trace input (J19 pin 12) and the LPC804's ISP and reset lines: last.
 
+## Next round: board-aware USB (plan, not started)
+
+Written 2026-10-20. It covers decisions d and e and the second
+VCOM from c, and needs no Pro until step 7. Phase 1's probe work on J7 (items 5 to 9 above) follows
+it.
+
+What the code does today: `src/usb_descriptors.c` has one static configuration (vendor interface 0
+on EP1, CDC on 0x82 and EP3, HID v1 on EP4), the product string is `DAP_PRODUCT_NAME` in
+`src/DAP_config.h`, read by CPU 0 for USB and by CPU 1 for `DAP_Info`, and CPU 1 alone reads the
+straps, in `board_debug_pins_init`.
+
+Constraints found while planning:
+- USB1, the high-speed controller, has six logical endpoints counting control (UM11126 §43.2): five
+  IN and five OUT. In use: IN 0x81 0x82 0x83 0x84, OUT 0x01 0x03 0x04. A second CDC needs two more
+  INs (notification and data), so with the HID v1 interface it does not fit. Stock fits two VCOMs
+  and three HID functions on the Pro somehow; how is a question for its descriptors (step 0).
+- PIO1_10 and PIO1_11 (Flexcomm 1, J26) are not bonded on the plain board's 64-pin package, so the
+  second VCOM exists on the Pro only.
+- The BSP muxes PIO1_30 (the Pro's HW_VER_2) to USB1_OVERCURRENTN; reading straps needs each pin
+  set to GPIO with its pull-up, after `board_init` and before `tusb_init`.
+- `dap_shared` is exactly 0x3000 bytes, but only from alignment: its header has slack for a byte or
+  two (`tools/image.py` checks both images agree on every member's offset).
+- CPU 0's per-command cost is the 1-word limit at 8 queued (BACKLOG item 5), and a second CDC adds
+  polling to CPU 0's loop. A whole-image A/B cannot resolve a CPU 0 change at 1 word; flag it at
+  run time.
+
+Steps:
+0. Observe stock, over USB only (decision 6c of item 9: observed behaviour): `lsusb -v` of the Pro on
+   stock V3.172 with no jumpers, then with J14 (VCOM off) and with J13 (SWD off); the same on the
+   plain board with J4 and J5. Record the interfaces and endpoints, what `DAP_Info` and
+   `DAP_Connect` answer with SWD off, and whether J14 removes both VCOMs. Needs the Pro on USB and
+   jumpers moved by hand.
+1. Read the straps on CPU 0: the board (HW_VER_3, HW_VER_4) and the feature jumpers (HW_VER_6 VCOM
+   off, HW_VER_7 SWD off; HW_VER_2 USB-SIO off is read but means nothing until USB-SIO exists). A
+   source both images compile replaces `board_detect` in `src/board_pins.c`; CPU 0 writes the board
+   and the jumpers into `dap_shared` before `start_core1`, and CPU 1 reads them there rather than
+   reading the pins again.
+2. Descriptors built at boot from the board and the jumpers: the vendor interface stays interface 0
+   on EP1 (the MS OS 2.0 descriptor names interface 0, and hosts find CMSIS-DAP by its string); the
+   CDC drops out with VCOM off; on the Pro a second CDC on Flexcomm 1. Endpoints per the decision
+   below. `CFG_TUD_CDC` becomes 2.
+3. The product string names the board, from one table both cores read through `dap_shared`, for USB
+   and for `DAP_Info` 0x02. Until item 9 picks the form, "MCU-Link Pro Verge CMSIS-DAP" on a Pro.
+4. SWD off: CPU 1 refuses `DAP_Connect` (and whatever else step 0 shows stock refusing).
+5. `src/vcom.c` serves two instances: Flexcomm 0 as now, Flexcomm 1 (PIO1_10 RXD, PIO1_11 TXD,
+   function 2) on the Pro.
+6. Checks: `tools/image.py` builds the descriptors for every board and jumper state and holds each
+   to its totals and endpoint budget, models CPU 0's strap read as `check_board` models CPU 1's,
+   and requires `DAP_Info` 0x02 to match the USB product string per board. The gate on both
+   compilers. On the bench plain probe: enumeration, the console, J4 and J5 by hand (check first
+   whether either is fitted today), and 1-word commands at 8 queued with and without the change,
+   through a run-time flag.
+7. On the Pro (phase 1): flash, enumerate, both VCOMs looped back, the jumpers.
+
+Decision needed before step 2: the Pro's endpoint budget. Options: drop the CMSIS-DAP v1 HID
+interface on the Pro only (probe-rs, pyOCD and OpenOCD all use v2), which frees IN 0x84 for the
+second CDC's notification; drop it on both boards; or follow whatever step 0 shows stock doing.
+Cross-boundary: none for probe-rs if the vendor interface keeps its number and string; `verge`
+learns the Pro's product string (it identifies ours by 0x82 already).
+
 ## Decisions
 
 a. The schematic: done, `references/docs/MCU-LINK-PRO-SCH.pdf`.
