@@ -42,11 +42,11 @@ option(MARKER "Mark command processing on the J8 header" ON)
 # until the bench has settled it; BENCH.md has the measurements behind it.
 option(SWD_SAMPLE_AFTER_EDGE "Sample SWDIO after the rising edge on the delayed SWD path" OFF)
 # Generate the SWD transfer paths at run time into SRAMX, for the clock the host asks for. See
-# src/swd_gen.c. Off until the equivalence and the gate pass on it.
-option(SWD_CODEGEN "Generate the SWD transfer paths at run time" OFF)
-# Generate the two-pin (OScan1) frames at run time into SRAMX. See src/jtag_gen.c. Off until the
-# equivalence, the timed check and the bench pass on it.
-option(JTAG_CODEGEN "Generate the two-pin JTAG frames at run time" OFF)
+# src/swd_gen.c. Off builds ARM's paths alone, the wire tools/equiv.py holds the generated one to.
+option(SWD_CODEGEN "Generate the SWD transfer paths at run time" ON)
+# Generate the four-wire and two-pin (OScan1) JTAG paths at run time into SRAMX. See
+# src/jtag_gen.c. Off builds ARM's paths alone.
+option(JTAG_CODEGEN "Generate the JTAG transfer paths at run time" ON)
 # Run TinyUSB's device stack from SRAM. Flash runs at 11 wait states, and the stack's interrupt
 # handler and task are branchy code the prefetcher cannot cover; they are paid once per command.
 option(USB_RAM "Run TinyUSB from SRAM" ON)
@@ -65,18 +65,19 @@ add_executable(${PROJECT_NAME})
 
 # The build's identity, regenerated every build so it cannot go stale between a commit and a
 # flash. Two units running different builds of ours are otherwise indistinguishable over USB.
-# A build option that changes what goes on the wire is named in it too, or two images built from
-# one commit answer alike.
+# A build option that moves what goes on the wire away from the default is named in it too, or
+# two images built from one commit answer alike.
 set(FW_VERSION_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/fw_version.h)
 set(FW_VARIANT "")
 if(SWD_SAMPLE_AFTER_EDGE)
   string(APPEND FW_VARIANT "+after-edge")
 endif()
-if(SWD_CODEGEN)
-  string(APPEND FW_VARIANT "+codegen")
-endif()
-if(JTAG_CODEGEN)
-  string(APPEND FW_VARIANT "+jtaggen")
+if(NOT SWD_CODEGEN AND NOT JTAG_CODEGEN)
+  string(APPEND FW_VARIANT "+armwire")
+elseif(NOT SWD_CODEGEN)
+  string(APPEND FW_VARIANT "+armswd")
+elseif(NOT JTAG_CODEGEN)
+  string(APPEND FW_VARIANT "+armjtag")
 endif()
 if(CODE_LAB)
   string(APPEND FW_VARIANT "+lab")

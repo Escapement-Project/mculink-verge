@@ -1,13 +1,2 @@
 # Wires that clock faster than the host asked for. See OPTIMISATIONS.md:
 # it is a decision rather than a slip, and both ways out cost throughput.
-#
-# The SWD and two-pin entries appeared when the cost model was calibrated against the bench on
-# 2026-10-16, not from a change to the code. The analyser agrees: at 10 MHz requested five bit
-# positions measured 10.28 to 10.30 MHz.
-cjtag@10MHz
-cjtag@20MHz
-jtag@10MHz
-jtag@20MHz
-jtag@50MHz
-swd@10MHz
-swd@20MHz

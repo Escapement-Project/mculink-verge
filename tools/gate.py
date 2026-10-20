@@ -4,8 +4,8 @@
 """The whole gate: host checks, then both compilers' images through the emulator.
 
 `ninja -C <build> check` holds one image to its baselines. This runs that for gcc and clang, each
-in the default configuration and with SWD_CODEGEN and JTAG_CODEGEN, because an optimisation that
-holds under one compiler has been seen not to under the other. A generated image also runs its
+in the default configuration and with SWD_CODEGEN and JTAG_CODEGEN off, because an optimisation
+that holds under one compiler has been seen not to under the other. A generated image also runs its
 two-pin and four-wire clocks against targets that answer by time, at every period up to 40 cycles
 and three longer ones. It runs the host checks and image builds together, then runs image checks
 and timing sweeps together. Each timing sweep simulates its independent clock points in parallel.
@@ -39,7 +39,7 @@ IMAGES = [(toolchain, codegen) for toolchain in ("gcc", "clang") for codegen in 
 
 
 def name(toolchain: str, codegen: bool) -> str:
-    return f"{toolchain}-{'codegen' if codegen else 'default'}"
+    return f"{toolchain}-{'default' if codegen else 'armwire'}"
 
 
 def run(args: list[str]) -> tuple[bool, str, float]:

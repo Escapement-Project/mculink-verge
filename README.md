@@ -76,8 +76,11 @@ for t in Release MinSizeRel; do for l in ON OFF; do
 done; done
 ```
 
-Two of the four report the two-pin path clocking 3% fast at 10 MHz. That is known and recorded;
-see OPTIMISATIONS.md.
+The transfer paths are generated at run time by default. `-DSWD_CODEGEN=OFF -DJTAG_CODEGEN=OFF`
+builds ARM's paths alone, and the check holds that build to `tools/baseline-armwire/` instead. It
+finds ARM's paths clocking SWD and both JTAG wires faster than asked at 10 and 20 MHz, and
+four-wire JTAG at 50 MHz too. That directory's `known-overshoot.txt` records them; see
+OPTIMISATIONS.md.
 
 `tools/equiv.py` is the heavier check, for replacing code rather than tuning it. It drives two
 builds over 536 SWD block cases, 188 four-wire JTAG cases, 128 two-pin cases and, with

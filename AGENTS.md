@@ -14,15 +14,17 @@ stream identical and still cost a cycle on every data bit.
 
 Code that predates the rule and breaks it, which is the work list:
 
-- ARM's SWD paths (`src/swd_transfer.h`, unrolled C in `.ramfunc`). They serve every SWD transfer
-  in the default build and are the generated build's fallback. Make `SWD_CODEGEN` the default.
-- The four-wire JTAG and two-pin paths (`JTAG_DP.c`, compiled three times) and their pacing.
+- ARM's SWD paths: the unrolled C in `.ramfunc`, which serves every SWD transfer in a build with
+  `SWD_CODEGEN` off, and SW_DP.c's transfer, the generated paths' fallback when nothing could be
+  generated.
+- The four-wire JTAG and two-pin paths (`JTAG_DP.c`, compiled three times) and their pacing: the
+  generated JTAG paths' fallback, and all a build with `JTAG_CODEGEN` off has.
 - The sequence commands (`DAP_SWJ_Sequence`, `DAP_SWD_Sequence`, `DAP_JTAG_Sequence`).
 
 **Gate on both compilers.** `uv run tools/gate.py` before committing firmware or tool changes. It
 runs the host checks, then builds gcc and clang, each in the default configuration and with
-`SWD_CODEGEN`, and holds every image to its baselines in the emulator. `ninja -C <build> check`
-checks one image only.
+`SWD_CODEGEN` and `JTAG_CODEGEN` off, and holds every image to its baselines in the emulator.
+`ninja -C <build> check` checks one image only.
 
 **C that can run on the host runs there under sanitizers.** `tools/gen_host.py` builds the transfer
 generator under ASan and UBSan with gcc and clang, and for QEMU's Cortex-M33 board with both, and
