@@ -39,6 +39,7 @@ PROBE = ("1fc9", "0143")
 # before V3.122 have no jumper-free update.
 STOCK_ISP = 0x81
 STOCK_ISP_ACCEPTED = bytes([0x81, 0x00, 0x01])
+STOCK_ISP_SINCE = (3, 122)
 
 
 def read(device: pathlib.Path, name: str) -> str:
@@ -104,6 +105,15 @@ def firmware_version(probe) -> str:
     return probe.info(0x09).rstrip(b"\x00").decode(errors="replace")
 
 
+def release_number(version: str) -> tuple[int, int] | None:
+    """Stock's `3.172` as `(3, 172)`; None for anything else."""
+    major, _, minor = version.partition(".")
+    try:
+        return int(major), int(minor)
+    except ValueError:
+        return None
+
+
 def wait_for(ids: tuple[str, str], seconds: float = 15.0) -> list[pathlib.Path]:
     """Poll until something shows up as these ids, because enumeration is not instant."""
     deadline = time.monotonic() + seconds
@@ -137,6 +147,15 @@ def cycle(elf: pathlib.Path, serial: str | None) -> int:
         ours = probe.command(bytes([0x82]))[1:6] == b"CJTAG"
     except RuntimeError:  # stock may answer 0x82 with ID_DAP_Invalid
         ours = False
+    if not ours:
+        version = firmware_version(probe)
+        number = release_number(version)
+        if number is None or number < STOCK_ISP_SINCE:
+            probe.release()
+            sys.exit(
+                f"{probe.serial}: stock V{version} has no jumper-free update before V3.122. "
+                "Use the ISP jumper"
+            )
     print(f"{probe.serial}: asking {'our' if ours else 'the stock'} firmware for the ROM bootloader")
     try:
         if ours:
