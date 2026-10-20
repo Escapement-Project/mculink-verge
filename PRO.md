@@ -210,11 +210,28 @@ on the Pro, with interval 16, and never opened: the firmware sends no notificati
 same to a host. The layout: EP1 CMSIS-DAP v2, EP2 the LPCSIO HID (Pro, after publishing), EP3 VCOM
 data, EP4 HID v1, EP5 VCOM2 data (Pro), EP6 and EP7 the notifications. This moves the plain board's
 notification off its real EP2, which the host polls every 125 us today (TinyUSB's
-`TUD_CDC_DESCRIPTOR` uses interval 1). The TinyUSB fork needs the CDC class not to open the
-notification endpoint when notifications are compiled out, and, as a fix in its own right, the
-IP3511 driver to refuse endpoint numbers beyond the controller's six. Open: whether a disabled
-function's interface is absent (stock removes a jumper-disabled VCOM, and later interface numbers
-shift) or present and inert.
+`TUD_CDC_DESCRIPTOR` uses interval 1).
+
+Decided 2026-10-20: a disabled function is removed entirely, as stock removes a
+jumper-disabled VCOM, never exposed as an interface that does nothing. Interface numbers after it
+shift; the always-present ones come first to keep that to a minimum: 0 CMSIS-DAP v2, then VCOM, the
+HID v1, VCOM2 (Pro), the LPCSIO HID (Pro, later).
+
+Decided 2026-10-20: the TinyUSB changes are written to be correct and ready for upstream,
+not the smallest fix that works here. Separate commits on our fork, the firmware's pin moved
+to them, each tested on the bench (the gate never runs the USB stack):
+- `dcd_lpc_ip3511.c`: `dcd_edpt_open` refuses an endpoint number at or beyond the controller's own
+  `ep_pairs`, which the driver already records per controller from NXP's feature macros (five
+  pairs on the LPC11, 13, 15, 51, 54 and the LPC55's USB0, six on its USB1). Today such an address
+  indexes past that controller's list, and from EP6 past the 12-entry array. A fix in its own
+  right.
+- `cdc_device.c`: an opt-in setting, default unchanged, under which the class records the
+  notification endpoint without opening it, for a device that declares the endpoint but never
+  sends on it (as NXP's own MCU-Link firmware does at endpoint numbers its controller lacks). It
+  has meaning only with `CFG_TUD_CDC_NOTIFY` 0.
+Before writing them: look upstream for prior art (issues, pull requests, discussions about an
+optional or unopened CDC notification endpoint), read TinyUSB's contributing guide and CI, and add a
+unit test wherever their harness (`test/unit-test`) reaches.
 Cross-boundary: none for probe-rs if the vendor interface keeps its number and string; `verge`
 learns the Pro's product string (it identifies ours by 0x82 already).
 
