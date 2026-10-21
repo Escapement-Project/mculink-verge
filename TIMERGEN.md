@@ -261,8 +261,29 @@ alike, both compilers; probe-rs moves within its noise; 10 and 20 MHz are unchan
 one image (`dap.py gen --timer off|on`, 127-word DPIDR reads at 50 MHz, 8 queued, three rounds,
 each within 0.1%): DAP_Transfer 1,636 off against 1,541 on (-5.8%), DAP_TransferBlock 2,712
 against 2,744 (+1.2%). So the wire did not bind block reads, and a DAP_Transfer read costs about
-22 cycles more on the timer path. Not localised; the per-read claim, bases and settle are the
-suspects, and the emulator can count them (`cycles.py` on a DAP_Transfer read).
+22 cycles more on the timer path.
+
+Why (2026-10-21): port 7 stalls the emulator does not model. Against the emulator's cycles a word
+(127 DPIDR reads, `cycles.py` with the m33 engine), the bench is 22 slower with the timer off and
+52 with it on, by DAP_Transfer; 10 and 33 by block. So the timer path carries about 30 cycles a
+read the model misses, on both commands. Each read makes 2 IOCON stores (SWCLK to the timer and
+back), 2 CTimer 0 TCR loads that drain the bridge before each start, 4 CTimer stores in pairs, and
+a DMB (BUSES.md). The code lab measured a CTimer load at about 9 cycles of stall; patching the drain
+loads to `nop.w` in one image (`drainab.py`, code lab, two commands in flight, every word of 300
+commands checked, three rounds within 0.1%) gives, in cycles a word:
+
+| | DAP_Transfer | block |
+| --- | --- | --- |
+| timer off (GPIO, 37.5 MHz) | 358.3 | 216.8 |
+| timer on, as generated | 380.4 | 214.0 |
+| second drain gone | 372.4 | 206.4 |
+| both drains gone | 364.4 | 197.9 |
+
+8 cycles a drain, as predicted, and no wrong word. The rest, about 14 a read, is the stores and
+the DMB. A block pays the claim, the DMB and both IOCON swaps once a command (the loop re-enters
+at the first packet store), DAP_Transfer once a read; and in the model the per-transfer gap
+already grows by 20 cycles (153 to 173), so DAP_Transfer's modelled saving is 8 cycles against a
+block's 26. Hence block +1%, DAP_Transfer -6%.
 
 Open:
 1. **The plain board was off USB from 04:18 to about 07:50** (replugged): after
@@ -271,5 +292,10 @@ Open:
    an hour before. Flashed and soaked normally afterwards.
 2. **LEDs on the Pro** (PRO.md step 8) plan a fade on CTimer 1, which shares APB0 with CTimer 0's
    start store and DMA1's stop write: it will need the same handshake, or a timer on another bridge.
-3. **Localise the DAP_Transfer read cost** (above), then decide whether timer reads stay the
-   default for DAP_Transfer.
+3. **The timer read's port 7 cost** (above). Options, each to be soaked: drop the drain loads
+   (block +9.5% and DAP_Transfer -1.7% against GPIO, measured; the drains were kept for a
+   deterministic start, and nothing has soaked without them); keep SWCLK on the timer between
+   reads in one DAP_Transfer, saving both IOCON swaps; or serve DAP_Transfer reads from GPIO.
+   And teach `tools/m33.py` the APB stall, so the emulator stops calling the timer path free.
+4. **CPU 0's other port 7 accesses** (BUSES.md "Not yet covered"): the VCOM line coding and the
+   SWO status request run unguarded against the start pair and DMA1's stop.
