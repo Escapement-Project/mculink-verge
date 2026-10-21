@@ -6,8 +6,40 @@
 #include "cjtag.h"
 
 static bool active;
+static uint8_t format = CJTAG_OSCAN1;
+static uint8_t tap = CJTAG_TAP_IDLE;
 
 bool cJTAG_Active(void) { return active; }
+
+uint32_t cJTAG_Format(void) { return format; }
+
+uint32_t cJTAG_Tap(void) { return tap; }
+
+/** IEEE 1149.1's state diagram: the next state for TMS 0 and for TMS 1. */
+static const uint8_t tap_next[CJTAG_TAP_STATES][2] = {
+    [CJTAG_TAP_RESET] = {CJTAG_TAP_IDLE, CJTAG_TAP_RESET},
+    [CJTAG_TAP_IDLE] = {CJTAG_TAP_IDLE, CJTAG_TAP_SELECT_DR},
+    [CJTAG_TAP_SELECT_DR] = {CJTAG_TAP_CAPTURE_DR, CJTAG_TAP_SELECT_IR},
+    [CJTAG_TAP_CAPTURE_DR] = {CJTAG_TAP_SHIFT_DR, CJTAG_TAP_EXIT1_DR},
+    [CJTAG_TAP_SHIFT_DR] = {CJTAG_TAP_SHIFT_DR, CJTAG_TAP_EXIT1_DR},
+    [CJTAG_TAP_EXIT1_DR] = {CJTAG_TAP_PAUSE_DR, CJTAG_TAP_UPDATE_DR},
+    [CJTAG_TAP_PAUSE_DR] = {CJTAG_TAP_PAUSE_DR, CJTAG_TAP_EXIT2_DR},
+    [CJTAG_TAP_EXIT2_DR] = {CJTAG_TAP_SHIFT_DR, CJTAG_TAP_UPDATE_DR},
+    [CJTAG_TAP_UPDATE_DR] = {CJTAG_TAP_IDLE, CJTAG_TAP_SELECT_DR},
+    [CJTAG_TAP_SELECT_IR] = {CJTAG_TAP_CAPTURE_IR, CJTAG_TAP_RESET},
+    [CJTAG_TAP_CAPTURE_IR] = {CJTAG_TAP_SHIFT_IR, CJTAG_TAP_EXIT1_IR},
+    [CJTAG_TAP_SHIFT_IR] = {CJTAG_TAP_SHIFT_IR, CJTAG_TAP_EXIT1_IR},
+    [CJTAG_TAP_EXIT1_IR] = {CJTAG_TAP_PAUSE_IR, CJTAG_TAP_UPDATE_IR},
+    [CJTAG_TAP_PAUSE_IR] = {CJTAG_TAP_PAUSE_IR, CJTAG_TAP_EXIT2_IR},
+    [CJTAG_TAP_EXIT2_IR] = {CJTAG_TAP_SHIFT_IR, CJTAG_TAP_UPDATE_IR},
+    [CJTAG_TAP_UPDATE_IR] = {CJTAG_TAP_IDLE, CJTAG_TAP_SELECT_DR},
+};
+
+bool cJTAG_TapClock(uint32_t tms) {
+    const bool shift = (tap == CJTAG_TAP_SHIFT_DR) || (tap == CJTAG_TAP_SHIFT_IR);
+    tap = tap_next[tap][tms & 1U];
+    return shift;
+}
 
 /** One half-period of whatever clock the host asked for. */
 #define CJTAG_DELAY() PIN_DELAY_SLOW(DAP_Data.clock_delay)
@@ -35,16 +67,33 @@ void cJTAG_Activate(void) {
 
     // Leave the clock low and the wire ours, which is the state every frame below starts from.
     PIN_SWCLK_TCK_CLR();
+    format = CJTAG_OSCAN1;
     active = true;
 }
 
-void cJTAG_Enter(void) {
+bool cJTAG_Enter(uint32_t scan_format, uint32_t tap_state) {
+    if ((scan_format >= 32U) || ((CJTAG_FORMATS & (1UL << scan_format)) == 0U) || (tap_state >= CJTAG_TAP_STATES)) {
+        return false;
+    }
     PIN_SWCLK_TCK_CLR();
     PIN_SWDIO_OUT_ENABLE();
+    format = (uint8_t)scan_format;
+    tap = (uint8_t)tap_state;
     active = true;
+    return true;
 }
 
-void cJTAG_Deactivate(void) { active = false; }
+void cJTAG_Deactivate(void) {
+    // After DAP_Disconnect the pins are the target's again, and a frame would take them back.
+    if (active && (format == CJTAG_OSCAN2) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {
+        if (tap == CJTAG_TAP_RESET) {
+            (void)cJTAG_Frame2(1U, 1U);
+        } else if (tap == CJTAG_TAP_IDLE) {
+            (void)cJTAG_Frame2(0U, 1U);
+        }
+    }
+    active = false;
+}
 
 /** Drive one TMSC packet: set the level while the clock is low, then clock it in.
  *
@@ -94,3 +143,21 @@ void cJTAG_Deactivate(void) { active = false; }
 
 CJTAG_FRAME_FUNCTION(Slow, CJTAG_DELAY())
 CJTAG_FRAME_FUNCTION(Fast, PIN_DELAY_FAST())
+
+uint32_t cJTAG_Frame2(uint32_t tms, uint32_t tdi) {
+    if (!cJTAG_TapClock(tms)) {
+        CJTAG_PACKET(tms, CJTAG_DELAY());
+        return 1U;
+    }
+    CJTAG_PACKET(tdi ^ 1U, CJTAG_DELAY());
+    CJTAG_PACKET(tms, CJTAG_DELAY());
+
+    PIN_SWDIO_OUT_DISABLE();
+    CJTAG_DELAY();
+    const uint32_t tdo = PIN_SWDIO_IN();
+    PIN_SWCLK_TCK_SET();
+    CJTAG_DELAY();
+    PIN_SWCLK_TCK_CLR();
+    PIN_SWDIO_OUT_ENABLE();
+    return tdo;
+}

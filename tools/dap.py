@@ -368,14 +368,18 @@ def cmd_identify(args) -> int:
     version, flags, length = body[5], body[6], body[7]
     build = body[8 : 8 + length].decode(errors="replace")
     supported = "yes" if flags & 1 else "no"
-    active = "yes" if flags & 2 else "no"
+    active = "yes" if flags & 2 else "no"  # two-pin framing, in whichever format
     print(f"  magic CJTAG, format {version}, flags 0x{flags:02x}")
-    print(f"  OScan1 supported {supported}, active now {active}")
+    print(f"  OScan1 supported {supported}, two-pin framing active now {active}")
     print(f"  build {build!r}")
-    # Format 3 adds the board. Read it at that format only: a v1 HID reply is padded.
+    # Format 3 adds the board and 4 the scan formats. Read each at its format only: a v1 HID reply
+    # is padded.
     if version >= 3 and len(body) > 8 + length:
         board = body[8 + length]
         print(f"  board {BOARDS.get(board, f'unknown ({board})')}")
+    if version >= 4 and len(body) >= 13 + length:
+        formats = int.from_bytes(body[9 + length : 13 + length], "little")
+        print(f"  two-pin scan formats {[n for n in range(32) if formats >> n & 1]} (SCNFMT)")
     probe.release()
     return 0
 
@@ -1466,12 +1470,59 @@ TI_OSCAN1 = [
 ]
 
 
-def frame_oscan1(probe: Probe) -> None:
-    """Vendor 0x83 mode 2. A probe that refuses it leaves the wire unframed, and every read after
-    the activation comes back as noise rather than an error."""
-    reply = probe.command(bytes([DAP_VENDOR_CJTAG_CONTROL, 2]))
+# TAP states in the numbering vendor 0x83 mode 3 takes (src/cjtag.h), and IEEE 1149.1's next state
+# for TMS 0 and TMS 1.
+TAP_STATES = ["tlr", "rti", "seldr", "capdr", "shdr", "ex1dr", "paudr", "ex2dr", "upddr",
+              "selir", "capir", "shir", "ex1ir", "pauir", "ex2ir", "updir"]
+TAP_NEXT = {
+    "tlr": ("rti", "tlr"), "rti": ("rti", "seldr"), "seldr": ("capdr", "selir"), "capdr": ("shdr", "ex1dr"),
+    "shdr": ("shdr", "ex1dr"), "ex1dr": ("paudr", "upddr"), "paudr": ("paudr", "ex2dr"), "ex2dr": ("shdr", "upddr"),
+    "upddr": ("rti", "seldr"), "selir": ("capir", "tlr"), "capir": ("shir", "ex1ir"), "shir": ("shir", "ex1ir"),
+    "ex1ir": ("pauir", "updir"), "pauir": ("pauir", "ex2ir"), "ex2ir": ("shir", "updir"), "updir": ("rti", "seldr"),
+}
+OSCAN1 = 9
+
+
+def tap_walk(state: str, tms: str) -> str:
+    for bit in tms:
+        state = TAP_NEXT[state][int(bit)]
+    return state
+
+
+def frame_oscan1(probe: Probe, scan_format: int = OSCAN1, tap: str = "rti") -> None:
+    """Vendor 0x83 mode 2 for OScan1, mode 3 for another format with the TAP state it starts in. A
+    probe that refuses it leaves the wire unframed, and every read after the activation comes back
+    as noise rather than an error."""
+    request = [DAP_VENDOR_CJTAG_CONTROL, 2] if scan_format == OSCAN1 else [
+        DAP_VENDOR_CJTAG_CONTROL, 3, scan_format, TAP_STATES.index(tap)]
+    reply = probe.command(bytes(request))
     if reply[1] != 0:
-        raise RuntimeError(f"the probe refused OScan1 framing (vendor 0x83 02 answered {reply.hex()})")
+        raise RuntimeError(f"the probe refused framing format {scan_format} (vendor {bytes(request).hex()} answered {reply.hex()})")
+
+
+def command_frames(opcode: int, operand: int) -> str:
+    """A TAP.7 command as TMS from Run-Test/Idle, two DR scans through Pause-DR as TI writes them,
+    back to Run-Test/Idle; the check packet's raw clocks follow it as a "csm" step."""
+    def part(n: int) -> str:
+        return "1010" + ("11" if n == 0 else "10" + "0" * (n - 1) + "11")
+    return part(opcode) + part(operand) + "0"
+
+
+def ti_steps(scan_format: int, switch: str) -> list:
+    """TI's sequence after its Test-Logic-Reset, selecting `scan_format`: in JScan in place of its
+    STFMT 9 ("jscan"), or as a command in OScan1 frames before the window closes ("command")."""
+    steps = list(TI_OSCAN1[1:])
+    if scan_format == OSCAN1:
+        return steps
+    if switch == "jscan":
+        stfmt = steps.index(("raw", tms_bits(0x31, 6) + tms_bits(0x05, 4) + tms_bits(0x1C01, 13)))
+        steps[stfmt] = ("raw", tms_bits(0x31, 6) + tms_bits(0x05, 4) + "1" + "0" * scan_format + "111")
+        return steps[: stfmt + 1] + [("format", scan_format)] + steps[stfmt + 1 :]
+    # The last three steps are ECL's, which closes the window. After a command's last Update-DR
+    # comes one SP that does not move the TAP, then the 4-clock check packet (1149.7 Table 21-5):
+    # TI's 7 raw clocks are OScan1's 3-bit SP and the CP. An OScan2 SP outside Shift is one bit.
+    ecl = [step if step[0] != "csm" else ("csm", 1 + 4) for step in steps[-3:]]
+    return steps[:-3] + [("frames", command_frames(3, scan_format)), ("csm", 7), ("format", scan_format)] + ecl
 
 
 def run_ti_activation(probe: Probe, steps=TI_OSCAN1) -> None:
@@ -1483,6 +1534,9 @@ def run_ti_activation(probe: Probe, steps=TI_OSCAN1) -> None:
     wire = PinProgram()
     wire.writes = []  # DAP_Connect leaves both pins high, which is what PinProgram assumes
     framing = False
+    # The format the probe frames in from the next time framing starts, and where the TAP is, which
+    # a format other than OScan1 needs. Steps start from the reset the prefix or TI's first step does.
+    scan_format, tap = OSCAN1, "tlr"
 
     def flush():
         if wire.writes:
@@ -1490,6 +1544,11 @@ def run_ti_activation(probe: Probe, steps=TI_OSCAN1) -> None:
             wire.writes = []
 
     for kind, arg in steps:
+        if kind == "format":
+            scan_format = arg
+            if framing:
+                frame_oscan1(probe, scan_format, tap)
+            continue
         if kind == "pause":
             wire.writes.append((2, arg))
             continue
@@ -1504,21 +1563,24 @@ def run_ti_activation(probe: Probe, steps=TI_OSCAN1) -> None:
             wire.escape(arg)
         elif kind in ("raw", "csm"):
             wire.clock(arg if kind == "raw" else "0" * arg)
+            if kind == "raw":
+                tap = tap_walk(tap, arg)
             if framing:
                 wire.writes.append((0, 0))  # a frame starts with TCKC low
                 wire.tck = 0
                 flush()
-                frame_oscan1(probe)
+                frame_oscan1(probe, scan_format, tap)
         else:
             if not framing:
                 wire.writes.append((0, 0))
                 wire.tck = 0
                 flush()
-                frame_oscan1(probe)
+                frame_oscan1(probe, scan_format, tap)
                 framing = True
             walk = TapWalk()
             walk.tms, walk.tdi, walk.cap = arg, "1" * len(arg), "0" * len(arg)
             run_walk(probe, walk)
+            tap = tap_walk(tap, arg)
             # Our frames end with TCKC low and TMSC at the last TMS bit.
             wire.tck, wire.tmsc = 0, int(arg[-1])
     flush()
@@ -1665,8 +1727,10 @@ def cmd_cjtag(args) -> int:
                 escapes.append(("wait" if token[0] == "w" else "pause", n))
             else:
                 escapes.append(("escape", n) if token[0] == "e" else ("raw", ("1" if token[0] == "h" else "0") * n))
-        run_ti_activation(probe, escapes + TI_OSCAN1[args.ti_from :])
-        print("  TI's XDS110 OScan1 sequence (TI E2E 766675)")
+        steps = (TI_OSCAN1[:1] + ti_steps(args.format, args.switch))[args.ti_from :]
+        run_ti_activation(probe, escapes + steps)
+        how = "" if args.format == OSCAN1 else f", then format {args.format} selected ({args.switch})"
+        print(f"  TI's XDS110 OScan1 sequence (TI E2E 766675){how}")
     elif args.synth:
         program = PinProgram().escape(args.escape_a).clock("1" * args.tap_reset + "00")
         program.escape(args.escape_b).clock("0" * args.idle + CJTAG_SELECT_OSCAN1 + args.raw + "0" * args.pad)
@@ -1897,6 +1961,9 @@ def main() -> int:
     cjtag.add_argument("--ti-prefix", default="",
                        help="--ti: steps first: eN escape, hN/lN TMS-high/low clocks; 'jlink' = e10,h200,l2,e7,l36")
     cjtag.add_argument("--ti-from", type=int, default=0, help="--ti: skip TI's first N steps")
+    cjtag.add_argument("--format", type=int, default=OSCAN1, help="--ti: scan format (SCNFMT) to end in: 9 OScan1, 10 OScan2")
+    cjtag.add_argument("--switch", choices=("command", "jscan"), default="command",
+                       help="--format: select it with an OScan1 command before the window closes, or in JScan")
     cjtag.add_argument("--escape-a", type=int, default=10, help="synth: edges in the first escape")
     cjtag.add_argument("--tap-reset", type=int, default=200, help="synth: TMS-high clocks after it")
     cjtag.add_argument("--escape-b", type=int, default=7, help="synth: edges in the second escape")

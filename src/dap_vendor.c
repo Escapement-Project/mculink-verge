@@ -59,11 +59,12 @@
  * The reply, after the echoed command id:
  *
  *     [0..4]  "CJTAG"                 magic
- *     [5]     format version          this layout is 3
+ *     [5]     format version          this layout is 4
  *     [6]     capability flags        CJTAG_CAP_*
  *     [7]     build string length n
  *     [8..]   build string, n bytes, not terminated
  *     [8+n]   board                   BOARD_KIND_* (board_pins.h); format 3 on
+ *     [9+n]   scan formats, u32 LE    bit n: two-pin frames in SCNFMT n (cjtag.h); format 4 on
  *
  * A host checks the magic to know it is us, the flags to know what it may use, and the build
  * string to know which image it is talking to. The capability flags are what makes this worth
@@ -78,12 +79,17 @@
  * Version 1 had no flags and no build string, and existed only in images that were never flashed.
  */
 #define CJTAG_INFO_MAGIC "CJTAG"
-#define CJTAG_INFO_VERSION 3U
+#define CJTAG_INFO_VERSION 4U
+/// The id, the magic, the version, the flags, the length, the board and the scan formats, around
+/// the build string. A v1 HID report holds 64 bytes, and a longer reply loses its last fields.
+#define CJTAG_INFO_FIXED 14U
+_Static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID_REPORT_SIZE,
+               "the build string pushes vendor 0x82's last fields out of a HID report");
 
 /// Two-pin OScan1 JTAG is implemented. Cleared on an on-board MCU-Link, where nobody has framed
 /// OScan1 through the buffers yet.
 #define CJTAG_CAP_OSCAN1 (1U << 0)
-/// OScan1 framing is on right now, which is ID_VENDOR_CJTAG_CONTROL's state.
+/// Two-pin framing is on right now, in whichever format: ID_VENDOR_CJTAG_CONTROL's state.
 #define CJTAG_CAP_OSCAN1_ACTIVE (1U << 1)
 /// ID_VENDOR_TARGET is implemented.
 #define CJTAG_CAP_TARGET_SENSE (1U << 2)
@@ -240,31 +246,34 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         memcpy(out, FIRMWARE_VERSION, sizeof(FIRMWARE_VERSION) - 1U);
         out += sizeof(FIRMWARE_VERSION) - 1U;
         *out++ = board_kind;
+        const uint32_t formats = (board_kind != BOARD_KIND_ON_BOARD) ? CJTAG_FORMATS : 0U;
+        for (uint32_t i = 0U; i < 4U; i++) {
+            *out++ = (uint8_t)(formats >> (8U * i));
+        }
         return (1U << 16) | (uint32_t)(out - response);
     }
 
-    case ID_VENDOR_CJTAG_CONTROL:
+    case ID_VENDOR_CJTAG_CONTROL: {
         // 0 returns to four-wire framing, 1 drives OpenOCD's activation and frames, 2 frames
-        // after an activation the host drove itself. A target whose adapter powers up online, as
-        // the CC13xx does, wants 2: OpenOCD's activation is for one that powers up offline.
+        // OScan1 after an activation the host drove itself. A target whose adapter powers up
+        // online, as the CC13xx does, wants 2: OpenOCD's activation is for one that powers up
+        // offline. 3 takes two more bytes, a scan format (SCNFMT) and the TAP state it starts in
+        // (enum cjtag_tap), and frames that: the host has switched the target's format itself.
+        // Mode 3 is a mode of its own rather than a byte after mode 2 because a vendor command
+        // carries no length: an optional byte would be read from whatever command came next.
+        const uint32_t mode = request[1];
+        const uint32_t consumed = mode == 3U ? 4U : 2U;
         response[1] = DAP_OK;
-        switch (request[1]) {
-        case 0U:
-            cJTAG_Deactivate();
-            break;
-        case 1U:
-        case 2U:
-            if (board_kind == BOARD_KIND_ON_BOARD) {
-                response[1] = DAP_ERROR;
-            } else if (request[1] == 1U) {
-                cJTAG_Activate();
-            } else {
-                cJTAG_Enter();
-            }
-            break;
-        default:
+        if ((mode != 0U) && (board_kind == BOARD_KIND_ON_BOARD)) {
             response[1] = DAP_ERROR;
-            break;
+        } else if (mode == 0U) {
+            cJTAG_Deactivate();
+        } else if (mode == 1U) {
+            cJTAG_Activate();
+        } else if (mode == 2U) {
+            (void)cJTAG_Enter(CJTAG_OSCAN1, CJTAG_TAP_IDLE);
+        } else if ((mode != 3U) || !cJTAG_Enter(request[2], request[3])) {
+            response[1] = DAP_ERROR;
         }
 #ifdef JTAG_CODEGEN
         // The wire changed: generate for it now rather than in the next command.
@@ -272,7 +281,8 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             (void)jtag_gen_ready(cJTAG_Active() ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE);
         }
 #endif
-        return (2U << 16) | 2U; // the id and the mode byte in, the id and a status out
+        return (consumed << 16) | 2U; // the id, the mode and its operands in; the id and a status out
+    }
 
 #ifdef MARKER_PINS
     case ID_VENDOR_J8: {
@@ -422,7 +432,9 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             } else if (mode == SWD_GEN_MODE_AUTOMATIC) {
                 jtag_sweep_automatic = true;
             } else if (mode == SWD_GEN_MODE_MEASURE) {
-                if (DAP_Data.debug_port == DAP_PORT_JTAG) {
+                // The measurement clocks generated frames, which are OScan1's.
+                if ((DAP_Data.debug_port == DAP_PORT_JTAG) &&
+                    jtag_gen_usable(cJTAG_Active() ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE)) {
                     jtag_sweep();
                 } else {
                     response[1] = DAP_ERROR;

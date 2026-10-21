@@ -95,6 +95,10 @@ extern uint32_t jtag_gen_failures;
  * generated: the caller runs ARM's path instead. */
 bool jtag_gen_ready(uint32_t wire);
 
+/** jtag_gen_ready, and on two pins only while the frames are OScan1, which is all the generated
+ * code frames. In src/cjtag_dp.c. */
+bool jtag_gen_usable(uint32_t wire);
+
 /** What jtag_gen_ready generates `wire` for now, learned idle clocks included. */
 struct jtag_gen_config jtag_gen_inputs(uint32_t wire);
 

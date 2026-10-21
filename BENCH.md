@@ -327,6 +327,7 @@ mculink-stock-notes' `identity.md`.
 | `0x82` | identify. Magic, format version, capability flags, build string. Stock answers a bare `82` with no payload, which is the discriminator. |
 | `0x83 0x01` | drive OpenOCD's activation, then frame as OScan1 |
 | `0x83 0x02` | frame as OScan1 after an activation the host drove; the CC13xx needs this one |
+| `0x83 0x03 f s` | frame in scan format `f` (SCNFMT: 9 OScan1, 10 OScan2) from TAP state `s` (`enum cjtag_tap`, 1 Run-Test/Idle), after the host switched the target's format |
 | `0x83 0x00` | stop framing |
 
 `0x82` is read-only, so a host may send it blindly to any probe.
@@ -344,7 +345,7 @@ Everything the probe says about itself. In a listing it reads
 | `DAP_Info` 0x04 | `2.1.2` | ARM's CMSIS-DAP protocol version from the pinned submodule, not ours |
 | `DAP_Info` 0x05..0x08 | nothing | `TARGET_FIXED` is 0, so the four target strings are compiled out. They are for a probe soldered to a known target; this one has a connector |
 | `DAP_Info` 0x09 | `git describe` of the build | ours, `DAP_GetProductFirmwareVersionString` in `src/DAP_config.h` |
-| vendor `0x82` | `CJTAG`, format 3, capability flags, build string, board | `src/dap_vendor.c` |
+| vendor `0x82` | `CJTAG`, format 4, capability flags, build string, board, scan formats | `src/dap_vendor.c` |
 
 `DAP_Info` also reports 512-byte packets, three of them (`REQUEST_SLOTS`), and the capabilities
 SWD, JTAG, SWO UART, atomic commands and timestamps.
@@ -360,20 +361,21 @@ The vendor `0x82` reply, after the echoed id:
 
 ```
 [0..4]  "CJTAG"                magic
-[5]     format version         3
+[5]     format version         4
 [6]     capability flags       bit 0 OScan1 supported, bit 1 OScan1 active now,
                                bit 2 target sense, bit 3 generated SWD, bit 4 0x83 mode 2,
                                bit 5 generated JTAG
 [7]     build string length n
 [8..]   build string, n bytes, not terminated
 [8+n]   board                  0 MCU-Link, 1 MCU-Link Pro, 2 on-board; format 3 on
+[9+n]   scan formats, u32 LE   bit n: two-pin frames in SCNFMT n (9 OScan1, 10 OScan2); format 4 on
 ```
 
 Check the magic to know it is us, the flags to know what may be used, the string to know which
 image. A flag is how a later feature arrives without every host learning a new version. Fields
 are only appended, and a field is read only at the format that added it (`src/dap_vendor.c`).
-On any board but the plain MCU-Link, bits 0 and 4 are clear and `0x83` refuses modes 1 and 2
-(PRO.md).
+On an on-board MCU-Link, bits 0 and 4 and the scan formats are clear and `0x83` refuses modes 1
+to 3 (PRO.md).
 
 ## The two units on the bench
 

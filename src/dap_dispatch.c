@@ -114,7 +114,7 @@ COMMAND_PATH static uint32_t transfer_block(const uint8_t* request, uint8_t* res
     }
 #ifdef JTAG_CODEGEN
     const uint32_t wire = cJTAG_Active() ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE;
-    if (jtag_gen_ready(wire)) {
+    if (jtag_gen_usable(wire)) {
         const uint32_t length = jgen_TransferBlock(request, response);
         jtag_gen_learn(wire);
         return length;
@@ -122,6 +122,9 @@ COMMAND_PATH static uint32_t transfer_block(const uint8_t* request, uint8_t* res
 #endif
     if (!cJTAG_Active()) {
         return JTAG_TransferBlock(request, response);
+    }
+    if (cJTAG_Format() != CJTAG_OSCAN1) {
+        return cjtag2_TransferBlock(request, response);
     }
     if (DAP_Data.fast_clock) {
         return cjtagf_TransferBlock(request, response);

@@ -1,9 +1,10 @@
-/** The JTAG entry points, routed to four-wire or OScan1.
+/** The JTAG entry points, routed to four-wire or two-pin.
  *
- * ARM's JTAG_DP.c is compiled twice, with its five entry points renamed each time: once normally
- * as `jtag4_*`, and once through src/cjtag_jtag_dp.c as `cjtag_*`, where the wire layer is
- * replaced by OScan1 frames. This file owns the real names and picks a path once per call, so
- * neither path carries a per-bit branch and neither duplicates the other's TAP logic.
+ * ARM's JTAG_DP.c is compiled several times, with its five entry points renamed each time: once
+ * normally as `jtag4_*`, and through src/cjtag_jtag_dp.c as `cjtag_*`, `cjtagf_*` and `cjtag2_*`,
+ * where the wire layer is replaced by OScan1 or OScan2 frames (src/jtag_dp.h). This file owns the
+ * real names and picks a path once per call, so no path carries a per-bit branch and none
+ * duplicates another's TAP logic.
  */
 // DAP_config.h first: DAP.h reads the DAP_SWD and DAP_JTAG settings it defines, so a sorted
 // include block that puts DAP.h ahead of it will not compile.
@@ -16,18 +17,23 @@
 #include "jtag_gen.h"
 #endif
 
-/** Which of the three copies a call goes to: four-wire, or two-pin paced or not.
+/** Which of the copies a call goes to: four-wire, OScan1 paced or not, or OScan2.
  *
- * The two-pin choice is made here rather than inside the frame because making it there costs a
+ * The OScan1 choice is made here rather than inside the frame because making it there costs a
  * cycle in the paced path, which is enough to take a 10 MHz request past the clock the host asked
  * for. Once per call it costs nothing measurable.
  */
-#define CJTAG_PICK(name) (DAP_Data.fast_clock ? cjtagf_##name : cjtag_##name)
+#define CJTAG_PICK(name) \
+    (cJTAG_Format() != CJTAG_OSCAN1 ? cjtag2_##name : DAP_Data.fast_clock ? cjtagf_##name : cjtag_##name)
 
 /** The generated clocks when they could be built for this clock and wire, ARM's copies when not. */
 #ifdef JTAG_CODEGEN
-#define CJTAG_ROUTE(name) (jtag_gen_ready(JTAG_GEN_TWO_PIN) ? jgen_##name : CJTAG_PICK(name))
+#define CJTAG_ROUTE(name) (jtag_gen_usable(JTAG_GEN_TWO_PIN) ? jgen_##name : CJTAG_PICK(name))
 #define JTAG4_ROUTE(name) (jtag_gen_ready(JTAG_GEN_FOUR_WIRE) ? jgen_##name : jtag4_##name)
+
+bool jtag_gen_usable(uint32_t wire) {
+    return ((wire != JTAG_GEN_TWO_PIN) || (cJTAG_Format() == CJTAG_OSCAN1)) && jtag_gen_ready(wire);
+}
 #else
 #define CJTAG_ROUTE(name) CJTAG_PICK(name)
 #define JTAG4_ROUTE(name) jtag4_##name

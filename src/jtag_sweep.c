@@ -78,7 +78,9 @@ __attribute__((noinline)) uint32_t jtag_sweep_connect(const uint8_t* request, ui
     jtag_sweep_configured = false;
     const uint32_t wire = current_wire();
     // [1] the DAP index, [2] the transfer count.
-    if (!jtag_sweep_automatic || (request[2] == 0U) || (request[1] >= DAP_Data.jtag_dev.count)) {
+    // OScan2 runs ARM's path, which has no latency to measure.
+    if (!jtag_sweep_automatic || (request[2] == 0U) || (request[1] >= DAP_Data.jtag_dev.count) ||
+        !jtag_gen_usable(wire)) {
         return arm_DAP_ProcessCommand(request, response);
     }
     // Nothing measured before is kept: probe-rs configures the chain again after it resets the

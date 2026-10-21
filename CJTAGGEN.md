@@ -190,6 +190,26 @@ registers.
   IR still holds BYPASS (`0xfffffffe`). `cjtag --ti --reset-clocks 0 --mem --sysctrl 0x81000000`
   (route the ICEPick, read CPUID) is the check.
 
+## OScan2 on ARM's path (2026-10-21)
+
+- The probe frames OScan2 through a fourth copy of ARM's JTAG_DP.c (`cjtag2_*`,
+  `src/cjtag_jtag_dp_oscan2.c`, paced only, not flattened: +10 KB). `cJTAG_Frame2` follows the TAP
+  from the TMS it sends: three packets in Shift-DR/IR, one TMS packet elsewhere, which returns
+  TDO 1, as OScan1's joint drive gives outside Shift. The generated paths are OScan1 only for now
+  (`jtag_gen_usable`), and the connect-time latency sweep is skipped in OScan2.
+- Vendor `0x83 03 <SCNFMT> <TAP state>` turns it on; mode 2 stays OScan1. A mode, not a byte after
+  mode 2: a vendor command has no length, so an optional byte would be read from the next queued
+  command. `0x82` format 4 appends the u32 mask of formats framed.
+- `dap.py cjtag --ti --format 10 --switch command|jscan`: STFMT 10 as an OScan1 command after MSC
+  0, its 7-clock SP+CP, then mode 3 at Run-Test/Idle and ECL in OScan2 with a 5-clock SP+CP (1-bit
+  SP, 1149.7 Table 21-5); or STFMT 10 in JScan in place of TI's
+  STFMT 9, then mode 3 at Select-DR. Both read CPUID; 64-word ROM blocks match the 1 MHz read at
+  1, 2, 5 and 10 MHz and fail from 15, ARM's OScan1 boundary too.
+- Any raw count after ECL from 4 to 8 works: extra TMS-low SPs from Run-Test/Idle stay there. A
+  first attempt framed ECL in OScan1 while the target was in OScan2 (the format step waited for the
+  next framing entry) and still read CPUID at 4, 7 and 10 raw clocks: a wrong framing can pass, so
+  check the decode, not only the result.
+
 ## Architecture
 
 - **One JTAG transfer scheduler**, two clock emitters. A transfer is the TAP walk
