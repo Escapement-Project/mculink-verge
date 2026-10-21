@@ -196,14 +196,34 @@ Bench, plain MCU-Link and the L1306 (lab images `ecb6d02-dirty+lab`), `soak.py`,
 - Not the APB clock's phase: an APB load and 0 to 5 fillers before the start changed nothing.
   The generated code reads CTimer 0 before each start anyway (drains the bridge; costs its stall).
 
+Since (commits `0814414`, `fe33026`):
+- **The emulator models the runs** (`tools/cycles.py`, `Machine._timer_write`): IOCON PIO0_0,
+  CTimer 0, 2 and 4 are register pages; a start schedules edges at c + 1 + 3k, the stop's start
+  cuts them at stop-start + MR0 + 22, and a cut high phase, a run nothing stopped or SWCLK rising
+  at the pin handover is a gate failure. It reproduces the bench's match sweep (3n - 23 and 3n - 22
+  clean, one either side faulty), and a stop moved to 3n - 21 fails the gate (break-tested). Timer
+  edges tied with a store on the same cycle come after it, as ARM's trace orders a fused fall.
+  Against ARM's path the 50 MHz traces differ only in sample positions, SWDIO taken back after
+  the falling edge that ends a read rather than before, and SWCLK left low: no rising edge and no
+  level at one changes. APB stalls are still not modelled (cycle counts are optimistic there).
+- **The LED handshake**: `dap_shared.swd_timer_busy` (set by the generated read's prologue, cleared
+  on every exit) and `led_writing` (set by CPU 0's LED tick around its CTimer 3 writes, cleared
+  after a read-back so the writes have left the bridge), each set before reading the other's
+  (Dekker, with a DMB each side). The tick stands down (disables its own interrupt) while a read
+  runs, and `led_resume` in CPU 0's loop turns it back on. Not yet run on the plain board, which
+  went offline before it was built.
+- `tools/swd_latency_test.c` runs the connect-time measurement against timer reads too: right at
+  every latency 2 to 40.
+- Regression check on the Pro (CC1312R1 on J7, image with both commits): four-wire and two-pin
+  ROM blocks 400/400 at 1, 10, 25, 50 MHz, throughput equal to PRO.md step 7's.
+
 Open:
-1. **The LED and the stops share a bridge.** Ways out: (a) CPU 0 skips its CTimer 3 writes while CPU 1
-   is in a timer read (a dap_shared flag; the tick would come from SysTick, which needs no
-   interrupt flag cleared on CTimer 3), (b) SCTimer as the stop (an AHB peripheral CPU 0 does not
-   use; DMA1 triggers 12 and 13), (c) move the LED. The Pro's LED plan (PRO.md step 8) puts a fade
-   on CTimer 1, which shares APB0 with CTimer 0's start and DMA1's stop write: the same problem.
-2. The emulator does not model the timers yet, so the gate cannot hold timer reads. Modelling
-   comes first (2026-10-21).
-3. After `dap.py reboot` at 04:18 the plain board re-enumerated but answered no control request,
-   and a USB port reset took it off the bus: it needs a replug. Not yet known whether the timer
-   code is involved (the reboot came after `ledmcr.py` had rewritten CTimer 3's MCR twice).
+1. **Soak the handshake on the plain board** (`soak.py`, 2000 x 64 DPIDR at 50 MHz, a few runs,
+   with the LED breathing), then the wire on the analyser: SWDIO-timed periods at 50 MHz reads.
+2. **The plain board needs a replug**: after `dap.py reboot` at 04:18 it re-enumerated but
+   answered no control request, and a USB port reset took it off the bus. Not known whether this
+   work caused it; the same lab image had rebooted cleanly an hour before.
+3. **LEDs on the Pro** (PRO.md step 8) plan a fade on CTimer 1, which shares APB0 with CTimer 0's
+   start store and DMA1's stop write: it will need the same handshake, or a timer on another bridge.
+4. A/B of block throughput against the GPIO path at 50 MHz, with `swd_gen_timer` switched at run time
+   (no host command reaches it yet; vendor 0x89 could take it).
