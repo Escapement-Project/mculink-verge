@@ -306,7 +306,7 @@ Steps:
    not the address; the signed release image carries it, so the release layout does not change.
    The Pro's bit is set since phase 1 finished (2026-10-21).
 4. The product string names the board, from one table both cores read through `dap_shared`, for USB
-   and for `DAP_Info` 0x02. Until item 9 picks the form, "MCU-Link Pro Verge CMSIS-DAP" on a Pro.
+   and for `DAP_Info` 0x02: "Verge Pro CMSIS-DAP" on a Pro (decision e).
 5. SWD off (decided 2026-10-20, after step 0): as stock, the SWD jumper removes both
    CMSIS-DAP interfaces, so no host can send a command and nothing reaches CPU 1. The BOS goes with
    them, since its MS OS 2.0 descriptor names the vendor interface, and with no BOS the device is
@@ -396,6 +396,7 @@ c. Before publishing: phases 0 and 1 and the second VCOM. USB-SIO, the target
 d. The feature jumpers: honour them as stock does, read once at boot. Pro J13
    (SWD and SWO off), J14 (VCOM off), J15 (USB-SIO off); plain J5 (SWD) and J4 (VCOM). On the Pro
    J13 also turns U5 round in hardware.
-e. The product string: it names the board, as stock adds "Pro", in the form item
-   9 chooses once "MCU-Link" comes out. CPU 0 then reads the straps before USB starts, so the
+e. The product string: it names the board, as stock adds "Pro". Without
+   "MCU-Link": `Verge CMSIS-DAP` and `Verge Pro CMSIS-DAP`, the vendor
+   `Escapement Project` on both, the serial ports `Verge VCOM` and `Verge VCOM2`. CPU 0 then reads the straps before USB starts, so the
    detection in `src/board_pins.c` moves where both cores can use it.

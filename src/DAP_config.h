@@ -191,13 +191,14 @@ static const char TargetBoardName    [] = TARGET_BOARD_NAME;
 ///
 /// The names: an escapement is the clockwork that releases a gear train one tooth at a time,
 /// which is what a bit-banged delay loop does to a wire, and it carries the escape edge this
-/// firmware exists not to emit. A verge is the oldest escapement, and an edge. `MCU-Link` stays
-/// in the product string so somebody holding an unfamiliar probe can still tell what it is.
+/// firmware exists not to emit. A verge is the oldest escapement, and an edge. NXP's board name
+/// stays out of the strings, since the firmware is not their product.
+///
+/// The product names the board, as stock adds "Pro". verge reads the Pro
+/// from it when the SWD jumper hides the CMSIS-DAP interfaces, so keep the "Verge Pro" prefix.
 #define DAP_VENDOR_NAME         "Escapement Project"
-#define DAP_PRODUCT_NAME        "MCU-Link Verge CMSIS-DAP"
-/// The product names the board, as stock adds "Pro" (PRO.md decision e), until BACKLOG item 9
-/// picks the form the names take without "MCU-Link".
-#define DAP_PRODUCT_NAME_PRO    "MCU-Link Pro Verge CMSIS-DAP"
+#define DAP_PRODUCT_NAME        "Verge CMSIS-DAP"
+#define DAP_PRODUCT_NAME_PRO    "Verge Pro CMSIS-DAP"
 
 /// The product string for a board (BOARD_KIND_*): the USB string on CPU 0 and DAP_Info's on
 /// CPU 1, which a host reads both of.

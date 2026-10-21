@@ -196,9 +196,9 @@ static char const* string_desc[] = {
     [2] = NULL,                          // the product, which names the board: DAP_ProductName
     [3] = NULL,                          // serial, filled in from the part's unique id
     [STRID_VENDOR_ITF] = "CMSIS-DAP v2", // the prefix host tools match on
-    [STRID_VCOM] = "MCU-Link VCOM",
+    [STRID_VCOM] = "Verge VCOM",
     [STRID_HID] = "CMSIS-DAP v1", // the same prefix, on the HID interface
-    [STRID_VCOM2] = "MCU-Link VCOM2",
+    [STRID_VCOM2] = "Verge VCOM2",
 };
 
 static uint16_t string_buffer[32];
