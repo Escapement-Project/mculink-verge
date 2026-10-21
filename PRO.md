@@ -133,23 +133,21 @@ by up to 2.6x. Builds differ, and `4a7ca13` must not run on a Pro, so the attrib
 `49633f3` on the plain board with the L1306 back on it (hands).
 `wire-1` through the Pro (analyser D6 SWDIO, D7 SWCLK at the L1306, 100 MS/s, the Logic 8's
 ceiling; mculink-bench `results/wireclock/2026-10-21-pro-gcc.json`, captures in
-`wireclock-pro-2026-10-21/`): no command failed at any clock. Read data rates
-match the plain board's within 1% from 1 to 50 MHz, and write rates within 1% from 8 MHz up;
-below 8 MHz the Pro's writes did not resolve from SWCLK. Item 16's early edge at 10 MHz is
-nearly gone (fastest 10.18 MHz against 11.13 on the plain board). New: at 8 MHz the write data
-phase alternates 113 and 140 ns periods (positions 15 to 43, `wireclock.py positions --clock 8`),
-fastest 8.88 MHz, where the plain board alternates only high and low time at a steady 126.7 ns.
-`near.py` beside the captures: every short period (110 ns at the analyser's 10 ns) ends at a
-SWCLK rise in the same sample as a rising SWDIO edge, 89,568 of them; the plain board's 8 MHz
-capture has the same coincidence 7,013 times. So at 8 MHz a rising SWDIO lands on SWCLK's rising
-edge, and on the Pro that rise arrives early. The emulator (`wireclock.py model --firmware`
-on the same code, `model-8-10MHz.txt` beside the captures) puts every period of that write phase
-at nominal: model fastest 7.89 MHz at 8 asked, and measured minus model alternates +-13.6 ns at
-8 MHz and +-1.5 ns at 10. So the code as modelled does not make the short periods; a store the
-hardware delays, or SWDIO coupling into SWCLK in the Pro's buffers, does. The plain board's 13x
-fewer coincidences point at the board. Next (hands): SWCLK at the LPC55S69's own pin on the Pro,
-before the level shifter, beside the target's, which item 16 needs too. Not known either whether
-the target sees the short period. Left besides: step 7 (a JTAG target), 8, 9.
+`wireclock-pro-2026-10-21-grounded/`): no command failed at any clock, and
+every clock from 1 to 30 MHz resolves from SWCLK (40 and 50 MHz from SWDIO only, as on the plain
+board). Measured minus the emulator (`wireclock.py model --firmware`) is within 0.8 ns at every
+position at 8 and 10 MHz but the write turnaround's known 4 cycles (26.7 ns, position 12). Fastest
+periods: 7.94 MHz at 8 asked, 10.03 at 10. Item 16's early edge is not on the Pro: the first
+RDBUFF after a write starts at 99.9 ns at 10 MHz, against the plain board's 93.8.
+The first run of the same matrix (captures in `wireclock-pro-2026-10-21/`) had the
+analyser's ground floating: at 8 MHz SWDIO carried 2.89 million edges against 1.08 million
+grounded, SWCLK the same 3.09 million both times, and SWCLK alternated 113 and 140 ns periods
+wherever a spurious SWDIO edge landed on a rise. The re-take replaced that result. Found with a scratch image that mirrors SWCLK on PIO0_7
+(J2 pin 3) from the same stores: with the ground floating the
+short periods moved between channels with the pairing captured, the firmware unchanged, and
+grounded none of the three pairings had any. With D3, D6 and D7 on at 100 MS/s the Logic 8
+recorded nothing and Logic 2 reported no error (D1 to D3 at that rate worked before, BENCH.md), so
+the pairs were taken one at a time. Left besides: step 7 (a JTAG target), 8, 9.
 
 5. Flash ours with `verge`: jumper-free from stock V3.122 or later, J4 otherwise.
 6. Identify, `DAP_Info`, SWD on the L1306 through J7, then the `swd-1` and `wire-1` matrices. The
