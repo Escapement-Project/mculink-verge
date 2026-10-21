@@ -8,11 +8,12 @@
 /** SWO capture and the seven DAP_SWO commands, on CPU 1.
  *
  * Flexcomm 3 receives on P0_3, and DMA0 channel 8 copies every byte into dap_shared.swo_ring
- * through SWO_SEGMENTS reload descriptors linked in a circle. Capture costs no CPU time per byte
- * and carries on through any command, however long. Each descriptor raises INTA as it completes,
- * and CPU 0's DMA interrupt counts them (src/main.c): the count is what tells one lap of the ring
- * from the next, since CPU 1 takes no interrupts and one command can outlast a lap. The ring
- * arithmetic is in src/swo_ring.h, where the host can test it.
+ * through SWO_SEGMENTS reload descriptors linked in a circle. DMA0 is CPU 0's, shared with the
+ * consoles: CPU 0 sets the controller up at boot, and this file touches channel 8 alone. Capture
+ * costs no CPU time per byte and carries on through any command, however long. Each descriptor
+ * raises INTA as it completes, and CPU 0's DMA interrupt counts them (src/main.c): the count is
+ * what tells one lap of the ring from the next, since CPU 1 takes no interrupts and one command
+ * can outlast a lap. The ring arithmetic is in src/swo_ring.h, where the host can test it.
  *
  * Replies follow ARM's SWO.c (CMSIS-DAP 2.1.2), with three differences. The ring never pauses: a
  * full ring overwrites its oldest bytes, so an overrun reports DAP_SWO_BUFFER_OVERRUN and the
@@ -31,6 +32,7 @@
 #include "DAP.h"
 #include "board_pins.h"
 #include "dap_shared.h"
+#include "dma0.h"
 #include "led.h"
 #include "swo_ring.h"
 
@@ -60,13 +62,6 @@ _Static_assert(SWO_STREAM == 0, "no streaming endpoint yet");
 #define SWO_COUNT_SETTLE_US 2U
 #define SWO_COUNT_SETTLE_POLLS 10000U
 
-typedef struct {
-    uint32_t xfercfg;
-    uint32_t source_end;
-    uint32_t destination_end;
-    uint32_t link;
-} swo_descriptor_t;
-
 enum {
     SWO_TRANSPORT_NONE,
     SWO_TRANSPORT_DATA_COMMAND,
@@ -87,10 +82,6 @@ static uint32_t read_position;
 static uint32_t stamp_index;
 static uint32_t stamp_tick;
 
-static volatile swo_descriptor_t* descriptors(void) {
-    return (volatile swo_descriptor_t*)dap_shared.swo_dma;
-}
-
 /** RESET_PeripheralReset waits on a readback that the image checker's register model never
  *  gives, and the reset takes effect when the write lands. */
 static void peripheral_reset(reset_ip_name_t peripheral) {
@@ -109,19 +100,12 @@ static void uart_on(void) {
     peripheral_reset(kFC3_RST_SHIFT_RSTn);
     FLEXCOMM3->PSELID = FLEXCOMM_PSELID_PERSEL(1U);  // USART
     SWO_USART->CFG = USART_CFG_DATALEN(1U);         // 8N1, still disabled
-
-    CLOCK_EnableClock(kCLOCK_Dma0);
-    peripheral_reset(kDMA0_RST_SHIFT_RSTn);
-    SWO_DMA->SRAMBASE = (uint32_t)dap_shared.swo_dma;
-    SWO_DMA->CTRL = DMA_CTRL_ENABLE_MASK;
 }
 
 static void uart_off(void) {
     SWO_USART->CFG = 0U;
     CLOCK_DisableClock(kCLOCK_FlexComm3);
     CLOCK_AttachClk(kNONE_to_FLEXCOMM3);
-    SWO_DMA->CTRL = 0U;
-    CLOCK_DisableClock(kCLOCK_Dma0);
 }
 
 /** Line errors and FIFO overflows since the last look. Flexcomm 3 has to be clocked. */
@@ -135,26 +119,16 @@ static void collect_errors(void) {
         SWO_USART->FIFOSTAT = USART_FIFOSTAT_RXERR_MASK;
         errors |= DAP_SWO_BUFFER_OVERRUN;
     }
-    if ((SWO_DMA->COMMON[0].ERRINT & SWO_DMA_MASK) != 0U) {
-        SWO_DMA->COMMON[0].ERRINT = SWO_DMA_MASK;
+    if (dap_shared.swo_dma_error != 0U) {
+        dap_shared.swo_dma_error = 0U;
         errors |= DAP_SWO_STREAM_ERROR;
     }
 }
 
-/** The DMA's position. The count, the pending flag and XFERCFG are read until the count and the
- *  flag read the same on both sides of XFERCFG, so all three describe one moment. */
+/** The DMA's position since capture started. Positions are modulo 2^32, so taking the segments
+ *  before the start off the total is the same as counting from the start. */
 static uint32_t dma_written(void) {
-    for (;;) {
-        uint32_t const segments = dap_shared.swo_segments;
-        __DMB();
-        bool const pending = (SWO_DMA->COMMON[0].INTA & SWO_DMA_MASK) != 0U;
-        uint32_t const xfercfg = SWO_DMA->CHANNEL[SWO_DMA_CHANNEL].XFERCFG;
-        bool const still_pending = (SWO_DMA->COMMON[0].INTA & SWO_DMA_MASK) != 0U;
-        __DMB();
-        if ((pending == still_pending) && (segments == dap_shared.swo_segments)) {
-            return swo_written(segments - segments_at_start, pending, xfercfg);
-        }
-    }
+    return dma0_ring_written(&dap_shared.swo_segments, SWO_DMA_CHANNEL) - (segments_at_start * SWO_SEGMENT_BYTES);
 }
 
 static uint32_t written(void) {
@@ -162,7 +136,7 @@ static uint32_t written(void) {
 }
 
 static void capture_start(void) {
-    volatile swo_descriptor_t* const ring = descriptors();
+    volatile dma_descriptor_t* const ring = dap_shared.swo_dma;
     uint32_t const source = (uint32_t)&SWO_USART->FIFORD;
     for (uint32_t k = 0U; k < SWO_SEGMENTS; k++) {
         ring[k].xfercfg = SWO_SEGMENT_XFERCFG;
@@ -171,7 +145,7 @@ static void capture_start(void) {
         ring[k].link = (uint32_t)&ring[(k + 1U) % SWO_SEGMENTS];
     }
     // The channel's table entry runs segment 0 the first time round; the circle has it after that.
-    volatile swo_descriptor_t* const entry = &ring[SWO_SEGMENTS];
+    volatile dma_descriptor_t* const entry = &dap_shared.dma_table[SWO_DMA_CHANNEL];
     entry->xfercfg = 0U;
     entry->source_end = source;
     entry->destination_end = ring[0].destination_end;
@@ -181,6 +155,7 @@ static void capture_start(void) {
     SWO_USART->STAT = SWO_LINE_ERRORS;
     SWO_USART->FIFOSTAT = USART_FIFOSTAT_RXERR_MASK;
     SWO_DMA->COMMON[0].ERRINT = SWO_DMA_MASK;
+    dap_shared.swo_dma_error = 0U;
 
     // A completion from the last capture that CPU 0 has read but not yet counted would land after
     // the snapshot, and every position from here would read a segment long.

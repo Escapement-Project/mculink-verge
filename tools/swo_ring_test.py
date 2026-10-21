@@ -1,7 +1,8 @@
 # /// script
 # requires-python = ">=3.11"
 # ///
-"""Run the SWO ring and baud rate arithmetic (src/swo_ring.h) under gcc and clang sanitizers."""
+"""Run the DMA ring arithmetic (src/dma_ring.h) at the SWO and console ring sizes, and the SWO baud
+rate arithmetic (src/swo_ring.h), under gcc and clang sanitizers."""
 
 import os
 import pathlib

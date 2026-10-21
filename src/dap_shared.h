@@ -31,11 +31,13 @@
 
 #define DAP_SHARED_ALIGN __attribute__((aligned(DAP_USB_BUFFER_ALIGN)))
 
-/** SWO capture's DMA descriptors, four words each: the ring's, then DMA0 channel 8's table entry.
- *  SRAMBASE points at the first, so the ring's sit in the table entries of channels 0 to 7, which
- *  nothing enables. A table starts on 512 bytes. */
-#define DAP_SHARED_SWO_DMA_WORDS ((SWO_SEGMENTS + 1U) * 4U)
-#define DAP_SHARED_SWO_DMA_ALIGN __attribute__((aligned(512)))
+/** DMA0's descriptor table, which SRAMBASE points at: an entry per channel to the highest one in
+ *  use, SWO's channel 8. CPU 0 sets the controller up and writes the consoles' entries (channels 4
+ *  to 7, src/vcom.c); CPU 1 writes SWO's. A table starts on 512 bytes. */
+#define DAP_SHARED_DMA_CHANNELS (SWO_DMA_CHANNEL + 1U)
+#define DAP_SHARED_DMA_TABLE_ALIGN __attribute__((aligned(512)))
+/** Descriptors start on 16 bytes. */
+#define DAP_SHARED_DMA_DESCRIPTOR_ALIGN __attribute__((aligned(16)))
 
 /** dap_stage's request buffers for each transport: one more than the slots (see dap_stage_t). */
 #define DAP_STAGE_REQUESTS (REQUEST_SLOTS + 1U)
@@ -137,6 +139,8 @@ typedef struct {
 
     /** SWO ring segments DMA0 has completed, counted by CPU 0's DMA interrupt for src/swo.c. */
     volatile uint32_t swo_segments;
+    /** Set by CPU 0's DMA interrupt when SWO's channel failed, which it clears; taken by CPU 1. */
+    volatile uint8_t swo_dma_error;
 
     volatile dap_core1_status_t core1;
 
@@ -145,8 +149,10 @@ typedef struct {
     DAP_SHARED_ALIGN uint8_t response[REQUEST_SLOTS][DAP_SHARED_PACKET_SIZE];
     DAP_SHARED_ALIGN uint8_t hid_request[REQUEST_SLOTS][DAP_SHARED_HID_REPORT_SIZE];
 
+    DAP_SHARED_DMA_TABLE_ALIGN volatile dma_descriptor_t dma_table[DAP_SHARED_DMA_CHANNELS];
+    // SWO's ring, linked in a circle from its channel's table entry.
+    DAP_SHARED_DMA_DESCRIPTOR_ALIGN volatile dma_descriptor_t swo_dma[SWO_SEGMENTS];
     // In USB SRAM so that a streaming endpoint can send trace from where DMA0 wrote it.
-    DAP_SHARED_SWO_DMA_ALIGN volatile uint32_t swo_dma[DAP_SHARED_SWO_DMA_WORDS];
     DAP_SHARED_ALIGN volatile uint8_t swo_ring[SWO_RING_BYTES];
 } dap_shared_t;
 

@@ -16,7 +16,7 @@ updates it in the same commit, so the history of this table is the history of th
 | SWD reads | 37.5 MHz | Nothing | 9.6 MHz |
 | JTAG, four wires (reads and writes) | 30 MHz | The target's TDO delay | Not measured yet |
 | cJTAG, two pins (reads and writes) | 50 MHz per wire packet, 8.3 MHz per JTAG clock | The target's TDO delay | Not supported |
-| Console (VCOM) | 2 Mbaud | How many consoles run at once | 3 Mbaud or more; its limit not measured yet |
+| Console (VCOM) | 19.2 Mbaud | Nothing | 3 Mbaud or more; its limit not measured yet |
 | SWO | 8 Mbaud, UART encoding only | Nothing | Not measured yet |
 | USB | High speed, 512-byte packets, 3 commands held | Nothing | 512-byte packets, 8 commands reported |
 
@@ -35,10 +35,8 @@ fastest gets the fastest.
 - **cJTAG, two pins.** The wire carries packets at up to 50 MHz, and three packets make one JTAG
   clock. That frame takes 18 core cycles at the CC1312R1's delay of 8, or 8.3 MHz. A target with
   a longer delay adds a cycle to the frame for each cycle of delay.
-- **Console.** One console loops back clean at 2 Mbaud and loses bytes at 3. The Pro's two
-  consoles each run clean at 2 Mbaud alone, but together only up to 1 Mbaud. The UART accepts
-  faster rates than these; the firmware moves console bytes one at a time, and that is the limit
-  (BACKLOG item 14).
+- **Console.** A console loops back clean at 19.2 Mbaud, and so do both of the Pro's at once.
+  That is the fastest rate the UART's clock can make. Above 10 Mbaud is past NXP's limit (below).
 - **Stock.** Its SWD figures are the data bits on the wire from 25 MHz asked, where they stop
   rising; at 10 MHz asked it runs at 6.4. From 25 MHz asked it also misreads acknowledges now and
   then, and with commands queued it fails at 50; up to 20 MHz asked it was clean, at 9.1 MHz
@@ -48,6 +46,15 @@ fastest gets the fastest.
   A faster request is clamped to 8 Mbaud. There is no Manchester encoding and no streaming
   endpoint. The buffer holds 7 KiB. 12 and 16 Mbaud divide the UART's clock exactly and are the
   next step (BACKLOG item 18).
+
+### Past NXP's limits
+
+Some of these rates are faster than NXP specifies for the part. They ran clean on the bench, and
+the host asks for the rate, so whoever runs the probe decides whether to use them or stay slower.
+
+| Feature | NXP's limit | Ours past it |
+| --- | --- | --- |
+| Console | The UART is specified to 10 Mbit/s (LPC55S6x data sheet, 7.26.3.4) | Above 10 Mbaud: 12, 16 and 19.2 Mbaud ran clean |
 
 Where the figures come from: SWD from the wire on the bench (mculink-bench's README, "The wire").
 JTAG and cJTAG from the clock length the firmware reports for each delay (vendor 0x8A, run in the

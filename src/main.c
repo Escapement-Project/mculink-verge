@@ -271,16 +271,40 @@ __attribute__((section(".ramfunc"))) static void idle(void) {
 /** The startup file's vector table names it, weakly; this is the strong definition. */
 void DMA0_IRQHandler(void);
 
-/** DMA0 has finished one of SWO capture's ring segments. Counting them is all of SWO that runs on
- *  CPU 0; src/swo.c on CPU 1 turns the count into a position. The completion is cleared before the
- *  count moves, so CPU 1 can read the pair one segment short but never long. */
+/** DMA0 has finished one of SWO capture's ring segments, or a console's. Counting SWO's is all of
+ *  SWO that runs on CPU 0; src/swo.c on CPU 1 turns the count into a position. Completions are
+ *  cleared before the counts move, so a reader can find a ring one segment short but never long. */
 __attribute__((section(".ramfunc"))) void DMA0_IRQHandler(void) {
-    uint32_t const done = DMA0->COMMON[0].INTA & SWO_DMA_MASK;
-    if (done != 0U) {
-        DMA0->COMMON[0].INTA = done;
-        __DMB();
+    // An error raises this interrupt too, and until it is cleared the interrupt comes straight
+    // back, ahead of everything else on this core. SWO's is CPU 1's to report, so hand it over.
+    uint32_t const failed = DMA0->COMMON[0].ERRINT & (SWO_DMA_MASK | VCOM_DMA_MASK);
+    if (failed != 0U) {
+        DMA0->COMMON[0].ERRINT = failed;
+        if ((failed & SWO_DMA_MASK) != 0U) {
+            dap_shared.swo_dma_error = 1U;
+        }
+    }
+    uint32_t const done = DMA0->COMMON[0].INTA & (SWO_DMA_MASK | VCOM_DMA_MASK);
+    if (done == 0U) {
+        return;
+    }
+    DMA0->COMMON[0].INTA = done;
+    __DMB();
+    if ((done & SWO_DMA_MASK) != 0U) {
         dap_shared.swo_segments++;
     }
+    vcom_dma_done(done);
+}
+
+/** DMA0 is CPU 0's: the consoles use channels 4 to 7, and CPU 1's SWO capture channel 8 alone, so
+ *  only CPU 0 resets the controller or points it at its table. Its table is in USB SRAM, so after
+ *  dap_core_security_init: a fetch while that changes the rules there can be refused. */
+__attribute__((noinline)) void dma0_init(void);
+__attribute__((noinline)) void dma0_init(void) {
+    CLOCK_EnableClock(kCLOCK_Dma0);
+    RESET_PeripheralReset(kDMA0_RST_SHIFT_RSTn);
+    DMA0->SRAMBASE = (uint32_t)dap_shared.dma_table;
+    DMA0->CTRL = DMA_CTRL_ENABLE_MASK;
 }
 
 bool usb_transport_reply_in_flight(void) { return response_in_flight; }
@@ -411,11 +435,12 @@ int main(void) {
     dap_shared_init(&dap_shared);
     board_read_straps();
     led_init();
-    vcom_init();
     CLOCK_EnableClock(kCLOCK_Mailbox);
     RESET_PeripheralReset(kMAILBOX_RST_SHIFT_RSTn);
     MAILBOX->MBOXIRQ[0].IRQCLR = UINT32_MAX;
     dap_core_security_init();
+    dma0_init();
+    vcom_init();
     // The highest priority, so nothing comes between DMA0_IRQHandler reading a completion and
     // counting it, which src/swo.c's capture start waits out.
     NVIC_SetPriority(DMA0_IRQn, 0U);

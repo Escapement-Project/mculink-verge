@@ -791,7 +791,8 @@ Proves `vcom_init` took Flexcomm 0 back from the board support, and that the fra
 reset actually fixed the 2.4% error at a megabaud. Unlocks the integrated UART
 from probe-rs.
 
-Loopback, 300,000 bytes a run, a jumper across TX and RX (`tools/coverage.py console`):
+Loopback, 300,000 bytes a run, a jumper across TX and RX (`tools/coverage.py console`, then one
+console at a time):
 
 | unit | consoles | clean at | lost |
 | --- | --- | --- | --- |
@@ -801,6 +802,22 @@ Loopback, 300,000 bytes a run, a jumper across TX and RX (`tools/coverage.py con
 
 The losses are RX FIFO overruns: CPU 0's loop moves console bytes one at a time, and two consoles
 share that loop (BACKLOG item 14). Stock V3.172 was clean with both of the Pro's at 3 Mbaud.
+
+**On DMA, 2026-10-21** (BACKLOG item 14): each unit's consoles looped back at once, one
+second's worth each (`tools/coverage.py console`, which now runs every console of the probe
+together, sets any rate through Linux's termios2 where pyserial's path stops at 4 Mbaud, and times
+each run to its last byte, so a refused rate cannot pass as a slower one).
+
+| unit | consoles | clean at | through |
+| --- | --- | --- | --- |
+| MCU-Link Pro | both at once | 115200, 1M, 2M, 3M, 4M, 6M, 8M, 12M, 16M, 19.2M baud | 11.7 Mbaud of 12, 18.2 of 19.2 |
+| MCU-Link | one (J7) | 115200, 3M, 12M, 19.2M baud | 12.0 Mbaud of 12, 18.9 of 19.2 |
+
+19.2 Mbaud is the UART's fastest from its 96 MHz clock (oversampling 5). The same image started
+and stopped SWO capture 20 times at 8 MHz while both consoles streamed at 3 and 12 Mbaud: every
+console byte back, every capture unbroken. With a 24 MHz SWO sweep image (§7) and both consoles
+run to 19.2 Mbaud during the capture, 20 s of SWO lost nothing; an earlier 15 s run lost three
+gaps, 7,305 bytes, all after the consoles had finished.
 
 ## 7. SWO
 

@@ -1489,6 +1489,62 @@ def model_syscon(probe: Machine) -> None:
     probe.uc.mmio_map(SYSCON, 0x1000, read, None, write, None)
 
 
+# DMA0 and the consoles' Flexcomms. A descriptor may hold either alias of a FIFO.
+DMA0_BASE, USART_BASES = 0x4008_2000, (0x4008_6000, 0x4008_7000)
+SECURE_ALIAS = 0x1000_0000
+DMA_XFERCFG_RX = 0x1 | 0x2 | 0x4 | 0x10 | (1 << 14) | (1023 << 16)  # CFGVALID RELOAD SWTRIG SETINTA DSTINC 1024
+USART_FIFOCFG, USART_FIFOWR, USART_FIFORD = 0xE00, 0xE20, 0xE30
+FIFOCFG_DMATX, FIFOCFG_DMARX = 1 << 12, 1 << 13
+VCOM_RX_RING_BYTES = 4096
+
+
+def check_console_dma(c: Checker, probe, name: str, count: int, table: int) -> None:
+    """After dma0_init and vcom_init, DMA0 is on with its table in dap_shared, and each console's
+    receive ring runs into its own buffer, round a circle of descriptors, and its send channel
+    points at its UART, both with DMA requests on. USART_Init leaves the requests off and
+    USART_Deinit turns them off, so a console that loses them receives nothing and reports no
+    error. Console i is Flexcomm i on both boards with no jumper fitted. The channel enables are
+    write-only, so the model cannot say whether they took."""
+    def word(at: int) -> int:
+        return int.from_bytes(probe.uc.mem_read(at, 4), "little")
+
+    def same(a: int, b: int) -> bool:
+        return (a & ~SECURE_ALIAS) == (b & ~SECURE_ALIAS)
+
+    # The model maps the non-secure alias, which is the one the image's registers are at.
+    dma = DMA0_BASE
+    before = len(c.problems)
+    c.check(word(dma) & 1, f"{name} board: DMA0 is not enabled")
+    c.check(same(word(dma + 0x8), table), f"{name} board: DMA0's SRAMBASE is {word(dma + 0x8):#x}, not dap_shared.dma_table")
+    for i in range(count):
+        usart = USART_BASES[i]
+        rx, tx = 4 + 2 * i, 5 + 2 * i
+        entry_rx, entry_tx = table + 16 * rx, table + 16 * tx
+        ring = probe.sym["vcom_rx_ring"] + VCOM_RX_RING_BYTES * i
+        c.check(same(word(entry_rx + 4), usart + USART_FIFORD) and word(entry_rx + 8) == ring + 1023,
+                f"{name} board: console {i}'s receive entry does not run from its FIFO into its ring")
+        link, ends = word(entry_rx + 12), []
+        for _ in range(VCOM_RX_RING_BYTES // 1024):
+            ends.append(word(link + 8))
+            c.check(word(link) == DMA_XFERCFG_RX & ~0x4 and same(word(link + 4), usart + USART_FIFORD),
+                    f"{name} board: console {i}'s ring descriptor at {link:#x} is not a reloading segment")
+            link = word(link + 12)
+        c.check(link == word(entry_rx + 12) and ends == [ring + 1024 * (k + 2) - 1 for k in range(len(ends) - 1)] + [ring + 1023],
+                f"{name} board: console {i}'s ring descriptors do not fill its ring in order and come round")
+        c.check(word(dma + 0x400 + 0x10 * rx + 8) == DMA_XFERCFG_RX,
+                f"{name} board: console {i}'s receive channel was not started as a ring of 1024-byte segments")
+        c.check(same(word(entry_tx + 8), usart + USART_FIFOWR),
+                f"{name} board: console {i}'s send entry does not write its FIFO")
+        for channel in (rx, tx):
+            c.check(word(dma + 0x400 + 0x10 * channel) & 1,
+                    f"{name} board: DMA0 channel {channel} does not take requests from console {i}")
+        fifocfg = word(usart + USART_FIFOCFG)
+        c.check((fifocfg & (FIFOCFG_DMATX | FIFOCFG_DMARX)) == FIFOCFG_DMATX | FIFOCFG_DMARX,
+                f"{name} board: console {i}'s UART has its DMA requests off, so DMA0 moves nothing")
+    if len(c.problems) == before:
+        c.note(f"after boot, {name} board: {count} console{'s' if count > 1 else ''} on DMA0, receive rings running")
+
+
 def check_clocks(c: Checker, elf: str, request_slots: int) -> None:
     """Run the boot-time clock setup and read the clock each console's UART was set up with.
 
@@ -1499,16 +1555,18 @@ def check_clocks(c: Checker, elf: str, request_slots: int) -> None:
     and src/vcom.c keeps what it read for each console. On the plain board that is VCOM alone; on
     the Pro VCOM2 too, Flexcomm 1.
     """
-    board = shared_offsets(request_slots, "board", small_enums=short_enums(elf))["board"]
+    offsets = shared_offsets(request_slots, "board", "dma_table", small_enums=short_enums(elf))
+    board = offsets["board"]
     for name, kind, consoles in (("plain", 0, 1), ("Pro", 1, 2)):
         probe = Machine(elf, Target([]), restart_at=set(), model=Model())
-        for symbol in ("board_clocks_init", "vcom_init", "vcom", "vcom_count"):
+        for symbol in ("board_clocks_init", "dma0_init", "vcom_init", "vcom", "vcom_count", "vcom_rx_ring"):
             if symbol not in probe.sym:
                 c.note(f"{symbol} was inlined away; the console clocks not checked")
                 return
         probe.uc.mem_write(probe.sym["dap_shared"] + board, bytes([kind]))
         model_syscon(probe)
         probe.call("board_clocks_init")
+        probe.call("dma0_init", timeout_insns=100_000)
         probe.call("vcom_init", timeout_insns=1_000_000)
         if not c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC,
                        f"{name} board: vcom_init did not return; a driver waits on a register the model lacks"):
@@ -1525,6 +1583,7 @@ def check_clocks(c: Checker, elf: str, request_slots: int) -> None:
             )
         c.note(f"after boot, {name} board: console Flexcomms at {', '.join(f'{k / 1e6:g}' for k in clocks)} MHz, "
                "from the FRO_HF_DIV SWO uses as well")
+        check_console_dma(c, probe, name, count, probe.sym["dap_shared"] + offsets["dma_table"])
 
     # What a host can actually ask a console for. The driver accepts anything within 3%, which
     # leaves a link no room for the other end's error, so check the rates against a tighter bound.
@@ -1573,7 +1632,9 @@ def main() -> int:
     check_sram_code(c, args.elf, "CPU 0 runs a command's USB work",
                     ("serve", "tud_vendor_rx_cb", "tud_vendor_tx_cb", "tud_hid_set_report_cb",
                      "tud_hid_report_complete_cb", "memcpy"),
-                    allow=("__NVIC_SystemReset",))  # the end of a reboot, which clang calls out of line
+                    # The end of a reboot, which clang calls out of line, and a console taking a new line
+                    # coding, which a host sends when it opens the port.
+                    allow=("__NVIC_SystemReset", "vcom_configure"))
     check_sram_code(c, args.core1, "CPU 1 waits for work", ("wait_for_mailbox",))
     # Allowed: ARM's processing of every command not routed in src/dap_dispatch.c, regenerating
     # the transfers when an input changed, and the first DAP_Transfer after a line reset or a

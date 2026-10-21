@@ -1,9 +1,8 @@
-/** The arithmetic behind SWO capture (src/swo.c), free of hardware so tools/swo_ring_test.c can
- *  run it on the host.
+/** SWO capture's ring (src/swo.c): the arithmetic in src/dma_ring.h at this ring's size, and the
+ *  USART divisors, free of hardware so tools/swo_ring_test.c can run them on the host.
  *
- * DMA0 writes the trace into a ring of SWO_SEGMENTS descriptors of SWO_SEGMENT_BYTES each, without
- * stopping: nothing paces it but the UART. Byte n of the stream lands at ring[n % SWO_RING_BYTES].
- * Positions are byte counts since capture started, modulo 2^32, so every comparison is a difference.
+ * DMA0 writes the trace into SWO_SEGMENTS descriptors without stopping: nothing paces it but the
+ * UART. CPU 0's interrupt counts the segments into dap_shared.swo_segments, and CPU 1 reads them.
  */
 #ifndef SWO_RING_H
 #define SWO_RING_H
@@ -11,55 +10,27 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/** A descriptor's maximum: XFERCOUNT is ten bits, minus one encoded. */
-#define SWO_SEGMENT_BYTES 1024U
+#include "dma_ring.h"
+
+#define SWO_SEGMENT_BYTES DMA_RING_SEGMENT_BYTES
 #define SWO_SEGMENTS 8U
 #define SWO_RING_BYTES (SWO_SEGMENT_BYTES * SWO_SEGMENTS)
-
-/** How much of the ring a reader can trust. swo_written can read one segment short, so a reader
- *  that trusted the whole ring could take bytes the DMA had already overwritten. */
 #define SWO_USABLE_BYTES (SWO_RING_BYTES - SWO_SEGMENT_BYTES)
 
 /** DMA0's channel for Flexcomm 3 RX. CPU 1 runs it, and CPU 0 counts its completions. */
 #define SWO_DMA_CHANNEL 8U
 #define SWO_DMA_MASK (1UL << SWO_DMA_CHANNEL)
 
-/** XFERCFG's XFERCOUNT field. */
-#define SWO_XFERCOUNT_SHIFT 16U
-#define SWO_XFERCOUNT_MASK 0x3FFU
-
-/** Bytes written since capture started.
- *
- * `segments` is how many descriptors CPU 0 has seen complete, `pending` whether one has completed
- * that it has not counted yet, and `xfercfg` the channel's XFERCFG. The three have to come from
- * one moment, which swo.c ensures by reading them twice. CPU 0 clears the completion before it
- * counts it, so a read between the two finds neither and comes out one segment short, never long.
- * A descriptor that has just run out reads as a full one still to go, which comes to the same
- * position as the next descriptor not yet started.
- */
-static inline uint32_t swo_written(uint32_t segments, bool pending, uint32_t xfercfg) {
-    uint32_t const left = ((xfercfg >> SWO_XFERCOUNT_SHIFT) & SWO_XFERCOUNT_MASK) + 1U;
-    return ((segments + (pending ? 1U : 0U)) * SWO_SEGMENT_BYTES) + (SWO_SEGMENT_BYTES - left);
-}
-
-/** Bytes between the reader and the writer, or none when the writer reads behind the reader
- *  (swo_written being short). */
 static inline uint32_t swo_unread(uint32_t written, uint32_t read) {
-    int32_t const ahead = (int32_t)(written - read);
-    return (ahead > 0) ? (uint32_t)ahead : 0U;
+    return dma_ring_unread(written, read);
 }
 
-/** Has the writer come close enough round the ring that bytes from `read` on may be gone? */
 static inline bool swo_overrun(uint32_t written, uint32_t read) {
-    return swo_unread(written, read) > SWO_USABLE_BYTES;
+    return dma_ring_overrun(written, read, SWO_RING_BYTES);
 }
 
-/** Where a reader that the writer has passed starts again: the newest bytes, less two segments of
- *  room, one for `written` having read a segment short and one for the writer to move before the
- *  reader's next check. With less, the copy that follows can count as another overrun, and so can
- *  every one after it. */
 static inline uint32_t swo_resync(uint32_t written) {
-    return written - (SWO_USABLE_BYTES - (2U * SWO_SEGMENT_BYTES));
+    return dma_ring_resync(written, SWO_RING_BYTES);
 }
 
 /** Copy `count` bytes from position `read` out of the ring, across its end if need be. */

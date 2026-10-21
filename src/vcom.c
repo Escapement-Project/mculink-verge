@@ -7,6 +7,10 @@
  * TinyUSB's board support also claims Flexcomm 0 for its own debug logging, on different pins, so
  * vcom_init runs after board_init and takes the peripheral back. Losing that logging costs nothing
  * here -- the probe has no console of its own -- and a Flexcomm can only serve one set of pins.
+ *
+ * DMA0 moves every byte, so CPU 0's loop moves runs of them and has no deadline to meet. Each
+ * console receives into a ring like SWO's (src/dma_ring.h), and sends what the host wrote in one
+ * transfer at a time from a buffer of its own.
  */
 #include <stdint.h>
 
@@ -18,6 +22,8 @@
 #include "board/peripherals.h"
 #include "board_straps.h"
 #include "dap_shared.h"
+#include "dma0.h"
+#include "dma_ring.h"
 #include "led.h"
 #include "tusb.h"
 #include "vcom.h"
@@ -70,12 +76,50 @@ static const vcom_uart_t vcom2_uart = {
 
 #define VCOM_DEFAULT_BAUD 115200U
 
+/** A receive ring of four segments. At 19.2 Mbaud, the fastest the UART makes, a reader can fall
+ *  1.6 ms behind before it loses the oldest bytes. */
+#define VCOM_RX_SEGMENTS 4U
+#define VCOM_RX_RING_BYTES (VCOM_RX_SEGMENTS * DMA_RING_SEGMENT_BYTES)
+_Static_assert(VCOM_RX_SEGMENTS >= 3U, "dma_ring_resync needs three segments");
+
+/** A send is as much as TinyUSB holds from the host, in one descriptor. */
+#define VCOM_TX_BYTES CFG_TUD_CDC_RX_BUFSIZE
+_Static_assert(VCOM_TX_BYTES <= DMA_RING_SEGMENT_BYTES, "a send is one descriptor");
+
+#define VCOM_RX_XFERCFG                                                                             \
+    (DMA_CHANNEL_XFERCFG_CFGVALID_MASK | DMA_CHANNEL_XFERCFG_RELOAD_MASK |                          \
+     DMA_CHANNEL_XFERCFG_SETINTA_MASK | DMA_CHANNEL_XFERCFG_WIDTH(0U) | DMA_CHANNEL_XFERCFG_SRCINC(0U) | \
+     DMA_CHANNEL_XFERCFG_DSTINC(1U) | DMA_CHANNEL_XFERCFG_XFERCOUNT(DMA_RING_SEGMENT_BYTES - 1U))
+#define VCOM_TX_XFERCFG(count)                                                                         \
+    (DMA_CHANNEL_XFERCFG_CFGVALID_MASK | DMA_CHANNEL_XFERCFG_SETINTA_MASK | DMA_CHANNEL_XFERCFG_WIDTH(0U) | \
+     DMA_CHANNEL_XFERCFG_SRCINC(1U) | DMA_CHANNEL_XFERCFG_DSTINC(0U) | DMA_CHANNEL_XFERCFG_XFERCOUNT((count) - 1U))
+
 /** The consoles that exist, by CDC instance: in SRAM, since CPU 0's wait reads them. */
 static struct {
     USART_Type* usart;
     uint32_t clock_hz;
 } vcom[CFG_TUD_CDC];
 static uint32_t vcom_count;
+
+static struct {
+    uint32_t channel;
+    uint32_t read;                // the next position to hand to TinyUSB
+    volatile uint32_t segments;   // completed, counted by vcom_dma_done
+} vcom_rx[CFG_TUD_CDC];
+
+static struct {
+    uint32_t channel;
+    volatile bool busy;           // a send is running; vcom_dma_done clears it
+    bool recode;                  // `coding` is waiting for the send to finish
+    cdc_line_coding_t coding;
+} vcom_tx[CFG_TUD_CDC];
+
+/** DMA0 writes the rings and reads the send buffers behind the compiler's back. Each access is
+ *  fenced by a __DMB, whose memory clobber makes the compiler read and write them for real. */
+static uint8_t vcom_rx_ring[CFG_TUD_CDC][VCOM_RX_RING_BYTES];
+static uint8_t vcom_tx_buffer[CFG_TUD_CDC][VCOM_TX_BYTES];
+static volatile dma_descriptor_t vcom_rx_descriptors[CFG_TUD_CDC][VCOM_RX_SEGMENTS]
+    __attribute__((aligned(16)));
 
 static void vcom_configure(uint32_t instance, uint32_t baud, uint8_t stop_bits, uint8_t parity, uint8_t data_bits) {
     usart_config_t config;
@@ -88,8 +132,51 @@ static void vcom_configure(uint32_t instance, uint32_t baud, uint8_t stop_bits, 
     config.parityMode = (parity == 1U) ? kUSART_ParityOdd : (parity == 2U) ? kUSART_ParityEven : kUSART_ParityDisabled;
     config.bitCountPerChar = (data_bits == 7U) ? kUSART_7BitsPerChar : kUSART_8BitsPerChar;
 
+    // USART_Deinit waits for the transmitter to go idle. With no send running, that is the FIFO.
     USART_Deinit(vcom[instance].usart);
     USART_Init(vcom[instance].usart, &config, vcom[instance].clock_hz);
+    // USART_Deinit turns the DMA requests off and USART_Init leaves them off.
+    vcom[instance].usart->FIFOCFG |= USART_FIFOCFG_DMARX_MASK | USART_FIFOCFG_DMATX_MASK;
+}
+
+/** Start the receive ring, which runs from here on, through every reconfiguration. */
+static void rx_start(uint32_t instance) {
+    uint32_t const channel = vcom_rx[instance].channel;
+    uint32_t const mask = 1UL << channel;
+    volatile dma_descriptor_t* const ring = vcom_rx_descriptors[instance];
+    uint32_t const source = (uint32_t)&vcom[instance].usart->FIFORD;
+    for (uint32_t k = 0U; k < VCOM_RX_SEGMENTS; k++) {
+        ring[k].xfercfg = VCOM_RX_XFERCFG;
+        ring[k].source_end = source;
+        ring[k].destination_end = (uint32_t)&vcom_rx_ring[instance][((k + 1U) * DMA_RING_SEGMENT_BYTES) - 1U];
+        ring[k].link = (uint32_t)&ring[(k + 1U) % VCOM_RX_SEGMENTS];
+    }
+    // The channel's table entry runs segment 0 the first time round; the circle has it after that.
+    volatile dma_descriptor_t* const entry = &dap_shared.dma_table[channel];
+    entry->xfercfg = 0U;
+    entry->source_end = source;
+    entry->destination_end = ring[0].destination_end;
+    entry->link = ring[0].link;
+    DMA0->COMMON[0].INTA = mask;
+    vcom_rx[instance].segments = 0U;
+    vcom_rx[instance].read = 0U;
+    __DMB();
+    DMA0->CHANNEL[channel].CFG = DMA_CHANNEL_CFG_PERIPHREQEN_MASK;
+    DMA0->COMMON[0].INTENSET = mask;
+    DMA0->COMMON[0].ENABLESET = mask;
+    DMA0->CHANNEL[channel].XFERCFG = VCOM_RX_XFERCFG | DMA_CHANNEL_XFERCFG_SWTRIG_MASK;
+}
+
+static void tx_start(uint32_t instance) {
+    uint32_t const channel = vcom_tx[instance].channel;
+    uint32_t const mask = 1UL << channel;
+    volatile dma_descriptor_t* const entry = &dap_shared.dma_table[channel];
+    entry->xfercfg = 0U;
+    entry->destination_end = (uint32_t)&vcom[instance].usart->FIFOWR;
+    entry->link = 0U;
+    DMA0->CHANNEL[channel].CFG = DMA_CHANNEL_CFG_PERIPHREQEN_MASK;
+    DMA0->COMMON[0].INTENSET = mask;
+    DMA0->COMMON[0].ENABLESET = mask;
 }
 
 static void vcom_start(const vcom_uart_t* uart) {
@@ -104,6 +191,10 @@ static void vcom_start(const vcom_uart_t* uart) {
     uint32_t const instance = vcom_count++;
     vcom[instance].usart = uart->usart;
     vcom[instance].clock_hz = CLOCK_GetFlexCommClkFreq(uart->flexcomm);
+    vcom_rx[instance].channel = VCOM_DMA_RX_CHANNEL(uart->flexcomm);
+    vcom_tx[instance].channel = VCOM_DMA_TX_CHANNEL(uart->flexcomm);
+    tx_start(instance);
+    rx_start(instance);
     vcom_configure(instance, VCOM_DEFAULT_BAUD, 1U, 0U, 8U);
 }
 
@@ -126,48 +217,112 @@ __attribute__((noinline)) void vcom_init(void) {
  *  signals. */
 void BOARD_InitBootPeripherals(void) {}
 
-/** The host setting the port's parameters is what a terminal does on open, so follow it. */
+/** The host setting the port's parameters is what a terminal does on open, so follow it, once the
+ *  bytes the host wrote before it have gone at the old ones (send). */
 void tud_cdc_line_coding_cb(uint8_t itf, cdc_line_coding_t const* coding) {
     if (itf < vcom_count) {
-        vcom_configure(itf, coding->bit_rate, coding->stop_bits, coding->parity, coding->data_bits);
+        vcom_tx[itf].coding = *coding;
+        vcom_tx[itf].recode = true;
     }
+}
+
+/** Where console `instance`'s receive ring has been written to. */
+__attribute__((always_inline)) static inline uint32_t rx_written(uint32_t instance) {
+    return dma0_ring_written(&vcom_rx[instance].segments, vcom_rx[instance].channel);
+}
+
+/** USB to target: one send at a time, of everything TinyUSB holds, and a new line coding between
+ *  two sends. The host's next write waits for the line, the loop does not. */
+__attribute__((section(".ramfunc"))) static void send(uint32_t instance) {
+    if (vcom_tx[instance].busy) {
+        return;
+    }
+    if (vcom_tx[instance].recode) {
+        cdc_line_coding_t const* const coding = &vcom_tx[instance].coding;
+        vcom_tx[instance].recode = false;
+        vcom_configure(instance, coding->bit_rate, coding->stop_bits, coding->parity, coding->data_bits);
+    }
+    if (tud_cdc_n_available(instance) == 0U) {
+        return;
+    }
+    uint32_t const count = tud_cdc_n_read(instance, vcom_tx_buffer[instance], VCOM_TX_BYTES);
+    if (count == 0U) {
+        return;
+    }
+    uint32_t const channel = vcom_tx[instance].channel;
+    dap_shared.dma_table[channel].source_end = (uint32_t)&vcom_tx_buffer[instance][count - 1U];
+    vcom_tx[instance].busy = true;
+    __DMB();
+    DMA0->CHANNEL[channel].XFERCFG = VCOM_TX_XFERCFG(count) | DMA_CHANNEL_XFERCFG_SWTRIG_MASK;
+    led_vcom();
+}
+
+/** Target to USB: as much of what has arrived as TinyUSB has room for. A ring the host has let
+ *  fill drops its oldest bytes.
+ *
+ * Nothing checks the ring again after the copy, as SWO_Data does. This core counts the
+ * completions itself, so the position is exact and the copy starts a whole segment clear of the
+ * writer: a segment takes 0.53 ms at 19.2 Mbaud, and the copy is at most TinyUSB's 512 bytes. */
+__attribute__((section(".ramfunc"))) static void receive(uint32_t instance) {
+    uint32_t const at = rx_written(instance);
+    uint32_t read = vcom_rx[instance].read;
+    if (dma_ring_overrun(at, read, VCOM_RX_RING_BYTES)) {
+        read = dma_ring_resync(at, VCOM_RX_RING_BYTES);
+    }
+    uint32_t count = dma_ring_unread(at, read);
+    uint32_t const room = tud_cdc_n_write_available(instance);
+    if (count > room) {
+        count = room;
+    }
+    if (count != 0U) {
+        led_vcom();
+    }
+    while (count != 0U) {
+        uint32_t const offset = read % VCOM_RX_RING_BYTES;
+        uint32_t run = VCOM_RX_RING_BYTES - offset;
+        if (run > count) {
+            run = count;
+        }
+        uint32_t const taken = tud_cdc_n_write(instance, &vcom_rx_ring[instance][offset], run);
+        read += taken;
+        count -= taken;
+        if (taken != run) {
+            break;
+        }
+    }
+    vcom_rx[instance].read = read;
 }
 
 __attribute__((section(".ramfunc"))) void vcom_task(void) {
     for (uint32_t i = 0U; i < vcom_count; i++) {
-        USART_Type* const usart = vcom[i].usart;
-        // USB to target. Only take what the UART can accept now, so a target that is not reading
-        // cannot stall the whole firmware -- the DAP interface has to keep answering either way.
-        while (tud_cdc_n_available(i) && (USART_GetStatusFlags(usart) & kUSART_TxFifoNotFullFlag)) {
-            uint8_t byte;
-            if (tud_cdc_n_read(i, &byte, 1) != 1) {
-                break;
-            }
-            USART_WriteByte(usart, byte);
-            led_vcom();
-        }
-
-        // Target to USB.
-        while ((USART_GetStatusFlags(usart) & kUSART_RxFifoNotEmptyFlag) && tud_cdc_n_write_available(i) > 0U) {
-            uint8_t byte = USART_ReadByte(usart);
-            tud_cdc_n_write(i, &byte, 1);
-            led_vcom();
-        }
+        send(i);
+        receive(i);
         // With a transfer in flight this sends nothing, and TinyUSB sends the rest when it
         // completes: this task does not run again until there are bytes to move.
         tud_cdc_n_write_flush(i);
     }
 }
 
-/** vcom_task's two loop conditions, which have to stay the same as its own. The FIFO counts are
- *  TinyUSB's, in SRAM, which tools/image.py checks. */
+/** The conditions send and receive act on, which have to stay the same as theirs. The FIFO
+ *  counts are TinyUSB's, in SRAM, which tools/image.py checks. */
 __attribute__((section(".ramfunc"), noinline)) bool vcom_ready(void) {
     for (uint32_t i = 0U; i < vcom_count; i++) {
-        uint32_t const status = USART_GetStatusFlags(vcom[i].usart);
-        if ((((status & kUSART_RxFifoNotEmptyFlag) != 0U) && (tud_cdc_n_write_available(i) > 0U)) ||
-            (((status & kUSART_TxFifoNotFullFlag) != 0U) && (tud_cdc_n_available(i) > 0U))) {
+        // The position is exact here, so a writer anywhere else is bytes or an overrun to resync.
+        if ((!vcom_tx[i].busy && (vcom_tx[i].recode || (tud_cdc_n_available(i) > 0U))) ||
+            ((rx_written(i) != vcom_rx[i].read) && (tud_cdc_n_write_available(i) > 0U))) {
             return true;
         }
     }
     return false;
+}
+
+__attribute__((section(".ramfunc"))) void vcom_dma_done(uint32_t done) {
+    for (uint32_t i = 0U; i < vcom_count; i++) {
+        if ((done & (1UL << vcom_rx[i].channel)) != 0U) {
+            vcom_rx[i].segments++;
+        }
+        if ((done & (1UL << vcom_tx[i].channel)) != 0U) {
+            vcom_tx[i].busy = false;
+        }
+    }
 }

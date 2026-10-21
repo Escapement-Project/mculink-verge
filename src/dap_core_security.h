@@ -22,7 +22,8 @@ enum {
 #define USB_SECURITY_CPU1_MASTER_ANTI_POL_MASK USB_SECURITY_CPU1_MASTER_LEVEL_MASK
 #define USB_SECURITY_CPU1_MASTER_ANTI_POL_NS_PRIV \
     ((~USB_SECURITY_CPU1_MASTER_LEVEL_NS_PRIV) & USB_SECURITY_CPU1_MASTER_ANTI_POL_MASK)
-/** DMA0, which writes SWO trace into USB SRAM, and whose rules there admit privileged masters only. */
+/** DMA0, which fetches its descriptor table from USB SRAM and writes SWO trace there, and whose
+ *  rules there admit privileged masters only. */
 #define USB_SECURITY_DMA0_MASTER_LEVEL_MASK (0x3U << 10)
 #define USB_SECURITY_DMA0_MASTER_LEVEL_NS_PRIV (0x1U << 10)
 #define USB_SECURITY_DMA0_MASTER_ANTI_POL_NS_PRIV \

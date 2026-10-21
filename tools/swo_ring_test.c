@@ -6,19 +6,22 @@
 
 #include "swo_ring.h"
 
+/** src/vcom.c's receive ring. */
+#define CONSOLE_RING_BYTES (4U * DMA_RING_SEGMENT_BYTES)
+
 static uint32_t xfercfg_left(uint32_t left) {
-    return ((left - 1U) & SWO_XFERCOUNT_MASK) << SWO_XFERCOUNT_SHIFT;
+    return ((left - 1U) & DMA_XFERCOUNT_MASK) << DMA_XFERCOUNT_SHIFT;
 }
 
 static void test_written_fixed_points(void) {
-    assert(swo_written(0U, false, xfercfg_left(1024U)) == 0U);
-    assert(swo_written(0U, false, xfercfg_left(1023U)) == 1U);
-    assert(swo_written(0U, false, xfercfg_left(1U)) == 1023U);
+    assert(dma_ring_written(0U, false, xfercfg_left(1024U)) == 0U);
+    assert(dma_ring_written(0U, false, xfercfg_left(1023U)) == 1U);
+    assert(dma_ring_written(0U, false, xfercfg_left(1U)) == 1023U);
     // Run out: XFERCOUNT has wrapped to 0x3FF, the same as a whole segment still to go.
-    assert(swo_written(0U, true, xfercfg_left(1024U)) == 1024U);
-    assert(swo_written(3U, false, xfercfg_left(1000U)) == 3U * 1024U + 24U);
+    assert(dma_ring_written(0U, true, xfercfg_left(1024U)) == 1024U);
+    assert(dma_ring_written(3U, false, xfercfg_left(1000U)) == 3U * 1024U + 24U);
     // Positions are modulo 2^32.
-    assert(swo_written(UINT32_MAX / SWO_SEGMENT_BYTES, true, xfercfg_left(1024U)) ==
+    assert(dma_ring_written(UINT32_MAX / SWO_SEGMENT_BYTES, true, xfercfg_left(1024U)) ==
            (uint32_t)((UINT32_MAX / SWO_SEGMENT_BYTES + 1U) * SWO_SEGMENT_BYTES));
 }
 
@@ -86,7 +89,7 @@ static void test_written_never_long(void) {
         uint32_t const after = m.bytes;
         maybe_step(&m);
         if ((pending == still) && same) {
-            uint32_t const got = swo_written(segments, pending, xfercfg);
+            uint32_t const got = dma_ring_written(segments, pending, xfercfg);
             assert((int32_t)(after - got) >= 0);  // never ahead of the writer at the last read
             assert((int32_t)(got - (before - SWO_SEGMENT_BYTES)) >= 0);
             accepted++;
@@ -106,6 +109,67 @@ static void test_unread_and_overrun(void) {
     assert(!swo_overrun(SWO_USABLE_BYTES, 0U));
     assert(swo_overrun(SWO_USABLE_BYTES + 1U, 0U));
     assert(!swo_overrun(3U, UINT32_MAX - SWO_USABLE_BYTES + 4U));
+    assert(dma_ring_usable(SWO_RING_BYTES) == SWO_USABLE_BYTES);
+    assert(!dma_ring_overrun(3U * 1024U, 0U, CONSOLE_RING_BYTES));
+    assert(dma_ring_overrun((3U * 1024U) + 1U, 0U, CONSOLE_RING_BYTES));
+    assert(dma_ring_resync(10000U, CONSOLE_RING_BYTES) == 10000U - 1024U);
+    // A short read is behind the reader by under a segment; more is a writer 2^31 or more ahead.
+    assert(!dma_ring_overrun(100U, 100U + SWO_SEGMENT_BYTES, SWO_RING_BYTES));
+    assert(dma_ring_overrun(100U, 101U + SWO_SEGMENT_BYTES, SWO_RING_BYTES));
+    assert(dma_ring_overrun(0x80000000U, 0U, CONSOLE_RING_BYTES));
+    assert(dma_ring_overrun(0x80000001U, 0U, CONSOLE_RING_BYTES));
+    assert(dma_ring_overrun(UINT32_MAX - SWO_SEGMENT_BYTES, 0U, CONSOLE_RING_BYTES));
+}
+
+/** A console's reader, src/vcom.c receive(): it counts the completions on its own core, so its
+ *  positions are exact and it does not check again after copying. The writer moves less than a
+ *  segment during a copy, and the reader can be away for any number of bytes, past 2^32 included. */
+static void test_console_reader(void) {
+    static uint32_t ring[CONSOLE_RING_BYTES];
+    uint32_t writer = 0U;
+    uint32_t read = 0U;
+    uint64_t delivered = 0U;
+    uint32_t resyncs = 0U;
+    for (uint32_t poll = 0U; poll < 200000U; poll++) {
+        uint32_t gap = next_random() % 2000U;
+        if (next_random() % 256U == 0U) {
+            gap = (next_random() << 16) ^ next_random();  // away for up to 2^32 bytes
+        }
+        // Only the ring's last lap matters to what it holds.
+        uint32_t const skip = (gap > CONSOLE_RING_BYTES) ? gap - CONSOLE_RING_BYTES : 0U;
+        writer += skip;
+        for (uint32_t i = skip; i < gap; i++) {
+            ring[writer % CONSOLE_RING_BYTES] = writer;
+            writer++;
+        }
+        uint32_t const at = writer;
+        if (dma_ring_overrun(at, read, CONSOLE_RING_BYTES)) {
+            read = dma_ring_resync(at, CONSOLE_RING_BYTES);
+            resyncs++;
+        }
+        uint32_t count = dma_ring_unread(at, read);
+        if (count > 512U) {
+            count = 512U;
+        }
+        // vcom_ready wakes on at != read. Nothing to deliver then is only a writer that lapped the
+        // reader by just under 2^32, which less than a segment more turns into an overrun.
+        assert(count != 0U || at == read || (read - at) <= DMA_RING_SEGMENT_BYTES);
+        uint32_t const during = next_random() % DMA_RING_SEGMENT_BYTES;
+        for (uint32_t i = 0U; i < count; i++) {
+            if (i == count / 2U) {
+                for (uint32_t k = 0U; k < during; k++) {
+                    ring[writer % CONSOLE_RING_BYTES] = writer;
+                    writer++;
+                }
+            }
+            assert(ring[(read + i) % CONSOLE_RING_BYTES] == read + i);
+        }
+        read += count;
+        delivered += count;
+    }
+    assert(resyncs > 100U);
+    printf("    console reader: %llu bytes delivered intact across %u resyncs\n", (unsigned long long)delivered,
+           resyncs);
 }
 
 static void test_copy_wraps(void) {
@@ -187,24 +251,28 @@ static void test_divisors(void) {
     }
 }
 
-/** SWO_Data's reader against a writer that runs at any speed: every byte it hands over is the one
- *  the writer put there, and a reader that falls behind gets data again on its next poll. */
+/** A reader against a writer that runs at any speed, for SWO_Data's ring and a console's: every
+ *  byte it hands over is the one the writer put there, and a reader that falls behind gets data
+ *  again on its next poll. */
 static uint32_t positions[SWO_RING_BYTES];
 static uint32_t truth;
+static uint32_t ring_bytes;
 
 static void write_bytes(uint32_t count) {
     for (uint32_t i = 0U; i < count; i++) {
-        positions[truth % SWO_RING_BYTES] = truth;
+        positions[truth % ring_bytes] = truth;
         truth++;
     }
 }
 
-/** What swo_written can report: the truth, or a segment short of it. */
+/** What SWO_Data's position can report: the truth, or a segment short of it. */
 static uint32_t observed(void) {
     return ((next_random() % 8U) == 0U && truth >= SWO_SEGMENT_BYTES) ? truth - SWO_SEGMENT_BYTES : truth;
 }
 
-static void test_reader_keeps_up_and_recovers(void) {
+static void test_reader_keeps_up_and_recovers(uint32_t ring) {
+    ring_bytes = ring;
+    truth = 0U;
     uint32_t read = 0U;
     uint64_t delivered = 0U;
     uint32_t overruns = 0U;
@@ -215,12 +283,12 @@ static void test_reader_keeps_up_and_recovers(void) {
         write_bytes(gap);
 
         uint32_t const at = observed();
-        if (swo_overrun(at, read)) {
-            read = swo_resync(at);
+        if (dma_ring_overrun(at, read, ring_bytes)) {
+            read = dma_ring_resync(at, ring_bytes);
             overruns++;
             behind = true;
         }
-        uint32_t count = swo_unread(at, read);
+        uint32_t count = dma_ring_unread(at, read);
         if (count > 508U) {
             count = 508U;
         }
@@ -230,13 +298,13 @@ static void test_reader_keeps_up_and_recovers(void) {
             if (i == count / 2U) {
                 write_bytes(during);
             }
-            out[i] = positions[(read + i) % SWO_RING_BYTES];
+            out[i] = positions[(read + i) % ring_bytes];
         }
         uint32_t const after = observed();
-        if (swo_overrun(after, read)) {
+        if (dma_ring_overrun(after, read, ring_bytes)) {
             // Only a writer that moved a segment in one copy may pass a reader that just resynced.
             assert(!behind);
-            read = swo_resync(after);
+            read = dma_ring_resync(after, ring_bytes);
             continue;
         }
         for (uint32_t i = 0U; i < count; i++) {
@@ -250,7 +318,8 @@ static void test_reader_keeps_up_and_recovers(void) {
         delivered += count;
     }
     assert(overruns > 100U);
-    printf("    %llu bytes delivered intact across %u overruns\n", (unsigned long long)delivered, overruns);
+    printf("    %u-byte ring: %llu bytes delivered intact across %u overruns\n", ring_bytes,
+           (unsigned long long)delivered, overruns);
 }
 
 int main(void) {
@@ -258,7 +327,9 @@ int main(void) {
     test_written_never_long();
     test_unread_and_overrun();
     test_copy_wraps();
-    test_reader_keeps_up_and_recovers();
+    test_reader_keeps_up_and_recovers(SWO_RING_BYTES);
+    test_reader_keeps_up_and_recovers(CONSOLE_RING_BYTES);
+    test_console_reader();
     test_divisors();
     return 0;
 }
