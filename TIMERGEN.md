@@ -254,6 +254,16 @@ tell a read error from a write error. About 255,000 words a second at 50 MHz.
   `armwire` build (ARM's transfer code), and from 10 MHz asked on stock V3.172 (whose clock runs
   slower than asked); right below that on all three. MDIV, above, is the WAIT test that works.
 
+Throughput (mculink-bench `swd-1`, 2026-10-21, gcc and clang `34431f1` against 2026-10-20's
+`4a7ca13`; mculink-bench README "Measured 2026-10-21"): at 50 MHz, full-packet block reads gain
+1% (2,676 to 2,707 KiB/s at 8 queued) and DAP_Transfer reads lose 6% (1,646 to 1,547), AP and DP
+alike, both compilers; probe-rs moves within its noise; 10 and 20 MHz are unchanged. The A/B in
+one image (`dap.py gen --timer off|on`, 127-word DPIDR reads at 50 MHz, 8 queued, three rounds,
+each within 0.1%): DAP_Transfer 1,636 off against 1,541 on (-5.8%), DAP_TransferBlock 2,712
+against 2,744 (+1.2%). So the wire did not bind block reads, and a DAP_Transfer read costs about
+22 cycles more on the timer path. Not localised; the per-read claim, bases and settle are the
+suspects, and the emulator can count them (`cycles.py` on a DAP_Transfer read).
+
 Open:
 1. **The plain board was off USB from 04:18 to about 07:50** (replugged): after
    `dap.py reboot` it re-enumerated but answered no control request, and a USB port reset took
@@ -261,6 +271,5 @@ Open:
    an hour before. Flashed and soaked normally afterwards.
 2. **LEDs on the Pro** (PRO.md step 8) plan a fade on CTimer 1, which shares APB0 with CTimer 0's
    start store and DMA1's stop write: it will need the same handshake, or a timer on another bridge.
-3. A/B of block throughput against the GPIO path at 50 MHz in one image: `dap.py gen --timer
-   off|on` switches `swd_gen_timer` (vendor 0x89 modes 4 and 5; its reply ends with the setting
-   and whether the current build uses it).
+3. **Localise the DAP_Transfer read cost** (above), then decide whether timer reads stay the
+   default for DAP_Transfer.
