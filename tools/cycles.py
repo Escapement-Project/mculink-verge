@@ -73,22 +73,6 @@ FLASH = (0x00000000, 0x00100000)
 SRAMX = (0x04000000, 0x00008000)
 SRAM = (0x20000000, 0x00050000)
 USB_RAM = (0x40100000, 0x00004000)
-# SWCLK from CTimer 0 for reads at 50 MHz (src/swd_timer.h): the pin's IOCON word, the clock timer
-# and the two stop timers whose match has DMA1 hold CTimer 0 in reset. Mapped as registers, so the
-# emulator makes the edges a run makes on the bench.
-IOCON_PIO0_0 = 0x40001000
-CTIMER0 = 0x40008000
-CTIMER_STOPS = (0x40028000, 0x4002A000)
-TIMER_PAGES = (IOCON_PIO0_0, CTIMER0, *CTIMER_STOPS)
-TCR = 0x04
-MR0 = 0x18
-# Measured (TIMERGEN.md "Built"): with CTimer 0 started on cycle c, rising edge k is where a GPIO
-# store on c + 1 + 3k would put it, and falls two cycles later. DMA1's hold lands where a store on
-# cycle c2 + MR0 + 22 would, c2 being the stop timer's start.
-TIMER_FIRST_RISE = 1
-TIMER_PERIOD = 3
-TIMER_HIGH = 2
-TIMER_STOP_AFTER = 22
 PERIPH_LOW = (0x40000000, GPIO_BASE - 0x40000000)
 PERIPH_HIGH = (GPIO_BASE + GPIO_SIZE, 0x40100000 - (GPIO_BASE + GPIO_SIZE))
 PPB = (0xE0000000, 0x00100000)
@@ -181,8 +165,6 @@ class Model:
 
 @dataclass
 class Counts:
-    # What went wrong with CTimer 0's runs, if anything: see Machine._timer_write.
-    timer_faults: list = field(default_factory=list)
     instructions: int = 0
     other: int = 0
     load: int = 0
@@ -718,29 +700,9 @@ class Machine:
         self.dir = 0
         self.mask = 0
 
-        # SWCLK's pin when CTimer 0 has it: its level, the edges a run has still to make as
-        # (cycle, rising), and what went wrong with any (a cut pulse, a run nothing stopped).
-        self.pin_timer = False
-        self.timer_level = 0
-        self.timer_edges: list[tuple[int, bool]] = []
-        self.timer_start = 0
-        self.timer_faults: list[str] = []
-        self.timer_regs: dict[int, int] = {}
-        # A cycle count that never resets, for scheduling the timer's edges whether or not a
-        # measurement is running: the engine's cycles while one is, one an instruction otherwise.
-        self.now = 0
-        self._now_base = 0
-
         self.uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
-        for base, size in (FLASH, SRAMX, SRAM, USB_RAM, PERIPH_HIGH, PPB):
+        for base, size in (FLASH, SRAMX, SRAM, USB_RAM, PERIPH_LOW, PERIPH_HIGH, PPB):
             self.uc.mem_map(base, size)
-        low, top = PERIPH_LOW[0], PERIPH_LOW[0] + PERIPH_LOW[1]
-        for page in sorted(TIMER_PAGES):
-            if page > low:
-                self.uc.mem_map(low, page - low)
-            self.uc.mmio_map(page, 0x1000, self._timer_read, page, self._timer_write, page)
-            low = page + 0x1000
-        self.uc.mem_map(low, top - low)
         self.uc.mmio_map(GPIO_BASE, GPIO_SIZE, self._gpio_read, None, self._gpio_write, None)
 
         with tempfile.NamedTemporaryFile(suffix=".bin") as raw:
@@ -875,14 +837,10 @@ class Machine:
             return "z"
         return "1" if (self.level >> PIN_SWDIO) & 1 else "0"
 
-    def _swclk(self) -> int:
-        """SWCLK's pin: CTimer 0's output while the pin is the timer's, the GPIO latch otherwise."""
-        return self.timer_level if self.pin_timer else (self.level >> PIN_TCK) & 1
-
     def _gpio_write(self, uc, offset, size, value, user):
         if self.engine is not None and self.counting:
             self.cycle = self.engine.access(GPIO_BASE + offset, True)
-        before_clock = self._swclk()
+        before_clock = (self.level >> PIN_TCK) & 1
         before_wire = self._driven()
         before_tdi = (self.level >> PIN_TDI) & 1
 
@@ -909,7 +867,7 @@ class Machine:
         else:
             return
 
-        after_clock = self._swclk()
+        after_clock = (self.level >> PIN_TCK) & 1
         after_wire = self._driven()
         after_tdi = (self.level >> PIN_TDI) & 1
 
@@ -923,59 +881,52 @@ class Machine:
         if isinstance(self.target, TimedSwdTarget):
             if before_wire == "z" and after_wire != "z":
                 self.target.take_back()
+            if after_clock and not before_clock:
+                self.target.rise(self.cycle)
         if isinstance(self.target, TimedCjtagTarget):
             if after_wire != before_wire:
                 self.target.wire(
                     self.cycle, after_wire, bool(before_clock and after_clock), after_clock != before_clock
                 )
-        if self.counting:
-            self.counts.gpio_store += 1
-            # Level changes are recorded before the clock edge in the same store, so that fusing a
-            # data write into the falling edge produces the same stream as doing them separately.
-            if after_tdi != before_tdi:
-                self.counts.trace.append(f"I{after_tdi}")
-            if after_wire != before_wire:
-                self.counts.trace.append(f"W{after_wire}")
-                if after_wire == "z":
-                    self.counts.swdio_release += 1
-                    # A frame releases the wire exactly once, immediately before its third packet.
-                    # That is a marker on the wire, so the framing stays in step with the probe
-                    # whatever the optimiser does to the code that produces it.
-                    self._packet = 2
-                if before_clock and after_clock:
-                    self.counts.moves_while_high += 1
-        if after_clock != before_clock:
-            self._edge(bool(after_clock), self.cycle)
-
-    def _edge(self, rising: bool, cycle: int) -> None:
-        """SWCLK changed, at `cycle` in the frame a GPIO store's cycle is in."""
-        wire = self._driven()
-        tdi = (self.level >> PIN_TDI) & 1
-        if isinstance(self.target, TimedSwdTarget) and rising:
-            self.target.rise(cycle)
-        if isinstance(self.target, TimedCjtagTarget):
-            if rising:
-                self.target.rise(cycle, wire)
-            else:
-                self.target.fall(cycle)
+            if after_clock and not before_clock:
+                self.target.rise(self.cycle, after_wire)
+            elif before_clock and not after_clock:
+                self.target.fall(self.cycle)
         if isinstance(self.target, TimedJtagTarget):
-            if rising:
-                self.target.rise((self.level >> PIN_SWDIO) & 1, tdi)
-            else:
-                self.target.fall(cycle)
+            if after_clock and not before_clock:
+                self.target.rise((self.level >> PIN_SWDIO) & 1, after_tdi)
+            elif before_clock and not after_clock:
+                self.target.fall(self.cycle)
+
         if not self.counting:
             return
-        if rising:
+        self.counts.gpio_store += 1
+
+        # Level changes are recorded before the clock edge in the same store, so that fusing a
+        # data write into the falling edge produces the same stream as doing them separately.
+        if after_tdi != before_tdi:
+            self.counts.trace.append(f"I{after_tdi}")
+        if after_wire != before_wire:
+            self.counts.trace.append(f"W{after_wire}")
+            if after_wire == "z":
+                self.counts.swdio_release += 1
+                # A frame releases the wire exactly once, immediately before its third packet.
+                # That is a marker on the wire, so the framing stays in step with the probe
+                # whatever the optimiser does to the code that produces it.
+                self._packet = 2
+            if before_clock and after_clock:
+                self.counts.moves_while_high += 1
+        if after_clock and not before_clock:
             self.counts.tck_rise += 1
-            self.counts.edge_cycles.append(cycle)
+            self.counts.edge_cycles.append(self.cycle)
             if self.explain:
-                span = cycle - self._window_start
+                span = self.cycle - self._window_start
                 if span > self.longest[0]:
                     self.longest = (span, self._window)
                 self.windows.append((span, self._window))
                 self._window = []
-                self._window_start = cycle
-            self.counts.trace.append(f"^{wire}{tdi}")
+                self._window_start = self.cycle
+            self.counts.trace.append(f"^{after_wire}{after_tdi}")
             if self.tap is not None:
                 self.tap.clock((self.level >> PIN_SWDIO) & 1)
             if self.cjtag_tap is not None:
@@ -987,77 +938,12 @@ class Machine:
                     self._frame_tdo = self.cjtag_tap.tdo()
                     self.cjtag_tap.clock(self._frame_tms)
                 self._packet = (self._packet + 1) % 3
-        else:
+        elif before_clock and not after_clock:
             if self.tap is not None:
                 self._tdo_latch = self.tap.tdo()
             self.counts.tck_fall += 1
-            self.counts.fall_cycles.append(cycle)
+            self.counts.fall_cycles.append(self.cycle)
             self.counts.trace.append("v")
-
-    # -- SWCLK from CTimer 0 --------------------------------------------------
-    def _timer_read(self, uc, offset, size, page):
-        return self.timer_regs.get(page + offset, 0)
-
-    def _timer_write(self, uc, offset, size, value, page):
-        address = page + offset
-        self.timer_regs[address] = value
-        if address == IOCON_PIO0_0:
-            before = self._swclk()
-            self.pin_timer = (value & 0xF) == 3
-            after = self._swclk()
-            if after != before:
-                if after:
-                    self.timer_faults.append(f"SWCLK rose as its pin changed hands, at {self.now}")
-                self._edge(bool(after), self.now - self._now_base)
-        elif address == CTIMER0 + TCR:
-            if value & 2:
-                # Held in reset: low, nothing more to come.
-                self.timer_edges = []
-                self._timer_set(0, self.now)
-            elif value & 1:
-                if self.timer_edges:
-                    self.timer_faults.append(f"CTimer 0 started at {self.now} before its last run stopped")
-                self.timer_start = self.now
-                first = self.now + TIMER_FIRST_RISE
-                # A long run; the stop's start cuts it to length.
-                self.timer_edges = []
-                for k in range(512):
-                    rise = first + TIMER_PERIOD * k
-                    self.timer_edges += [(rise, True), (rise + TIMER_HIGH, False)]
-        elif page in CTIMER_STOPS and offset == TCR and value & 1:
-            stop = self.now + self.timer_regs.get(page + MR0, 0) + TIMER_STOP_AFTER
-            kept: list[tuple[int, bool]] = []
-            for cycle, rising in self.timer_edges:
-                if cycle >= stop:
-                    break
-                kept.append((cycle, rising))
-            if kept and kept[-1][1]:
-                if stop - kept[-1][0] < TIMER_HIGH:
-                    self.timer_faults.append(f"the stop at {stop} cut a high phase short")
-                kept.append((stop, False))
-            self.timer_edges = kept
-            # The run ends held in reset, which the code finds when it starts the next.
-            self.timer_edges.append((stop, None))
-
-    def _timer_set(self, level: int, cycle: int) -> None:
-        if level != self.timer_level:
-            self.timer_level = level
-            if self.pin_timer:
-                # In the measurement's own cycles, which GPIO accesses and the targets count in.
-                self._edge(bool(level), cycle - self._now_base)
-
-    def _timer_run_to(self, now: int) -> None:
-        """Makes the timer's edges before cycle `now`. One on `now` itself waits for the instruction
-        issuing then, so that SWDIO stored on a falling edge is recorded as ARM's path records it:
-        the level, then the edge."""
-        while self.timer_edges and self.timer_edges[0][0] < now:
-            cycle, rising = self.timer_edges.pop(0)
-            if rising is None:
-                continue
-            self._timer_set(1 if rising else 0, cycle)
-        if self.timer_edges and now - self.timer_start > 512 * TIMER_PERIOD - 8:
-            self.timer_faults.append(f"CTimer 0's run from {self.timer_start} was never stopped")
-            self.timer_edges = []
 
     # -- instruction accounting ---------------------------------------------
     def _classify(self, address: int, size: int) -> tuple[str, int]:
@@ -1085,8 +971,6 @@ class Machine:
         if address in self.restart_at:
             self.target.restart()
         if not self.counting:
-            self.now += 1
-            self._timer_run_to(self.now)
             self._prev_end = address + size
             return
 
@@ -1103,8 +987,6 @@ class Machine:
                     skipped += insn.size
             insn = self._insn(address, size)
             self.cycle = self.engine.issue(insn, address if taken else None)
-            self.now = self._now_base + self.cycle
-            self._timer_run_to(self.now)
             # A load's or store's accesses, from the address its base register gives, which is
             # the bus they take. GPIO and the PPB report their own, from their callbacks.
             spec = self._accesses.get(address)
@@ -1155,8 +1037,6 @@ class Machine:
         else:
             c.other += 1
             self.cycle += m.other
-        self.now = self._now_base + self.cycle
-        self._timer_run_to(self.now)
 
     # -- running -------------------------------------------------------------
     def call(self, name: str, *args: int, timeout_insns: int = 50_000_000) -> int:
@@ -1197,7 +1077,6 @@ class Machine:
         if isinstance(self.target, TimedJtagTarget):
             self.target.elapse(self.cycle + BETWEEN_COMMANDS)
         self.counts = Counts()
-        self._now_base = self.now
         self.cycle = 0
         self.counting = True
         if self.engine is not None:
@@ -1205,7 +1084,6 @@ class Machine:
 
     def end(self) -> Counts:
         self.counting = False
-        self.counts.timer_faults = list(self.timer_faults)
         if self.engine is not None:
             self.counts.span = self.cycle
         if isinstance(self.target, TimedSwdTarget):
@@ -1814,11 +1692,9 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
     # the default: it has to find each one exactly, and leave every sample of the read that follows
     # inside its window.
     if "swd_sweep_last" in symbols(elf):
-        # 50 MHz is where reads take CTimer 0's clock, timed by the target's latency only here.
-        for latency, hz in ((6, 37_500_000), (9, 30_000_000), (7, 50_000_000), (11, 50_000_000)):
+        for latency, hz in ((6, 37_500_000), (9, 30_000_000)):
             failures += measure_latency(elf, model, latency, hz)
         failures += connect_measures(elf, model, 11, 37_500_000)
-        failures += connect_measures(elf, model, 8, 50_000_000)
         failures += connect_rescued(elf, model, 12, 25_000_000)
     # The same on both JTAG wires, with IDCODE reads.
     if "jtag_sweep_last" in symbols(elf):
@@ -1891,10 +1767,6 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
 
     for wire in CHECK_WIRES:
         for mhz in CHECK_CLOCKS:
-            for read in (True, False):
-                timed, _, _ = measure(elf, wire, int(mhz * 1e6), 16, read, model)
-                for fault in timed.timer_faults:
-                    failures.append(f"{wire}@{mhz}MHz {'read' if read else 'write'}: {fault}")
             counts, _, _ = measure(elf, wire, int(mhz * 1e6), 16, True, model)
             periods = [b - a for a, b in zip(counts.edge_cycles, counts.edge_cycles[1:])]
             if not periods:

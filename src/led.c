@@ -54,19 +54,7 @@ void CTIMER3_IRQHandler(void);
 
 /** Once per PWM period, just after the counter has wrapped. MR0 written here takes effect at once,
  *  and with the count this close to zero no period sees a half-applied level. */
-volatile bool led_waiting;
-
 void CTIMER3_IRQHandler(void) {
-    dap_shared.led_writing = 1U;
-    __DMB();
-    if (dap_shared.swd_timer_busy != 0U) {
-        // CPU 1 is in a read whose stop timers share this timer's bridge. Leave CTimer 3 alone,
-        // its interrupt still pending, until led_resume finds the read over.
-        dap_shared.led_writing = 0U;
-        NVIC_DisableIRQ(CTIMER3_IRQn);
-        led_waiting = true;
-        return;
-    }
     CTIMER3->IR = CTIMER_IR_MR3INT_MASK;
     const uint32_t now = ++led_ticks;
     if (dap_shared.led_activity != 0U) {
@@ -83,11 +71,6 @@ void CTIMER3_IRQHandler(void) {
         level = breath(now);
     }
     CTIMER3->MR[0] = level;
-    // A read through the same bridge waits for the writes above to have left it, not only for
-    // the core to have issued them.
-    (void)CTIMER3->MR[0];
-    __DMB();
-    dap_shared.led_writing = 0U;
 }
 
 /** PIO0_5's function 3 is CTIMER3's match 0 output. Driving it from CTIMER3 MR0 gives the

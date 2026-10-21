@@ -124,8 +124,6 @@ static inline uint32_t t_bx_pad(uint32_t rm) { return t32(0x4700U | (rm << 3), 0
 
 /** msr primask, rn. */
 static inline uint32_t t_msr_primask(uint32_t rn) { return t32(0xF380U | rn, 0x8810U); }
-/** dmb sy */
-static inline uint32_t t_dmb(void) { return t32(0xF3BFU, 0x8F5FU); }
 
 /** push.w and pop.w of a register list (bit n = rn). */
 static inline uint32_t t_push(uint32_t list) { return t32(0xE92DU, list); }

@@ -1062,8 +1062,6 @@ def sample_run(probe: "Probe", low: int, fill: int, at: int, count: int, expecte
 
 
 SWD_GEN_MODE_NONE, SWD_GEN_MODE_MEASURE, SWD_GEN_MODE_PIN, SWD_GEN_MODE_AUTOMATIC = range(4)
-# Vendor 0x89 only: reads at the write period from GPIO, or from CTimer 0 where they can be.
-SWD_GEN_MODE_TIMER_OFF, SWD_GEN_MODE_TIMER_ON = 4, 5
 LATENCY_OUTCOMES = ("never measured", "measured", "two latencies left, the later used",
                     "several latencies left", "nothing read right",
                     "no latency agrees with every read")
@@ -1087,8 +1085,6 @@ def swd_gen(probe: "Probe", latency: int = 0, mode: int = SWD_GEN_MODE_NONE) -> 
             "periods": reply[33], "word": u32[0], "cycles": u32[1], "runs": u32[2],
             "consistent": u32[3] | (u32[4] << 32), "rescues": u32[5],
         }
-    if len(reply) >= 60:
-        state["timer"] = {"allowed": bool(reply[58]), "in_use": bool(reply[59])}
     return state
 
 
@@ -1193,11 +1189,6 @@ def cmd_gen(args) -> int:
             print(f"  line reset at the latency in use: {exc}")
     mode = (SWD_GEN_MODE_MEASURE if args.measure else SWD_GEN_MODE_PIN if args.pin
             else SWD_GEN_MODE_AUTOMATIC if args.automatic else SWD_GEN_MODE_NONE)
-    if args.timer is not None:
-        if mode != SWD_GEN_MODE_NONE:
-            print("  --timer goes on its own")
-            return 2
-        mode = SWD_GEN_MODE_TIMER_ON if args.timer == "on" else SWD_GEN_MODE_TIMER_OFF
     state = swd_gen(probe, args.latency, mode)
     if state["status"] != 0:
         print(f"  latency {args.latency}, mode {mode} refused")
@@ -1209,9 +1200,6 @@ def cmd_gen(args) -> int:
     )
     if "sweep" in state:
         print(f"  last measurement: {describe_sweep(state['sweep'])}")
-    if "timer" in state:
-        print(f"  reads from CTimer 0: {'allowed' if state['timer']['allowed'] else 'off'}, "
-              f"{'in use' if state['timer']['in_use'] else 'not in use'} at this clock")
     return 0 if state["ok"] else 1
 
 
@@ -1862,8 +1850,6 @@ def main() -> int:
     gen.add_argument("--hz", type=int, default=0, help="with --measure, the clock to measure at")
     gen.add_argument("--pin", action="store_true", help="stop the probe measuring the latency on its own")
     gen.add_argument("--automatic", action="store_true", help="let the probe measure the latency on its own")
-    gen.add_argument("--timer", choices=("on", "off"),
-                     help="reads at 50 MHz from CTimer 0 where they can be, or from GPIO at 37.5")
     gen.set_defaults(run=cmd_gen)
 
     jgen = sub.add_parser("jgen", help="the generated JTAG paths: state, latencies, measurement")

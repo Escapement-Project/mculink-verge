@@ -279,8 +279,7 @@ if(SWD_CODEGEN OR JTAG_CODEGEN)
 endif()
 if(SWD_CODEGEN)
   target_sources(${CORE1} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_gen.c
-                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_sweep.c
-                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_timer.c)
+                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_sweep.c)
   target_compile_definitions(${CORE1} PRIVATE SWD_CODEGEN=1)
 endif()
 if(JTAG_CODEGEN)

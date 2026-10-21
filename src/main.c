@@ -334,7 +334,6 @@ __attribute__((section(".ramfunc"), noinline, noreturn)) static void serve(void)
             vcom_task();
         }
         reboot_poll();
-        led_resume();
         idle();
     }
 }

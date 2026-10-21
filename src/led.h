@@ -19,11 +19,9 @@
 #ifndef LED_H
 #define LED_H
 
-#include <stdbool.h>
 #include <stdint.h>
 
 #include "dap_shared.h"
-#include "fsl_device_registers.h"
 
 /** CPU 1: a command has arrived. Taken by CPU 0's LED tick. A lost update loses one command's
  *  worth of blinking, so neither side locks: a command must not pay for the LED. One store, so it
@@ -40,17 +38,5 @@ static inline void led_connected(uint32_t on) {
 /** CPU 0: hand the pin to CTIMER3 and start it. FRO_HF clocks the timer, so call after
  *  board_clocks_init. */
 void led_init(void);
-
-/** CPU 0: the LED tick stood down for one of CPU 1's 50 MHz reads (dap_shared.swd_timer_busy). */
-extern volatile bool led_waiting;
-
-/** CPU 0's loop: the LED tick back on once that read is over. CPU 1 publishes a reply after it,
- *  which wakes the loop. */
-static inline void led_resume(void) {
-    if (led_waiting && (dap_shared.swd_timer_busy == 0U)) {
-        led_waiting = false;
-        NVIC_EnableIRQ(CTIMER3_IRQn);
-    }
-}
 
 #endif
