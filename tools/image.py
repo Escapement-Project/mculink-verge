@@ -55,6 +55,7 @@ from unicorn.arm_const import UC_ARM_REG_PC, UC_ARM_REG_R0  # noqa: E402
 UUID_ADDRESS = 0x0009FC70
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 USB_SRAM = (0x40100000, 0x00004000)
+SRAM3 = (0x20030000, 0x00010000)
 
 
 def base_name(symbol: str) -> str:
@@ -317,6 +318,7 @@ DAP_COMMANDS = {
     # Our SAMPLE, no reads. The port is disconnected by this point, so it answers DAP_ERROR;
     # check_sample_probe runs it connected.
     0x87: b"\x00\x00\xff\x00\x00\x00\x00\x00\x00",
+    0x8C: b"\xff",  # our STAGE, asking only
 }
 ID_DAP_INVALID = 0xFF
 SWO_COMMANDS = (0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1E)
@@ -1043,8 +1045,9 @@ def check_core1_image(c: Checker, elf: str, core1: str, request_slots: int) -> N
     sym0, sym1 = symbols_with_size(elf), symbols_with_size(core1)
     # The linker script defines the stack top, and a linker symbol has no size.
     top = symbols(core1).get("__core1_stack_top")
-    missing = [f"{name} (CPU 0)" for name in ("core1_image", "dap_shared") if name not in sym0]
-    missing += [f"{name} (CPU 1)" for name in ("core1_vectors", "core1_reset", "dap_shared") if name not in sym1]
+    missing = [f"{name} (CPU 0)" for name in ("core1_image", "dap_shared", "dap_stage") if name not in sym0]
+    missing += [f"{name} (CPU 1)" for name in ("core1_vectors", "core1_reset", "dap_shared", "dap_stage")
+                if name not in sym1]
     missing += [] if top is not None else ["__core1_stack_top (CPU 1)"]
     if missing:
         c.problems.append(f"the two images are missing {', '.join(missing)}")
@@ -1075,12 +1078,21 @@ def check_core1_image(c: Checker, elf: str, core1: str, request_slots: int) -> N
     c.check(USB_SRAM[0] <= at0 and at0 + size0 <= USB_SRAM[0] + USB_SRAM[1],
             f"dap_shared at {at0:#x} is outside USB SRAM, the only memory the USB DMA reaches")
 
+    (stage0, stage_size0), (stage1, stage_size1) = sym0["dap_stage"], sym1["dap_stage"]
+    c.check((stage0, stage_size0) == (stage1, stage_size1),
+            f"dap_stage is {stage_size0} bytes at {stage0:#x} on CPU 0 and {stage_size1} bytes at {stage1:#x} on CPU 1")
+    # The top of SRAM3, where dap_shared.h and BUSES.md put it, past CPU 1's data.
+    bss_end = symbols(core1).get("__bss_end__", top)
+    c.check(SRAM3[0] <= stage0 and stage0 + stage_size0 <= SRAM3[0] + SRAM3[1],
+            f"dap_stage at {stage0:#x} is outside SRAM3")
+    c.check(stage0 >= bss_end, f"dap_stage at {stage0:#x} overlaps CPU 1's data, which ends at {bss_end:#x}")
+
     c.check("DAP_ExecuteCommand" not in sym0, "CPU 0's image carries the DAP command layer")
     c.check(not any(name.startswith("tud_") for name in sym1), "CPU 1's image carries TinyUSB")
     foreign = foreign_instructions(core1)
     c.check(not foreign, f"CPU 1 has no FPU or DSP extension, and its image uses them: {'; '.join(foreign[:5])}")
     c.note(f"CPU 1's image is embedded at {vectors:#x}, {len(linked)} bytes, and uses no FPU or DSP"
-           f" instruction; dap_shared is {size0} bytes at {at0:#x} in both")
+           f" instruction; dap_shared is {size0} bytes at {at0:#x} in both, dap_stage {stage_size0} at {stage0:#x}")
 
 
 DAP_ID_PRODUCT, DAP_ID_SER_NUM = 2, 3
@@ -1305,10 +1317,9 @@ def main() -> int:
     check_core1_image(c, args.elf, args.core1, slots)
     check_sram_code(c, args.elf, "CPU 0 waits for work", ("wait_for_work", "vcom_ready", "tud_cdc_n_available",
                                                          "tud_cdc_n_write_available", "tu_edpt_stream_write_available"))
-    # The HID report callback is left out: it copies with the library's memcpy, in flash, and
-    # HID is the transport for hosts that cannot use the bulk one.
     check_sram_code(c, args.elf, "CPU 0 runs a command's USB work",
-                    ("serve", "tud_vendor_rx_cb", "tud_vendor_tx_cb", "tud_hid_report_complete_cb"),
+                    ("serve", "tud_vendor_rx_cb", "tud_vendor_tx_cb", "tud_hid_set_report_cb",
+                     "tud_hid_report_complete_cb", "memcpy"),
                     allow=("__NVIC_SystemReset",))  # the end of a reboot, which clang calls out of line
     check_sram_code(c, args.core1, "CPU 1 waits for work", ("wait_for_mailbox",))
     # Allowed: ARM's processing of every command not routed in src/dap_dispatch.c, regenerating

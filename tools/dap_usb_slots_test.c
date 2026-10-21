@@ -266,7 +266,7 @@ static void test_shared_state_initialization(void) {
     dap_shared_init(&state);
 
     for (size_t i = 0U; i < offsetof(dap_shared_t, request); i++) {
-        if (i != offsetof(dap_shared_t, reboot_mode)) {
+        if ((i != offsetof(dap_shared_t, reboot_mode)) && (i != offsetof(dap_shared_t, stage_commands))) {
             assert(bytes[i] == 0U);
         }
     }
@@ -277,6 +277,7 @@ static void test_shared_state_initialization(void) {
     assert(state.response_head == 0U && state.response_tail == 0U);
     assert(state.transfer_abort == NULL);
     assert(state.reboot_mode == REBOOT_NONE);
+    assert(state.stage_commands == 1U);
 }
 
 /** The USB DMA buffers in the struct both images place at one address. */

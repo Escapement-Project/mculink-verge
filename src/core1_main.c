@@ -26,18 +26,21 @@ _Static_assert(DAP_PACKET_SIZE == DAP_SHARED_PACKET_SIZE, "dap_shared.h repeats 
 _Static_assert(DAP_RESPONSE_SIZE == DAP_SHARED_RESPONSE_SIZE, "dap_shared.h repeats DAP_RESPONSE_SIZE");
 
 dap_shared_t dap_shared __attribute__((section(".dap_shared")));
+dap_stage_t dap_stage __attribute__((section(".dap_stage")));
 
 #ifdef MARKER_PINS
 /** Which J8 pins the marker still owns. ID_VENDOR_J8 takes pins away from it and gives them back. */
 volatile uint32_t marker_mask = J8_PIN_MASK;
 #endif
 
-/** The command being executed and its reply, in CPU 1's own SRAM.
+/** The command being executed and its reply, in CPU 1's own SRAM, for a command CPU 0 did not
+ *  stage.
  *
  * The generated transfer code loads and stores words at any offset in these: a block write's data
  * starts at byte 5, and inside DAP_ExecuteCommands a reply can start anywhere. Normal memory takes
  * that; USB SRAM is Device memory, where it faults. So each command is copied in from its USB slot
- * and its reply copied back out, both between word-aligned buffers.
+ * and its reply copied back out, both between word-aligned buffers: here by CPU 1, or by CPU 0
+ * through dap_stage.
  */
 static uint8_t request_copy[DAP_PACKET_SIZE] __attribute__((aligned(DAP_USB_BUFFER_ALIGN)));
 static uint8_t response_copy[DAP_RESPONSE_SIZE] __attribute__((aligned(DAP_USB_BUFFER_ALIGN)));
@@ -71,7 +74,7 @@ static void wake_core0(void) {
     MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQSET = DAP_CORE_MAILBOX_WAKE_MASK;
 }
 
-static bool dap_task(void) {
+COMMAND_PATH static bool dap_task(void) {
     __DMB();
     uint8_t const bulk = dap_shared.request_head;
     uint8_t const hid = dap_shared.hid_request_head;
@@ -83,18 +86,27 @@ static bool dap_task(void) {
     }
     __DMB();
 
-    // Once copied, the slot goes back to CPU 0, which can receive the next command into it while
-    // this one runs.
     bool const use_hid =
         dap_usb_choose_hid(hid_ready, dap_shared.hid_request_seq[hid], bulk_ready, dap_shared.request_seq[bulk]);
     uint32_t const seq = use_hid ? dap_shared.hid_request_seq[hid] : dap_shared.request_seq[bulk];
-    if (use_hid) {
+    uint8_t const stage = use_hid ? dap_shared.hid_request_stage[hid] : dap_shared.request_stage[bulk];
+    bool const staged = stage != 0U;
+    uint8_t* request = request_buffer;
+    uint8_t* response = response_buffer;
+    if (staged) {
+        request = use_hid ? dap_stage.hid_request[stage - 1U] : dap_stage.request[stage - 1U];
+        response = dap_stage.response[out];
+    } else if (use_hid) {
         memcpy(request_copy, dap_shared.hid_request[hid], dap_shared.hid_request_len[hid]);
-        __DMB();
-        dap_shared.hid_request_head = dap_usb_slot_release(dap_shared.hid_request_len, hid, REQUEST_SLOTS);
     } else {
         memcpy(request_copy, dap_shared.request[bulk], dap_shared.request_len[bulk]);
-        __DMB();
+    }
+
+    // The slot goes back to CPU 0, which can receive the next command into it while this one runs.
+    __DMB();
+    if (use_hid) {
+        dap_shared.hid_request_head = dap_usb_slot_release(dap_shared.hid_request_len, hid, REQUEST_SLOTS);
+    } else {
         dap_shared.request_head = dap_usb_slot_release(dap_shared.request_len, bulk, REQUEST_SLOTS);
         wake_core0();  // to receive into the slot
     }
@@ -107,23 +119,26 @@ static bool dap_task(void) {
     }
 
     uint32_t command;
-    memcpy(&command, request_copy, sizeof(command));
+    memcpy(&command, request, sizeof(command));
     dap_shared.core1.command = command;
 
     led_activity();
     MARKER_BUSY();
-    uint32_t produced = DAP_ExecuteCommand(request_buffer, response_buffer) & 0xFFFFU;
+    uint32_t produced = DAP_ExecuteCommand(request, response) & 0xFFFFU;
     MARKER_IDLE();
     if (produced > DAP_PACKET_SIZE) {
         produced = DAP_PACKET_SIZE;
     }
 
     if (use_hid) {
-        hid_report_packet_size(request_copy, response_copy);
+        hid_report_packet_size(request, response);
         produced = DAP_SHARED_HID_REPORT_SIZE;
     }
     if (produced != 0U) {
-        memcpy(dap_shared.response[out], response_copy, produced);
+        if (!staged) {
+            memcpy(dap_shared.response[out], response_copy, produced);
+        }
+        dap_shared.response_staged[out] = staged;
         dap_shared.response_seq[out] = seq;
         dap_shared.response_transport[out] = use_hid ? DAP_TRANSPORT_HID : DAP_TRANSPORT_BULK;
         __DMB();

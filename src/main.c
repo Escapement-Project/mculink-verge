@@ -35,6 +35,24 @@ _Static_assert(DAP_PACKET_SIZE == DAP_SHARED_PACKET_SIZE, "dap_shared.h repeats 
 _Static_assert(CFG_TUD_HID_EP_BUFSIZE == DAP_SHARED_HID_REPORT_SIZE, "dap_shared.h repeats the HID report size");
 
 dap_shared_t dap_shared __attribute__((section(".dap_shared")));
+dap_stage_t dap_stage __attribute__((section(".dap_stage")));
+
+/** The dap_stage request buffer each transport's next staged command goes in. */
+static uint8_t stage_next;
+static uint8_t hid_stage_next;
+
+/** Copy a command into the next stage buffer, and return what its slot's `_stage` takes. */
+__attribute__((section(".ramfunc"))) static uint8_t stage_request(uint8_t (*buffers)[DAP_SHARED_PACKET_SIZE],
+                                                                 uint8_t* next, const uint8_t* command,
+                                                                 uint32_t length) {
+    if (dap_shared.stage_commands == 0U) {
+        return 0U;
+    }
+    uint8_t const at = *next;
+    *next = dap_usb_next_slot(at, DAP_STAGE_REQUESTS);
+    memcpy(buffers[at], command, length);
+    return (uint8_t)(at + 1U);
+}
 
 static bool disconnect_requested;
 static bool disconnect_complete;
@@ -80,9 +98,11 @@ __attribute__((section(".ramfunc"))) void tud_vendor_rx_cb(uint8_t index, const 
         return;
     }
 
-    dap_shared.request_seq[dap_shared.request_tail] = dap_shared.next_request_seq++;
+    uint8_t const tail = dap_shared.request_tail;
+    dap_shared.request_stage[tail] = stage_request(dap_stage.request, &stage_next, buffer, length);
+    dap_shared.request_seq[tail] = dap_shared.next_request_seq++;
     __DMB();
-    dap_shared.request_len[dap_shared.request_tail] = (uint16_t)length;
+    dap_shared.request_len[tail] = (uint16_t)length;
     __DMB();
     dap_shared.request_tail = dap_usb_next_slot(dap_shared.request_tail, REQUEST_SLOTS);
     signal_core1();
@@ -131,6 +151,9 @@ __attribute__((section(".ramfunc"))) static bool start_rx(void* context, uint8_t
 
 __attribute__((section(".ramfunc"))) static bool start_tx(void* context, uint8_t slot, uint16_t length) {
     uint8_t (*buffers)[DAP_PACKET_SIZE] = context;
+    if (dap_shared.response_staged[slot] != 0U) {
+        memcpy(buffers[slot], dap_stage.response[slot], length);
+    }
     if (dap_shared.response_transport[slot] == DAP_TRANSPORT_BULK) {
         return tud_vendor_write_xfer(buffers[slot], length) == length;
     }
@@ -195,6 +218,34 @@ __attribute__((section(".ramfunc"), noinline)) static void wait_for_work(void) {
     }
 }
 
+#ifdef CODE_LAB
+/** While a code lab body holds this bit of CPU 0's mailbox, CPU 0 copies 256 bytes back and forth
+ *  at the 256-byte-aligned address in the register's upper bits, word by word or with memcpy if
+ *  bit 2 is set too, so that the body can time its own accesses against another master on the
+ *  same SRAM port. It runs in place of idle()'s wait, and stops for a USB event or CPU 1's wake. */
+#define LAB_HAMMER_MASK 2U
+#define LAB_HAMMER_MEMCPY 4U
+
+__attribute__((section(".ramfunc"))) static bool lab_hammer(void) {
+    uint32_t control = MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQ;
+    if ((control & LAB_HAMMER_MASK) == 0U) {
+        return false;
+    }
+    while (((control & 0xFBU) == LAB_HAMMER_MASK) && !tud_task_event_ready()) {
+        uint32_t* const words = (uint32_t*)(control & ~0xFFU);
+        if ((control & LAB_HAMMER_MEMCPY) != 0U) {
+            memcpy(&words[64], words, 256U);
+        } else {
+            for (uint32_t i = 0U; i < 64U; i++) {
+                ((volatile uint32_t*)words)[64U + i] = ((volatile uint32_t*)words)[i];
+            }
+        }
+        control = MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQ;
+    }
+    return true;
+}
+#endif
+
 /** Everything that gives the loop work wakes it: USB and the LED tick by interrupt, CPU 1 through
  *  the mailbox when it frees a request slot, publishes a reply or asks for a reboot, and the
  *  console through vcom_ready. The mailbox is cleared before the checks, so a write CPU 1 makes
@@ -207,6 +258,11 @@ __attribute__((section(".ramfunc"))) static void idle(void) {
     if (reply_waiting || disconnect_requested || tud_task_event_ready()) {
         return;
     }
+#ifdef CODE_LAB
+    if (lab_hammer()) {
+        return;
+    }
+#endif
     __disable_irq();
     wait_for_work();
     __enable_irq();
@@ -272,7 +328,11 @@ __attribute__((section(".ramfunc"))) void tud_hid_set_report_cb(uint8_t instance
         return;
     }
 
-    memcpy(dap_shared.hid_request[tail], buffer, bufsize);
+    uint8_t const stage = stage_request(dap_stage.hid_request, &hid_stage_next, buffer, bufsize);
+    if (stage == 0U) {
+        memcpy(dap_shared.hid_request[tail], buffer, bufsize);
+    }
+    dap_shared.hid_request_stage[tail] = stage;
     dap_shared.hid_request_seq[tail] = dap_shared.next_request_seq++;
     __DMB();
     dap_shared.hid_request_len[tail] = bufsize;
@@ -305,6 +365,11 @@ __attribute__((section(".ramfunc"))) void tud_hid_report_failed_cb(uint8_t insta
 
 static void start_core1(void) {
     extern uint32_t core1_image[];
+
+    // CPU 1's data bus wins every tie at an AHB matrix port. At the reset priorities CPU 0 does,
+    // and its copies in dap_stage delayed CPU 1's accesses there by a cycle at a time: enough to
+    // move a wire edge when a transfer reads or writes its buffer between two of them.
+    SYSCON->AHBMATPRIO = SYSCON_AHBMATPRIO_PRI_CPU1_SBUS(3U);
 
     SYSCON->CPUCFG |= SYSCON_CPUCFG_CPU1ENABLE_MASK;
     SYSCON->CPBOOT = SYSCON_CPBOOT_CPBOOT((uint32_t)core1_image);

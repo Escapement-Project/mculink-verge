@@ -6,7 +6,9 @@ MEMORY
 {
   m_text       (RX) : ORIGIN = @CORE1_FLASH_ORIGIN@, LENGTH = @CORE1_FLASH_LENGTH@
   m_data       (RW) : ORIGIN = @CORE1_RAM_ORIGIN@, LENGTH = @CORE1_RAM_LENGTH@
+  m_stack      (RW) : ORIGIN = @CORE1_STACK_ORIGIN@, LENGTH = @CORE1_STACK_LENGTH@
   m_dap_shared (RW) : ORIGIN = @DAP_SHARED_ORIGIN@, LENGTH = @DAP_SHARED_LENGTH@
+  m_dap_stage  (RW) : ORIGIN = @DAP_STAGE_ORIGIN@, LENGTH = @DAP_STAGE_LENGTH@
 }
 
 SECTIONS
@@ -51,9 +53,13 @@ SECTIONS
     KEEP(*(.dap_shared))
   } > m_dap_shared
 
+  .dap_stage (NOLOAD) :
+  {
+    KEEP(*(.dap_stage))
+  } > m_dap_stage
+
   /* newlib's snprintf links its allocator, whose sbrk starts at `end`. Nothing here allocates. */
   PROVIDE(end = __bss_end__);
 
-  __core1_stack_top = ORIGIN(m_data) + LENGTH(m_data);
-  ASSERT(__core1_stack_top - __bss_end__ >= @CORE1_STACK_SIZE@, "CPU 1's RAM leaves less than its stack")
+  __core1_stack_top = ORIGIN(m_stack) + LENGTH(m_stack);
 }

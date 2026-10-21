@@ -7,8 +7,8 @@
  *
  * It lives in USB SRAM because the packet buffers are USB DMA targets and the HS controller reaches
  * no other memory. That RAM is Device memory to both cores, and CPU 1 has no MPU to change that, so
- * an unaligned access to anything here faults. CPU 1 runs each command from its own copy; see
- * src/core1_main.c.
+ * an unaligned access to anything here faults. CPU 1 runs each command from a copy in Normal
+ * memory: CPU 0's in dap_stage (below), or its own (src/core1_main.c).
  */
 #ifndef DAP_SHARED_H
 #define DAP_SHARED_H
@@ -36,6 +36,13 @@
  *  nothing enables. A table starts on 512 bytes. */
 #define DAP_SHARED_SWO_DMA_WORDS ((SWO_SEGMENTS + 1U) * 4U)
 #define DAP_SHARED_SWO_DMA_ALIGN __attribute__((aligned(512)))
+
+/** dap_stage's request buffers for each transport: one more than the slots (see dap_stage_t). */
+#define DAP_STAGE_REQUESTS (REQUEST_SLOTS + 1U)
+
+/** A reply slot in dap_stage: DAP_SHARED_RESPONSE_SIZE, rounded up so the next slot is aligned. */
+#define DAP_STAGE_RESPONSE_SIZE \
+    ((DAP_SHARED_RESPONSE_SIZE + DAP_USB_BUFFER_ALIGN - 1U) & ~(DAP_USB_BUFFER_ALIGN - 1U))
 
 /** The HID report size, which CPU 0 checks against CFG_TUD_HID_EP_BUFSIZE. */
 #define DAP_SHARED_HID_REPORT_SIZE 64U
@@ -80,9 +87,10 @@ enum {
  * earlier reply to leave, and a conforming HID host never finds its ring full.
  */
 typedef struct {
-    // Bulk requests: CPU 0 fills, CPU 1 releases as soon as it has copied the command.
+    // Bulk requests: CPU 0 fills, CPU 1 releases as soon as it has taken the command.
     volatile uint16_t request_len[REQUEST_SLOTS];
     volatile uint32_t request_seq[REQUEST_SLOTS];
+    volatile uint8_t request_stage[REQUEST_SLOTS];  // 0, or 1 + the dap_stage.request it is in
     volatile uint8_t request_head;
     volatile uint8_t request_tail;
     volatile uint8_t rx_armed_slot;
@@ -94,6 +102,7 @@ typedef struct {
     // into a buffer of its own.
     volatile uint16_t hid_request_len[REQUEST_SLOTS];
     volatile uint32_t hid_request_seq[REQUEST_SLOTS];
+    volatile uint8_t hid_request_stage[REQUEST_SLOTS];
     volatile uint8_t hid_request_head;
     volatile uint8_t hid_request_tail;
     // Replies, in the order CPU 1 ran their commands: CPU 1 fills, CPU 0 releases once USB has sent
@@ -101,8 +110,13 @@ typedef struct {
     volatile uint16_t response_len[REQUEST_SLOTS];
     volatile uint32_t response_seq[REQUEST_SLOTS];  // the command's
     volatile uint8_t response_transport[REQUEST_SLOTS];
+    volatile uint8_t response_staged[REQUEST_SLOTS];  // the reply is in dap_stage.response
     volatile uint8_t response_head;
     volatile uint8_t response_tail;
+
+    /** Whether CPU 0 stages the commands it receives next, set by ID_VENDOR_STAGE. Each command
+     *  carries its own flag, so a change takes effect between commands. */
+    volatile uint8_t stage_commands;
 
     /** DAP_TransferAbort lives in CPU 1's RAM. CPU 1 publishes its address before it runs a
      *  command; CPU 0 sets it the moment an abort arrives. */
@@ -136,6 +150,31 @@ typedef struct {
 
 extern dap_shared_t dap_shared;
 
+/** Commands and replies in Normal memory, where CPU 1 runs them in place. CPU 0 copies each staged
+ *  command in from its USB slot as it arrives and each staged reply out as it starts to send it,
+ *  so CPU 1 copies nothing while commands are queued. Each image defines it in `.dap_stage`, which
+ *  both link scripts place at the top of SRAM3 (CMakeLists.txt says why there). CPU 1 has the
+ *  highest AHB matrix priority (src/main.c), so CPU 0's copies cannot delay the accesses a
+ *  transfer makes to its buffers.
+ *
+ * CPU 1 frees a staged command's request slot as it takes the command, as it does an unstaged one
+ * once copied, so a DAP_TransferAbort can still arrive while the host has every slot in use. So
+ * the request buffers are not the slots: CPU 0 takes them in turn, one more of them than there are
+ * slots. A buffer comes round again after REQUEST_SLOTS more commands, and CPU 0 cannot receive
+ * that many while the command in it runs. HID has its own, a packet long like `request_copy`,
+ * because the command layer bounds its reads by the packet size. The reply buffers are the reply
+ * slots'.
+ */
+typedef struct {
+    DAP_SHARED_ALIGN uint8_t request[DAP_STAGE_REQUESTS][DAP_SHARED_PACKET_SIZE];
+    DAP_SHARED_ALIGN uint8_t hid_request[DAP_STAGE_REQUESTS][DAP_SHARED_PACKET_SIZE];
+    // The command layer may write past the packet before the reply is cut to it, as CPU 1's own
+    // reply buffer allows for.
+    DAP_SHARED_ALIGN uint8_t response[REQUEST_SLOTS][DAP_STAGE_RESPONSE_SIZE];
+} dap_stage_t;
+
+extern dap_stage_t dap_stage;
+
 /** Clear the hand-off state. USB SRAM is not cleared by either startup. */
 static inline void dap_shared_init(volatile dap_shared_t* state) {
     volatile uint8_t* bytes = (volatile uint8_t*)state;
@@ -143,6 +182,7 @@ static inline void dap_shared_init(volatile dap_shared_t* state) {
         bytes[i] = 0U;
     }
     state->reboot_mode = REBOOT_NONE;
+    state->stage_commands = 1U;
 }
 
 #endif

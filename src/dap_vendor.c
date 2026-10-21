@@ -14,6 +14,7 @@
 #include "DAP.h"
 #include "board_pins.h"
 #include "cjtag.h"
+#include "dap_shared.h"
 #include "marker.h"
 #include "reboot.h"
 #include "sample_probe.h"
@@ -50,6 +51,8 @@
 #define ID_VENDOR_JTAG_GEN ID_DAP_Vendor10
 /// Switches the generated JTAG transfers' learned pacing. See below.
 #define ID_VENDOR_JTAG_PACING ID_DAP_Vendor11
+/// Switches whether CPU 0 stages commands for CPU 1 (dap_stage in dap_shared.h). See below.
+#define ID_VENDOR_STAGE ID_DAP_Vendor12
 
 /** Answered by ID_VENDOR_CJTAG_INFO, so a host can recognise this firmware rather than assume it.
  *
@@ -169,6 +172,11 @@
 /** ID_VENDOR_JTAG_PACING takes `mode`: 0 turns the learned idle clocks off, so the generated wire
  * is ARM's exactly, 1 turns them on (the default), anything else leaves them. It answers `status,
  * on, paced`: whether pacing is on and the idle clocks learned so far (jtag_gen_paced).
+ */
+
+/** ID_VENDOR_STAGE takes `mode`: 0 has CPU 1 copy each command and reply itself, 1 has CPU 0 stage
+ * them (the default), anything else leaves it. It answers `status, on`. Commands already received
+ * keep the way they arrived, so the change reaches the ones after them.
  */
 
 /** ID_VENDOR_TARGET takes `mode, channel` and answers `status, code, millivolts, detect`, the two
@@ -298,6 +306,14 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             response[1] = DAP_ERROR;
         }
         return (2U << 16) | 2U;
+
+    case ID_VENDOR_STAGE:
+        if (request[1] <= 1U) {
+            dap_shared.stage_commands = request[1];
+        }
+        response[1] = DAP_OK;
+        response[2] = dap_shared.stage_commands;
+        return (2U << 16) | 3U;
 
     case ID_VENDOR_TARGET: {
         const bool supply = (request[1] == TARGET_MODE_SUPPLY);
