@@ -50,6 +50,9 @@ from cycles import (  # noqa: E402
 AP_DRW_READ, AP_DRW_WRITE = 0x0F, 0x0D
 # Off, so that a generated image's JTAG wire is ARM's exactly even when the target answers WAIT.
 ID_JTAG_PACING = 0x8B
+# Mode 2 pins the latency in use, so a first transfer that fails does not make a generated image
+# measure it with IDCODE reads (src/jtag_sweep.h), which ARM's path never sends.
+ID_JTAG_GEN, JTAG_GEN_PIN = 0x8A, 2
 
 # Set by --ignore-samples, --ignore-falls and --clock.
 IGNORE_SAMPLES = False
@@ -194,13 +197,16 @@ def run_jtag_commands(
     idle: int,
     commands: list[bytes],
     chain: tuple[int, ...] = (4,),
+    index: int = 0,
 ) -> tuple[list[str], bytes]:
     """Any commands on four wires or through OScan1 framing, against the TAP run_jtag and
-    run_cjtag use: the replies, joined."""
-    dr = ((ack >> 1) & 1) | ((ack & 1) << 1) | (((ack >> 2) & 1) << 2) | (word << 3)
+    run_cjtag use: the replies, joined. The TAP is at chain position `index`; the TAPs nearer TDO
+    are in BYPASS during a DR scan, one zero each ahead of its DR."""
+    dr = (((ack >> 1) & 1) | ((ack & 1) << 1) | (((ack >> 2) & 1) << 2) | (word << 3)) << index
     probe = Machine(elf, Target([]), restart_at=set(), model=Model())
     probe.command(bytes([ID_CONNECT, 2]))
     probe.command(bytes([ID_JTAG_PACING, 0]))
+    probe.command(bytes([ID_JTAG_GEN, 0, 0, JTAG_GEN_PIN]))
     # On four wires the generated path samples a short clock's TDO after the next falling edge,
     # which an order-only TAP cannot hold for it; tools/jtagcheck.py times those. 12.5 MHz is the
     # fastest clock that samples within its own.
@@ -209,9 +215,9 @@ def run_jtag_commands(
     probe.command(bytes([ID_JTAG_CONFIGURE, len(chain)]) + bytes(chain))
     if two_pin:
         probe.command(bytes([ID_CJTAG_CONTROL, 1]))
-        probe.cjtag_tap = JtagTap(dr, 35)
+        probe.cjtag_tap = JtagTap(dr, 35 + index)
     else:
-        probe.tap = JtagTap(dr, 35)
+        probe.tap = JtagTap(dr, 35 + index)
     probe.begin()
     replies = b"".join(probe.command(c) for c in commands)
     return wire(probe.end().trace), replies
@@ -399,7 +405,7 @@ def main() -> int:
                         ("block", bytes([ID_TRANSFER_BLOCK, index]) + u16(3) + bytes([AP_DRW_READ])),
                     ):
                         cases.append((f"{kind} index={index} ack={ack} word=0x{word:08x} {'fast' if fast else 'paced'} idle={idle} chain={chain}",
-                                      (ack, word, fast, idle, [payload], chain)))
+                                      (ack, word, fast, idle, [payload], chain, index)))
         two_pin = args.wire == "cjtag"
         failures = sum(
             compare(
