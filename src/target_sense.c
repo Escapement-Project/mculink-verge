@@ -6,6 +6,8 @@
 #include "fsl_lpadc.h"
 #include "fsl_power.h"
 
+#include "core_clock.h"
+
 /** DBGIF_VREF: half of the buffered J6 pin 1, through R22/R23. */
 #define SENSE_VREF_PORT 0U
 #define SENSE_VREF_PIN 31U
@@ -18,6 +20,12 @@
 /** Iterations of a result poll. A conversion takes tens of microseconds and an iteration a few
  *  core cycles, so this is a wait of tens of milliseconds and never the reason a read fails. */
 #define SENSE_RESULT_POLLS 1000000U
+
+/** Reads of STAT between the offset calibration finishing and the gain calibration's request. A
+ *  request made within a few cycles of the offset calibration's CAL_RDY sometimes never completes:
+ *  the gain results never become ready, however long the wait. 1 us apart was enough on the
+ *  bench. Each read takes at least a cycle, so this is at least 10 us. */
+#define SENSE_CALIBRATION_GAP_READS (10U * (CORE_CLOCK_HZ / 1000000U))
 
 #define SENSE_COMMAND_ID 1U
 #define SENSE_TRIGGER 0U
@@ -54,6 +62,9 @@ static target_sense_status_t adc_init(void) {
     // timeout options. Without them these are unbounded waits on a status bit.
     if (LPADC_DoOffsetCalibration(ADC0) != kStatus_Success) {
         return TARGET_SENSE_OFFSET_CALIBRATION;
+    }
+    for (uint32_t i = 0U; i < SENSE_CALIBRATION_GAP_READS; i++) {
+        (void)ADC0->STAT;
     }
     // DoAutoCalibration is the same two calls with the status thrown away.
     LPADC_PrepareAutoCalibration(ADC0);
