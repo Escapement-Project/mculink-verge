@@ -214,6 +214,14 @@ Since (commits `0814414`, `fe33026`):
   went offline before it was built.
 - `tools/swd_latency_test.c` runs the connect-time measurement against timer reads too: right at
   every latency 2 to 40.
+- Review (2026-10-21): no wrong bit, ack, count or word on any path (OK, WAIT, FAULT,
+  protocol error, parity error, either data phase); register use, settle counts and the parity
+  fold checked. Its gaps, closed in `a5a3413`: equiv now compares a timer read on rising edges
+  (`--ignore-falls`): 360/360 DAP_Transfer and 536/536 block cases at 50 MHz against ARM's build;
+  the gate measures the latency at 50 MHz, which times the timer samples against a target (a run
+  shifted two cycles fails it: break-tested). Left as is: outside begin()/end() the model counts
+  an instruction a cycle, so timer edges there are approximate (nothing in the gate runs one);
+  DAP_SWJ_Pins reads SWCLK as 0 after a timer read.
 - Regression check on the Pro (CC1312R1 on J7, image with both commits): four-wire and two-pin
   ROM blocks 400/400 at 1, 10, 25, 50 MHz, throughput equal to PRO.md step 7's.
 
