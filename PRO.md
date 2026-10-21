@@ -194,6 +194,12 @@ lifted, the same blocks match at every clock from 1 to 50 MHz (31.2 KiB/s at 1 M
    (2026-10-21).
 9. The probe's own LPC55S69 through the Pro's J3, debugged by the plain MCU-Link: a bring-up aid for
    faults on the Pro.
+   Done 2026-10-21, reading only (`j3read.py`): the plain
+   board on J3 reads the Pro's DPIDR (0x6BA02477), AP0 and AP1 (AHB-APs, CPU 0 and CPU 1), AP2
+   (the debug mailbox), both cores' CPUID and DHCSR, and our firmware's RAM, all without halting:
+   the LED tick advanced 488 a second as it was read. CPU 1's AP faults a secure access, so its CSW
+   needs bit 30 (non-secure): three CSW values without it faulted, both with it read. Halting a
+   core through J3 is untried.
 
 Phase 2, the extras (needs decisions b and c below):
 
