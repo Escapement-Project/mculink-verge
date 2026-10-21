@@ -1,5 +1,13 @@
 # A generator whose SWD clock comes from CTimer 0
 
+**Removed from master 2026-10-21.** The code is on branch `swd-timer-reads` (`23637a3`):
+`src/swd_timer.c`, the timer section of `src/swd_gen.c`, the LED handshake, vendor 0x89 modes 4
+and 5, and the emulator's timer model. Why: a run's edges do not wait for the core, so its stop
+and its start pair are only right while no other master reaches APB port 7 (BUSES.md), which both
+cores share for every APB peripheral; and it gained 1% on block reads and lost 6% on DAP_Transfer
+(port 7 stalls, "Why" below). Reads are back on GPIO at 37.5 MHz (`6cf4f52`). This file stays
+as the record. Reads against writes on GPIO: BACKLOG 22.
+
 Read CODEGEN.md first (the GPIO generator as built, which this extends), then this. The first part
 is the 2026-10-16 design; "Built, 2026-10-21" at the end is what was implemented, which differs,
 and what the bench found. Numbers are from the MSPM0L1306 bench.
@@ -260,8 +268,9 @@ Throughput (mculink-bench `swd-1`, 2026-10-21, gcc and clang `34431f1` against 2
 alike, both compilers; probe-rs moves within its noise; 10 and 20 MHz are unchanged. The A/B in
 one image (`dap.py gen --timer off|on`, 127-word DPIDR reads at 50 MHz, 8 queued, three rounds,
 each within 0.1%): DAP_Transfer 1,636 off against 1,541 on (-5.8%), DAP_TransferBlock 2,712
-against 2,744 (+1.2%). So the wire did not bind block reads, and a DAP_Transfer read costs about
-22 cycles more on the timer path.
+against 2,744 (+1.2%). The timer's own costs ate most of what the faster wire saved, and a
+DAP_Transfer read costs about 22 cycles more on the timer path. (On GPIO the wire does bind
+reads at 50 MHz asked: BACKLOG 22.)
 
 Why (2026-10-21): port 7 stalls the emulator does not model. Against the emulator's cycles a word
 (127 DPIDR reads, `cycles.py` with the m33 engine), the bench is 22 slower with the timer off and
