@@ -230,6 +230,30 @@ same image with the timer off (GPIO reads at 37.5): 128,000, no error. Blocks of
 3 queued: 2,736 KiB/s timer on against 2,706 off, 1%, so a block is bound by something other than
 the read's wire time at this size. The wire: 20 ns rising edges through a read.
 
+Reliability (2026-10-21, image `34431f1` gcc unless named; L1306 halted;
+`memsoak.py`): random words in the first 1 KiB of SRAM,
+read back at random offsets and lengths, half DAP_TransferBlock and half DAP_Transfer (TAR write
+plus reads), the page rewritten at the clock every 5,000 commands; a wrong word is read again to
+tell a read error from a write error. About 255,000 words a second at 50 MHz.
+- **Long soak**: 30 min, 463.6 million words (233 million by block, 231 million by transfer),
+  1,454 page rewrites at 50 MHz, no wrong word and no stop. Each rewrite reattaches with a line
+  reset, so the probe measured the latency about 1,800 times along the way, choosing 6 or 7.
+- **Under load**: 10 min with the UART bridge streaming at 2 Mbaud (120 MB sent, the line full)
+  and SWO capture on and drained (the M0+ target sends none): 131.6 million words, no error,
+  about 15% fewer a second than unloaded.
+- **Margin**: latency pinned at 6 and at 7, 60 s each: 15.6 million words each, no error. At 5 and
+  at 8 not even DPIDR reads (20 attaches of 20 fail). The GPIO path at 37.5 MHz works at 5 to 8
+  (10 s each, no error) and fails at 4, 9 and 10. So the timer reads have two working settings
+  against the GPIO path's four: a 20 ns bit sampled in 6.7 ns steps. The connect-time measurement
+  chose 7 in the morning and 6 in the afternoon on the same target; both are inside. Nothing
+  re-measures during a session, so a drift of a cycle in the wrong direction would fail reads.
+- **WAIT**: the target's MCLK divided by 16 (SYSCTL MCLKCFG MDIV, 2 MHz): every command answers
+  WAIT (245 of 245 stop with no retries). With 100 retries, 120 s: 30.6 million words, no error.
+- **A target limit, not ours**: with MCLK from the 32 kHz LFCLK, reads return zeros with an OK
+  acknowledge from 8 MHz asked on our image (generated and timer paths alike) and on the
+  `armwire` build (ARM's transfer code), and from 10 MHz asked on stock V3.172 (whose clock runs
+  slower than asked); right below that on all three. MDIV, above, is the WAIT test that works.
+
 Open:
 1. **The plain board was off USB from 04:18 to about 07:50** (replugged): after
    `dap.py reboot` it re-enumerated but answered no control request, and a USB port reset took
