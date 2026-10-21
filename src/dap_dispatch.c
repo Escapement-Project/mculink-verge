@@ -30,6 +30,7 @@
 #include "dap_dispatch.h"
 #include "hot.h"
 #include "jtag_dp.h"
+#include "led.h"
 #include "swd_dp.h"
 #ifdef SWD_CODEGEN
 #include "swd_gen.h"
@@ -43,7 +44,10 @@
 extern uint32_t arm_DAP_ProcessCommand(const uint8_t* request, uint8_t* response);
 
 /** ARM's processing, for every command not routed here. Out of line and in flash: inlined into
- *  the SRAM dispatch below it would take all of DAP.c into SRAM with it. */
+ *  the SRAM dispatch below it would take all of DAP.c into SRAM with it.
+ *
+ * The wire changes only here, in DAP_Connect, DAP_Disconnect and vendor 0x83 (ID_VENDOR_CJTAG_CONTROL),
+ * so this is where the FUNC LED learns it. */
 __attribute__((noinline)) static uint32_t arm_command(const uint8_t* request, uint8_t* response) {
 #ifdef SWD_CODEGEN
     swd_sweep_watch(request);
@@ -51,7 +55,17 @@ __attribute__((noinline)) static uint32_t arm_command(const uint8_t* request, ui
 #ifdef JTAG_CODEGEN
     jtag_sweep_watch(request);
 #endif
-    return arm_DAP_ProcessCommand(request, response);
+    uint32_t const result = arm_DAP_ProcessCommand(request, response);
+    if ((*request == ID_DAP_Connect) || (*request == ID_DAP_Disconnect) || (*request == ID_DAP_Vendor3)) {
+        if (DAP_Data.debug_port == DAP_PORT_SWD) {
+            led_wire(LED_WIRE_SWD);
+        } else if (DAP_Data.debug_port == DAP_PORT_JTAG) {
+            led_wire(cJTAG_Active() ? LED_WIRE_CJTAG : LED_WIRE_JTAG);
+        } else {
+            led_wire(LED_WIRE_NONE);
+        }
+    }
+    return result;
 }
 
 /** Words a block reply fits: the command id, the two count bytes and the status, then the data. */

@@ -1098,115 +1098,353 @@ def check_core1_image(c: Checker, elf: str, core1: str, request_slots: int) -> N
 DAP_ID_PRODUCT, DAP_ID_SER_NUM = 2, 3
 
 
-CTIMER3_MR0 = 0x40029018
-CTIMER3_MR3 = 0x40029024
+# Each timer's registers, by offset; an LED's level is in a match shadow register, which the timer
+# copies into the match register as it wraps.
+CTIMER1, CTIMER3 = 0x40009000, 0x40029000
+CTIMER_TCR, CTIMER_PR, CTIMER_MCR, CTIMER_MR0, CTIMER_MR3, CTIMER_PWMC, CTIMER_MSR0, CTIMER_MSR3 = (
+    0x04, 0x0C, 0x14, 0x18, 0x24, 0x74, 0x78, 0x84)
+CTIMER_TCR_CEN = 1
+# SYSCON's clock select for CTimer 1 and 3, and the clock gate bit for CTimer 1 in AHBCLKCTRL1.
+CTIMER1_CLKSEL, CTIMER3_CLKSEL, AHBCLKCTRL1, AHBCLKCTRL1_TIMER1 = 0x40000270, 0x40000278, 0x40000204, 1 << 27
+IOCON = 0x40001000
+CTIMER_MCR_MR0R, CTIMER_MCR_MR0RL, CTIMER_MCR_MR3RL, CTIMER_PWMC_PWMEN3 = 1 << 1, 1 << 24, 1 << 27, 1 << 3
+GPIO_SET, GPIO_CLR, GPIO_DIRSET = 0x2200, 0x2280, 0x2380
 ID_DAP_HOST_STATUS = 0x01
 
 # A flash shorter than this is one a person staring at the board can miss, and the whole point
 # of the LED is to be seen.
 LED_VISIBLE_MS = 50
 
-# How long after the traffic stops the LED has to have stopped blinking. Generous: the check is
-# that the blinking ends at all, not what the hold time is.
+# How long after the traffic stops the LED has to be back to what it showed. Generous: the check
+# is that the flicker ends at all, not how long it lasts.
 LED_SETTLE_MS = 800
 
-# What CTIMER3 counts at. A tick is one PWM period, so this is what turns ticks into time.
+# What the LED timers count at. A tick is one PWM period, so this is what turns ticks into time.
 LED_TIMER_HZ = 1_000_000
+
+# The largest step in L* a fade may take in one tick, out of 100.
+LED_SMOOTH_LSTAR = 1.0
+
+# How far an inverted LED has to be from what it would have shown, in L*.
+LED_FLICKER_LSTAR = 40
+
+# The Pro's LEDs on port 1 (src/led.c, PRO.md), and FUNC's ramp in ms (512 ticks).
+PRO_LED_USB, PRO_LED_SWO, PRO_LED_VCOM, PRO_LED_FUNC, PRO_LED_SIO, PRO_LED_NRG = 12, 13, 15, 16, 17, 18
+PRO_SWITCHED = (PRO_LED_USB, PRO_LED_SWO, PRO_LED_VCOM, PRO_LED_SIO, PRO_LED_NRG)
+LED_RAMP_MS = (900, 1200)
+LED_WIRE_NONE, LED_WIRE_SWD, LED_WIRE_JTAG, LED_WIRE_CJTAG = 0, 1, 2, 3
+# Written into the port 1 pin registers before the LEDs start, to show which the firmware writes.
+LED_PIN_SENTINEL = 0xAA
+
+
+def lightness(level: int, period: int) -> float:
+    """CIE 1976 L*, 0 to 100, of a PWM level: how bright the LED looks rather than its duty."""
+    y = min(level, period) / period
+    return 116 * y ** (1 / 3) - 16 if y > 216 / 24389 else y * 24389 / 27
+
+
+def largest_step(values: list[float]) -> float:
+    return max(abs(a - b) for a, b in zip(values, values[1:]))
+
+
+def stretches(flags: list[bool]) -> list[int]:
+    """The lengths of each unbroken run of True, except one the list ends inside."""
+    runs, run = [], 0
+    for flag in flags:
+        if flag:
+            run += 1
+        elif run:
+            runs.append(run)
+            run = 0
+    return runs
+
+
+class LedTick:
+    """CPU 0's LED tick on the emulator: the interrupt run the way the timer would, the levels it
+    leaves read back."""
+
+    def __init__(self, elf: str, request_slots: int, board: int = 0, jumpers: int = 0):
+        self.probe = Machine(elf, Target([]), restart_at=set(), model=Model())
+        self.ok = all(name in self.probe.sym for name in
+                      ("board_clocks_init", "led_init", "CTIMER3_IRQHandler", "dap_shared", "led_ticks"))
+        if not self.ok:
+            return
+        fields = shared_offsets(request_slots, "led_activity", "led_connected", "led_wire", "led_swo", "board",
+                                "jumpers", small_enums=short_enums(elf))
+        self.shared = {name: self.probe.sym["dap_shared"] + offset for name, offset in fields.items()}
+        self.write("board", board)
+        self.write("jumpers", jumpers)
+        for pin in range(PRO_LED_USB, PRO_LED_NRG + 1):
+            self.probe.uc.mem_write(ORDINARY_GPIO + REG_B0 + 32 + pin, bytes([LED_PIN_SENTINEL]))
+        model_syscon(self.probe)
+        self.probe.call("board_clocks_init")
+        self.probe.call("led_init")
+        self.period = self.read32(CTIMER3 + CTIMER_MR3) + 1
+        self.tick_ms = self.period * 1000 / LED_TIMER_HZ
+
+    def write(self, field: str, value: int) -> None:
+        self.probe.uc.mem_write(self.shared[field], bytes([value]))
+
+    def read32(self, address: int) -> int:
+        return int.from_bytes(self.probe.uc.mem_read(address, 4), "little")
+
+    def pin(self, pin: int) -> int:
+        return self.probe.uc.mem_read(ORDINARY_GPIO + REG_B0 + 32 + pin, 1)[0]
+
+    def ticks(self, value: int) -> None:
+        self.probe.uc.mem_write(self.probe.sym["led_ticks"], u32(value))
+
+    def run(self, n: int, read=None, every: int = 0, flag: str = "led_activity", burst: int = 1,
+            until: int | None = None) -> list:
+        """n ticks, each giving read(); by default the status LED's L*. With `every`, `flag` is
+        set before the first `burst` of every that-many ticks, up to tick `until`."""
+        read = read or (lambda: lightness(self.read32(CTIMER3 + CTIMER_MSR0), self.period))
+        out = []
+        for i in range(n):
+            if every and i % every < burst and (until is None or i < until):
+                if flag in self.shared:
+                    self.write(flag, 1)
+                else:
+                    self.probe.uc.mem_write(self.probe.sym[flag], b"\x01")
+            self.probe.call("CTIMER3_IRQHandler")
+            out.append(read())
+        return out
 
 
 def check_led(c: Checker, elf: str, request_slots: int) -> None:
-    """CTIMER3 drives the LED as a PWM and its period interrupt decides the level.
+    """CTIMER3 drives the status LED as a PWM and its period interrupt decides the level.
 
     Nothing about the LED is visible from a capture -- P0_5 goes nowhere but the LED -- so the
     policy is checked here, by running the interrupt the way the timer would and reading back the
-    match register it writes. MR0 is how long each period the pin is held low, and the LED is lit
-    while it is low, so MR0 is the brightness: zero is dark and anything past the period is full.
+    level it writes, into MR0's shadow so the timer takes it as it wraps. MR0 is how long each
+    period the pin is held low, and the LED is lit while it is low, so MR0 is the brightness: zero
+    is dark and anything past the period is full. Each level is judged by its L*, how bright it
+    looks.
 
-    Three properties. An idle probe breathes, smoothly and through nearly the whole range. A probe
-    whose host says it is connected sits fully lit. And one command is visible: its flash is cut
-    out of a blink phase the tick owns rather than started where the command lands, so the length
-    depends on the tick it arrives on, and the shortest of those is what a person would see.
+    An idle probe breathes through the whole range in steps too small to see, and spends as long
+    below half lightness as above it, which is what an even fade to the eye means. A probe whose
+    host says it is connected sits fully lit. A command inverts the LED, at least LED_FLICKER_LSTAR
+    from what it showed, for long enough to see, and once per burst; steady traffic keeps doing so.
     """
-    probe = Machine(elf, Target([]), restart_at=set(), model=Model())
-    for name in ("board_clocks_init", "led_init", "CTIMER3_IRQHandler", "dap_shared", "led_ticks"):
-        if name not in probe.sym:
-            c.note(f"{name} is not a symbol; the LED policy not checked")
-            return
-    # CPU 1 sets these; check_led_inputs checks that it does.
-    fields = shared_offsets(request_slots, "led_activity", "led_connected", small_enums=short_enums(elf))
-    seen = probe.sym["dap_shared"] + fields["led_activity"]
-    connected = probe.sym["dap_shared"] + fields["led_connected"]
+    led = LedTick(elf, request_slots)
+    if not led.ok:
+        c.problems.append("an LED symbol is missing, so the LED policy cannot be run")
+        return
+    c.check(led.read32(CTIMER3 + CTIMER_MCR) & CTIMER_MCR_MR0RL,
+            "CTIMER3 does not take the status LED's level from MR0's shadow as it wraps")
+    settle = int(LED_SETTLE_MS / led.tick_ms)
 
-    probe.call("board_clocks_init")
-    probe.call("led_init")
-    period = int.from_bytes(probe.uc.mem_read(CTIMER3_MR3, 4), "little") + 1
-    smooth = period // 50  # the largest step a fade may take in one tick
-    tick_ms = period * 1000 / LED_TIMER_HZ
-    settle = int(LED_SETTLE_MS / tick_ms)
+    breath = led.run(2 * int(10_000 / led.tick_ms))  # two breaths, if a breath is under ten seconds
+    below = sum(1 for v in breath if v < 50) / len(breath)
+    c.check(min(breath) <= 1, f"an idle probe's LED never goes darker than L* {min(breath):.1f}")
+    c.check(max(breath) >= 99, f"an idle probe's LED never gets brighter than L* {max(breath):.1f}")
+    c.check(largest_step(breath) <= LED_SMOOTH_LSTAR,
+            f"an idle probe's fade jumps by L* {largest_step(breath):.1f} in one tick")
+    c.check(0.4 <= below <= 0.6, f"an idle probe's LED spends {below:.0%} of a breath below half lightness")
 
-    def run(n: int) -> list[int]:
-        levels = []
-        for _ in range(n):
-            probe.call("CTIMER3_IRQHandler")
-            levels.append(int.from_bytes(probe.uc.mem_read(CTIMER3_MR0, 4), "little"))
-        return levels
+    led.write("led_connected", 1)
+    c.check(all(v >= 100 for v in led.run(1000)), "the LED is not fully lit after a host said it is connected")
+    led.write("led_connected", 0)
+    c.check(largest_step(led.run(1000)) <= LED_SMOOTH_LSTAR, "the LED does not go back to breathing after the host disconnected")
 
-    def largest_step(levels: list[int]) -> int:
-        return max(abs(a - b) for a, b in zip(levels, levels[1:]))
-
-    levels = run(2 * int(10_000 / tick_ms))  # two breaths, if a breath is under ten seconds
-    c.check(min(levels) <= smooth, f"an idle probe's LED never goes darker than {min(levels)}/{period}")
-    c.check(max(levels) >= period * 9 // 10, f"an idle probe's LED never gets brighter than {max(levels)}/{period}")
-    c.check(largest_step(levels) <= smooth, f"an idle probe's fade jumps by {largest_step(levels)}/{period} in one tick")
-
-    probe.uc.mem_write(connected, b"\x01")
-    c.check(all(level >= period for level in run(1000)), "the LED is not fully lit after a host said it is connected")
-    probe.uc.mem_write(connected, b"\x00")
-    c.check(largest_step(run(1000)) <= smooth, "the LED does not go back to breathing after the host disconnected")
-
-    # One command, landing on each tick of a blink period in turn. 128 covers any half-period up
-    # to 64 ticks without this check knowing which one the firmware picked. What is measured is
-    # the longest unbroken stretch the LED is fully lit, because that is the flash a person sees.
-    ticks = probe.sym["led_ticks"]
+    # One command, landing at points through a breath and on a connected probe, against the same
+    # ticks with no command.
     worst = settle
-    for phase in range(128):
-        probe.uc.mem_write(ticks, u32(100_000 + phase))
-        probe.uc.mem_write(seen, b"\x01")
-        longest = 0
-        stretch = 0
-        for level in run(settle):
-            stretch = stretch + 1 if level >= period else 0
-            longest = max(longest, stretch)
-        worst = min(worst, longest)
-        if largest_step(run(200)) > smooth:
-            c.problems.append(f"the LED is still blinking {LED_SETTLE_MS} ms after one command")
-            return
+    for connected in (0, 1):
+        led.write("led_connected", connected)
+        for start in range(0, 4096, 64):
+            led.run(settle)
+            led.ticks(100_000 + start)
+            quiet = led.run(settle)
+            led.ticks(100_000 + start)
+            busy = led.run(settle, every=settle)
+            inverted = stretches([abs(a - b) >= LED_FLICKER_LSTAR for a, b in zip(quiet, busy)])
+            if not c.check(len(inverted) == 1, f"one command inverted the LED {len(inverted)} times"):
+                return
+            worst = min(worst, inverted[0])
+            c.check(quiet[-50:] == busy[-50:], f"the LED is still flickering {LED_SETTLE_MS} ms after one command")
+    led.write("led_connected", 0)
+    c.check(worst * led.tick_ms >= LED_VISIBLE_MS,
+            f"a command flickers the LED for only {worst * led.tick_ms:.0f} ms")
 
-    c.check(
-        worst * tick_ms >= LED_VISIBLE_MS,
-        f"a command landing on the wrong tick flashes the LED for only {worst * tick_ms:.0f} ms",
-    )
-    c.note(
-        f"LED: {LED_TIMER_HZ / period:.0f} Hz PWM, breathes 0 to {max(levels) * 100 // period}% when idle, "
-        f"full when connected, one command flashes it for {worst * tick_ms:.0f} ms at worst"
-    )
+    # Bursts of commands lasting 40 ms, 300 ms apart, flicker once each; a steady stream keeps on
+    # flickering, at a rate the eye still separates.
+    ticks = int(3000 / led.tick_ms)
+    every = int(300 / led.tick_ms)
+    for spacing_ms, want in ((300, (ticks - 1) // every + 1), (0, 15)):
+        led.run(settle)
+        led.ticks(100_000)
+        quiet = led.run(ticks + settle)
+        led.ticks(100_000)
+        busy = led.run(ticks + settle, every=every if spacing_ms else 1, burst=int(40 / led.tick_ms), until=ticks)
+        inverted = stretches([abs(a - b) >= LED_FLICKER_LSTAR for a, b in zip(quiet, busy)])
+        what = "bursts of commands every 300 ms" if spacing_ms else "a steady stream of commands"
+        enough = len(inverted) == want if spacing_ms else len(inverted) >= want
+        c.check(enough and min(inverted, default=0) * led.tick_ms >= LED_VISIBLE_MS,
+                f"{what} flickered the LED {len(inverted)} times in 3 s, wanted {want}, the shortest "
+                f"{min(inverted, default=0) * led.tick_ms:.0f} ms")
+    starts = [i for i in range(1, len(busy)) if abs(quiet[i] - busy[i]) >= LED_FLICKER_LSTAR
+              and abs(quiet[i - 1] - busy[i - 1]) < LED_FLICKER_LSTAR]
+    steady = 1000 * (len(starts) - 1) / ((starts[-1] - starts[0]) * led.tick_ms)
+    c.note(f"LED: {LED_TIMER_HZ / led.period:.0f} Hz PWM, breathes L* 0 to 100 when idle, {below:.0%} of it below "
+           f"half, full when connected; a command flickers it for {worst * led.tick_ms:.0f} ms, steady traffic "
+           f"{steady:.1f} times a second")
+
+
+def check_pro_leds(c: Checker, elf: str, request_slots: int) -> None:
+    """The Pro's six other LEDs (PRO.md), and that no other board touches their pins.
+
+    FUNC is CTIMER1's match 3 as a PWM, its level written to the shadow register that the timer
+    takes as it wraps. Each wire has to show its own shape: SWD a rising ramp, two-pin a falling one,
+    four-wire a triangle, all at one rate and in steps too small to see. The others are switched
+    GPIO, lit by a low pin.
+    """
+    plain = LedTick(elf, request_slots)
+    if not plain.ok:
+        c.problems.append("an LED symbol is missing, so the Pro's LEDs cannot be run")
+        return
+    pro_pins = [IOCON + 4 * (32 + pin) for pin in range(PRO_LED_USB, PRO_LED_NRG + 1)]
+    plain.run(200, every=50)
+    plain.run(200, every=50, flag="led_swo")
+    touched = [hex(a) for a in pro_pins if plain.read32(a)]
+    touched += [f"GPIO {name}" for name, at in (("SET", GPIO_SET), ("CLR", GPIO_CLR), ("DIRSET", GPIO_DIRSET))
+                if plain.read32(ORDINARY_GPIO + at + 4) & (0x7F << PRO_LED_USB)]
+    touched += [f"B[1][{pin}]" for pin in range(PRO_LED_USB, PRO_LED_NRG + 1) if plain.pin(pin) != LED_PIN_SENTINEL]
+    touched += ["CTIMER1"] if plain.read32(CTIMER1 + CTIMER_PWMC) or plain.read32(CTIMER1 + CTIMER_MCR) else []
+    c.check(not touched, f"the plain board's LEDs touched the Pro's LED pins: {', '.join(touched)}")
+
+    led = LedTick(elf, request_slots, board=BOARD_PRO)
+    funcs = {pin: led.read32(IOCON + 4 * (32 + pin)) & 0xF for pin in range(PRO_LED_USB, PRO_LED_NRG + 1)}
+    want = {pin: 3 if pin == PRO_LED_FUNC else 0 for pin in PRO_SWITCHED + (PRO_LED_FUNC,)}
+    c.check(all(funcs[pin] == f for pin, f in want.items()), f"the Pro's LED pins have functions {funcs}")
+    c.check(funcs[14] == 0 and led.read32(IOCON + 4 * (32 + 14)) == 0, "PIO1_14, between the LEDs, was touched")
+    switched = sum(1 << pin for pin in PRO_SWITCHED)
+    driven = led.read32(ORDINARY_GPIO + GPIO_DIRSET + 4) & (0x7F << PRO_LED_USB)
+    dark = led.read32(ORDINARY_GPIO + GPIO_SET + 4) & (0x7F << PRO_LED_USB)
+    c.check(driven == switched and dark == switched,
+            f"the Pro's switched LEDs: outputs {driven:#x}, set dark {dark:#x}, wanted {switched:#x}")
+    timer = {name: led.read32(CTIMER1 + offset) for name, offset in
+             (("TCR", CTIMER_TCR), ("PR", CTIMER_PR), ("MCR", CTIMER_MCR), ("MR0", CTIMER_MR0), ("PWMC", CTIMER_PWMC))}
+    c.check(timer["MR0"] + 1 == led.period and timer["PR"] == led.read32(CTIMER3 + CTIMER_PR)
+            and timer["MCR"] == CTIMER_MCR_MR0R | CTIMER_MCR_MR3RL and timer["PWMC"] == CTIMER_PWMC_PWMEN3
+            and timer["TCR"] & CTIMER_TCR_CEN,
+            f"CTIMER1 {', '.join(f'{k} {v:#x}' for k, v in timer.items())}: wanted the status LED's period and "
+            f"prescale, reset on MR0, MR3 from its shadow, PWM on match 3, counting")
+    c.check(led.read32(CTIMER1_CLKSEL) == led.read32(CTIMER3_CLKSEL) and led.read32(AHBCLKCTRL1) & AHBCLKCTRL1_TIMER1,
+            f"CTIMER1 is not clocked as CTIMER3 is: select {led.read32(CTIMER1_CLKSEL):#x} against "
+            f"{led.read32(CTIMER3_CLKSEL):#x}, AHBCLKCTRL1 {led.read32(AHBCLKCTRL1):#x}")
+
+    def func() -> float:
+        return lightness(led.read32(CTIMER1 + CTIMER_MSR3), led.period)
+
+    ticks = 2048
+    shapes = {}
+    for wire in (LED_WIRE_NONE, LED_WIRE_SWD, LED_WIRE_CJTAG, LED_WIRE_JTAG):
+        led.write("led_wire", wire)
+        led.ticks(0)
+        shapes[wire] = led.run(ticks, func)
+    c.check(max(shapes[LED_WIRE_NONE]) == 0, "FUNC is not dark with no port connected")
+    for wire, name, jump in ((LED_WIRE_SWD, "SWD", -1), (LED_WIRE_CJTAG, "two-pin", 1)):
+        levels = shapes[wire]
+        steps = [b - a for a, b in zip(levels, levels[1:])]
+        wraps = [i for i, s in enumerate(steps) if s * jump > 50]
+        against = [s for s in steps if 0 < s * jump <= 50]
+        smooth = max(-s * jump for s in steps if s * jump <= 50)
+        spacing = [(b - a) * led.tick_ms for a, b in zip(wraps, wraps[1:])]
+        c.check(len(wraps) >= 3 and all(LED_RAMP_MS[0] <= s <= LED_RAMP_MS[1] for s in spacing) and not against,
+                f"FUNC for {name} is not a {'rising' if jump < 0 else 'falling'} ramp every "
+                f"{LED_RAMP_MS[0]} to {LED_RAMP_MS[1]} ms: it starts again at ticks {wraps}, "
+                f"{len(against)} steps the other way")
+        c.check(smooth <= LED_SMOOTH_LSTAR and min(levels) <= 1 and max(levels) >= 99,
+                f"FUNC for {name} ramps L* {min(levels):.0f} to {max(levels):.0f} in steps up to {smooth:.1f}")
+    jtag = shapes[LED_WIRE_JTAG]
+    # The ticks it arrives at each end, which alternate: a side is the time between two.
+    ends = sorted([i for i in range(1, ticks) if jtag[i] <= 1 < jtag[i - 1]]
+                  + [i for i in range(1, ticks) if jtag[i] >= 99 > jtag[i - 1]])
+    halves = [(b - a) * led.tick_ms for a, b in zip(ends, ends[1:])]
+    c.check(largest_step(jtag) <= LED_SMOOTH_LSTAR and min(jtag) <= 1 and max(jtag) >= 99
+            and len(halves) >= 2 and all(LED_RAMP_MS[0] <= h <= LED_RAMP_MS[1] for h in halves),
+            f"FUNC for four-wire JTAG is not a triangle of {LED_RAMP_MS[0]} to {LED_RAMP_MS[1]} ms a side: "
+            f"it reaches an end at ticks {ends[:6]}, in steps up to {largest_step(jtag):.1f}")
+    led.write("jumpers", 2)
+    c.check(all(v >= 100 for v in led.run(500, func)), "FUNC is not solid with the SWD jumper fitted")
+    led.write("jumpers", 0)
+
+    def pin_lit(pin: int):
+        return lambda: led.pin(pin) == 0
+
+    settle = int(LED_SETTLE_MS / led.tick_ms)
+    for pin, flag, name in ((PRO_LED_SWO, "led_swo", "SWO"), (PRO_LED_VCOM, "led_vcom_seen", "VCOM")):
+        if flag not in led.shared and flag not in led.probe.sym:
+            c.problems.append(f"no {flag}, so the {name} LED cannot be run")
+            continue
+        led.run(settle)
+        quiet = led.run(settle, pin_lit(pin))
+        busy = led.run(settle, pin_lit(pin), every=settle, flag=flag)
+        lit = stretches(busy)
+        c.check(not any(quiet) and len(lit) == 1 and lit[0] * led.tick_ms >= LED_VISIBLE_MS,
+                f"the {name} LED: lit {sum(quiet)} ticks when quiet, {lit} after one burst")
+
+    # TinyUSB's own answers, found by setting each byte of its device state in turn.
+    usb = pin_lit(PRO_LED_USB)
+    if "_usbd_dev" in led.probe.sym and "tud_mounted" in led.probe.sym and "tud_suspended" in led.probe.sym:
+        state = led.probe.sym["_usbd_dev"]
+        size = symbols_with_size(elf)["_usbd_dev"][1]
+
+        def flag(answer: str) -> int | None:
+            for offset in range(size):
+                was = bytes(led.probe.uc.mem_read(state + offset, 1))
+                led.probe.uc.mem_write(state + offset, b"\x01")
+                found = led.probe.call(answer) & 0xFF
+                led.probe.uc.mem_write(state + offset, was)
+                if found:
+                    return offset
+            return None
+
+        mounted_at, suspended_at = flag("tud_mounted"), flag("tud_suspended")
+        if c.check(None not in (mounted_at, suspended_at), "TinyUSB's mounted or suspended state was not found"):
+            unmounted = led.run(5, usb)
+            led.probe.uc.mem_write(state + mounted_at, b"\x01")
+            mounted = led.run(5, usb)
+            led.probe.uc.mem_write(state + suspended_at, b"\x01")
+            suspended = led.run(5, usb)
+            c.check(not any(unmounted) and all(mounted) and not any(suspended),
+                    f"the USB LED: lit {unmounted} unconfigured, {mounted} configured, {suspended} suspended")
+    else:
+        c.problems.append("the image lacks _usbd_dev, tud_mounted or tud_suspended, so the USB LED cannot be run")
+    untouched = [pin for pin in (PRO_LED_SIO, PRO_LED_NRG) if led.pin(pin) != LED_PIN_SENTINEL]
+    c.check(not untouched, f"the tick drove PIO1_{untouched} after leaving them dark")
+    c.note(f"Pro LEDs: FUNC ramps in {512 * led.tick_ms:.0f} ms (SWD up, two-pin down, four-wire both), solid "
+           f"with the SWD jumper, dark with no port; SWO and VCOM flicker, USB lit while configured")
 
 
 def check_led_inputs(c: Checker, core1: str, request_slots: int) -> None:
-    """DAP_HostStatus reaches CPU 0's LED through dap_shared. Activity is set by CPU 1's command
-    loop rather than the command layer, so the bench is what shows it."""
-    probe = Machine(core1, Target([]), restart_at=set(), model=Model())
+    """DAP_HostStatus and the wire in use reach CPU 0's LEDs through dap_shared. Activity is set by
+    CPU 1's command loop rather than the command layer, and SWO's by a capture, so the bench is
+    what shows those."""
+    probe = Machine(core1, Target([0] * 64), restart_at=set(), model=Model())
     if "dap_shared" not in probe.sym:
         c.problems.append("CPU 1's image has no dap_shared")
         return
-    connected = probe.sym["dap_shared"] + shared_offsets(request_slots, "led_connected",
-                                                         small_enums=short_enums(core1))["led_connected"]
+    fields = shared_offsets(request_slots, "led_connected", "led_wire", small_enums=short_enums(core1))
+    connected = probe.sym["dap_shared"] + fields["led_connected"]
+    wire = probe.sym["dap_shared"] + fields["led_wire"]
+    probe.call("board_debug_pins_init")
     probe.command(bytes([ID_DAP_HOST_STATUS, 0, 1]))
     on = probe.uc.mem_read(connected, 1)[0]
     probe.command(bytes([ID_DAP_HOST_STATUS, 0, 0]))
     off = probe.uc.mem_read(connected, 1)[0]
-    if c.check((on, off) == (1, 0), f"DAP_HostStatus connected/disconnected left led_connected {on}/{off}"):
-        c.note("LED inputs: DAP_HostStatus sets and clears led_connected in dap_shared")
+    c.check((on, off) == (1, 0), f"DAP_HostStatus connected/disconnected left led_connected {on}/{off}")
+
+    steps = (("DAP_Connect SWD", bytes([0x02, 1]), LED_WIRE_SWD), ("DAP_Connect JTAG", bytes([0x02, 2]), LED_WIRE_JTAG),
+             ("vendor 0x83 mode 2", bytes([0x83, 2]), LED_WIRE_CJTAG), ("vendor 0x83 mode 0", bytes([0x83, 0]), LED_WIRE_JTAG),
+             ("DAP_Disconnect", bytes([0x03]), LED_WIRE_NONE))
+    for name, request, want in steps:
+        probe.command(request)
+        got = probe.uc.mem_read(wire, 1)[0]
+        c.check(got == want, f"{name} left led_wire {got}, wanted {want}")
+    c.note("LED inputs: DAP_HostStatus sets led_connected, and DAP_Connect, DAP_Disconnect and vendor 0x83 set "
+           "led_wire, in dap_shared")
 
 
 SYSCON = 0x40000000
@@ -1335,6 +1573,7 @@ def main() -> int:
                     allow=("arm_command", "regenerate", "swd_sweep_connect", "jtag_sweep_connect"))
     check_clocks(c, args.elf, slots)
     check_led(c, args.elf, slots)
+    check_pro_leds(c, args.elf, slots)
     check_led_inputs(c, args.core1, slots)
     check_commands(c, args.core1, args.code_lab, swo)
     check_response_bounds(c, args.core1, args.packet_size)

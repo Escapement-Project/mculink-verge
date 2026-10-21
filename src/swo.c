@@ -31,6 +31,7 @@
 #include "DAP.h"
 #include "board_pins.h"
 #include "dap_shared.h"
+#include "led.h"
 #include "swo_ring.h"
 
 _Static_assert(SWO_BUFFER_SIZE == SWO_USABLE_BYTES, "DAP_Info reports SWO_BUFFER_SIZE as the buffer");
@@ -382,6 +383,9 @@ uint32_t SWO_Data(const uint8_t* request, uint8_t* response) {
             read_position = swo_resync(after);
         } else {
             read_position += count;
+            if (count != 0U) {
+                led_swo();
+            }
         }
     }
     response[0] = status;

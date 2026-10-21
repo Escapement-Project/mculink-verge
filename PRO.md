@@ -170,9 +170,9 @@ lifted, the same blocks match at every clock from 1 to 50 MHz (31.2 KiB/s at 1 M
 7. Four-wire JTAG and two-pin cJTAG on J7. Both are wired (schematic page 5); the two-pin buffer
    turnaround is the part to check, since bit 4 stays clear until it has worked.
 8. The LEDs, reworked: a fade that looks linear to the eye, new timing, a better
-   activity marker. A fade on more than P0_5 needs a timer match or SCT output on each LED pin:
-   PIO1_12 has CTIMER1_MAT1 and PIO1_16 CTIMER1_MAT3 (from the BSP's pin table); check the rest in
-   UM11126.
+   activity marker. Only FUNC and the status LED fade: FUNC on CTIMER1_MAT3, PIO1_16's only timer
+   output, with match 0 as the period (UM11126 reads as if only matches 0 to 2 can be PWM outputs,
+   but match 3 works on the Pro); the others switch, as GPIO.
    Decided 2026-10-21. The Pro's pins (schematic page 4): LED1 USB PIO1_12, LED2 SWO
    PIO1_13, LED3 status PIO0_5 (the plain board's LED), LED4 VCOM PIO1_15, LED5 FUNC PIO1_16, LED6
    SIO PIO1_17, LED7 NRG PIO1_18. Meanings follow UM11673 Table 4 where we have the function; SIO
@@ -184,6 +184,14 @@ lifted, the same blocks match at every clock from 1 to 50 MHz (31.2 KiB/s at 1 M
      the SWD jumper fitted (CMSIS-DAP off, the consoles only). Dark with no port connected.
      Every ramp lasts 512 ticks of the 488 Hz LED clock (1.05 s), so they all
      move at one rate and differ only in shape: the JTAG triangle is 1.05 s down and 1.05 s up.
+   Built 2026-10-21 (`src/led.c`). Also: the status LED keeps a 4.2 s breath, twice
+   the JTAG triangle, so the two are not confused; a flicker inverts for 65 ms then leaves the LED
+   alone 65 ms, so steady traffic flickers at 7.6 Hz; SWO activity is trace bytes handed to the host,
+   since nothing else on CPU 0 sees them arrive; USB is lit while configured and not suspended.
+   Every level goes through each timer's match shadow register, so a write never lands
+   mid-period. `tools/image.py` checks each pattern in the emulator. On the Pro FUNC shows its
+   three ramps as agreed, and the status and VCOM LEDs flicker once per burst, then steadily
+   (2026-10-21).
 9. The probe's own LPC55S69 through the Pro's J3, debugged by the plain MCU-Link: a bring-up aid for
    faults on the Pro.
 

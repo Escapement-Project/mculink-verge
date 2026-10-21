@@ -18,6 +18,7 @@
 #include "board/peripherals.h"
 #include "board_straps.h"
 #include "dap_shared.h"
+#include "led.h"
 #include "tusb.h"
 #include "vcom.h"
 
@@ -143,12 +144,14 @@ __attribute__((section(".ramfunc"))) void vcom_task(void) {
                 break;
             }
             USART_WriteByte(usart, byte);
+            led_vcom();
         }
 
         // Target to USB.
         while ((USART_GetStatusFlags(usart) & kUSART_RxFifoNotEmptyFlag) && tud_cdc_n_write_available(i) > 0U) {
             uint8_t byte = USART_ReadByte(usart);
             tud_cdc_n_write(i, &byte, 1);
+            led_vcom();
         }
         // With a transfer in flight this sends nothing, and TinyUSB sends the rest when it
         // completes: this task does not run again until there are bytes to move.

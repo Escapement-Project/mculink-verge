@@ -125,9 +125,11 @@ typedef struct {
     /** A reboot ID_VENDOR_REBOOT asked for, published only once its reply is READY. */
     volatile uint8_t reboot_mode;
 
-    /** The LED's inputs, written by CPU 1 and read by CPU 0's LED tick. */
+    /** The LEDs' inputs, written by CPU 1 and read by CPU 0's LED tick. */
     volatile uint8_t led_activity;
     volatile uint8_t led_connected;
+    volatile uint8_t led_wire;  // LED_WIRE_*
+    volatile uint8_t led_swo;   // SWO bytes have gone to the host
 
     /** BOARD_KIND_* and BOARD_JUMPER_* (board_straps.h), written by CPU 0 before CPU 1 starts. */
     volatile uint8_t board;
