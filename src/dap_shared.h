@@ -119,6 +119,15 @@ typedef struct {
     volatile uint8_t board;
     volatile uint8_t jumpers;
 
+    /** CPU 1's 50 MHz reads stop their clock with CTimer 2 and 4, which share a peripheral bridge
+     *  with the LED's CTimer 3, and a write to CTimer 3 at the wrong moment delays a stop by a
+     *  cycle (src/swd_timer.h). CPU 1 sets swd_timer_busy for the length of such a read, CPU 0
+     *  sets led_writing while it writes CTimer 3, and each sets its own before reading the
+     *  other's, so they never overlap. The generated code finds led_writing next to
+     *  swd_timer_busy. */
+    volatile uint8_t swd_timer_busy;
+    volatile uint8_t led_writing;
+
     /** SWO ring segments DMA0 has completed, counted by CPU 0's DMA interrupt for src/swo.c. */
     volatile uint32_t swo_segments;
 

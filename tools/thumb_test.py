@@ -79,6 +79,7 @@ for rd, rn, rm, ra in (("r3", "r1", "r7", "r3"), ("r12", "r0", "lr", "r2")):
     case(f"t_mla({R[rd]}, {R[rn]}, {R[rm]}, {R[ra]})", f"mla {rd}, {rn}, {rm}, {ra}")
 for rm in ("r3", "r12", "lr"):
     case(f"t_bx_pad({R[rm]})", f"bx {rm}\n    nop")
+case("t_dmb()", "dmb sy")
 case("t_push(0x4FF0)", "push.w {r4-r11, lr}")
 case("t_pop(0x8FF0)", "pop.w {r4-r11, pc}")
 

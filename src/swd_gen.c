@@ -306,6 +306,7 @@ static uint32_t consume_insn(uint32_t k, uint32_t reg) {
 #define LABEL_PARITY 3U
 #define LABEL_WAIT_FAULT 4U
 #define LABEL_EXIT 5U
+#define LABEL_CLAIM 6U
 
 /** Where a body leaves its schedule, for what comes after it. */
 struct body {
@@ -819,6 +820,25 @@ static void emit_pin(struct gen_emitter* e, uint32_t value, bool gpio) {
     gen_emit(e, t_str(R_T1, R_T0, 0U));
 }
 
+/** Takes the peripheral bridge from CPU 0's LED (dap_shared.swd_timer_busy), waiting out a write
+ * it has started. */
+static void emit_claim(struct gen_emitter* e) {
+    gen_load_const(e, R_T0, SWD_TIMER_BUSY);
+    gen_emit(e, t_strb(R_ONE, R_T0, 0U));
+    gen_emit(e, t_dmb());
+    gen_bind(e, LABEL_CLAIM);
+    gen_emit(e, t_ldrb(R_T1, R_T0, 1U));
+    gen_emit(e, t_cmp_imm(R_T1, 0U));
+    gen_emit_branch(e, T_COND_NE, LABEL_CLAIM);
+}
+
+/** SWCLK back to GPIO and the bridge back to CPU 0: every exit. */
+static void emit_leave(struct gen_emitter* e, uint32_t pin_gpio) {
+    emit_pin(e, pin_gpio, true);
+    gen_load_const(e, R_T0, SWD_TIMER_BUSY);
+    gen_emit(e, t_strb(R_ZERO, R_T0, 0U));
+}
+
 /** Pads so that the run that started `length` cycles ago, `edges` edges long, has stopped by the time
  * `more` further cycles have passed. */
 static void emit_settle(struct gen_emitter* e, uint32_t length, uint32_t more, uint32_t edges) {
@@ -843,6 +863,7 @@ static bool emit_timer_read(struct gen_emitter* e, const struct gen_cfg* c, uint
     gen_emit(e, t_mov_imm(R_ZERO, 0U));
     gen_emit(e, t_mov_imm(R_FOUR, SWDIO));
     gen_load_const(e, R_TXEN, TXEN);
+    emit_claim(e);
     // CTimer 0 holds SWCLK low until the first run: a falling edge, which clocks nothing.
     emit_pin(e, pin_timer, false);
 
@@ -886,18 +907,18 @@ static bool emit_timer_read(struct gen_emitter* e, const struct gen_cfg* c, uint
     gen_emit(e, t_str_post(R_WORD, R_BUF, 4U));
     gen_emit(e, t_subs_imm(R_COUNT, R_COUNT, 1U));
     gen_emit_branch(e, T_COND_NE, LABEL_LOOP);
-    emit_pin(e, pin_gpio, true);
+    emit_leave(e, pin_gpio);
     emit_return(e, t_mov_imm(0U, DAP_TRANSFER_OK));
 
     gen_bind(e, LABEL_PARITY);
-    emit_pin(e, pin_gpio, true);
+    emit_leave(e, pin_gpio);
     emit_return(e, t_mov_imm(0U, DAP_TRANSFER_ERROR));
 
     // The clock has stopped after the turnaround that follows the acknowledge, where the GPIO path
     // decides too. SWCLK is low, and the tail's first clock starts with a fall that is already
     // there.
     gen_bind(e, LABEL_FAIL);
-    emit_pin(e, pin_gpio, true);
+    emit_leave(e, pin_gpio);
     emit_fail(e, c, true, c->period);
     gen_resolve(e);
     *first = 1 - before;

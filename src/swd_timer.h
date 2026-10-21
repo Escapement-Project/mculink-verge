@@ -13,6 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "dap_shared.h"
 #include "fsl_device_registers.h"
 
 #define SWD_TIMER_CLOCK ((uint32_t)CTIMER0)
@@ -23,6 +24,10 @@
 #define SWD_TIMER_PIN ((uint32_t)&IOCON->PIO[0][0])
 /** SWCLK's pin function that is CTimer 0's match 0. */
 #define SWD_TIMER_PIN_FUNC 3U
+/** The flag a read holds against CPU 0's LED writes, with CPU 0's own flag the byte after it. */
+#define SWD_TIMER_BUSY ((uint32_t)&dap_shared.swd_timer_busy)
+_Static_assert(offsetof(dap_shared_t, led_writing) == offsetof(dap_shared_t, swd_timer_busy) + 1U,
+               "the generated code reads led_writing next to swd_timer_busy");
 
 /** Configures the clock, both stops and their DMA, the stops matching `ack` and `data` cycles
  * after they start, and leaves CTimer 0 stopped as a run leaves it. */

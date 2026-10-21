@@ -11,6 +11,7 @@
 #define SWD_TIMER_TCR 4U
 #define SWD_TIMER_PIN 0x40001000U
 #define SWD_TIMER_PIN_FUNC 3U
+#define SWD_TIMER_BUSY 0x20000000U
 
 static inline void swd_timer_setup(uint32_t ack, uint32_t data) {
     (void)ack;
