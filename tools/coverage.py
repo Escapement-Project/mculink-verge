@@ -19,8 +19,10 @@ comes back against what was sent. Targets: a CC13xx over `jtag` or `cjtag`, an M
 """
 
 import argparse
+import fcntl
 import os
 import select
+import struct
 import sys
 import threading
 import time
@@ -460,38 +462,71 @@ def cmd_pipeline(args) -> int:
     return lost != 0
 
 
+# Linux termios2, which takes any rate where pyserial's own path stops at 4 Mbaud.
+TCGETS2, TCSETS2, CBAUD, BOTHER = 0x802C542A, 0x402C542B, 0o010017, 0o010000
+TERMIOS2 = "4I B 19s 2I"
+
+
+def set_any_baud(fd: int, baud: int) -> None:
+    raw = bytearray(struct.calcsize(TERMIOS2))
+    fcntl.ioctl(fd, TCGETS2, raw)
+    iflag, oflag, cflag, lflag, line, cc, _, _ = struct.unpack(TERMIOS2, raw)
+    cflag = (cflag & ~CBAUD) | BOTHER
+    fcntl.ioctl(fd, TCSETS2, struct.pack(TERMIOS2, iflag, oflag, cflag, lflag, line, cc, baud, baud))
+
+
+def loopback(port: str, baud: int) -> tuple[int, int, bool, float]:
+    """One second's worth of random bytes out and back: bytes back, bytes sent, whether they
+    match, and the time to the last byte. The time is what shows the rate was taken: a refused
+    rate leaves the old one, and a loopback is just as clean there, only slower."""
+    size = baud // 10
+    data = os.urandom(size)
+    got = bytearray()
+    last = 0.0
+    with serial.Serial(port, 115200, timeout=0.5) as s:
+        set_any_baud(s.fileno(), baud)
+        s.reset_input_buffer()
+
+        def reader() -> None:
+            nonlocal last
+            quiet_since = time.perf_counter()
+            while len(got) < size and time.perf_counter() - quiet_since < 2.0:
+                chunk = s.read(min(4096, size - len(got)))
+                if chunk:
+                    got.extend(chunk)
+                    quiet_since = last = time.perf_counter()
+
+        thread = threading.Thread(target=reader)
+        started = time.perf_counter()
+        thread.start()
+        s.write(data)
+        thread.join()
+    return len(got), size, bytes(got) == data, last - started
+
+
 def cmd_console(args) -> int:
-    """Send random bytes out of the console and read them back through a jumper across J7's TX
-    and RX pins. Each rate sends one second's worth."""
+    """Loop each of the probe's consoles back through a jumper across its TX and RX, all at once,
+    one second's worth at each rate."""
     probe = dap.one(args)
     serial_number = probe.serial
     probe.release()
-    port = next((p.device for p in list_ports.comports() if p.serial_number == serial_number), None)
-    if port is None:
+    ports = sorted(p.device for p in list_ports.comports() if p.serial_number == serial_number)
+    if not ports:
         raise SystemExit(f"no CDC port for {serial_number}")
     failed = 0
     for baud in args.baud:
-        size = baud // 10
-        data = os.urandom(size)
-        got = bytearray()
-        with serial.Serial(port, baud, timeout=0.5) as s:
-            s.reset_input_buffer()
-
-            def reader() -> None:
-                quiet_since = time.perf_counter()
-                while len(got) < size and time.perf_counter() - quiet_since < 2.0:
-                    chunk = s.read(4096)
-                    if chunk:
-                        got.extend(chunk)
-                        quiet_since = time.perf_counter()
-
-            thread = threading.Thread(target=reader)
+        results: dict[str, tuple[int, int, bool, float]] = {}
+        threads = [threading.Thread(target=lambda p=p: results.__setitem__(p, loopback(p, baud))) for p in ports]
+        for thread in threads:
             thread.start()
-            s.write(data)
+        for thread in threads:
             thread.join()
-        same = bytes(got) == data
-        failed += not same
-        print(f"  {port} at {baud} baud: {len(got)} of {size} bytes back, {'identical' if same else 'DIFFERENT'}")
+        for port in ports:
+            got, size, same, elapsed = results[port]
+            failed += not same
+            rate = got * 10 / elapsed / 1e6 if elapsed > 0 else 0.0
+            print(f"  {port} at {baud} baud: {got} of {size} bytes back in {elapsed:.2f} s, {rate:.2f} Mbaud,"
+                  f" {'identical' if same else 'DIFFERENT'}")
     return failed != 0
 
 
@@ -536,7 +571,7 @@ def main() -> int:
     p.add_argument("--no-core1", dest="core1", action="store_false", help="for an image without CPU 1's status")
     p.set_defaults(run=cmd_rate)
 
-    p = sub.add_parser("console", help="CDC console loopback through a jumper on J7")
+    p = sub.add_parser("console", help="every CDC console looped back at once, through jumpers")
     p.add_argument("--baud", type=lambda v: [int(float(x)) for x in v.split(",")],
                    default=[9600, 115200, 921600, 2_000_000])
     p.set_defaults(run=cmd_console)
