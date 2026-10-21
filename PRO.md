@@ -112,8 +112,9 @@ P0_30 check below is still open.
    - A reader takes the board byte only at format 3 or above. Over a v1 HID read the reply is padded
      to the report, so a format 2 image has a byte there too (`dap.py` and `verge` read 0x82).
    - Bit 4 (`CJTAG_CAP_OSCAN1_ENTER`) is all probe-rs checks before running cJTAG, so the Pro image
-     clears it until OScan1 framing, the buffer turnaround within a frame included, has worked on
-     the Pro's pins.
+     cleared it until OScan1 framing, the buffer turnaround within a frame included, had worked on
+     the Pro's pins. It has (step 7, 2026-10-21): the Pro sets it now, and only an on-board
+     MCU-Link, which nothing has tried, keeps it clear and refuses vendor 0x83 modes 1 and 2.
      Confirmed in probe-rs's code (`wip-cmsisdap-cjtag` at `7b17871e1`): with bit 4
      clear, selecting cJTAG fails as an unsupported protocol and probe-rs sends no 0x83 at all.
    `verge` gains the Pro as a batch `--board` and recognises stock's `MCU-LINK Pro` product string.
@@ -151,7 +152,17 @@ wherever a spurious SWDIO edge landed on a rise. The re-take replaced that resul
 short periods moved between channels with the pairing captured, the firmware unchanged, and
 grounded none of the three pairings had any. With D3, D6 and D7 on at 100 MS/s the Logic 8
 recorded nothing and Logic 2 reported no error (D1 to D3 at that rate worked before, BENCH.md), so
-the pairs were taken one at a time. Left besides: step 7 (a JTAG target), 8, 9.
+the pairs were taken one at a time.
+Step 7, JTAG on J7 with the CC1312R1 LaunchPad (analyser D0 nRESET, D1 TMSC, D2 TCKC, D4 TDI, D5
+TDO; logs and the capture script in `pro-jtag-2026-10-21/`): four-wire reads
+CPUID through probe-rs, and 400 queued 127-word ROM blocks match the 1 MHz read at every clock from
+1 to 50 MHz (93.5 KiB/s at 1 MHz, 828.5 at 10, 1639.8 at 25, 1591 from 30). Asked to measure at
+50 MHz, the probe finds four-wire latency 7, the plain board's figure on this part after nRESET, so
+the Pro's buffers add no whole cycle. Two-pin first read garbage at 1 MHz: the image refused vendor
+0x83 mode 2 on the Pro, and `dap.py` carried on unframed (it stops on a refusal now). With the gate
+lifted, the same blocks match at every clock from 1 to 50 MHz (31.2 KiB/s at 1 MHz, 301.8 at 10,
+541.5 at 25, 678.3 at 50), probe-rs reads CPUID over cJTAG, and the measured two-pin latency at
+50 MHz is 8, the default. nRESET reaches the target. Left: 8, 9.
 
 5. Flash ours with `verge`: jumper-free from stock V3.122 or later, J4 otherwise.
 6. Identify, `DAP_Info`, SWD on the L1306 through J7, then the `swd-1` and `wire-1` matrices. The
