@@ -225,5 +225,6 @@ Open:
    work caused it; the same lab image had rebooted cleanly an hour before.
 3. **LEDs on the Pro** (PRO.md step 8) plan a fade on CTimer 1, which shares APB0 with CTimer 0's
    start store and DMA1's stop write: it will need the same handshake, or a timer on another bridge.
-4. A/B of block throughput against the GPIO path at 50 MHz, with `swd_gen_timer` switched at run time
-   (no host command reaches it yet; vendor 0x89 could take it).
+4. A/B of block throughput against the GPIO path at 50 MHz in one image: `dap.py gen --timer
+   off|on` switches `swd_gen_timer` (vendor 0x89 modes 4 and 5; its reply ends with the setting
+   and whether the current build uses it).

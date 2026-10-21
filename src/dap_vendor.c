@@ -135,6 +135,10 @@
 #define SWD_GEN_MODE_MEASURE 1U
 #define SWD_GEN_MODE_PIN 2U
 #define SWD_GEN_MODE_AUTOMATIC 3U
+/** Vendor 0x89 only: reads at the write period from GPIO, or from CTimer 0 where they can be
+ * (swd_gen_timer). */
+#define SWD_GEN_MODE_TIMER_OFF 4U
+#define SWD_GEN_MODE_TIMER_ON 5U
 
 /** ID_VENDOR_JTAG_GEN takes `two_pin, four_wire, mode`: each wire's cycles from the falling edge
  * that launches TDO to the first load that sees it, 1 to 64, or 0 to leave it as it is. Setting
@@ -340,12 +344,16 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         const uint32_t latency = request[1];
         const uint32_t mode = request[2];
         response[1] = DAP_OK;
-        if ((latency > LATENCY_MAX) || (mode > SWD_GEN_MODE_AUTOMATIC)) {
+        if ((latency > LATENCY_MAX) || (mode > SWD_GEN_MODE_TIMER_ON)) {
             response[1] = DAP_ERROR;
         } else {
             if (latency != 0U) {
                 swd_gen_latency = latency;
                 swd_sweep_automatic = false;
+                swd_gen_changed();
+            }
+            if ((mode == SWD_GEN_MODE_TIMER_OFF) || (mode == SWD_GEN_MODE_TIMER_ON)) {
+                swd_gen_timer = mode == SWD_GEN_MODE_TIMER_ON;
                 swd_gen_changed();
             }
             if (mode == SWD_GEN_MODE_PIN) {
@@ -380,6 +388,8 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
                                   (uint32_t)(measured->consistent >> 32),
                                   swd_sweep_last.rescues};
         out = put_u32s(out, sweep, sizeof sweep / sizeof sweep[0]);
+        *out++ = swd_gen_timer ? 1U : 0U;
+        *out++ = swd_gen_info.timer ? 1U : 0U;
         return (3U << 16) | (uint32_t)(out - response);
     }
 #endif
