@@ -129,8 +129,11 @@ grounded; SWD reads of the L1306's factory region at 1, 10, 20 and 50 MHz. `swd-
 Pro: 480 cases, none failed, probe-rs's half too (mculink-bench,
 `results/throughput/2026-10-21-pro-gcc.json`). Against the plain board's `4a7ca13` run, 453 of
 480 within 3%; every gap over 20% is a 1-word command at depth 8 and 10 to 50 MHz, the Pro ahead
-by up to 2.6x. Builds differ, and `4a7ca13` must not run on a Pro, so the attribution needs
-`49633f3` on the plain board with the L1306 back on it (hands).
+by up to 2.6x. The build, not the board: `49633f3` on the plain board (mculink-bench
+`results/throughput/2026-10-21-plain-gcc.json`) is up to 2.4x faster than `4a7ca13` in the same
+cases, and the two boards on `49633f3` agree within 3% in 458 of 480. The rest are 1-word commands
+at depth 8, whose own runs spread 5 to 33%, but for 32-word transfer reads at 50 MHz (the Pro 7%
+faster) and 32-word block reads at 20 MHz (5% slower), runs within 2% on both.
 `wire-1` through the Pro (analyser D6 SWDIO, D7 SWCLK at the L1306, 100 MS/s, the Logic 8's
 ceiling; mculink-bench `results/wireclock/2026-10-21-pro-gcc.json`, captures in
 `wireclock-pro-2026-10-21-grounded/`): no command failed at any clock, and
@@ -138,7 +141,8 @@ every clock from 1 to 30 MHz resolves from SWCLK (40 and 50 MHz from SWDIO only,
 board). Measured minus the emulator (`wireclock.py model --firmware`) is within 0.8 ns at every
 position at 8 and 10 MHz but the write turnaround's known 4 cycles (26.7 ns, position 12). Fastest
 periods: 7.94 MHz at 8 asked, 10.03 at 10. Item 16's early edge is not on the Pro: the first
-RDBUFF after a write starts at 99.9 ns at 10 MHz, against the plain board's 93.8.
+RDBUFF after a write starts at 99.9 ns at 10 MHz, as on the plain board once its analyser was
+grounded too (BACKLOG item 16).
 The first run of the same matrix (captures in `wireclock-pro-2026-10-21/`) had the
 analyser's ground floating: at 8 MHz SWDIO carried 2.89 million edges against 1.08 million
 grounded, SWCLK the same 3.09 million both times, and SWCLK alternated 113 and 140 ns periods
