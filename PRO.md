@@ -202,7 +202,10 @@ lifted, the same blocks match at every clock from 1 to 50 MHz (31.2 KiB/s at 1 M
    Halting works too (`j3halt.py` beside it): each core halted for half a second,
    its registers read and resumed, and the Pro answered USB after. Idle, CPU 0 stopped in
    `vcom_ready` and CPU 1 in `wait_for_mailbox`; the LED tick stood still only while CPU 0 was
-   halted.
+   halted. With the plain board on J3 the Pro started its bootloader at every reset: J3 pin 7 is
+   the Pro's ISP pin, and the plain board never drove the P0_14 that feeds it, so its open-drain
+   buffer held the pin low. Fixed in `125a6ce` for any NXP target; verge then put `8b90b88` on both
+   units with the cable in place.
 
 Phase 2, the extras (needs decisions b and c below):
 
