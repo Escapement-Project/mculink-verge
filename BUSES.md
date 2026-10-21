@@ -42,7 +42,7 @@ contends with any other.
 | --- | --- | --- | --- |
 | CPU 1 | 1 | Generated code fetch | Every generated transfer |
 | CPU 1 | 10 | Secure GPIO (`DBGIF_GPIO`): every SWDIO, SWCLK, TMS, TDI, TDO access | Inside every timed window |
-| CPU 1 | 3, 4 | ARM's and cJTAG's bit paths (`.ramfunc`), where nothing is generated | Inside their timed windows |
+| CPU 1 | 3, 4 | The `.ramfunc` bit paths: ARM's SWD, the JTAG and two-pin blocks, where nothing is generated | Inside their timed windows |
 | CPU 1 | 0, 3, 4, 6 | C code, `.ramfunc`, data and stack between transfers | Between timed windows |
 | CPU 1 | 10 | ADC0 (target sense, `dap_vendor`) | Own core, never during a window |
 | CPU 1 | 7, 8 | SWO setup: SYSCON resets and clocks, Flexcomm 3, DMA0 regs | SWO commands only |
@@ -54,7 +54,8 @@ contends with any other.
 | CPU 0 | 7 | CTimer 3 (LED) | 488 times a second |
 | CPU 0 | 7 | SYSCON and IOCON through `vcom_configure` (`USART_Init`, `CLOCK_*`) | When a host sets the line coding (a terminal opening the port) |
 | CPU 0 | 7 | SYSCON and IOCON reads for the SWO status request; SYSCON NMISRC for the CPU 1 wake | Those vendor control requests |
-| CPU 0 | 7 | SYSCON (CPU 1 start), PMC (reboot), GPIO port 8 (straps) | Boot and reboot only |
+| CPU 0 | 7 | SYSCON (CPU 1 start), PMC (reboot) | Boot and reboot only |
+| CPU 0 | 8 | Ordinary GPIO (the board straps) | Boot only |
 
 ## Timed windows and their exposure
 
