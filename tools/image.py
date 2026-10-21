@@ -827,7 +827,8 @@ def check_unconnected_block(c: Checker, elf: str) -> None:
 
 
 def check_board(c: Checker, elf: str, request_slots: int) -> None:
-    """Only the plain MCU-Link lets the marker or two-pin cJTAG near its pins (PRO.md).
+    """Only the plain MCU-Link lets the marker near its pins, and an on-board one keeps two-pin cJTAG
+    off (PRO.md).
 
     On a Pro the J8 pins are the analog trace input, a level shifter's direction and two SPI lines,
     so driving them fights other drivers. CPU 1 takes the board from dap_shared, as CPU 0 read it.
@@ -852,17 +853,18 @@ def check_board(c: Checker, elf: str, request_slots: int) -> None:
             probe.uc.mem_read(j8_set, 4), "little"
         )
         plain = board == 0
+        two_pin = board != 2
         if reported != board:
             c.problems.append(f"{name} board: vendor 0x82 reports board {reported}, wanted {board}")
-        if bool(flags & 0x11) != plain:
+        if bool(flags & 0x11) != two_pin:
             c.problems.append(f"{name} board: vendor 0x82 flags {flags:#04x} get two-pin cJTAG wrong")
         if (j8[1] == 0) != plain:
             c.problems.append(f"{name} board: vendor 0x84 answered {j8.hex()}")
-        if (enter[1] == 0) != plain:
+        if (enter[1] == 0) != two_pin:
             c.problems.append(f"{name} board: vendor 0x83 mode 2 answered {enter.hex()}")
         if bool(driven & 0x0F) != plain:
             c.problems.append(f"{name} board: J8's pins were {'not ' if plain else ''}driven ({driven:#x})")
-    c.note("board: CPU 1 reports each board as CPU 0 read it; J8 and two-pin on the plain one only")
+    c.note("board: CPU 1 reports each board as CPU 0 read it; J8 on the plain one only, two-pin on the plain one and the Pro")
 
 
 def check_sample_probe(c: Checker, elf: str) -> None:

@@ -223,7 +223,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         memcpy(out, CJTAG_INFO_MAGIC, sizeof(CJTAG_INFO_MAGIC) - 1U);
         out += sizeof(CJTAG_INFO_MAGIC) - 1U;
         *out++ = (uint8_t)CJTAG_INFO_VERSION;
-        const uint32_t two_pin = (board_kind == BOARD_KIND_PLAIN) ? (CJTAG_CAP_OSCAN1 | CJTAG_CAP_OSCAN1_ENTER) : 0U;
+        const uint32_t two_pin = (board_kind != BOARD_KIND_ON_BOARD) ? (CJTAG_CAP_OSCAN1 | CJTAG_CAP_OSCAN1_ENTER) : 0U;
         *out++ = (uint8_t)(two_pin | CJTAG_CAP_TARGET_SENSE | CJTAG_CAPS_BUILT |
                            (cJTAG_Active() ? CJTAG_CAP_OSCAN1_ACTIVE : 0U));
         // The same string DAP_Info's product firmware version reports, so a host that knows
@@ -246,7 +246,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             break;
         case 1U:
         case 2U:
-            if (board_kind != BOARD_KIND_PLAIN) {
+            if (board_kind == BOARD_KIND_ON_BOARD) {
                 response[1] = DAP_ERROR;
             } else if (request[1] == 1U) {
                 cJTAG_Activate();
