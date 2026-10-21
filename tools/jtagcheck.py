@@ -99,15 +99,16 @@ def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire
     probe.command(bytes([cy.ID_SWJ_CLOCK]) + cy.u32(hz))
     probe.command(bytes([cy.ID_TRANSFER_CONFIG, 0]) + cy.u16(100) + cy.u16(0))
     probe.command(bytes([cy.ID_JTAG_CONFIGURE, 1, 4]))
-    two_pin = wire == "cjtag"
+    two_pin = wire in cy.TWO_PIN
     if two_pin:
         # Framing on without an activation: the target starts in Run-Test/Idle, framed, which is
         # where a host leaves it after driving the activation itself.
-        probe.command(bytes([cy.ID_CJTAG_CONTROL, 2]))
+        probe.command(cy.cjtag_enter(wire, False))
     if gen_latency:
         probe.command(bytes([ID_VENDOR_JTAG_GEN, gen_latency if two_pin else 0, 0 if two_pin else gen_latency, 0]))
     tap = cy.RecordingTap(dr, 35)
-    target = cy.TimedCjtagTarget(tap, latency=latency) if two_pin else cy.TimedJtagTarget(tap, latency=latency)
+    target = (cy.TimedCjtagTarget(tap, latency=latency, oscan2=wire == "cjtag2") if two_pin
+              else cy.TimedJtagTarget(tap, latency=latency))
     probe.target = target
 
     problems: list[str] = []
@@ -190,7 +191,7 @@ def run_point(args: tuple[str, int, int, int, int, str]) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("elf", nargs="?", default="build-gen/mculink_cjtag_core1.elf", help="CPU 1's image")
-    ap.add_argument("--wire", choices=["cjtag", "jtag"], default="cjtag")
+    ap.add_argument("--wire", choices=["cjtag", "cjtag2", "jtag"], default="cjtag")
     ap.add_argument("--mhz", type=float, nargs="*")
     ap.add_argument("--latency", type=int, default=8, help="cycles from the TDO packet's fall to valid TDO")
     ap.add_argument("--gen-latency", type=int, default=0, help="the latency to generate for, with vendor 0x8A; 0 leaves the image's")

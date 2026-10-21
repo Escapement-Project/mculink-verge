@@ -278,7 +278,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
 #ifdef JTAG_CODEGEN
         // The wire changed: generate for it now rather than in the next command.
         if (DAP_Data.debug_port == DAP_PORT_JTAG) {
-            (void)jtag_gen_ready(cJTAG_Active() ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE);
+            (void)jtag_gen_ready(jtag_gen_wire());
         }
 #endif
         return (consumed << 16) | 2U; // the id, the mode and its operands in; the id and a status out
@@ -432,16 +432,14 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             } else if (mode == SWD_GEN_MODE_AUTOMATIC) {
                 jtag_sweep_automatic = true;
             } else if (mode == SWD_GEN_MODE_MEASURE) {
-                // The measurement clocks generated frames, which are OScan1's.
-                if ((DAP_Data.debug_port == DAP_PORT_JTAG) &&
-                    jtag_gen_usable(cJTAG_Active() ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE)) {
+                if (DAP_Data.debug_port == DAP_PORT_JTAG) {
                     jtag_sweep();
                 } else {
                     response[1] = DAP_ERROR;
                 }
             }
         }
-        (void)jtag_gen_ready(cJTAG_Active() ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE);
+        (void)jtag_gen_ready(jtag_gen_wire());
         response[2] = (uint8_t)jtag_gen_latency[JTAG_GEN_TWO_PIN];
         response[3] = (uint8_t)jtag_gen_latency[JTAG_GEN_FOUR_WIRE];
         response[4] = jtag_gen_info.masked ? 1U : 0U;
@@ -471,7 +469,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         if (request[1] <= 1U) {
             jtag_gen_pacing = request[1] != 0U;
             if (DAP_Data.debug_port == DAP_PORT_JTAG) {
-                (void)jtag_gen_ready(cJTAG_Active() ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE);
+                (void)jtag_gen_ready(jtag_gen_wire());
             }
         }
         response[1] = DAP_OK;

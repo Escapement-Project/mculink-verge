@@ -1130,7 +1130,7 @@ def describe_sweep(sweep: dict, cpu_hz: int = 150_000_000, word: str = "DPIDR") 
     outcome = sweep["outcome"]
     text = LATENCY_OUTCOMES[outcome] if outcome < len(LATENCY_OUTCOMES) else f"outcome {outcome}"
     if "wire" in sweep and outcome != 0:
-        text = f"{('four-wire', 'two-pin')[sweep['wire']]} {text}"
+        text = f"{('four-wire', 'two-pin', 'two-pin OScan2')[sweep['wire']]} {text}"
     if sweep["latency"]:
         text += f": latency {sweep['latency']}"
     if outcome != 0:

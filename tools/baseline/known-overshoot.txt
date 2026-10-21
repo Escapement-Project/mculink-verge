@@ -1,6 +1,2 @@
 # Wires that clock faster than the host asked for. See OPTIMISATIONS.md:
 # it is a decision rather than a slip, and both ways out cost throughput.
-#
-# cjtag2: OScan2 runs ARM's paced copy until its frames are generated, as the armwire build does.
-cjtag2@10MHz
-cjtag2@20MHz

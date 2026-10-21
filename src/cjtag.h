@@ -51,6 +51,8 @@ uint32_t cJTAG_Tap(void);
 /** Moves the tracked TAP by one clock with TMS `tms`, returning whether that clock was in a Shift
  * state, where an OScan2 frame is three packets rather than one. */
 bool cJTAG_TapClock(uint32_t tms);
+/** Whether the tracked TAP is in Shift-DR or Shift-IR, so the next OScan2 frame is three packets. */
+bool cJTAG_TapShift(void);
 
 /** Drive the online and OScan1 activation sequence, and mark the TAP as two-pin.
  *

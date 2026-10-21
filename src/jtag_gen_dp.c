@@ -40,9 +40,36 @@ static void set_tdi(uint32_t level) {
     }
 }
 
+/** OScan2's frames: runs in Shift through the scan function, runs outside it through the TMS
+ * packets, split where the tracked TAP enters or leaves Shift. Held TMS keeps a Shift run in
+ * Shift, so a run leaves it only on its first frame. */
+COMMAND_PATH static uint32_t frames_oscan2(uint32_t tdi, uint32_t count, uint32_t tms) {
+    uint32_t tdo = 0U;
+    for (uint32_t done = 0U; done < count;) {
+        uint32_t n = 0U;
+        jtag_gen_scan_fn fn = jtag_gen_tms;
+        if (cJTAG_TapShift()) {
+            fn = jtag_gen_scan;
+            n = tms != 0U ? 1U : count - done;
+            (void)cJTAG_TapClock(tms);
+        } else {
+            do {
+                (void)cJTAG_TapClock(tms);
+                n++;
+            } while ((done + n < count) && !cJTAG_TapShift());
+        }
+        const uint32_t out = fn(tdi >> done, n, tms);
+        const uint32_t mask = n < 32U ? (1U << n) - 1U : 0xFFFFFFFFU;
+        tdo |= (out & mask) << done;
+        done += n;
+    }
+    return tdo;
+}
+
 /** Up to 32 frames with TMS held and TDI from `tdi`, least significant bit first. */
 static uint32_t frames(uint32_t tdi, uint32_t count, uint32_t tms) {
-    const uint32_t tdo = jtag_gen_scan(tdi, count, tms);
+    // jtag_gen_tms exists exactly when the code was generated for OScan2.
+    const uint32_t tdo = jtag_gen_tms != NULL ? frames_oscan2(tdi, count, tms) : jtag_gen_scan(tdi, count, tms);
     tdi_level = (tdi >> (count - 1U)) & 1U;
     return tdo;
 }
@@ -51,7 +78,7 @@ static uint32_t frames(uint32_t tdi, uint32_t count, uint32_t tms) {
 static void hold(uint32_t count, uint32_t tms) {
     while (count != 0U) {
         const uint32_t n = count < JTAG_GEN_FRAMES_MAX ? count : JTAG_GEN_FRAMES_MAX;
-        (void)jtag_gen_scan(held(), n, tms);
+        (void)frames(held(), n, tms);
         count -= n;
     }
 }
@@ -144,6 +171,13 @@ void jgen_WriteAbort(uint32_t data) {
     set_tdi(1U);
 }
 
+/** Whether the generated transfers may run: they walk from Run-Test/Idle, and in OScan2 a frame's
+ * shape depends on where the TAP is, so a host that left it elsewhere gets the scans, which follow
+ * the tracked state. */
+static bool transfers_fit(void) {
+    return (jtag_gen_read != NULL) && ((jtag_gen_tms == NULL) || (cJTAG_Tap() == CJTAG_TAP_IDLE));
+}
+
 /** One generated transfer, where they exist. */
 static uint8_t transfer_one(uint32_t request, uint32_t* data) {
     const jtag_gen_xfer_fn fn = (request & DAP_TRANSFER_RnW) != 0U ? jtag_gen_read : jtag_gen_write;
@@ -166,7 +200,7 @@ static uint8_t transfer_one(uint32_t request, uint32_t* data) {
 }
 
 COMMAND_PATH uint8_t jgen_Transfer(uint32_t request, uint32_t* data) {
-    if (jtag_gen_read != NULL) {
+    if (transfers_fit()) {
         return transfer_one(request, data);
     }
     hold(1U, 1U); // Select-DR-Scan
@@ -261,7 +295,7 @@ static uint32_t block_whole(const uint8_t* request, uint8_t* response) {
     }
     const uint32_t request_value = *request++;
     // The generated transfers are for one chain position: this command's.
-    if (!jtag_gen_ready(cJTAG_Active() ? JTAG_GEN_TWO_PIN : JTAG_GEN_FOUR_WIRE) || (jtag_gen_read == NULL)) {
+    if (!jtag_gen_ready(jtag_gen_wire()) || !transfers_fit()) {
         return jgen_BlockImpl(request - 4, response_head);
     }
     const uint32_t ir = (request_value & DAP_TRANSFER_APnDP) != 0U ? JTAG_APACC : JTAG_DPACC;

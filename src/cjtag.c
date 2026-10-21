@@ -4,6 +4,7 @@
 
 #include "DAP.h"
 #include "cjtag.h"
+#include "hot.h"
 
 static bool active;
 static uint8_t format = CJTAG_OSCAN1;
@@ -13,7 +14,7 @@ bool cJTAG_Active(void) { return active; }
 
 uint32_t cJTAG_Format(void) { return format; }
 
-uint32_t cJTAG_Tap(void) { return tap; }
+COMMAND_PATH uint32_t cJTAG_Tap(void) { return tap; }
 
 /** IEEE 1149.1's state diagram: the next state for TMS 0 and for TMS 1. */
 static const uint8_t tap_next[CJTAG_TAP_STATES][2] = {
@@ -35,8 +36,10 @@ static const uint8_t tap_next[CJTAG_TAP_STATES][2] = {
     [CJTAG_TAP_UPDATE_IR] = {CJTAG_TAP_IDLE, CJTAG_TAP_SELECT_DR},
 };
 
-bool cJTAG_TapClock(uint32_t tms) {
-    const bool shift = (tap == CJTAG_TAP_SHIFT_DR) || (tap == CJTAG_TAP_SHIFT_IR);
+COMMAND_PATH bool cJTAG_TapShift(void) { return (tap == CJTAG_TAP_SHIFT_DR) || (tap == CJTAG_TAP_SHIFT_IR); }
+
+COMMAND_PATH bool cJTAG_TapClock(uint32_t tms) {
+    const bool shift = cJTAG_TapShift();
     tap = tap_next[tap][tms & 1U];
     return shift;
 }

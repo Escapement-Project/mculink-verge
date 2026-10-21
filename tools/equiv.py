@@ -25,7 +25,6 @@ import sys
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 
 from cycles import (  # noqa: E402
-    ID_CJTAG_CONTROL,
     ID_JTAG_SEQUENCE,
     ID_TRANSFER,
     ID_CONNECT,
@@ -37,7 +36,9 @@ from cycles import (  # noqa: E402
     ID_TRANSFER_CONFIG,
     Machine,
     Model,
+    TWO_PIN,
     Target,
+    cjtag_enter,
     u16,
     u32,
 )
@@ -150,7 +151,7 @@ def run_jtag(
 
 
 def run_cjtag(
-    elf: str, ack: int, read: bool, idle: int, word: int, fast: bool, words: int = 2
+    elf: str, ack: int, read: bool, idle: int, word: int, fast: bool, words: int = 2, wire_name: str = "cjtag"
 ) -> tuple[list[str], bytes]:
     """The same comparison again, through OScan1 framing.
 
@@ -166,11 +167,12 @@ def run_cjtag(
     probe.command(bytes([ID_SWJ_CLOCK]) + u32(50_000_000 if fast else 10_000_000))
     probe.command(bytes([ID_TRANSFER_CONFIG, idle]) + u16(2) + u16(0))
     probe.command(bytes([ID_JTAG_CONFIGURE, 1, 4]))
-    probe.command(bytes([ID_CJTAG_CONTROL, 1]))
+    probe.command(cjtag_enter(wire_name, True))
 
     # The activation sequence ends in a TAP reset on a real target; start the model where the
     # firmware's first transfer expects to find it.
     probe.cjtag_tap = JtagTap(dr, 35)
+    probe.cjtag_oscan2 = wire_name == "cjtag2"
 
     payload = bytes([ID_TRANSFER_BLOCK, 0]) + u16(words) + bytes([AP_DRW_READ if read else AP_DRW_WRITE])
     if not read:
@@ -182,7 +184,7 @@ def run_cjtag(
 
 def run_jtag_commands(
     elf: str,
-    two_pin: bool,
+    wire_name: str,
     ack: int,
     word: int,
     fast: bool,
@@ -195,6 +197,7 @@ def run_jtag_commands(
     run_cjtag use: the replies, joined. The TAP is at chain position `index`; the TAPs nearer TDO
     are in BYPASS during a DR scan, one zero each ahead of its DR."""
     dr = (((ack >> 1) & 1) | ((ack & 1) << 1) | (((ack >> 2) & 1) << 2) | (word << 3)) << index
+    two_pin = wire_name in TWO_PIN
     probe = Machine(elf, Target([]), restart_at=set(), model=Model())
     probe.command(bytes([ID_CONNECT, 2]))
     probe.command(bytes([ID_JTAG_PACING, 0]))
@@ -206,8 +209,9 @@ def run_jtag_commands(
     probe.command(bytes([ID_TRANSFER_CONFIG, idle]) + u16(2) + u16(2))
     probe.command(bytes([ID_JTAG_CONFIGURE, len(chain)]) + bytes(chain))
     if two_pin:
-        probe.command(bytes([ID_CJTAG_CONTROL, 1]))
+        probe.command(cjtag_enter(wire_name, True))
         probe.cjtag_tap = JtagTap(dr, 35 + index)
+        probe.cjtag_oscan2 = wire_name == "cjtag2"
     else:
         probe.tap = JtagTap(dr, 35 + index)
     probe.begin()
@@ -346,7 +350,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("reference")
     ap.add_argument("candidate")
-    ap.add_argument("--wire", choices=["swd", "jtag", "cjtag"], default="swd")
+    ap.add_argument("--wire", choices=["swd", "jtag", "cjtag", "cjtag2"], default="swd")
     ap.add_argument("--command", choices=["block", "transfer", "sequence"], default="block")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--ignore-samples", action="store_true", help="compare without the SWDIO loads")
@@ -372,7 +376,7 @@ def main() -> int:
             print(f"  ok     {name}  ({len(a[0])} events, {len(a[1])}B reply)")
         return 0
 
-    if args.wire in ("cjtag", "jtag") and args.command != "block":
+    if args.wire in ("cjtag", "cjtag2", "jtag") and args.command != "block":
         # Two TAPs as the CC13xx's ICEPick puts them, the DAP at either end, so the IR and DR
         # scans cross bypass bits on both sides.
         chains = ((4,), (4, 6))
@@ -396,12 +400,12 @@ def main() -> int:
                     ):
                         cases.append((f"{kind} index={index} ack={ack} word=0x{word:08x} {'fast' if fast else 'paced'} idle={idle} chain={chain}",
                                       (ack, word, fast, idle, [payload], chain, index)))
-        two_pin = args.wire == "cjtag"
+        two_pin = args.wire in TWO_PIN
         failures = sum(
             compare(
                 name,
-                run_jtag_commands(args.reference, two_pin, *case),
-                run_jtag_commands(args.candidate, two_pin, *case),
+                run_jtag_commands(args.reference, args.wire, *case),
+                run_jtag_commands(args.candidate, args.wire, *case),
             )
             for name, case in cases
         )
@@ -438,7 +442,7 @@ def main() -> int:
         print(f"\n{total - failures}/{total} DAP_Transfer cases identical on the wire and in the reply")
         return 1 if failures else 0
 
-    if args.wire == "cjtag":
+    if args.wire in TWO_PIN:
         failures = 0
         total = 0
         cases = itertools.product(
@@ -450,8 +454,8 @@ def main() -> int:
                 f"ack={ack} {'read' if read else 'write'} idle={idle} word=0x{word:08x}"
                 f" {'delay-free' if fast else 'paced'}"
             )
-            a = run_cjtag(args.reference, ack, read, idle, word, fast)
-            b = run_cjtag(args.candidate, ack, read, idle, word, fast)
+            a = run_cjtag(args.reference, ack, read, idle, word, fast, wire_name=args.wire)
+            b = run_cjtag(args.candidate, ack, read, idle, word, fast, wire_name=args.wire)
             if a[0] != b[0]:
                 first = next(
                     (i for i, (x, y) in enumerate(zip(a[0], b[0])) if x != y),
@@ -471,7 +475,7 @@ def main() -> int:
         extra, bad = sweep_sizes(
             args.reference,
             args.candidate,
-            lambda elf, read, words: run_cjtag(elf, 2, read, 0, 0xA5A5_5A5A, False, words),
+            lambda elf, read, words: run_cjtag(elf, 2, read, 0, 0xA5A5_5A5A, False, words, wire_name=args.wire),
             args.verbose,
         )
         total += extra

@@ -1,5 +1,5 @@
-/** The JTAG wire paths, four-wire and two-pin (IEEE 1149.7 OScan1), generated at run time for the
- * clock the host asked for.
+/** The JTAG wire paths, four-wire and two-pin (IEEE 1149.7 OScan1 and OScan2), generated at run
+ * time for the clock the host asked for.
  *
  * src/jtag_gen.c writes them into SRAMX with every edge and sample placed to the core cycle, as
  * src/swd_gen.c does for SWD. src/jtag_gen_dp.c builds ARM's JTAG entry points on them.
@@ -43,10 +43,13 @@
 #define JTAG_GEN_FRAMES_MAX 32U
 
 #define JTAG_GEN_FOUR_WIRE 0U
-#define JTAG_GEN_TWO_PIN 1U
+#define JTAG_GEN_TWO_PIN 1U // OScan1
+#define JTAG_GEN_OSCAN2 2U  // two-pin in OScan2: one TMS packet a clock outside Shift
+/** The index of jtag_gen_latency a wire uses: both two-pin formats read the same TDO packet. */
+#define JTAG_GEN_PINS(wire) ((wire) == JTAG_GEN_FOUR_WIRE ? JTAG_GEN_FOUR_WIRE : JTAG_GEN_TWO_PIN)
 
 struct jtag_gen_config {
-    uint32_t wire;     // JTAG_GEN_FOUR_WIRE or JTAG_GEN_TWO_PIN
+    uint32_t wire;     // JTAG_GEN_FOUR_WIRE, JTAG_GEN_TWO_PIN or JTAG_GEN_OSCAN2
     uint32_t period;   // core cycles per TCK clock or TCKC packet
     uint32_t latency;  // see JTAG_GEN_LATENCY_DEFAULT
     uint32_t before;   // the transfers' bypass bits before the DAP: its index in the chain
@@ -62,6 +65,11 @@ struct jtag_gen_config {
  * every frame ends with. Four-wire: entered and left with TCK high, as ARM's clocks leave it. */
 typedef uint32_t (*jtag_gen_scan_fn)(uint32_t tdi, uint32_t count, uint32_t tms);
 
+/** OScan2 only: `count` frames of one TMS packet each, for clocks outside Shift-DR and Shift-IR,
+ * with TMS held at `tms`. `tdi` goes nowhere, and the frames bring nothing back, so this returns
+ * all ones, what a capture there reads in OScan1. Entered and left as the scan function is. */
+extern jtag_gen_scan_fn jtag_gen_tms;
+
 /** Runs `count` transfers of one request back to back, each as ARM's JTAG_Transfer clocks it, and
  * stops at the first that does not acknowledge OK. `request` is DAP's request byte; `words` is read
  * into or written from, four bytes a transfer, unaligned allowed; `tdi` is the level ARM's TDI holds
@@ -69,8 +77,9 @@ typedef uint32_t (*jtag_gen_scan_fn)(uint32_t tdi, uint32_t count, uint32_t tms)
  * transfers not completed, the one that stopped it included. ARM's TDI is high afterwards. */
 typedef uint64_t (*jtag_gen_xfer_fn)(uint32_t request, uint8_t* words, uint32_t count, uint32_t tdi);
 
-/** Generates for `config` into SRAMX: the scan function, then the read and write transfers if they
- * fit, NULL where they do not. With `read` and `write` NULL, the scan function alone. False if the
+/** Generates for `config` into SRAMX: the scan function, OScan2's TMS packets (jtag_gen_tms), then
+ * the read and write transfers if they fit, NULL where they do not. With `read` and `write` NULL,
+ * no transfers. False if the
  * configuration is out of range or the scan function does not fit, in which case nothing generated
  * earlier is usable either. */
 bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan, jtag_gen_xfer_fn* read,
@@ -78,7 +87,7 @@ bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan
 
 /** The clock the host last asked for with DAP_SWJ_Clock, in Hz. */
 extern uint32_t jtag_gen_clock_hz;
-/** The latency each wire is generated for, indexed by JTAG_GEN_FOUR_WIRE and JTAG_GEN_TWO_PIN. */
+/** The latency each wire is generated for, indexed by JTAG_GEN_PINS(wire). */
 extern uint32_t jtag_gen_latency[2];
 
 extern jtag_gen_scan_fn jtag_gen_scan;
@@ -95,9 +104,8 @@ extern uint32_t jtag_gen_failures;
  * generated: the caller runs ARM's path instead. */
 bool jtag_gen_ready(uint32_t wire);
 
-/** jtag_gen_ready, and on two pins only while the frames are OScan1, which is all the generated
- * code frames. In src/cjtag_dp.c. */
-bool jtag_gen_usable(uint32_t wire);
+/** The wire the probe drives now, for jtag_gen_ready. In src/cjtag_dp.c. */
+uint32_t jtag_gen_wire(void);
 
 /** What jtag_gen_ready generates `wire` for now, learned idle clocks included. */
 struct jtag_gen_config jtag_gen_inputs(uint32_t wire);

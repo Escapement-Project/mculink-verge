@@ -95,10 +95,12 @@ Verified on the CC1312R1 from a pin reset: IDCODE, then ICEPick routing and CPUI
 3. **4 clocks "in the CSM"**: raw TCK clocks with TMS low that the adapter's control state machine
    consumes and the TAP controller never sees. OScan1 frames start after them.
 4. **In OScan1 frames**: finish the scan to Pause-DR; STMC 4 (zero-bit scan, then a 4-clock scan:
-   deselect all controllers), 7 CSM clocks; CCE 0 (a 7-clock scan, then a zero-bit scan: select
+   deselect all controllers), 7 CSM clocks; MSC 0 (a 7-clock scan, then a zero-bit scan: select
    controller 0), 7 CSM clocks; ECL (zero-bit scan, then a 1-clock scan: close the command window,
    which re-couples the device TAP), 7 CSM clocks. CSM clocks follow every command that selects,
-   deselects or closes. Skipping deselect-and-select reads all ones (TAP not coupled).
+   deselects or closes. They are one SP that does not move the TAP, three packets in OScan1, then
+   the 4-clock check packet (1149.7 Table 21-5); in OScan2 the SP is one packet, so 5. Skipping
+   deselect-and-select reads all ones (TAP not coupled).
 5. IR now holds BYPASS from step 2; load IDCODE or route the ICEPick next.
 
 **Attach from any state (measured 2026-10-17).** With step 1 as above, the activation plus
@@ -138,7 +140,7 @@ domain on and halt-in-boot armed (inferred from the TRM, not measured on four-wi
 - OpenOCD's `ti-cjtag.cfg` is the switch to four-pin (STC2), not two-pin.
 
 The J-Link's activation is the same protocol: its two 4-clock bursts at a different clock rate
-are CSM clocks, its 54-clock burst is CCE 0, and its final `110110` IR scan closes the window
+are CSM clocks, its 54-clock burst is MSC 0, and its final `110110` IR scan closes the window
 (consumed by the adapter, so IR keeps IDCODE). Rebuilt that way it reads IDCODE with TDI held at
 0 or 1, 6/6. The TDI sensitivity seen
 when replaying its tail came from a 2-clock pad: the CSM swallowed two packets of our first
@@ -209,6 +211,46 @@ registers.
   first attempt framed ECL in OScan1 while the target was in OScan2 (the format step waited for the
   next framing entry) and still read CPUID at 4, 7 and 10 raw clocks: a wrong framing can pass, so
   check the decode, not only the result.
+
+## OScan2 generated (2026-10-21/22)
+
+- Wire `JTAG_GEN_OSCAN2` (2) beside four-wire and OScan1; `jtag_gen_wire()` (src/cjtag_dp.c) picks
+  it from the framing, `JTAG_GEN_PINS(wire)` indexes the latency (both two-pin formats read the
+  same TDO packet). `emit_tms` generates `jtag_gen_tms`, `count` one-packet frames with TMS held
+  (fall, TMS store, rise; never masked, since nothing is released), after the scan function, for
+  OScan2 only, so OScan1's SRAMX layout is unchanged. `frames_oscan2` (src/jtag_gen_dp.c) splits a
+  held-TMS run where the tracked TAP enters or leaves Shift. Transfers lay Select-DR, Capture-DR,
+  the Capture-to-Shift clock, Update-DR, Run-Test/Idle and the idle clocks as one-packet frames
+  (`cx_tms_frame`, with the take-back after a released frame); their failure path and the idle
+  loop too. The connect-time latency sweep and vendor 0x8A's measurement run in OScan2 again.
+- Checks: gen_host 6282 configurations, 1134 of them OScan2, all with transfers, four builds
+  agree; `jtagcheck.py --wire cjtag2` clean at all 41 clocks on `TimedCjtagTarget(oscan2=True)`;
+  `equiv.py --wire cjtag2` against ARM's OScan2 copy; the gate runs `cjtag2` in both.
+- Bench (CC1312R1, plain probe, 127-word ROM blocks, dap.py, 300 per clock after 30 to let
+  pacing learn; two rounds agree within 1.5%):
+
+  | MHz | OScan1 | OScan2 | OScan1 unpaced | OScan2 unpaced |
+  | --- | --- | --- | --- | --- |
+  | 12.5 | 330 KiB/s | 352 | 295 | 292 |
+  | 25 | 464-468 | 481 | 420 | 408 |
+  | 50 | 565-566 | 577-586 | 505-506 | 487-491 |
+
+  Every block matched at 1 to 50 MHz in both formats. OScan2 is 2 to 7% faster with pacing, about
+  what its packet count predicts. Pacing learns 5 idle clocks in OScan2 against 2 in OScan1: the
+  CC1312's AP WAITs when a Capture-DR follows the last Update-DR too closely, and OScan2 sends
+  those states in a third of the packets. Without pacing OScan2 is slower than OScan1, from the
+  extra WAITs. Each learned clock regenerates the code, which costs a short run: 50 blocks right
+  after a clock change put OScan2 at 323 KiB/s against OScan1's 423.
+- Detach and attach in OScan2 (6cd7a89, 2026-10-22): after a session that walks Run-Test/Idle to
+  Test-Logic-Reset with three framed TMS-high clocks and KeepPoweredinTLR clear, then mode 0 (its
+  trailing frame completes the last advance, 1149.7 25.6.2), no-wake commands fail 3/3 and a wake
+  without escape attaches 3/3, the same as after OScan1: the domain is off. With KeepPoweredinTLR
+  set the no-wake commands attach (2/2), so the check can tell. A target left live in OScan2
+  (no detach, either SYSCTRL) is attached by the escape-first sequence 12/12, in OScan1 or OScan2.
+  probe-rs's OScan2 activation (its wip-cmsisdap-cjtag tree) read 64 ROM words at 1, 5 and 10 MHz
+  byte-identical to a four-wire read, CNFG0 logged each time (2026-10-22).
+- Before generating OScan5/6: the clock sweep 2026-10-21 put OScan1 at 7.8 us a word at 50 MHz
+  and 9.2 at 25 (127-word blocks), so about 1.3 us of a word at 50 MHz scales with the clock.
 
 ## Architecture
 

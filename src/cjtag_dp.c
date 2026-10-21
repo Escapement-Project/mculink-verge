@@ -28,11 +28,14 @@
 
 /** The generated clocks when they could be built for this clock and wire, ARM's copies when not. */
 #ifdef JTAG_CODEGEN
-#define CJTAG_ROUTE(name) (jtag_gen_usable(JTAG_GEN_TWO_PIN) ? jgen_##name : CJTAG_PICK(name))
+#define CJTAG_ROUTE(name) (jtag_gen_ready(jtag_gen_wire()) ? jgen_##name : CJTAG_PICK(name))
 #define JTAG4_ROUTE(name) (jtag_gen_ready(JTAG_GEN_FOUR_WIRE) ? jgen_##name : jtag4_##name)
 
-bool jtag_gen_usable(uint32_t wire) {
-    return ((wire != JTAG_GEN_TWO_PIN) || (cJTAG_Format() == CJTAG_OSCAN1)) && jtag_gen_ready(wire);
+uint32_t jtag_gen_wire(void) {
+    if (!cJTAG_Active()) {
+        return JTAG_GEN_FOUR_WIRE;
+    }
+    return cJTAG_Format() == CJTAG_OSCAN2 ? JTAG_GEN_OSCAN2 : JTAG_GEN_TWO_PIN;
 }
 #else
 #define CJTAG_ROUTE(name) CJTAG_PICK(name)
