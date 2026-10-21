@@ -54,6 +54,16 @@
 #define DBGIF_RESET_TXEN_PORT 0U
 #define DBGIF_RESET_TXEN_PIN 13U
 
+/** The target's ISP pin, debug connector pin 7, through an open-drain buffer (74LVC1G07) on the
+ *  plain board and the Pro: a low pin pulls the target's ISP pin low. NXP's parts sample theirs at
+ *  reset, so left low it boots an attached LPC into its bootloader. Held high, released.
+ *
+ * Until CPU 1 sets it up, and while the probe is in its own bootloader, the pin is an input. The
+ * Pro pulls the buffer's input up (R89); the plain board's schematic shows no pull-up, so there the
+ * target's ISP pin is not held released in those windows. */
+#define DBGIF_ISP_CTRL_PORT 0U
+#define DBGIF_ISP_CTRL_PIN 14U
+
 #define LED1_PORT 0U
 #define LED1_PIN 5U
 

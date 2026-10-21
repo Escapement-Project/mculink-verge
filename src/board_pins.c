@@ -10,7 +10,7 @@
 _Static_assert(DBGIF_TCK_SWCLK_PORT == DBGIF_PORT && DBGIF_TDI_PORT == DBGIF_PORT &&
                    DBGIF_TMS_SWDIO_PORT == DBGIF_PORT && DBGIF_TDO_SWO_PORT == DBGIF_PORT &&
                    DBGIF_TMS_SWDIO_TXEN_PORT == DBGIF_PORT && DBGIF_RESET_PORT == DBGIF_PORT &&
-                   DBGIF_RESET_TXEN_PORT == DBGIF_PORT,
+                   DBGIF_RESET_TXEN_PORT == DBGIF_PORT && DBGIF_ISP_CTRL_PORT == DBGIF_PORT,
                "the per-port writes below assume every signal is on DBGIF_PORT");
 
 /** Start the cycle counter behind TIMESTAMP_GET.
@@ -74,6 +74,14 @@ __attribute__((noinline)) void board_debug_pins_init(void) {
     // clear, the pin is an open-drain I2C cell that cannot drive high. RESET_TXEN would then never
     // turn the reset buffer round, and nRESET would never reach the target.
     IOCON_PinMuxSet(IOCON, DBGIF_PORT, DBGIF_RESET_TXEN_PIN, DEBUG_PIN_MODE | IOCON_GPIO_MODE);
+
+    // PIO0_14 is the other I2C pin, so it needs the same bit to release the target's ISP pin. An
+    // on-board MCU-Link's nets are unknown, so it is left alone there.
+    if (board_kind != BOARD_KIND_ON_BOARD) {
+        DBGIF_GPIO->SET[DBGIF_PORT] = 1UL << DBGIF_ISP_CTRL_PIN;
+        DBGIF_GPIO->DIRSET[DBGIF_PORT] = 1UL << DBGIF_ISP_CTRL_PIN;
+        IOCON_PinMuxSet(IOCON, DBGIF_PORT, DBGIF_ISP_CTRL_PIN, DEBUG_PIN_MODE | IOCON_GPIO_MODE);
+    }
 
 #ifdef MARKER_PINS
     // J8 is on port 1, which the secure GPIO does not reach, so it stays on the ordinary GPIO.

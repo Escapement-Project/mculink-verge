@@ -827,12 +827,19 @@ def check_unconnected_block(c: Checker, elf: str) -> None:
     c.note("a transfer block with no port connected answers none and moves no pin")
 
 
+# P0_14 drives the target's ISP pin, debug connector pin 7, through an open-drain buffer.
+ISP_CTRL_PIN = 14
+
+
 def check_board(c: Checker, elf: str, request_slots: int) -> None:
     """Only the plain MCU-Link lets the marker near its pins, and an on-board one keeps two-pin cJTAG
     off (PRO.md).
 
     On a Pro the J8 pins are the analog trace input, a level shifter's direction and two SPI lines,
     so driving them fights other drivers. CPU 1 takes the board from dap_shared, as CPU 0 read it.
+
+    The plain board and the Pro release the target's ISP pin: P0_14 driven high, as P0_13's I2C
+    cell is set up to drive, since a low one boots an attached NXP part into its bootloader.
     """
     j8_dir = ORDINARY_GPIO + 0x2380 + 4  # DIRSET[1]
     j8_set = ORDINARY_GPIO + 0x2200 + 4  # SET[1]
@@ -844,6 +851,14 @@ def check_board(c: Checker, elf: str, request_slots: int) -> None:
             return
         probe.uc.mem_write(probe.sym["dap_shared"] + offset, bytes([board]))
         probe.call("board_debug_pins_init")
+        isp = ((probe.level >> ISP_CTRL_PIN) & 1, (probe.dir >> ISP_CTRL_PIN) & 1)
+        iocon = [int.from_bytes(probe.uc.mem_read(IOCON + 4 * pin, 4), "little") for pin in (13, ISP_CTRL_PIN)]
+        if board == 2:
+            c.check(isp == (0, 0) and iocon[1] == 0, f"{name} board: P0_14, whose net is unknown there, was set up")
+        else:
+            c.check(isp == (1, 1) and iocon[1] == iocon[0],
+                    f"{name} board: the target's ISP pin is not released: P0_14 level {isp[0]}, output {isp[1]}, "
+                    f"IOCON {iocon[1]:#x} against P0_13's {iocon[0]:#x}")
         reply = probe.command(bytes([0x82]))
         flags, length = reply[7], reply[8]
         reported = reply[9 + length] if len(reply) > 9 + length else None
@@ -865,7 +880,8 @@ def check_board(c: Checker, elf: str, request_slots: int) -> None:
             c.problems.append(f"{name} board: vendor 0x83 mode 2 answered {enter.hex()}")
         if bool(driven & 0x0F) != plain:
             c.problems.append(f"{name} board: J8's pins were {'not ' if plain else ''}driven ({driven:#x})")
-    c.note("board: CPU 1 reports each board as CPU 0 read it; J8 on the plain one only, two-pin on the plain one and the Pro")
+    c.note("board: CPU 1 reports each board as CPU 0 read it; J8 on the plain one only, two-pin on the plain one and the Pro, "
+           "the target's ISP pin released on both")
 
 
 def check_sample_probe(c: Checker, elf: str) -> None:
