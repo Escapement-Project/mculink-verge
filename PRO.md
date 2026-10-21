@@ -122,6 +122,17 @@ P0_30 check below is still open.
 
 Phase 1, the Pro as a probe (needs the Pro on USB, a target on J7, and hands for cables):
 
+Progress 2026-10-21, the L1306 on J7: the Pro `CJ8C2F60A3` runs `49633f3`, flashed from
+stock with `tools/flash.py --cycle` (verge refuses an image that declares the plain board only, as
+it should). Format 3, board Pro, flags 0x2c; DAP_Info as expected; target sense 3.294 V with pin 9
+grounded; SWD reads of the L1306's factory region at 1, 10, 20 and 50 MHz. `swd-1` through the
+Pro: 480 cases, none failed, probe-rs's half too (mculink-bench,
+`results/throughput/2026-10-21-pro-gcc.json`). Against the plain board's `4a7ca13` run, 453 of
+480 within 3%; every gap over 20% is a 1-word command at depth 8 and 10 to 50 MHz, the Pro ahead
+by up to 2.6x. Builds differ, and `4a7ca13` must not run on a Pro, so the attribution needs
+`49633f3` on the plain board with the L1306 back on it (hands). Left: that, `wire-1` (the
+analyser on the L1306's pins), step 7 (a JTAG target), 8, 9.
+
 5. Flash ours with `verge`: jumper-free from stock V3.122 or later, J4 otherwise.
 6. Identify, `DAP_Info`, SWD on the L1306 through J7, then the `swd-1` and `wire-1` matrices. The
    latency measurement at connect covers different level shifters.
