@@ -229,9 +229,11 @@ Open:
 1. **Soak the handshake on the plain board** (`soak.py`, 2000 x 64 DPIDR at 50 MHz, a few runs,
    with the LED breathing), then the wire on the analyser: SWDIO-timed periods at 50 MHz reads.
    A lab script, `validate.sh`, does all of it, with the A/B, in one run.
-2. **The plain board needs a replug**: after `dap.py reboot` at 04:18 it re-enumerated but
-   answered no control request, and a USB port reset took it off the bus. Not known whether this
-   work caused it; the same lab image had rebooted cleanly an hour before.
+2. **The plain board was off USB from 04:18 to about 07:50** (replugged): after
+   `dap.py reboot` it re-enumerated but answered no control request, and a USB port reset took
+   it off the bus. Not known whether this work caused it; the same lab image had rebooted cleanly
+   an hour before. Back and answering at 07:52, still on the lab image of `0814414` (no LED
+   handshake).
 3. **LEDs on the Pro** (PRO.md step 8) plan a fade on CTimer 1, which shares APB0 with CTimer 0's
    start store and DMA1's stop write: it will need the same handshake, or a timer on another bridge.
 4. A/B of block throughput against the GPIO path at 50 MHz in one image: `dap.py gen --timer
