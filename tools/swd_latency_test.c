@@ -22,6 +22,7 @@ struct target {
     uint32_t write_period;
     uint32_t read_period;
     uint32_t odd_word_at; // a latency whose reads come back right but different, or 0
+    uint32_t timer;       // reads at the write period from CTimer 0, where the generator can
 };
 
 static bool served(const struct swd_gen_config* config, uint32_t latency) {
@@ -41,6 +42,7 @@ static void try_latency(uint32_t period, uint32_t latency, struct latency_try* o
         .latency = latency,
         .turnaround = 1U,
         .data_phase = 1U,
+        .timer = t->timer,
     };
     swd_gen_fn read;
     swd_gen_fn write;
@@ -193,8 +195,10 @@ int main(void) {
     test_safe_period();
     test_connect();
 
-    static const uint32_t periods[][2] = {{3, 4},   {4, 4},   {5, 5},   {6, 6},   {7, 7},   {8, 8},  {9, 9},
-                                          {10, 10}, {12, 12}, {13, 13}, {16, 16}, {20, 20}, {40, 40}};
+    // Write period, the read period the firmware measures with, and whether reads take the timer.
+    static const uint32_t periods[][3] = {{3, 4, 0},   {3, 4, 1},   {4, 4, 0},   {5, 5, 0},   {6, 6, 0},
+                                          {7, 7, 0},   {8, 8, 0},   {9, 9, 0},   {10, 10, 0}, {12, 12, 0},
+                                          {13, 13, 0}, {16, 16, 0}, {20, 20, 0}, {40, 40, 0}};
     static const uint32_t starts[] = {7U, 1U, 30U};
     uint32_t outcomes[6] = {0};
     uint32_t most_tries[sizeof periods / sizeof periods[0]] = {0};
@@ -202,23 +206,24 @@ int main(void) {
     for (uint32_t p = 0U; p < sizeof periods / sizeof periods[0]; p++) {
         for (uint32_t latency = 2U; latency <= 40U; latency++) {
             for (uint32_t s = 0U; s < sizeof starts / sizeof starts[0]; s++) {
-                struct target t = {latency, periods[p][0], periods[p][1], 0U};
+                struct target t = {latency, periods[p][0], periods[p][1], 0U, periods[p][2]};
                 struct latency_result r;
                 latency_measure(&wire, t.read_period, starts[s], try_latency, &t, &r);
                 outcomes[r.outcome]++;
                 most_tries[p] = r.tries > most_tries[p] ? r.tries : most_tries[p];
                 const uint32_t used = r.latency != 0U ? r.latency : starts[s];
                 const struct swd_gen_config production = {
-                    .period = t.write_period, .latency = used, .turnaround = 1U, .data_phase = 0U};
+                    .period = t.write_period, .latency = used, .turnaround = 1U, .data_phase = 0U, .timer = t.timer};
                 // Wherever the probe can read this target at all, what it ends on reads it.
                 const bool right = (r.outcome == LATENCY_MEASURED) ? (r.latency == latency)
                                    : (r.outcome == LATENCY_AMBIGUOUS)
                                        ? ((r.latency == latency) || (r.latency == latency + 1U))
                                        : (r.outcome == LATENCY_UNRESOLVED);
                 if (!right || !served(&production, latency) || (r.word != DPIDR)) {
-                    printf("  period %u/%u, latency %u, from %u: outcome %u, latency %u, %u tries, "
+                    printf("  period %u/%u%s, latency %u, from %u: outcome %u, latency %u, %u tries, "
                            "left 0x%016llx\n",
-                           t.write_period, t.read_period, latency, starts[s], r.outcome, r.latency, r.tries,
+                           t.write_period, t.read_period, t.timer ? " timer" : "", latency, starts[s], r.outcome,
+                           r.latency, r.tries,
                            (unsigned long long)r.consistent);
                     failures++;
                 }
@@ -227,14 +232,14 @@ int main(void) {
     }
 
     // No answer: nothing passes, nothing changes, and one generation at the safe period says so.
-    struct target silent = {0U, 4U, 4U, 0U};
+    struct target silent = {0U, 4U, 4U, 0U, 0U};
     struct latency_result r;
     latency_measure(&wire, 4U, 7U, try_latency, &silent, &r);
     assert(r.outcome == LATENCY_NO_BAND && r.latency == 0U && r.tries == 1U);
 
     // A word other than the safe read's is a read gone wrong, however the reads agree. This target
     // reads it at a latency whose range holds its own, so no latency agrees with every read.
-    struct target odd = {7U, 4U, 4U, 6U};
+    struct target odd = {7U, 4U, 4U, 6U, 0U};
     latency_measure(&wire, 4U, 7U, try_latency, &odd, &r);
     assert((r.word == DPIDR) && (r.outcome == LATENCY_INCONSISTENT) && (r.latency == 0U));
 
@@ -242,7 +247,7 @@ int main(void) {
            outcomes[2], outcomes[3], outcomes[4], outcomes[5]);
     printf("  most generations, by read period:");
     for (uint32_t p = 0U; p < sizeof periods / sizeof periods[0]; p++) {
-        printf(" %u/%u:%u", periods[p][0], periods[p][1], most_tries[p]);
+        printf(" %u/%u%s:%u", periods[p][0], periods[p][1], periods[p][2] ? "t" : "", most_tries[p]);
     }
     printf("\n");
     return failures != 0U;

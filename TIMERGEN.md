@@ -1,8 +1,8 @@
 # A generator whose SWD clock comes from CTimer 0
 
-Design; nothing here is implemented. Read CODEGEN.md first (the GPIO
-generator as built, which this extends), then this. Every number below was measured 2026-10-16 on
-the MSPM0L1306 bench.
+Read CODEGEN.md first (the GPIO generator as built, which this extends), then this. The first part
+is the 2026-10-16 design; "Built, 2026-10-21" at the end is what was implemented, which differs,
+and what the bench found. Numbers are from the MSPM0L1306 bench.
 
 ## Why
 
@@ -139,3 +139,71 @@ Decided 2026-10-16: 50 MHz is the target; this is recorded, not scheduled.
   would verify it.
 - Gain: ~46 bits a transfer, 138 -> 92 cycles before the fixed stop/restart cost; invisible to
   probe-rs while it is USB-bound.
+
+## Built, 2026-10-21 (branch `swd-timer-reads`; `src/swd_timer.c`, the timer section of `src/swd_gen.c`)
+
+Scope: the read function only, at period 3 (requests of 50 MHz and up), turnaround 1, idle cycles 0;
+anything else keeps the GPIO generator. `swd_gen_timer` (on by default) switches it, and is part of
+`swd_gen_config`, so a change regenerates.
+
+Design as built (differs from the architecture above):
+- **Two runs a read**, each started by the core and stopped by DMA1, re-anchored at every start,
+  so nothing drifts across a block and the frozen windows may take any time: run 1 is the packet,
+  the turnaround and the acknowledge plus the clock after it (13 edges; on OK that is data bit 0's
+  clock, else the turnaround the GPIO path clocks before deciding); run 2 is the other 33 (data
+  bits 2..31 launched, parity, its clock, the turnaround). 46 edges a read. Splitting at 12 edges
+  instead read one transfer right and lost step on the next: one clock short.
+- **Stop timers CTimer 2 (run 1) and CTimer 4 (run 2), DMA1 channels 0 and 1** (input mux 6 and 7).
+  CTimer 1 and DMA0 are out: SWO resets DMA0 and owns its descriptor table, and CTimer 1 has no DMA1
+  trigger. MCR = MR0R | MR0S: the match stops the timer with its count at the match, and a start
+  from there counts one more cycle than a start from zero, so setup parks each at its match and
+  every run starts the same way. Descriptors reload themselves (RELOAD, linked to self): the core
+  never re-arms anything, and the match flag never needs clearing (`rearm.py`, variant "none":
+  every round froze at the same cycle).
+- **DMA1 writes TCR = 2 (reset and hold), not 0.** A stop with TCR = 0 left the count at 1 or 2
+  depending on the configuration, and the next run's edges moved with it. Held at 0, every run
+  starts identically: SWCLK falls at the stop and stays low between runs, so before the pin goes
+  back to GPIO the code lowers SWCLK's GPIO output too (a rising edge there would be a clock).
+  `stop` is a word in SRAM, not flash.
+- **Clock shape low 1, high 2.** Low 2 / high 1 (the GPIO writes' shape) failed every other read
+  with a timer-clocked packet (`pktsweep.py`, 10/20 at every store slot); low 1 read 20/20.
+- **Frame:** with CTimer 0 started at cycle 0 and its stop at 1, rising edge k is a load-visible
+  edge at 4 + 3k, i.e. RUN_EDGE(k) = 1 + 3k in store terms, the frame the target latency counts in.
+  DMA1's write lands 26 cycles after the stop's match: RUN_STOP(n) = 3n - 23 puts it on the
+  falling edge after the n-th rise (`diag.py --match`: one cycle earlier cuts the last high phase
+  to a cycle, two later lets an edge through). The next start must wait past the stop.
+- **Packet bits on the timer clock** (never measured before): a store at RUN_EDGE(k) - 2 or - 1
+  (one or two cycles after the previous edge) reads 20/20; - 3 and - 4 fail. The start bit is
+  stored before the run: a sequence may have left SWDIO low (the first transfer after a line
+  reset got no acknowledge until it was).
+- **Samples** at the middle of [launch + A, next launch + A - 1]; served latencies A - 1..A + 1.
+  Run 2 places all loads first, then the uses: placing them greedily pushed loads onto window edges.
+  Parity folds into R_ACK bit 0 in run 2's spare cycles (load, orr, eor fill every cycle).
+  The connect-time measurement works unchanged on timer reads: it measures latency 7 on the L1306.
+- Cost: 13 + 33 edges at 3 cycles, plus two windows; about 160-180 cycles a read against 203.
+
+Bench, plain MCU-Link and the L1306 (lab images `ecb6d02-dirty+lab`), `soak.py`, 2000 blocks of
+64 DPIDR reads (128,000 transfers):
+- GPIO path at 37.5 and 30 MHz: 0 errors.
+- Timer reads at 50 MHz: about 1 in 10,000 transfers fails (10 to 14 blocks stopped, mostly ack 7,
+  a few parity, plus 2 to 8 wrong words), at any position in a block. Moving the stop a cycle
+  either way does not change it; pinning latency 6 or 8 makes it much worse (only 7 works).
+- **Cause: CPU 0's LED.** With CTimer 3's period interrupt off (MCR = 0x400 from CPU 1,
+  `ledmcr.py`), 384,000 reads with no error. The LED's tick (488 Hz) writes CTimer 3, on the same
+  APB bridge as CTimer 2 and 4; a collision delays a stop timer's start, so its stop lands a cycle
+  or more late (`diag.py --match` showed one APB access before the start moving the run a cycle).
+  The rate fits: about 1,500 APB writes a second against two starts a transfer.
+- Not the APB clock's phase: an APB load and 0 to 5 fillers before the start changed nothing.
+  The generated code reads CTimer 0 before each start anyway (drains the bridge; costs its stall).
+
+Open:
+1. **The LED and the stops share a bridge.** Ways out: (a) CPU 0 skips its CTimer 3 writes while CPU 1
+   is in a timer read (a dap_shared flag; the tick would come from SysTick, which needs no
+   interrupt flag cleared on CTimer 3), (b) SCTimer as the stop (an AHB peripheral CPU 0 does not
+   use; DMA1 triggers 12 and 13), (c) move the LED. The Pro's LED plan (PRO.md step 8) puts a fade
+   on CTimer 1, which shares APB0 with CTimer 0's start and DMA1's stop write: the same problem.
+2. The emulator does not model the timers yet, so the gate cannot hold timer reads. Modelling
+   comes first (2026-10-21).
+3. After `dap.py reboot` at 04:18 the plain board re-enumerated but answered no control request,
+   and a USB port reset took it off the bus: it needs a replug. Not yet known whether the timer
+   code is involved (the reboot came after `ledmcr.py` had rewritten CTimer 3's MCR twice).

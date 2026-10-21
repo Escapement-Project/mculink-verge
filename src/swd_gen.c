@@ -32,6 +32,7 @@
 
 #include "DAP.h"
 #include "gen.h"
+#include "swd_timer.h"
 #include "thumb.h"
 
 /* What the generated functions keep in registers for their whole run. */
@@ -91,6 +92,7 @@ struct gen_cfg {
     uint32_t data_phase;
     uint32_t idle;
     bool masked;
+    bool timer; // reads clocked by CTimer 0 (src/swd_timer.h)
 };
 
 /* -- schedule ---------------------------------------------------------------------------------- */
@@ -633,6 +635,276 @@ static bool emit_function(struct gen_emitter* e, const struct gen_cfg* c, bool r
     return !e->failed;
 }
 
+/* -- reads with the clock from CTimer 0 -------------------------------------------------------- */
+
+/* A read is two runs of the timer's clock, each started by the core and stopped by DMA1. The first
+ * clocks the packet, the turnaround and the acknowledge, and stops after the clock that follows it:
+ * on OK that is data bit 0's clock, and on anything else the turnaround ARM's path clocks before
+ * deciding. The second clocks the rest of the data, the parity and the turnaround. Between runs
+ * SWCLK stands low, so the core can decide, and run the GPIO tails, at its own pace.
+ *
+ * Cycles in a run count from the store that starts CTimer 0, with the stop's start the cycle after.
+ * Every instruction from there is one cycle, as the generated code always is, and nothing in a run
+ * touches SRAM or a peripheral but GPIO. */
+
+/** Rising edges in each run, 46 between them. Edge 8 of the first, the turnaround's, launches the
+ * acknowledge's first bit, and each edge after it launches the next bit. */
+#define RUN_ACK_EDGES 13U
+#define RUN_DATA_EDGES 33U
+/** Rising edge k of a run, as the cycle of the store that would have made it on GPIO: a load sees
+ * it three cycles later, and the target's latency counts from here as it does for a store. */
+#define RUN_EDGE(k) (1U + 3U * (k))
+/** The stop's match that ends a run after `edges` rising edges. DMA1's write lands 26 cycles after
+ * the match, which this puts on the falling edge after the last rising one: a cycle earlier cuts
+ * that clock's high phase to one cycle, and a cycle later lets one more edge through. */
+#define RUN_STOP(edges) (3U * (edges) - 23U)
+/** The earliest cycle of a run the next run's start may come on: after the stop has landed, since a
+ * start before it would be undone. */
+#define RUN_SETTLED(edges) (3U * (edges) + 6U)
+
+/** Puts `insn` on the first free cycle from `earliest`. */
+static uint32_t place_free(struct sched* s, uint32_t earliest, uint32_t insn) {
+    uint32_t cycle = earliest;
+    while (taken(s, cycle)) {
+        cycle++;
+    }
+    put(s, cycle, insn);
+    return cycle;
+}
+
+/** CTimer 0's start, from lr, and the stop's, from r12. */
+static void run_start(struct sched* s) {
+    put(s, 0U, t_str(R_ONE, R_T1, SWD_TIMER_TCR));
+    put(s, 1U, t_str(R_ONE, R_T0, SWD_TIMER_TCR));
+}
+
+/** Samples the bit edge `k` launches into `reg`, at the middle of its window when that cycle is free.
+ * A bit with no edge after it in the run stays on the pin, and its window has no end. */
+static uint32_t run_sample(struct sched* s, uint32_t k, uint32_t reg, uint32_t not_before, bool stays) {
+    const uint32_t launch = RUN_EDGE(k);
+    const uint32_t first = launch + s->cfg->latency;
+    const uint32_t last = RUN_EDGE(k + 1U) + s->cfg->latency - 1U;
+    uint32_t best = 0U;
+    uint32_t best_margin = 0U;
+    bool found = false;
+    for (uint32_t cycle = first; cycle <= (stays ? first + 2U : last); cycle++) {
+        if ((cycle < not_before) || taken(s, cycle)) {
+            continue;
+        }
+        const uint32_t early = cycle - first;
+        const uint32_t late = stays ? early : last - cycle;
+        const uint32_t margin = early < late ? early : late;
+        if (!found || (margin > best_margin)) {
+            best = cycle;
+            best_margin = margin;
+            found = true;
+        }
+    }
+    if (!found) {
+        s->q.failed = true;
+        return 0U;
+    }
+    put(s, best, t_ldrb(reg, R_GPIO, OFF_B_SWDIO));
+    if (best > s->last_load) {
+        s->last_load = best;
+    }
+    const int32_t after = (int32_t)(best - launch);
+    s->after_launch = after < s->after_launch ? after : s->after_launch;
+    if (!stays) {
+        const int32_t before = (int32_t)(RUN_EDGE(k + 1U) - best);
+        s->before_next = before < s->before_next ? before : s->before_next;
+    }
+    return best;
+}
+
+/** The packet, the turnaround and the acknowledge into R_ACK, then data bits 0 and 1 into R_WORD:
+ * bit 1 stands on the pin while the clock is stopped. */
+static void schedule_run_ack(struct sched* s) {
+    run_start(s);
+    // The start bit is stored before the run starts, and SWDIO is driven. Each other bit is
+    // stored on the falling edge, a cycle before its rising edge, as ARM's path changes it: the
+    // target took the bits there and a cycle earlier, but not two. The first is extracted into
+    // R_ACK before the run starts.
+    uint32_t free_from[2] = {RUN_EDGE(1U) - 1U, 2U}; // r11, r12: r12 holds the stop's base until its start
+    for (uint32_t k = 1U; k < 8U; k++) {
+        const uint32_t at = RUN_EDGE(k) - 1U;
+        uint32_t bit = R_ONE;
+        if (k == 6U) {
+            bit = R_ZERO;
+        } else if (k == 1U) {
+            bit = R_ACK;
+        } else if (k <= 5U) {
+            bit = (k & 1U) ? R_ACK : R_T0;
+            const uint32_t extracted = place_free(s, free_from[k & 1U ? 0U : 1U], t_and(bit, R_ONE, R_PKT, T_LSR, k));
+            if (extracted >= at) {
+                s->q.failed = true;
+            }
+        }
+        put(s, at, t_strb(bit, R_GPIO, OFF_B_SWDIO));
+        free_from[k & 1U ? 0U : 1U] = at + 1U;
+    }
+    // Let go after the park bit's edge, before the turnaround's.
+    const uint32_t txen = place_free(s, RUN_EDGE(7U) + 1U, t_str(R_TXEN, R_PORT, OFF_CLR));
+    const uint32_t dir = place_free(s, txen + 1U, t_str(R_FOUR, R_PORT, OFF_DIRCLR));
+    if (dir >= RUN_EDGE(8U)) {
+        s->q.failed = true;
+    }
+    uint32_t busy[2] = {0U, 0U};
+    uint32_t chain[2] = {0U, 0U}; // R_ACK's last consume, and R_WORD's
+    for (uint32_t j = 0U; j < 5U; j++) {
+        const uint32_t reg = (j & 1U) ? R_T1 : R_T0;
+        const uint32_t load = run_sample(s, 8U + j, reg, busy[j & 1U] + 1U, j == 4U);
+        const bool word = j >= 3U;
+        uint32_t earliest = load + 2U;
+        if ((j != 0U) && (j != 3U) && (earliest <= chain[word])) {
+            earliest = chain[word] + 1U;
+        }
+        // Acknowledge bits 0 to 2, then data bit 0 as R_WORD and bit 1 into it.
+        const uint32_t insn = (j == 4U) ? t_orr(R_WORD, R_WORD, reg, T_LSL, 1U) : consume_insn(j, reg);
+        chain[word] = place_free(s, earliest, insn);
+        busy[j & 1U] = chain[word];
+    }
+    place_free(s, s->last_load + 1U, t_msr_primask(R_ZERO));
+}
+
+/** Data bits 2 to 31 into R_WORD and the parity folded into bit 0 of R_ACK, which holds bits 0 and
+ * 1's on entry: that bit ends as zero for a word whose parity is right. Then the probe takes the
+ * wire back. */
+static void schedule_run_data(struct sched* s) {
+    run_start(s);
+    // Every load first, each at the middle of its window, then their uses in the cycles between.
+    // Edge k launches data bit k + 2, and edge 30 the parity.
+    uint32_t load[31];
+    uint32_t busy[2] = {1U, 0U}; // r12 holds the stop's base until its start, lr CTimer 0's
+    for (uint32_t k = 0U; k < 31U; k++) {
+        load[k] = run_sample(s, k, (k & 1U) ? R_T1 : R_T0, busy[k & 1U] + 1U, false);
+        busy[k & 1U] = load[k];
+    }
+    for (uint32_t k = 0U; k < 31U; k++) {
+        const uint32_t reg = (k & 1U) ? R_T1 : R_T0;
+        uint32_t last = load[k];
+        if (k < 30U) {
+            last = place_free(s, load[k] + 2U, t_orr(R_WORD, R_WORD, reg, T_LSL, k + 2U));
+        }
+        last = place_free(s, (load[k] + 2U > last + 1U) ? load[k] + 2U : last + 1U, t_eor(R_ACK, R_ACK, reg, T_LSL, 0U));
+        // The register's next load, two bits on, must come after its uses.
+        if ((k + 2U < 31U) && (last >= load[k + 2U])) {
+            s->q.failed = true;
+        }
+    }
+    // The turnaround is the run's last edge. After it the target has let go, and every sample is in.
+    const uint32_t from = (RUN_EDGE(32U) > s->last_load ? RUN_EDGE(32U) : s->last_load) + 1U;
+    const uint32_t dir = place_free(s, from, t_str(R_FOUR, R_PORT, OFF_DIRSET));
+    place_free(s, dir + 1U, t_str(R_TXEN, R_PORT, OFF_SET));
+    place_free(s, s->last_load + 1U, t_msr_primask(R_ZERO));
+}
+
+/** Loads the two timer bases a run's start stores use, then reads CTimer 0. The read waits out any
+ * store still on its way through the peripheral bridge, which would otherwise move the start a
+ * cycle. */
+static void emit_run_bases(struct gen_emitter* e, uint32_t stop) {
+    gen_load_const(e, R_T0, stop);
+    gen_load_const(e, R_T1, SWD_TIMER_CLOCK);
+    gen_emit(e, t_ldr(R_DELAY, R_T1, SWD_TIMER_TCR));
+}
+
+/** SWCLK's pin to `value`, through r12 and lr. Back to GPIO, the output is lowered first: the
+ * timer leaves SWCLK low, and a rising edge here would be a clock. */
+static void emit_pin(struct gen_emitter* e, uint32_t value, bool gpio) {
+    if (gpio) {
+        gen_emit(e, t_str(R_ONE, R_PORT, OFF_CLR));
+    }
+    gen_load_const(e, R_T0, SWD_TIMER_PIN);
+    gen_load_const(e, R_T1, value);
+    gen_emit(e, t_str(R_T1, R_T0, 0U));
+}
+
+/** Pads so that the run that started `length` cycles ago, `edges` edges long, has stopped by the time
+ * `more` further cycles have passed. */
+static void emit_settle(struct gen_emitter* e, uint32_t length, uint32_t more, uint32_t edges) {
+    if (length + more < RUN_SETTLED(edges)) {
+        gen_delay(e, RUN_SETTLED(edges) - length - more);
+    }
+}
+
+/** The read function with the clock from CTimer 0, served latencies left in `first` and `last`. */
+static bool emit_timer_read(struct gen_emitter* e, const struct gen_cfg* c, uint32_t pin_gpio, int32_t* first,
+                            int32_t* last) {
+    struct sched* s = &sched;
+    const uint32_t pin_timer = (pin_gpio & ~0xFU) | SWD_TIMER_PIN_FUNC;
+    int32_t after = INT32_MAX;
+    int32_t before = INT32_MAX;
+
+    gen_emit(e, t_push(0x4FF0U)); // r4-r11, lr
+    gen_emit(e, t_mov(R_COUNT, 2U));
+    gen_load_const(e, R_GPIO, (uint32_t)DBGIF_GPIO);
+    gen_load_const(e, R_PORT, PORT_BASE);
+    gen_emit(e, t_mov_imm(R_ONE, SWCLK));
+    gen_emit(e, t_mov_imm(R_ZERO, 0U));
+    gen_emit(e, t_mov_imm(R_FOUR, SWDIO));
+    gen_load_const(e, R_TXEN, TXEN);
+    // CTimer 0 holds SWCLK low until the first run: a falling edge, which clocks nothing.
+    emit_pin(e, pin_timer, false);
+
+    gen_bind(e, LABEL_LOOP);
+    // The start bit, since a sequence may have left SWDIO low. Well before the start: a GPIO store
+    // just before it holds the start store up.
+    gen_emit(e, t_strb(R_ONE, R_GPIO, OFF_B_SWDIO));
+    gen_emit(e, t_and(R_ACK, R_ONE, R_PKT, T_LSR, 1U));
+    emit_run_bases(e, SWD_TIMER_STOP_ACK);
+    gen_emit(e, t_msr_primask(R_ONE));
+    sched_reset(s, c);
+    schedule_run_ack(s);
+    if (s->q.failed) {
+        return false;
+    }
+    after = s->after_launch;
+    before = s->before_next;
+    const uint32_t ack_length = gen_emit_schedule(e, &s->q);
+    // To the next start: a cmp, the branch, an eor, five to load the bases and the mask.
+    emit_settle(e, ack_length, 9U, RUN_ACK_EDGES);
+    gen_emit(e, t_cmp_imm(R_ACK, DAP_TRANSFER_OK));
+    gen_emit_branch(e, T_COND_NE, LABEL_FAIL);
+    // The parity so far in bit 0, from data bits 0 and 1.
+    gen_emit(e, t_eor(R_ACK, R_WORD, R_WORD, T_LSR, 1U));
+    emit_run_bases(e, SWD_TIMER_STOP_DATA);
+    gen_emit(e, t_msr_primask(R_ONE));
+
+    sched_reset(s, c);
+    schedule_run_data(s);
+    if (s->q.failed) {
+        return false;
+    }
+    after = s->after_launch < after ? s->after_launch : after;
+    before = s->before_next < before ? s->before_next : before;
+    const uint32_t data_length = gen_emit_schedule(e, &s->q);
+    // To the next start, the shortest way: tst, branch, store, subs, a taken branch of two, and the
+    // eight before the start. The exit's pin store comes later than that.
+    emit_settle(e, data_length, 14U, RUN_DATA_EDGES);
+    gen_emit(e, t_tst_imm(R_ACK, 1U));
+    gen_emit_branch(e, T_COND_NE, LABEL_PARITY);
+    gen_emit(e, t_str_post(R_WORD, R_BUF, 4U));
+    gen_emit(e, t_subs_imm(R_COUNT, R_COUNT, 1U));
+    gen_emit_branch(e, T_COND_NE, LABEL_LOOP);
+    emit_pin(e, pin_gpio, true);
+    emit_return(e, t_mov_imm(0U, DAP_TRANSFER_OK));
+
+    gen_bind(e, LABEL_PARITY);
+    emit_pin(e, pin_gpio, true);
+    emit_return(e, t_mov_imm(0U, DAP_TRANSFER_ERROR));
+
+    // The clock has stopped after the turnaround that follows the acknowledge, where the GPIO path
+    // decides too. SWCLK is low, and the tail's first clock starts with a fall that is already
+    // there.
+    gen_bind(e, LABEL_FAIL);
+    emit_pin(e, pin_gpio, true);
+    emit_fail(e, c, true, c->period);
+    gen_resolve(e);
+    *first = 1 - before;
+    *last = after;
+    return !e->failed;
+}
+
 bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_gen_fn* write) {
     if ((config->period < SWD_GEN_PERIOD_MIN) || (config->period > SWD_GEN_PERIOD_MAX) || (config->latency == 0U) ||
         (config->latency > 64U) || (config->turnaround < 1U) || (config->turnaround > 4U) ||
@@ -640,6 +912,8 @@ bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_ge
         return false;
     }
     const uint32_t period = config->period < SWD_GEN_READ_PERIOD_MIN ? SWD_GEN_READ_PERIOD_MIN : config->period;
+    const bool timer = (config->timer != 0U) && (config->period == SWD_GEN_PERIOD_MIN) && (config->turnaround == 1U) &&
+                       (config->idle_cycles == 0U);
     const struct gen_cfg c = {
         .period = period,
         .low = period / 2U,
@@ -652,6 +926,7 @@ bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_ge
         .data_phase = config->data_phase != 0U,
         .idle = config->idle_cycles,
         .masked = period < config->latency + 1U + SAFE_MARGIN,
+        .timer = timer,
     };
     struct gen_emitter e = {
         .code = (uint32_t*)SWD_GEN_BASE, .cap = SWD_GEN_SIZE / 4U, .delay_reg = R_DELAY, .filler = FILLER};
@@ -664,10 +939,19 @@ bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_ge
         .ok = true,
     };
     const uint32_t read_at = e.pos;
-    if (!emit_function(&e, &c, true)) {
-        return false;
+    if (timer) {
+        info.read_period = config->period;
+        info.masked_from = 1U;
+        info.timer = true;
+        if (!emit_timer_read(&e, &c, swd_timer_pin_gpio(), &info.read_first, &info.read_last)) {
+            return false;
+        }
+    } else {
+        if (!emit_function(&e, &c, true)) {
+            return false;
+        }
+        latencies_served(&sched, &info.read_first, &info.read_last);
     }
-    latencies_served(&sched, &info.read_first, &info.read_last);
     const uint32_t write_at = e.pos;
     if (!emit_function(&e, &c, false)) {
         return false;
@@ -677,6 +961,9 @@ bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_ge
     swd_gen_info = info;
     // Only SWCLK and SWDIO answer a masked-port store. Nothing else in the image uses MPIN.
     DBGIF_GPIO->MASK[0] = ~(SWCLK | SWDIO);
+    if (timer) {
+        swd_timer_setup(RUN_STOP(RUN_ACK_EDGES), RUN_STOP(RUN_DATA_EDGES));
+    }
     // The code was written as data; the core has to fetch what is there now.
     __DSB();
     __ISB();
@@ -688,6 +975,7 @@ bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_ge
 /* -- when to generate ------------------------------------------------------------------------- */
 
 uint32_t swd_gen_clock_hz = DAP_DEFAULT_SWJ_CLOCK;
+bool swd_gen_timer = true;
 struct swd_gen_info swd_gen_info;
 uint32_t swd_gen_latency = SWD_GEN_LATENCY_DEFAULT;
 swd_gen_fn swd_gen_read;
@@ -716,6 +1004,7 @@ struct swd_gen_config swd_gen_inputs(void) {
         .turnaround = DAP_Data.swd_conf.turnaround,
         .data_phase = DAP_Data.swd_conf.data_phase,
         .idle_cycles = DAP_Data.transfer.idle_cycles,
+        .timer = swd_gen_timer ? 1U : 0U,
     };
 }
 

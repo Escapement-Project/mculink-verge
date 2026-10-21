@@ -38,6 +38,7 @@ struct swd_gen_config {
     uint32_t turnaround;  // 1 to 4 clocks
     uint32_t data_phase;  // clock a data phase after WAIT and FAULT
     uint32_t idle_cycles; // clocks after each transfer, with SWDIO low
+    uint32_t timer;       // reads at SWD_GEN_PERIOD_MIN clocked by CTimer 0, where they can be
 };
 
 /** Runs `count` transfers of one request back to back, and stops at the first that does not
@@ -56,6 +57,11 @@ static inline uint32_t swd_gen_packet(uint32_t request) {
 /** Generates both functions for `config` into SRAMX. False if the configuration is out of range
  * or the code does not fit, in which case nothing generated earlier is usable either. */
 bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_gen_fn* write);
+
+/** Whether reads at SWD_GEN_PERIOD_MIN take their clock from CTimer 0 (src/swd_timer.h), which runs
+ * them at the write period. It serves a turnaround of one clock and no idle cycles; anything else
+ * reads at SWD_GEN_READ_PERIOD_MIN. On unless a host turns it off, for comparing the two. */
+extern bool swd_gen_timer;
 
 /** The clock the host last asked for with DAP_SWJ_Clock, in Hz. */
 extern uint32_t swd_gen_clock_hz;
@@ -97,6 +103,7 @@ struct swd_gen_info {
     // just before the next rising edge, and so generates the same code.
     uint32_t masked_from;
     bool masked; // transfers run with interrupts masked
+    bool timer;  // reads take their clock from CTimer 0
     bool ok;     // the last configuration generated
 };
 

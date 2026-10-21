@@ -16,7 +16,7 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SOURCES = ("swd_gen.c", "swd_gen.h", "gen.c", "gen.h", "hot.h", "thumb.h", "latency.h", "swd_connect.h")
-HARNESS = ("DAP_config.h", "DAP.h")
+HARNESS = ("DAP_config.h", "DAP.h", "swd_timer.h")
 GEN_BASE = ["-DSWD_GEN_BASE=0x38100000U", "-DJTAG_GEN_BASE=0x38100000U"]
 
 
