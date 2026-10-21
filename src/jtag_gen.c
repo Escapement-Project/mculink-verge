@@ -1185,9 +1185,12 @@ bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan
     bool transfers = false;
     uint32_t read_offset = 0U;
     bool read_bound = false;
-    // Unrolled where that fits, which leaves the fastest clocks the fewest instructions.
-    for (uint32_t loop = 0U; (read != NULL) && (loop < 2U) && !transfers; loop++) {
-        xc.loop = loop != 0U;
+    // Unrolled where that fits in JTAG_GEN_UNROLLED_MAX, which leaves the fastest clocks the fewest
+    // instructions; the data bits in a loop otherwise; unrolled into the whole region where the
+    // loop does not fit either.
+    for (uint32_t loop = 0U; (read != NULL) && (loop < 3U) && !transfers; loop++) {
+        xc.loop = loop == 1U;
+        e.cap = loop == 0U ? JTAG_GEN_UNROLLED_MAX / 4U : JTAG_GEN_SIZE / 4U;
         e.pos = scan_end;
         e.failed = false;
         read_at = e.pos;
@@ -1197,6 +1200,7 @@ bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan
         write_at = e.pos;
         transfers = transfers && emit_xfer(&e, &xc, false);
     }
+    e.cap = JTAG_GEN_SIZE / 4U;
     if (!transfers) {
         e.pos = scan_end;
         e.failed = false;

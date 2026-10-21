@@ -17,6 +17,10 @@
 #define JTAG_GEN_BASE 0x04000000U
 #endif
 #define JTAG_GEN_SIZE 0x4000U
+/** Unrolled transfers longer than this loop their data bits instead, where a loop fits. A loop
+ * costs four-wire blocks several percent at 25 and 50 MHz on the bench, and saves up to 6 KB
+ * between 11 and 22 MHz. */
+#define JTAG_GEN_UNROLLED_MAX 0x3000U
 
 /** A two-pin packet the probe drives is a falling edge, a data store and a rising edge. A
  * four-wire clock is five instructions and runs at no less than five cycles whatever the period. */
