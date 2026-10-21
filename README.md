@@ -232,7 +232,8 @@ minisign -S -s verge.key -m mculink-verge-v0.3.0.s19 -t "file:mculink-verge-v0.3
 - `CODEGEN.md` and `CJTAGGEN.md` -- how the SWD and JTAG paths are generated at runtime.
 - `TIMERGEN.md` -- SWD reads at 50 MHz with the clock made by a timer: built, measured and removed
   (kept on branch `swd-timer-reads`).
-- `PRO.md` -- a plan, not built, for MCU-Link Pro support, and why today's image must not go on one.
+- `PRO.md` -- MCU-Link Pro support: what runs on the Pro today, what is still to come, and how each
+  step was checked.
 - `PACING.md` -- how ARM's paths pace the wire clock, and what is wrong with it. Only the build with
   generation off still uses them.
 - `OPTIMISATIONS.md` -- what was done to ARM's paths for throughput, and what was tried and

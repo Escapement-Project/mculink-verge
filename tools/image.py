@@ -667,9 +667,8 @@ BOARDS = (("plain", {}, 0), ("Pro", {"HW_VER_4": 0}, 1), ("on-board", {"HW_VER_3
 # The jumpers, by the strap each pulls low, and its BOARD_JUMPER_* bit.
 JUMPERS = (("VCOM off", "HW_VER_6", 1), ("SWD off", "HW_VER_7", 2), ("USB-SIO off", "HW_VER_2", 4))
 BOARD_PRO = 1
-# The boards the image declares for verge (src/board_straps.c). The Pro joins once its support is
-# complete.
-IMAGE_BOARDS = 1 << 0
+# The boards the image declares for verge (src/board_straps.c): the plain MCU-Link and the Pro.
+IMAGE_BOARDS = (1 << 0) | (1 << BOARD_PRO)
 
 
 def board_states():

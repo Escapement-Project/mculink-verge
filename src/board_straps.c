@@ -83,5 +83,5 @@ __attribute__((section(".image_boards"), used)) const image_boards_t image_board
     .magic = {'V', 'E', 'R', 'G', 'E', 'I', 'M', 'G'},
     .format = 1U,
     .length = sizeof(image_boards_t),
-    .boards = 1UL << BOARD_KIND_PLAIN,
+    .boards = (1UL << BOARD_KIND_PLAIN) | (1UL << BOARD_KIND_PRO),
 };

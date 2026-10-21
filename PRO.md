@@ -72,7 +72,7 @@ The rest of the Pro's pins, from schematic page 1:
 
 Resolved by the board-aware USB round (2026-10-20, below): the board is read on CPU 0 and was
 read as a Pro on the bench, J8 stays off there, and the board support's console no longer starts
-on P0_29 and P0_30. The image still declares the plain MCU-Link only until phase 1 runs.
+on P0_29 and P0_30. The image declares the Pro since phase 1 (2026-10-21), so verge puts it there.
 
 - `MARKER` is on by default (`CMakeLists.txt:40`). It drives PIO1_0 to PIO1_3 push-pull, high during
   every command (`src/marker.h`, `src/board_pins.c`), and `ID_VENDOR_J8` hands them to the host. On
@@ -301,7 +301,7 @@ Steps:
    record's length (16), two zero bytes, then a 32-bit mask with bit n set for each board the image
    runs on, numbered as 0x82's board byte. Fields are only appended. verge finds it by the magic,
    not the address; the signed release image carries it, so the release layout does not change.
-   The Pro's bit is set once this round's Pro support is complete.
+   The Pro's bit is set since phase 1 finished (2026-10-21).
 4. The product string names the board, from one table both cores read through `dap_shared`, for USB
    and for `DAP_Info` 0x02. Until item 9 picks the form, "MCU-Link Pro Verge CMSIS-DAP" on a Pro.
 5. SWD off (decided 2026-10-20, after step 0): as stock, the SWD jumper removes both
