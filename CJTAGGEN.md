@@ -175,7 +175,20 @@ registers.
 - **SREDGE** selects the TMSC sampling edge (STC1's SEDGE in step 2 above). Only OScan0 and
   OScan4 carry RDY bits (RDYC sets how many). A nonzero DLYC adds delay bits after any OScan
   payload; we never write it.
-- The CNFG0 read is from Table 9-4 and 9.10, not tried on the part yet.
+- **The CC1312R1 has every optional OScan format** (read 2026-10-21, 3/3): CNFG0
+  `0x03c00714`, class
+  4 (T4), revision 1, OSCANS 111 (OScan2 to OScan7), no SScan, two-pin by default, no TRESET,
+  FRESET or duty-cycle control. CNFG1 0, CNFG2 0x120 (user-defined).
+- **How it was read**: TI's activation up to its ECL; MCM 0 (opcode 6, operand 0); SCNS 2
+  (opcode 9, operand 2); a 32-bit DR scan from Run-Test/Idle, LSB first, is the CR scan; then ECL.
+  Each command is two DR scans through Pause-DR, as TI writes them, and seven TMS-low raw clocks
+  (the check packet) after it. **Select with MCM, not STMC 7**: STMC's CGM=1 counts as possibly
+  many members, and with more than one every controller drives 1 through a register read, so it
+  read 0xffffffff (13.9, 14.8). MCM 0 makes it the only member, and only then does it drive.
+- **Reading IDCODE after the activation is not a wire check.** With TMS-high reset clocks the TAP
+  passes Test-Logic-Reset, which on this part powers the JTAG domain down (ones); without them the
+  IR still holds BYPASS (`0xfffffffe`). `cjtag --ti --reset-clocks 0 --mem --sysctrl 0x81000000`
+  (route the ICEPick, read CPUID) is the check.
 
 ## Architecture
 
