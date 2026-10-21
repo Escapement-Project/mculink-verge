@@ -133,8 +133,9 @@ by up to 2.6x. Builds differ, and `4a7ca13` must not run on a Pro, so the attrib
 `49633f3` on the plain board with the L1306 back on it (hands).
 `wire-1` through the Pro (analyser D6 SWDIO, D7 SWCLK at the L1306, 100 MS/s, the Logic 8's
 ceiling; mculink-bench `results/wireclock/2026-10-21-pro-gcc.json`, captures in
-`wireclock-pro-2026-10-21/`): no command failed at any clock, and the data
-rates match the plain board's within 1% from 1 to 50 MHz. Item 16's early edge at 10 MHz is
+`wireclock-pro-2026-10-21/`): no command failed at any clock. Read data rates
+match the plain board's within 1% from 1 to 50 MHz, and write rates within 1% from 8 MHz up;
+below 8 MHz the Pro's writes did not resolve from SWCLK. Item 16's early edge at 10 MHz is
 nearly gone (fastest 10.18 MHz against 11.13 on the plain board). New: at 8 MHz the write data
 phase alternates 113 and 140 ns periods (positions 15 to 43, `wireclock.py positions --clock 8`),
 fastest 8.88 MHz, where the plain board alternates only high and low time at a steady 126.7 ns.
