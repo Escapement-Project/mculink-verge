@@ -1466,6 +1466,14 @@ TI_OSCAN1 = [
 ]
 
 
+def frame_oscan1(probe: Probe) -> None:
+    """Vendor 0x83 mode 2. A probe that refuses it leaves the wire unframed, and every read after
+    the activation comes back as noise rather than an error."""
+    reply = probe.command(bytes([DAP_VENDOR_CJTAG_CONTROL, 2]))
+    if reply[1] != 0:
+        raise RuntimeError(f"the probe refused OScan1 framing (vendor 0x83 02 answered {reply.hex()})")
+
+
 def run_ti_activation(probe: Probe, steps=TI_OSCAN1) -> None:
     """Drive TI's activation: raw clocks as pin writes, frames through our OScan1 framing.
 
@@ -1500,13 +1508,13 @@ def run_ti_activation(probe: Probe, steps=TI_OSCAN1) -> None:
                 wire.writes.append((0, 0))  # a frame starts with TCKC low
                 wire.tck = 0
                 flush()
-                probe.command(bytes([DAP_VENDOR_CJTAG_CONTROL, 2]))
+                frame_oscan1(probe)
         else:
             if not framing:
                 wire.writes.append((0, 0))
                 wire.tck = 0
                 flush()
-                probe.command(bytes([DAP_VENDOR_CJTAG_CONTROL, 2]))
+                frame_oscan1(probe)
                 framing = True
             walk = TapWalk()
             walk.tms, walk.tdi, walk.cap = arg, "1" * len(arg), "0" * len(arg)
