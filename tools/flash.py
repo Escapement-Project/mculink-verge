@@ -138,6 +138,12 @@ def cycle(elf: pathlib.Path, serial: str | None) -> int:
     sys.path.insert(0, str(pathlib.Path(__file__).parent))
     import dap  # noqa: PLC0415
 
+    # The wait below takes the first bootloader it sees, so one already there would be flashed in
+    # this unit's place.
+    waiting = present(ISP) + present(MINI_ISP)
+    if waiting:
+        names = ", ".join(device.name for device in waiting)
+        sys.exit(f"a unit is already in ISP mode ({names}); flash it alone first")
     probes = [p for p in dap.find() if serial is None or p.serial == serial]
     if len(probes) != 1:
         names = ", ".join(p.serial for p in dap.find())
