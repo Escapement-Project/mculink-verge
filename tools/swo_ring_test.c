@@ -322,6 +322,76 @@ static void test_reader_keeps_up_and_recovers(uint32_t ring) {
            (unsigned long long)delivered, overruns);
 }
 
+/** The clock choice: rates the 96 MHz clock makes stay on it, the rest come from 150 MHz through
+ *  the fractional divider, within its limit whenever any output there is within 3%. */
+static void test_uart_clock(void) {
+    uint32_t const fro = 96000000U;
+    uint32_t const main_clock = 150000000U;
+    swo_uart_clock_t got;
+    // The CC1312's 48 MHz / (ACPR + 1): all but 24 from the 96 MHz clock, as before.
+    static const uint32_t direct[] = {8000000U, 9600000U, 12000000U, 16000000U, 1000000U};
+    for (size_t i = 0U; i < sizeof(direct) / sizeof(direct[0]); i++) {
+        uint32_t osrval = 0U;
+        uint32_t brgval = 0U;
+        assert(swo_uart_clock(fro, main_clock, direct[i], &got) == swo_uart_divisors(fro, direct[i], &osrval, &brgval));
+        assert(!got.from_main && got.mult == 0U && got.osrval == osrval && got.brgval == brgval);
+    }
+    // 24 MHz: 150 x 256 / 320 = 120 MHz, past the limit, oversampling 5.
+    assert(swo_uart_clock(fro, main_clock, 24000000U, &got) == 24000000U);
+    assert(got.from_main && got.mult == 64U && got.osrval == 4U && got.brgval == 0U);
+    // 20 MHz: exactly the limit.
+    assert(swo_uart_clock(fro, main_clock, 20000000U, &got) == 20000000U);
+    assert(got.from_main && swo_frg_output(main_clock, got.mult) == SWO_FRG_LIMIT_HZ);
+    // 30 MHz is the main clock undivided; past that nothing is within 3%.
+    assert(swo_uart_clock(fro, main_clock, 30000000U, &got) == 30000000U && got.mult == 0U);
+    assert(swo_uart_clock(fro, main_clock, 31000000U, &got) == 0U);
+    assert(swo_uart_clock(0U, 0U, 1000000U, &got) == 0U);
+
+    // Every rate from 1 to 30 MHz in 10 kHz steps, against every source there is.
+    uint32_t first_above = 0U;
+    for (uint32_t baud = 1000000U; baud <= 30000000U; baud += 10000U) {
+        uint32_t const rate = swo_uart_clock(fro, main_clock, baud, &got);
+        assert(rate != 0U);
+        uint32_t const clock = got.from_main ? swo_frg_output(main_clock, got.mult) : fro;
+        assert(rate == clock / ((got.osrval + 1U) * (got.brgval + 1U)));
+        swo_uart_candidate_t const chosen = swo_uart_candidate(clock, baud, got.from_main, got.mult);
+        assert(chosen.rate == rate);
+        // Some source makes every rate here within 0.5%, the divider's steps being that fine.
+        assert(chosen.numerator * 200U <= (uint64_t)baud * chosen.period);
+        swo_uart_candidate_t const direct = swo_uart_candidate(fro, baud, false, 0U);
+        swo_uart_candidate_t within = {0};
+        swo_uart_candidate_t beyond = {0};
+        for (uint32_t mult = 0U; mult <= 255U; mult++) {
+            uint32_t const output = swo_frg_output(main_clock, mult);
+            swo_uart_candidate_t const c = swo_uart_candidate(output, baud, true, mult);
+            swo_uart_candidate_t* const best = (output > SWO_FRG_LIMIT_HZ) ? &beyond : &within;
+            if (swo_uart_closer(&c, best)) {
+                *best = c;
+            }
+        }
+        if (swo_uart_close(&direct, baud)) {
+            assert(!got.from_main);
+        } else if (swo_uart_close(&within, baud)) {
+            assert(got.from_main && clock <= SWO_FRG_LIMIT_HZ && !swo_uart_closer(&within, &chosen));
+        } else if (swo_uart_close(&beyond, baud)) {
+            assert(got.from_main && clock > SWO_FRG_LIMIT_HZ && !swo_uart_closer(&beyond, &chosen));
+        } else {
+            assert(!swo_uart_closer(&direct, &chosen) && !swo_uart_closer(&within, &chosen) &&
+                   !swo_uart_closer(&beyond, &chosen));
+        }
+        if (got.from_main && clock > SWO_FRG_LIMIT_HZ) {
+            if (first_above == 0U) {
+                first_above = baud;
+            }
+        } else {
+            assert(first_above == 0U);  // past the limit only from one rate up
+        }
+    }
+    // swo_uart_clock's comment and README.md's "Past NXP's limits" quote this.
+    assert(first_above > 20000000U && first_above <= 20200000U);
+    printf("    the divider passes its limit from %u Hz\n", first_above);
+}
+
 int main(void) {
     test_written_fixed_points();
     test_written_never_long();
@@ -331,5 +401,6 @@ int main(void) {
     test_reader_keeps_up_and_recovers(CONSOLE_RING_BYTES);
     test_console_reader();
     test_divisors();
+    test_uart_clock();
     return 0;
 }

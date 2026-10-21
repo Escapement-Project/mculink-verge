@@ -118,9 +118,11 @@ This information includes:
 #define SWO_UART                1               ///< SWO UART:  1 = available, 0 = not available.
 
 /// Maximum SWO UART Baudrate.
-/// Requests above it are clamped to it. 8 MHz is exact from Flexcomm 3's 96 MHz at an oversampling
-/// ratio of 12. Higher rates are reachable (12 MHz at 8) but not yet measured.
-#define SWO_UART_MAX_BAUDRATE   8000000U        ///< SWO UART Maximum Baudrate in Hz.
+/// Requests above it are clamped to it. 24 MHz is the fastest measured: at 150 MHz, the main clock
+/// through the fractional divider at 120 MHz and an oversampling ratio of 5 (src/swo_ring.h,
+/// swo_uart_clock).
+/// It is past NXP's limits for both the UART and the divider: README.md, "Past NXP's limits".
+#define SWO_UART_MAX_BAUDRATE   24000000U       ///< SWO UART Maximum Baudrate in Hz.
 
 /// Indicate that Manchester Serial Wire Output (SWO) trace is available.
 /// This information is returned by the command \ref DAP_Info as part of <b>Capabilities</b>.

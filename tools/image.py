@@ -344,32 +344,62 @@ def nxp_baudrate(src: int, want: int) -> tuple[int, int, bool]:
 
 
 def swo_rate(clock: int, want: int) -> tuple[int, int, float]:
-    """swo_uart_divisors in src/swo_ring.h, by brute force: the rate, its oversampling and its
-    error. The C is tested against the same search on the host (tools/swo_ring_test.c)."""
-    periods = {o * d: o for o in range(5, 17) for d in range(1, 65537)
-               if abs(clock / (o * d) - want) <= want * 0.05}
-    period = min(periods, key=lambda p: (abs(clock / p - want), -periods[p]))
+    """swo_uart_divisors in src/swo_ring.h: the rate, its oversampling and its error. For each
+    oversampling only the two dividers either side of the ideal can be closest. The C is tested
+    against an exhaustive search on the host (tools/swo_ring_test.c)."""
+    periods = {}
+    for o in range(5, 17):
+        below = clock // (o * want)
+        for d in (below, below + 1):
+            if 1 <= d <= 65536:
+                periods.setdefault(o * d, o)
+    period = min(periods, key=lambda p: (abs(clock - want * p) / p, -max(o for o in range(5, 17) if p % o == 0)))
     oversampling = max(o for o in range(5, 17) if period % o == 0 and period // o <= 65536)
-    return clock // period, oversampling, abs(clock / period - want) / want
+    return clock // period, oversampling, abs(clock - want * period) / period / want
 
 
-def check_swo_baudrate(c: Checker, config: str, clock: int) -> None:
+FRG_LIMIT = 100_000_000  # UM11126 4.5.49
+UART_LIMIT = 10_000_000  # LPC55S6x data sheet 7.26.3.4, asynchronous
+
+
+def swo_clock(fro: int, main: int, want: int) -> tuple[int, int, int, float]:
+    """swo_uart_clock in src/swo_ring.h: the function clock, the rate, its oversampling and its
+    error. The first source within 0.5% of the rate, in order: the 96 MHz clock, the main clock
+    through the fractional divider within its limit, then above it; with none that close, the
+    closest of the three."""
+    def best(clocks: list[int]) -> tuple[int, int, int, float] | None:
+        found = [(f, *swo_rate(f, want)) for f in clocks]
+        found = [t for t in found if t[3] <= 0.03]
+        return min(found, key=lambda t: t[3]) if found else None
+
+    outputs = [main * 256 // (256 + mult) for mult in range(256)]
+    sources = [best([fro]), best([f for f in outputs if f <= FRG_LIMIT]), best([f for f in outputs if f > FRG_LIMIT])]
+    close = next((t for t in sources if t and t[3] <= 0.005), None)
+    found = close or min((t for t in sources if t), key=lambda t: t[3], default=None)
+    return found if found else (0, 0, 0, 1.0)
+
+
+def check_swo_baudrate(c: Checker, config: str, fro: int, main: int) -> None:
     """SWO_Baudrate clamps every request to SWO_UART_MAX_BAUDRATE and refuses a rate more than 3%
-    from any it can make, so a maximum it cannot make fails every request at or above it."""
+    from any it can make, so a maximum it cannot make fails every request at or above it. Which of
+    NXP's limits the maximum passes is a note: README.md's "Past NXP's limits" is where a user
+    reads it, and a change here belongs there too."""
     m = re.search(r"^#define\s+SWO_UART_MAX_BAUDRATE\s+(\d+)U?", open(config).read(), re.M)
     if not m:
         c.note("SWO_UART_MAX_BAUDRATE not found; the SWO rate not checked")
         return
     want = int(m.group(1))
-    actual, oversampling, error = swo_rate(clock, want)
+    clock, actual, oversampling, error = swo_clock(fro, main, want)
     c.check(
         error <= 0.03,
-        f"SWO's maximum of {want} Hz is {error * 100:.2f}% from anything a"
-        f" {clock // 1_000_000} MHz Flexcomm can produce, so every request at or above it fails",
+        f"SWO's maximum of {want} Hz is {error * 100:.2f}% from anything the Flexcomm's clocks can"
+        " produce, so every request at or above it fails",
     )
-    c.check(oversampling >= 8, f"SWO's maximum needs an oversampling ratio of {oversampling}")
-    c.note(f"SWO maximum {want / 1e6:g} MHz -> {actual / 1e6:g} MHz, {error * 100:.2f}% out,"
-           f" oversampling {oversampling}")
+    past = ([f"the UART's {UART_LIMIT // 1_000_000} Mbit/s"] if want > UART_LIMIT else []) + (
+        [f"the fractional divider's {FRG_LIMIT // 1_000_000} MHz"] if clock > FRG_LIMIT else [])
+    c.note(f"SWO maximum {want / 1e6:g} MHz -> {actual / 1e6:g} MHz from {clock / 1e6:g} MHz,"
+           f" {error * 100:.2f}% out, oversampling {oversampling}"
+           + (f"; past {' and '.join(past)}" if past else ""))
 
 
 # Where the cycle counter and its two enables live, from the ARMv8-M core definitions.
@@ -403,10 +433,11 @@ def check_timestamp(c: Checker, elf: str) -> None:
 def check_commands(c: Checker, elf: str, code_lab: bool, swo: bool) -> None:
     """Every command in COMMANDS has to answer. The claim is that none is a downgrade.
 
-    One caveat worth keeping honest. CPU 0's clock setup never runs here, so Flexcomm 3 reads as
-    0 Hz and SWO_Baudrate answers 0, and capture never starts. The SWO commands answer, which is
-    what is being checked, but nothing here says SWO works: that is tools/swo_ring_test.c for the
-    arithmetic and the bench for the rest. A build without SWO has to refuse them.
+    One caveat worth keeping honest. CPU 0's clock setup never runs here, so the 96 MHz clock reads
+    as 0 Hz, SWO_Baudrate makes its rate from the main clock instead, and capture never starts.
+    The SWO commands answer, which is what is being checked, but nothing here says SWO works: that
+    is tools/swo_ring_test.c for the arithmetic and the bench for the rest. A build without SWO has
+    to refuse them.
     """
     probe = Machine(elf, Target([0] * 64), restart_at=set(), model=Model())
     answered = 0
@@ -436,7 +467,7 @@ def check_commands(c: Checker, elf: str, code_lab: bool, swo: bool) -> None:
             c.problems.append(f"command {cmd:#04x} should answer ID_DAP_Invalid")
     c.note(
         f"{answered} of {len(commands)} commands answered, unimplemented ids rejected"
-        + (" (SWO with Flexcomm 3 unclocked; see the note above)" if swo else ", SWO not built")
+        + (" (SWO answering, capture not started)" if swo else ", SWO not built")
     )
 
 
@@ -1609,6 +1640,7 @@ def main() -> int:
     # packet hands two commands to one read. src/tusb_config.h has the measurement.
     ap.add_argument("--packet-count", type=int, default=2)
     ap.add_argument("--code-lab", action="store_true", help="check the optional vendor 0x88 code lab")
+    ap.add_argument("--core-clock-mhz", type=int, default=150, help="the main clock, src/core_clock.h")
     args = ap.parse_args()
 
     sym = symbols_with_size(args.elf)
@@ -1662,7 +1694,7 @@ def main() -> int:
     check_sample_probe(c, args.core1)
     check_timestamp(c, args.core1)
     if swo:
-        check_swo_baudrate(c, args.config, 96_000_000)
+        check_swo_baudrate(c, args.config, 96_000_000, args.core_clock_mhz * 1_000_000)
     check_info(c, args.core1, args.packet_size, args.packet_count, swo)
     for image in (args.elf, args.core1):
         check_serial(c, image, bytes(range(1, 17)), args.prefix)

@@ -17,7 +17,7 @@ updates it in the same commit, so the history of this table is the history of th
 | JTAG, four wires (reads and writes) | 30 MHz | The target's TDO delay | Not measured yet |
 | cJTAG, two pins (reads and writes) | 50 MHz per wire packet, 8.3 MHz per JTAG clock | The target's TDO delay | Not supported |
 | Console (VCOM) | 19.2 Mbaud | Nothing | 3 Mbaud or more; its limit not measured yet |
-| SWO | 8 Mbaud, UART encoding only | Nothing | Not measured yet |
+| SWO | 24 Mbaud, UART encoding only | Nothing | Not measured yet |
 | USB | High speed, 512-byte packets, 3 commands held | Nothing | 512-byte packets, 8 commands reported |
 
 The core runs at 150 MHz, and every clock is a whole number of its cycles. A host that asks for a
@@ -42,10 +42,11 @@ fastest gets the fastest.
   then, and with commands queued it fails at 50; up to 20 MHz asked it was clean, at 9.1 MHz
   reads and 9.4 writes. Its console figure is both of the Pro's consoles at once, the fastest
   tried. Its USB figures are what its `DAP_Info` says, not what it was seen to hold.
-- **SWO.** Captured over `DAP_SWO_Data` in UART (NRZ) encoding up to 8 Mbaud, which is 800 KB/s.
-  A faster request is clamped to 8 Mbaud. There is no Manchester encoding and no streaming
-  endpoint. The buffer holds 7 KiB. 12 and 16 Mbaud divide the UART's clock exactly and are the
-  next step (BACKLOG item 18).
+- **SWO.** Captured over `DAP_SWO_Data` in UART (NRZ) encoding up to 24 Mbaud, which is 2.4 MB/s,
+  with both of the Pro's consoles running at 19.2 Mbaud alongside. A faster request is clamped to
+  24 Mbaud. 24 Mbaud is the fastest the bench's trace source sends, so the probe's own limit is
+  not found yet. There is no Manchester encoding and no streaming endpoint. The buffer holds
+  7 KiB.
 
 ### Past NXP's limits
 
@@ -55,6 +56,8 @@ the host asks for the rate, so whoever runs the probe decides whether to use the
 | Feature | NXP's limit | Ours past it |
 | --- | --- | --- |
 | Console | The UART is specified to 10 Mbit/s (LPC55S6x data sheet, 7.26.3.4) | Above 10 Mbaud: 12, 16 and 19.2 Mbaud ran clean |
+| SWO | The same UART, to 10 Mbit/s | Above 10 Mbaud: 12, 16 and 24 Mbaud ran clean |
+| SWO | The UART's clock divider is specified to 100 MHz (UM11126, 4.5.49) | Above 20.1 Mbaud, where nothing inside the divider's limit comes within 0.5% of the rate: 24 Mbaud ran clean with it at 120 MHz |
 
 Where the figures come from: SWD from the wire on the bench (mculink-bench's README, "The wire").
 JTAG and cJTAG from the clock length the firmware reports for each delay (vendor 0x8A, run in the

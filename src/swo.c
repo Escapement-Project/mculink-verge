@@ -276,15 +276,21 @@ uint32_t SWO_Baudrate(const uint8_t* request, uint8_t* response) {
     }
     uint32_t actual = 0U;
     if (mode == DAP_SWO_UART) {
-        // Set whenever the rate is not 0, which gcc cannot see without LTO.
-        uint32_t osrval = 0U;
-        uint32_t brgval = 0U;
-        actual = swo_uart_divisors(CLOCK_GetFlexCommClkFreq(SWO_FLEXCOMM), baudrate, &osrval, &brgval);
+        // FRO_HF_DIV read from its registers. The main clock is a constant: the SDK keeps PLL0's
+        // rate in a variable only CPU 0's image sets, so on this core it reads 0 Hz.
+        uint32_t const fro = CLOCK_GetFroHfFreq() / ((SYSCON->FROHFDIV & SYSCON_FROHFDIV_DIV_MASK) + 1U);
+        swo_uart_clock_t clock = {0};
+        actual = swo_uart_clock(fro, CORE_CLOCK_HZ, baudrate, &clock);
         if (actual != 0U) {
             uint32_t const cfg = SWO_USART->CFG;
             SWO_USART->CFG = cfg & ~USART_CFG_ENABLE_MASK;
-            SWO_USART->OSR = USART_OSR_OSRVAL(osrval);
-            SWO_USART->BRG = USART_BRG_BRGVAL(brgval);
+            // Only the main clock's own selectors are glitch-free, so the divider changes with no
+            // clock in, and the new source arrives at the new ratio rather than the old one.
+            CLOCK_AttachClk(kNONE_to_FLEXCOMM3);
+            CLOCK_SetClkDiv(kCLOCK_DivFlexFrg3, clock.mult, false);
+            CLOCK_AttachClk(clock.from_main ? kMAIN_CLK_to_FLEXCOMM3 : kFRO_HF_DIV_to_FLEXCOMM3);
+            SWO_USART->OSR = USART_OSR_OSRVAL(clock.osrval);
+            SWO_USART->BRG = USART_BRG_BRGVAL(clock.brgval);
             SWO_USART->CFG = cfg;
         } else if (capturing) {
             capture_stop();

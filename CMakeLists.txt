@@ -474,7 +474,7 @@ endforeach()
 # own Python and the emulator, so it is a target rather than part of the build.
 find_program(UV_EXECUTABLE uv)
 if(UV_EXECUTABLE)
-  set(IMAGE_CHECK_ARGS --packet-count ${DAP_PACKET_COUNT})
+  set(IMAGE_CHECK_ARGS --packet-count ${DAP_PACKET_COUNT} --core-clock-mhz ${CORE_CLOCK_MHZ})
   if(CODE_LAB)
     list(APPEND IMAGE_CHECK_ARGS --code-lab)
   endif()

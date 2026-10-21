@@ -860,9 +860,24 @@ Mbaud. The 24 MHz breaks all fall in the 2 and 3 Mbaud runs. The 120 MHz clock i
 fractional divider's 100 MHz limit (UM11126 4.5.49), and every rate above 10 MHz is over the data
 sheet's asynchronous USART maximum.
 
-The emulator still cannot run capture: CPU 0's clock setup never runs there, so Flexcomm 3 reads
-0 Hz and SWO_Baudrate answers 0. The ring and rate arithmetic is tested on the host instead
-(`tools/swo_ring_test.py`, in the gate).
+**At 24 MHz in the shipped image, 2026-10-21** (cap 24 MHz; `swo_uart_clock` in `src/swo_ring.h`
+takes the 96 MHz clock when it makes the rate within 0.5%, otherwise the main clock through
+Flexcomm 3's fractional divider, so of these rates only 24 comes from the divider). The sweep and
+the rate switching below were repeated on the final image with the same results. Through the Pro: 24, 16, 12, 9.6, 8 and 1 MHz, 3 s twice each, every rate
+answered exactly and every capture unbroken. 24 MHz while both consoles looped back at 3, 12 and
+19.2 Mbaud, 12 s twice: 28,799,849 and 28,799,931 bytes, no break. One session moving 24, 8, 24,
+12 MHz without a mode change: all unbroken; 30 MHz asked answers 24. probe-rs (`itm swo`, release
+build, 3 s at 24 MHz from a 48 MHz trace clock): 76,278 packets decoded, its print loop the limit,
+and the one stream error a capture starting mid-frame raises.
+
+Through the plain MCU-Link, the LaunchPad moved to its debug connector: 24, 16, 12 and 8 MHz,
+3 s twice each, unbroken; 24, 8, 24 MHz in one session, unbroken, and 30 MHz asked answers 24;
+24 MHz for 10 s while its console looped back at 3, 12 and 19.2 Mbaud, 23,999,973 bytes, no break.
+Its input buffer is the one part of the SWO path the two boards do not share.
+
+The emulator still cannot run capture: CPU 0's clock setup never runs there, so the 96 MHz clock
+reads 0 Hz, SWO_Baudrate makes its rate from the main clock instead, and no capture is started. The
+ring and rate arithmetic is tested on the host instead (`tools/swo_ring_test.py`, in the gate).
 
 ## 8. cJTAG activation on a CC13xx, with the analyser
 
