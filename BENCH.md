@@ -875,6 +875,27 @@ Through the plain MCU-Link, the LaunchPad moved to its debug connector: 24, 16, 
 24 MHz for 10 s while its console looped back at 3, 12 and 19.2 Mbaud, 23,999,973 bytes, no break.
 Its input buffer is the one part of the SWO path the two boards do not share.
 
+**At 30 MHz, 2026-10-21, the Pro as the source.** The CC1312 stops at 24 MHz, so the Pro's own
+CPU 0 sent the trace instead. The plain MCU-Link halted it through the Pro's J3 and ran an ITM
+counter from SRAM: the same stream
+as `itm_counter.c`, trace clock the 150 MHz main clock undivided, SWO on PIO0_10 to J3 pin 6, so
+150 MHz / (ACPR + 1). A reset of the Pro brings its firmware back. The plain MCU-Link captured with
+`dap.py swo`, 3 s twice each:
+
+- On the shipped 24 MHz image: 1, 12.5, 15, 18.75 and 21.4 MHz unbroken. 25 MHz asked answers 24,
+  and the 4% between the ends breaks the stream on every reply.
+- On a sweep image from a scratch copy (`fe84c9f-dirty`, cap 30 MHz): 21.4, 25 and 30 MHz
+  unbroken, 30 MHz at 9,000,675 and 9,000,009 bytes (3000 KB/s). 30 MHz for 20 s: 59,997,323
+  bytes, 11,999,464 words, no break. 30 MHz for 20 s with the console looping back for 12 of them,
+  a second each at 3, 6 and 12 Mbaud and then 19.2: 59,997,409 bytes, no break, and every console
+  run identical. 37.5 MHz asked answers 30, with a stream error on every reply.
+- On the shipped image: 30 MHz for 3 s, 9,000,468 bytes, no break; 40 MHz asked
+  answers 30.
+
+The analyser cannot resolve 30 MHz, about 3 samples a bit, so the evidence is the answered rate,
+an unbroken counter and 3.0 MB/s together. 30 MHz is the fastest the UART's clock makes, so this
+is the probe's ceiling. The Pro's input buffer has not seen anything above 24 MHz.
+
 The emulator still cannot run capture: CPU 0's clock setup never runs there, so the 96 MHz clock
 reads 0 Hz, SWO_Baudrate makes its rate from the main clock instead, and no capture is started. The
 ring and rate arithmetic is tested on the host instead (`tools/swo_ring_test.py`, in the gate).
