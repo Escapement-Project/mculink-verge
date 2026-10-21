@@ -142,10 +142,14 @@ fastest 8.88 MHz, where the plain board alternates only high and low time at a s
 `near.py` beside the captures: every short period (110 ns at the analyser's 10 ns) ends at a
 SWCLK rise in the same sample as a rising SWDIO edge, 89,568 of them; the plain board's 8 MHz
 capture has the same coincidence 7,013 times. So at 8 MHz a rising SWDIO lands on SWCLK's rising
-edge, and on the Pro that rise arrives early. Not yet known: whether the probe moves SWDIO there
-or a buffer delay brings the two together, and whether the target sees the short period. Next:
-the generated write's SWDIO and SWCLK store times at 8 MHz in the emulator. Left besides: step 7
-(a JTAG target), 8, 9.
+edge, and on the Pro that rise arrives early. The emulator (`wireclock.py model --firmware`
+on the same code, `model-8-10MHz.txt` beside the captures) puts every period of that write phase
+at nominal: model fastest 7.89 MHz at 8 asked, and measured minus model alternates +-13.6 ns at
+8 MHz and +-1.5 ns at 10. So the code as modelled does not make the short periods; a store the
+hardware delays, or SWDIO coupling into SWCLK in the Pro's buffers, does. The plain board's 13x
+fewer coincidences point at the board. Next (hands): SWCLK at the LPC55S69's own pin on the Pro,
+before the level shifter, beside the target's, which item 16 needs too. Not known either whether
+the target sees the short period. Left besides: step 7 (a JTAG target), 8, 9.
 
 5. Flash ours with `verge`: jumper-free from stock V3.122 or later, J4 otherwise.
 6. Identify, `DAP_Info`, SWD on the L1306 through J7, then the `swd-1` and `wire-1` matrices. The
