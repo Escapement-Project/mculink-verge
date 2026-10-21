@@ -26,6 +26,10 @@ runs the host checks, then builds gcc and clang, each in the default configurati
 `SWD_CODEGEN` and `JTAG_CODEGEN` off, and holds every image to its baselines in the emulator.
 `ninja -C <build> check` checks one image only.
 
+**Keep README.md's "Limits" table current.** It is the record of the fastest each transport
+runs. A change that moves one of those limits, faster or slower, updates the table in the same
+commit, with how the new figure was measured.
+
 **Keep BUSES.md current.** It maps every master's accesses to the AHB matrix ports and says which
 ports each timed window uses. A new peripheral access, DMA channel or buffer in another SRAM bank
 gets a row there, and one that lands on a timed window's port needs a handshake or another port:

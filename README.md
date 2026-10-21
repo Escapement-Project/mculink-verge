@@ -3,6 +3,51 @@
 CMSIS-DAP firmware for the NXP MCU-Link, with IEEE 1149.7 two-pin cJTAG support that the stock
 firmware does not have.
 
+## Limits
+
+The fastest each transport runs, on the MCU-Link and the MCU-Link Pro alike, as of 2026-10-21.
+This table is the record of where the firmware stands: a change that moves one of these limits
+updates it in the same commit, so the history of this table is the history of the optimisations.
+
+| Transport | Fastest | Depends on |
+| --- | --- | --- |
+| SWD writes | 50 MHz | Nothing |
+| SWD reads | 37.5 MHz | Nothing |
+| JTAG, four wires (reads and writes) | 30 MHz | The target's TDO delay |
+| cJTAG, two pins (reads and writes) | 50 MHz per wire packet, 8.3 MHz per JTAG clock | The target's TDO delay |
+| Console (VCOM) | 2 Mbaud | How many consoles run at once |
+| SWO | 8 Mbaud, UART encoding only | Nothing |
+| USB | High speed, 512-byte packets, 3 commands held | Nothing |
+
+The core runs at 150 MHz, and every clock is a whole number of its cycles. A host that asks for a
+clock gets it, or the next slower step: 30 MHz is 5 cycles, 18.75 MHz is 8. A request above the
+fastest gets the fastest.
+
+- **SWD.** A write clock takes 3 core cycles and a read clock 4. At 50 MHz asked, a transfer's
+  request and write data run at 50 MHz and its read data at 37.5. The target's reply delay does
+  not slow either.
+- **JTAG, four wires.** The probe has to sample TDO after the target drives it, so a slow target
+  lengthens the clock. The probe measures that delay when a host connects. Up to 8 core cycles
+  (53 ns) the clock runs at 30 MHz, at 9 or 10 cycles at 25 MHz, and past that each cycle of delay
+  adds one to the clock: 18.75 MHz at 12, 12.5 at 16. A CC1312R1 measures 7 after a pin reset
+  and 11 after a system reset.
+- **cJTAG, two pins.** The wire carries packets at up to 50 MHz, and three packets make one JTAG
+  clock. That frame takes 18 core cycles at the CC1312R1's delay of 8, or 8.3 MHz. A target with
+  a longer delay adds a cycle to the frame for each cycle of delay.
+- **Console.** One console loops back clean at 2 Mbaud and loses bytes at 3. The Pro's two
+  consoles each run clean at 2 Mbaud alone, but together only up to 1 Mbaud. The UART accepts
+  faster rates than these; the firmware moves console bytes one at a time, and that is the limit
+  (BACKLOG item 14).
+- **SWO.** Captured over `DAP_SWO_Data` in UART (NRZ) encoding up to 8 Mbaud, which is 800 KB/s.
+  A faster request is clamped to 8 Mbaud. There is no Manchester encoding and no streaming
+  endpoint. The buffer holds 7 KiB. 12 and 16 Mbaud divide the UART's clock exactly and are the
+  next step (BACKLOG item 18).
+
+Where the figures come from: SWD from the wire on the bench (mculink-bench's README, "The wire").
+JTAG and cJTAG from the clock length the firmware reports for each delay (vendor 0x8A, run in the
+emulator); four-wire's 30 MHz is also measured on the bench (CJTAGGEN.md). The console from
+loopbacks on the bench (BENCH.md §6). SWO from captures on the bench (BENCH.md §7).
+
 ## Build
 
 ```
@@ -177,7 +222,8 @@ minisign -S -s verge.key -m mculink-verge-v0.3.0.s19 -t "file:mculink-verge-v0.3
   against stock, and what stock does as seen from outside.
 - `TIMING.md` -- the timing rules the generated paths are placed by, each from a bench measurement.
 - `CODEGEN.md` and `CJTAGGEN.md` -- how the SWD and JTAG paths are generated at runtime.
-- `TIMERGEN.md` -- a design, not built, for SWD reads above 37.5 MHz with the clock made by a timer.
+- `TIMERGEN.md` -- SWD reads at 50 MHz with the clock made by a timer: built, measured and removed
+  (kept on branch `swd-timer-reads`).
 - `PRO.md` -- a plan, not built, for MCU-Link Pro support, and why today's image must not go on one.
 - `PACING.md` -- how ARM's paths pace the wire clock, and what is wrong with it. Only the build with
   generation off still uses them.

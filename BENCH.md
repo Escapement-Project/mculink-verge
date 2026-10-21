@@ -791,6 +791,17 @@ Proves `vcom_init` took Flexcomm 0 back from the board support, and that the fra
 reset actually fixed the 2.4% error at a megabaud. Unlocks the integrated UART
 from probe-rs.
 
+Loopback, 300,000 bytes a run, a jumper across TX and RX (`tools/coverage.py console`):
+
+| unit | consoles | clean at | lost |
+| --- | --- | --- | --- |
+| MCU-Link, 2026-10-19 | one (J7) | 9600, 115200, 921600, 1M, 2M baud | 18 to 62 bytes at 3 Mbaud |
+| MCU-Link Pro, 2026-10-20 | each alone | 115200, 1M, 2M baud; VCOM also 3M | VCOM2 one byte at 3 Mbaud |
+| MCU-Link Pro, 2026-10-20 | both at once | 1 Mbaud, twice | 2 to 4% at 2 Mbaud, 3 to 6% at 3 |
+
+The losses are RX FIFO overruns: CPU 0's loop moves console bytes one at a time, and two consoles
+share that loop (BACKLOG item 14). Stock V3.172 was clean with both of the Pro's at 3 Mbaud.
+
 ## 7. SWO
 
 Ask for SWO at 8 MHz and below, and capture.
