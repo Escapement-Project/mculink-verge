@@ -124,9 +124,9 @@ domain on and halt-in-boot armed (inferred from the TRM, not measured on four-wi
   J-Link use OScan1.
 - TRM Table 6-3: OScan1 sends nTDI, TMS, TDO in every state; OScan2 sends only TMS outside
   Shift and nTDI, TMS, TDO in Shift; OScan5 sends nTDI, TMS, TDO outside Shift and nTDI, TDO in
-  Shift. Nothing here says how OScan5 leaves Shift without a TMS packet, and we have no IEEE
-  1149.7. For a DPACC/APACC (4 non-shift and 36 shift clocks) OScan2 sends 7% fewer packets
-  than OScan1, OScan5 30% fewer.
+  Shift. How OScan5 leaves Shift is in IEEE 1149.7 (next section). For a DPACC/APACC (4
+  non-shift and 36 shift clocks) OScan2 sends 7% fewer packets than OScan1, OScan5 30% fewer
+  before its exit escape.
 - The XDS110 activates in its firmware, with one `CJTAG_CONNECT`
   (command 0x2b, as in OpenOCD's xds110.c) carrying the DOT7.* settings. A capture of it is the
   only TI reference for OScan2 within reach, and needs the LaunchPad's XDS110 jumpered back to the
@@ -145,6 +145,37 @@ when replaying its tail came from a 2-clock pad: the CSM swallowed two packets o
 frame, the target's framing ran two packets off ours, and our TDI bits fell in its TMS slots.
 Escapes are not needed from a fresh domain; a selection escape followed by fewer idle clocks
 than the adapter wants swallows the next command scans.
+
+## What IEEE 1149.7-2022 says (read 2026-10-21)
+
+The standard is IEEE 1149.7-2022, summarised here in our own words. Clause 25 is the OScan
+formats, 10.4 the escapes, 9.10 and Table 9-15 the configuration registers, Table 23-2 the T4
+registers.
+
+- **STFMT's operand is the format number**: JScan0-3 0-3, SScan0-3 4-7, OScan0-7 8-15, MScan 16.
+  Our STFMT 9 is OScan1, so OScan2 is STFMT 10 and OScan5 STFMT 13 in the same activation.
+- **Which bits a format sends** (Table 25-1): OScan1 sends nTDI, TMS and TDO for every JTAG
+  clock; OScan2 drops nTDI and TDO outside Shift; OScan5 drops TMS in Shift; OScan6 is OScan5
+  with one PAD bit on entering Shift. A missing nTDI means TDI 1.
+- **OScan4-7 leave Shift with an EOT escape on an nTDI bit** (Figure 25-11): TMS is 0 in Shift
+  until the probe holds TCKC high through the last nTDI bit and toggles TMSC twice in it
+  (nTDI, its inverse, nTDI), then drops TCKC. That bit's TMS becomes 1 (Exit1). The standard
+  prices the escape at about four bit periods.
+- **Escapes** (10.4.1): TMSC edges counted while TCKC is high, odd and even alike: 2-3 custom
+  (EOT), 4-5 deselection, 6-7 selection, 8 or more reset. Each edge at least one minimum TCKC
+  period after the rise or the previous edge, and the fall at least one period after the last.
+- **TAP advance** (25.6): on the TDO bit's rising edge when the payload has one; otherwise on
+  the period after the payload ends, so a TDO-less payload (OScan2's non-Shift states) is
+  pipelined: the next packet starts before the state advances.
+- **The part says which optional formats it has**: CNFG0 bits 24:22 (OSCANS) flag the pairs
+  OScan3:2, OScan5:4 and OScan7:6; bits 3:0 the class (4 is T4). Read with SCNS 2 (command
+  01001, operand 00010) and a 32-bit CR scan, which reads the register only while CGM is 1
+  (SCNB 1 writes CGM), and the bypass bit otherwise. Optional formats come in those pairs, so a
+  part with OScan5 has OScan4.
+- **SREDGE** selects the TMSC sampling edge (STC1's SEDGE in step 2 above). Only OScan0 and
+  OScan4 carry RDY bits (RDYC sets how many). A nonzero DLYC adds delay bits after any OScan
+  payload; we never write it.
+- The CNFG0 read is from Table 9-4 and 9.10, not tried on the part yet.
 
 ## Architecture
 
