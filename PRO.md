@@ -130,8 +130,21 @@ Pro: 480 cases, none failed, probe-rs's half too (mculink-bench,
 `results/throughput/2026-10-21-pro-gcc.json`). Against the plain board's `4a7ca13` run, 453 of
 480 within 3%; every gap over 20% is a 1-word command at depth 8 and 10 to 50 MHz, the Pro ahead
 by up to 2.6x. Builds differ, and `4a7ca13` must not run on a Pro, so the attribution needs
-`49633f3` on the plain board with the L1306 back on it (hands). Left: that, `wire-1` (the
-analyser on the L1306's pins), step 7 (a JTAG target), 8, 9.
+`49633f3` on the plain board with the L1306 back on it (hands).
+`wire-1` through the Pro (analyser D6 SWDIO, D7 SWCLK at the L1306, 100 MS/s, the Logic 8's
+ceiling; mculink-bench `results/wireclock/2026-10-21-pro-gcc.json`, captures in
+`wireclock-pro-2026-10-21/`): no command failed at any clock, and the data
+rates match the plain board's within 1% from 1 to 50 MHz. Item 16's early edge at 10 MHz is
+nearly gone (fastest 10.18 MHz against 11.13 on the plain board). New: at 8 MHz the write data
+phase alternates 113 and 140 ns periods (positions 15 to 43, `wireclock.py positions --clock 8`),
+fastest 8.88 MHz, where the plain board alternates only high and low time at a steady 126.7 ns.
+`near.py` beside the captures: every short period (110 ns at the analyser's 10 ns) ends at a
+SWCLK rise in the same sample as a rising SWDIO edge, 89,568 of them; the plain board's 8 MHz
+capture has the same coincidence 7,013 times. So at 8 MHz a rising SWDIO lands on SWCLK's rising
+edge, and on the Pro that rise arrives early. Not yet known: whether the probe moves SWDIO there
+or a buffer delay brings the two together, and whether the target sees the short period. Next:
+the generated write's SWDIO and SWCLK store times at 8 MHz in the emulator. Left besides: step 7
+(a JTAG target), 8, 9.
 
 5. Flash ours with `verge`: jumper-free from stock V3.122 or later, J4 otherwise.
 6. Identify, `DAP_Info`, SWD on the L1306 through J7, then the `swd-1` and `wire-1` matrices. The
