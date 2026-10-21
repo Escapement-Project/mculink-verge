@@ -198,8 +198,11 @@ lifted, the same blocks match at every clock from 1 to 50 MHz (31.2 KiB/s at 1 M
    board on J3 reads the Pro's DPIDR (0x6BA02477), AP0 and AP1 (AHB-APs, CPU 0 and CPU 1), AP2
    (the debug mailbox), both cores' CPUID and DHCSR, and our firmware's RAM, all without halting:
    the LED tick advanced 488 a second as it was read. CPU 1's AP faults a secure access, so its CSW
-   needs bit 30 (non-secure): three CSW values without it faulted, both with it read. Halting a
-   core through J3 is untried.
+   needs bit 30 (non-secure): three CSW values without it faulted, both with it read.
+   Halting works too (`j3halt.py` beside it): each core halted for half a second,
+   its registers read and resumed, and the Pro answered USB after. Idle, CPU 0 stopped in
+   `vcom_ready` and CPU 1 in `wait_for_mailbox`; the LED tick stood still only while CPU 0 was
+   halted.
 
 Phase 2, the extras (needs decisions b and c below):
 
