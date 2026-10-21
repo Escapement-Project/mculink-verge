@@ -825,6 +825,24 @@ which in a debug build manages about 70 KB/s; behind that the probe overruns, sa
 stream resumes after the gap. probe-rs ignores the overrun bit and fails a read on the stream-error
 bit, which a capture that starts mid-frame sets once.
 
+**Above 8 MHz, 2026-10-21, through the Pro** (sweep images from a scratch copy, `954e2c9-dirty`;
+the Pro back on `8b90b88` after). Same target and `dap.py swo`; the Pro at 8 MHz first matched the
+plain board's figures above (2,400,047 and 2,400,062 bytes, no break).
+
+| Flexcomm 3 clock | rate | alone, 3 s twice | under console load, 15 s |
+| --- | --- | --- | --- |
+| 96 MHz, FRO_HF_DIV | 9.6 MHz | 960.0 KB/s, no break | |
+| 96 MHz | 12 MHz | 1200.0 KB/s, no break | |
+| 96 MHz | 16 MHz, oversampling 6 | 1600.0 KB/s, no break | 23,999,995 bytes, no break |
+| 120 MHz, main clock / 1.25 | 8 MHz | 800.0 KB/s, no break | 11,999,917 bytes, no break |
+| 120 MHz | 12 MHz | 1200.0 KB/s, no break | 17,999,934 bytes, no break |
+| 120 MHz | 24 MHz, oversampling 5 | 2400.0 KB/s, no break; 30 s, 71,999,402 bytes, no break | 825 breaks, 4.8% lost |
+
+Console load: both of the Pro's consoles looped back at once, one second's worth at 1, 2 and 3
+Mbaud. The 24 MHz breaks all fall in the 2 and 3 Mbaud runs. The 120 MHz clock is over the
+fractional divider's 100 MHz limit (UM11126 4.5.49), and every rate above 10 MHz is over the data
+sheet's asynchronous USART maximum.
+
 The emulator still cannot run capture: CPU 0's clock setup never runs there, so Flexcomm 3 reads
 0 Hz and SWO_Baudrate answers 0. The ring and rate arithmetic is tested on the host instead
 (`tools/swo_ring_test.py`, in the gate).
