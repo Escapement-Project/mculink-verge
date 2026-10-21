@@ -5,19 +5,20 @@ firmware does not have.
 
 ## Limits
 
-The fastest each transport runs, on the MCU-Link and the MCU-Link Pro alike, as of 2026-10-21.
+The fastest each transport runs, on the MCU-Link and the MCU-Link Pro alike, as of 2026-10-21,
+beside NXP's stock firmware on the same probe.
 This table is the record of where the firmware stands: a change that moves one of these limits
 updates it in the same commit, so the history of this table is the history of the optimisations.
 
-| Transport | Fastest | Depends on |
-| --- | --- | --- |
-| SWD writes | 50 MHz | Nothing |
-| SWD reads | 37.5 MHz | Nothing |
-| JTAG, four wires (reads and writes) | 30 MHz | The target's TDO delay |
-| cJTAG, two pins (reads and writes) | 50 MHz per wire packet, 8.3 MHz per JTAG clock | The target's TDO delay |
-| Console (VCOM) | 2 Mbaud | How many consoles run at once |
-| SWO | 8 Mbaud, UART encoding only | Nothing |
-| USB | High speed, 512-byte packets, 3 commands held | Nothing |
+| Transport | Ours | Ours depends on | NXP's stock V3.172 |
+| --- | --- | --- | --- |
+| SWD writes | 50 MHz | Nothing | 10.7 MHz |
+| SWD reads | 37.5 MHz | Nothing | 9.6 MHz |
+| JTAG, four wires (reads and writes) | 30 MHz | The target's TDO delay | Not measured yet |
+| cJTAG, two pins (reads and writes) | 50 MHz per wire packet, 8.3 MHz per JTAG clock | The target's TDO delay | Not supported |
+| Console (VCOM) | 2 Mbaud | How many consoles run at once | 3 Mbaud or more; its limit not measured yet |
+| SWO | 8 Mbaud, UART encoding only | Nothing | Not measured yet |
+| USB | High speed, 512-byte packets, 3 commands held | Nothing | 512-byte packets, 8 commands reported |
 
 The core runs at 150 MHz, and every clock is a whole number of its cycles. A host that asks for a
 clock gets it, or the next slower step: 30 MHz is 5 cycles, 18.75 MHz is 8. A request above the
@@ -38,6 +39,11 @@ fastest gets the fastest.
   consoles each run clean at 2 Mbaud alone, but together only up to 1 Mbaud. The UART accepts
   faster rates than these; the firmware moves console bytes one at a time, and that is the limit
   (BACKLOG item 14).
+- **Stock.** Its SWD figures are the data bits on the wire from 25 MHz asked, where they stop
+  rising; at 10 MHz asked it runs at 6.4. From 25 MHz asked it also misreads acknowledges now and
+  then, and with commands queued it fails at 50; up to 20 MHz asked it was clean, at 9.1 MHz
+  reads and 9.4 writes. Its console figure is both of the Pro's consoles at once, the fastest
+  tried. Its USB figures are what its `DAP_Info` says, not what it was seen to hold.
 - **SWO.** Captured over `DAP_SWO_Data` in UART (NRZ) encoding up to 8 Mbaud, which is 800 KB/s.
   A faster request is clamped to 8 Mbaud. There is no Manchester encoding and no streaming
   endpoint. The buffer holds 7 KiB. 12 and 16 Mbaud divide the UART's clock exactly and are the
@@ -46,7 +52,9 @@ fastest gets the fastest.
 Where the figures come from: SWD from the wire on the bench (mculink-bench's README, "The wire").
 JTAG and cJTAG from the clock length the firmware reports for each delay (vendor 0x8A, run in the
 emulator); four-wire's 30 MHz is also measured on the bench (CJTAGGEN.md). The console from
-loopbacks on the bench (BENCH.md §6). SWO from captures on the bench (BENCH.md §7).
+loopbacks on the bench (BENCH.md §6). SWO from captures on the bench (BENCH.md §7). Stock's SWD
+from the wire on the bench (mculink-stock-notes' `wire.md`, and mculink-bench's README), the rest
+as BENCH.md §6 and mculink-bench's `results/throughput/2026-10-21-stock.json` record it.
 
 ## Build
 

@@ -27,8 +27,9 @@ runs the host checks, then builds gcc and clang, each in the default configurati
 `ninja -C <build> check` checks one image only.
 
 **Keep README.md's "Limits" table current.** It is the record of the fastest each transport
-runs. A change that moves one of those limits, faster or slower, updates the table in the same
-commit, with how the new figure was measured.
+runs, ours beside stock's. A change that moves one of ours, faster or slower, updates the table in
+the same commit, with how the new figure was measured. Stock's entries marked "not measured yet"
+are filled when a bench run measures them; none is filled from a guess.
 
 **Keep BUSES.md current.** It maps every master's accesses to the AHB matrix ports and says which
 ports each timed window uses. A new peripheral access, DMA channel or buffer in another SRAM bank
