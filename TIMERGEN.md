@@ -210,8 +210,7 @@ Since (commits `0814414`, `fe33026`):
   on every exit) and `led_writing` (set by CPU 0's LED tick around its CTimer 3 writes, cleared
   after a read-back so the writes have left the bridge), each set before reading the other's
   (Dekker, with a DMB each side). The tick stands down (disables its own interrupt) while a read
-  runs, and `led_resume` in CPU 0's loop turns it back on. Not yet run on the plain board, which
-  went offline before it was built.
+  runs, and `led_resume` in CPU 0's loop turns it back on. Soaked clean (below).
 - `tools/swd_latency_test.c` runs the connect-time measurement against timer reads too: right at
   every latency 2 to 40.
 - Review (2026-10-21): no wrong bit, ack, count or word on any path (OK, WAIT, FAULT,
@@ -225,17 +224,19 @@ Since (commits `0814414`, `fe33026`):
 - Regression check on the Pro (CC1312R1 on J7, image with both commits): four-wire and two-pin
   ROM blocks 400/400 at 1, 10, 25, 50 MHz, throughput equal to PRO.md step 7's.
 
+Soaked (lab image `6979c8f+lab`, plain board, LED breathing, `validate.sh`): 3 x 128,000 DPIDR
+reads at 50 MHz, no error; at the old rate (about 1 in 10,000) that is roughly 38 expected. The
+same image with the timer off (GPIO reads at 37.5): 128,000, no error. Blocks of 127 at 50 MHz,
+3 queued: 2,736 KiB/s timer on against 2,706 off, 1%, so a block is bound by something other than
+the read's wire time at this size. The wire: 20 ns rising edges through a read.
+
 Open:
-1. **Soak the handshake on the plain board** (`soak.py`, 2000 x 64 DPIDR at 50 MHz, a few runs,
-   with the LED breathing), then the wire on the analyser: SWDIO-timed periods at 50 MHz reads.
-   A lab script, `validate.sh`, does all of it, with the A/B, in one run.
-2. **The plain board was off USB from 04:18 to about 07:50** (replugged): after
+1. **The plain board was off USB from 04:18 to about 07:50** (replugged): after
    `dap.py reboot` it re-enumerated but answered no control request, and a USB port reset took
    it off the bus. Not known whether this work caused it; the same lab image had rebooted cleanly
-   an hour before. Back and answering at 07:52, still on the lab image of `0814414` (no LED
-   handshake).
-3. **LEDs on the Pro** (PRO.md step 8) plan a fade on CTimer 1, which shares APB0 with CTimer 0's
+   an hour before. Flashed and soaked normally afterwards.
+2. **LEDs on the Pro** (PRO.md step 8) plan a fade on CTimer 1, which shares APB0 with CTimer 0's
    start store and DMA1's stop write: it will need the same handshake, or a timer on another bridge.
-4. A/B of block throughput against the GPIO path at 50 MHz in one image: `dap.py gen --timer
+3. A/B of block throughput against the GPIO path at 50 MHz in one image: `dap.py gen --timer
    off|on` switches `swd_gen_timer` (vendor 0x89 modes 4 and 5; its reply ends with the setting
    and whether the current build uses it).
