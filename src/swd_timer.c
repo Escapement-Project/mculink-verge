@@ -54,6 +54,15 @@ static void stop_setup(CTIMER_Type* timer, uint32_t cycles) {
 }
 
 __attribute__((noinline)) void swd_timer_setup(uint32_t ack, uint32_t data) {
+    // Nothing else uses these peripherals, and every run leaves them as this does. The latency
+    // measurement at connect builds dozens of times.
+    static uint32_t done_ack;
+    static uint32_t done_data;
+    if ((ack == done_ack) && (data == done_data)) {
+        return;
+    }
+    done_ack = ack;
+    done_data = data;
     CLOCK_EnableClock(kCLOCK_InputMux);
     CLOCK_EnableClock(kCLOCK_Dma1);
     CLOCK_EnableClock(kCLOCK_Timer0);

@@ -30,7 +30,8 @@ _Static_assert(offsetof(dap_shared_t, led_writing) == offsetof(dap_shared_t, swd
                "the generated code reads led_writing next to swd_timer_busy");
 
 /** Configures the clock, both stops and their DMA, the stops matching `ack` and `data` cycles
- * after they start, and leaves CTimer 0 stopped as a run leaves it. */
+ * after they start, and leaves CTimer 0 stopped as a run leaves it. Only the first call with
+ * given matches does anything. */
 void swd_timer_setup(uint32_t ack, uint32_t data);
 
 /** SWCLK's pin configuration outside a run. */
