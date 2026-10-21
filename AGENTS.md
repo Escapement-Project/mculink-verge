@@ -26,6 +26,11 @@ runs the host checks, then builds gcc and clang, each in the default configurati
 `SWD_CODEGEN` and `JTAG_CODEGEN` off, and holds every image to its baselines in the emulator.
 `ninja -C <build> check` checks one image only.
 
+**Keep BUSES.md current.** It maps every master's accesses to the AHB matrix ports and says which
+ports each timed window uses. A new peripheral access, DMA channel or buffer in another SRAM bank
+gets a row there, and one that lands on a timed window's port needs a handshake or another port:
+the other core on a shared port has moved a wire edge twice.
+
 **C that can run on the host runs there under sanitizers.** `tools/gen_host.py` builds the transfer
 generator under ASan and UBSan with gcc and clang, and for QEMU's Cortex-M33 board with both, and
 requires all four to generate identical code. New logic that does not touch hardware gets the same
