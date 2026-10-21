@@ -173,6 +173,17 @@ lifted, the same blocks match at every clock from 1 to 50 MHz (31.2 KiB/s at 1 M
    activity marker. A fade on more than P0_5 needs a timer match or SCT output on each LED pin:
    PIO1_12 has CTIMER1_MAT1 and PIO1_16 CTIMER1_MAT3 (from the BSP's pin table); check the rest in
    UM11126.
+   Decided 2026-10-21. The Pro's pins (schematic page 4): LED1 USB PIO1_12, LED2 SWO
+   PIO1_13, LED3 status PIO0_5 (the plain board's LED), LED4 VCOM PIO1_15, LED5 FUNC PIO1_16, LED6
+   SIO PIO1_17, LED7 NRG PIO1_18. Meanings follow UM11673 Table 4 where we have the function; SIO
+   and NRG stay dark until phase 2.
+   - The fade follows CIE lightness (L*), so it looks linear to the eye.
+   - Activity flickers: each burst of traffic inverts the LED, on the status, SWO and VCOM LEDs.
+   - LED5 FUNC shows the wire by its pattern: SWD a repeating dark-to-light ramp, two-pin cJTAG a
+     repeating light-to-dark ramp, four-wire JTAG light to dark to light repeating. Solid with
+     the SWD jumper fitted (CMSIS-DAP off, the consoles only). Dark with no port connected.
+     Every ramp lasts 512 ticks of the 488 Hz LED clock (1.05 s), so they all
+     move at one rate and differ only in shape: the JTAG triangle is 1.05 s down and 1.05 s up.
 9. The probe's own LPC55S69 through the Pro's J3, debugged by the plain MCU-Link: a bring-up aid for
    faults on the Pro.
 
