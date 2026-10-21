@@ -1814,9 +1814,11 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
     # the default: it has to find each one exactly, and leave every sample of the read that follows
     # inside its window.
     if "swd_sweep_last" in symbols(elf):
-        for latency, hz in ((6, 37_500_000), (9, 30_000_000)):
+        # 50 MHz is where reads take CTimer 0's clock, timed by the target's latency only here.
+        for latency, hz in ((6, 37_500_000), (9, 30_000_000), (7, 50_000_000), (11, 50_000_000)):
             failures += measure_latency(elf, model, latency, hz)
         failures += connect_measures(elf, model, 11, 37_500_000)
+        failures += connect_measures(elf, model, 8, 50_000_000)
         failures += connect_rescued(elf, model, 12, 25_000_000)
     # The same on both JTAG wires, with IDCODE reads.
     if "jtag_sweep_last" in symbols(elf):

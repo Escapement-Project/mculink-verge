@@ -21,7 +21,8 @@
  *
  * The functions follow ARM's SWD_Transfer pin for pin, which tools/equiv.py checks: the same
  * edges in the same order, with SWDIO at the same level on each, for every acknowledge, every
- * turnaround and both data-phase settings.
+ * turnaround and both data-phase settings. Reads with CTimer 0's clock match on every rising edge
+ * (equiv's --ignore-falls): the timer stops with SWCLK low, so falls move and SWCLK rests low.
  */
 #include "swd_gen.h"
 

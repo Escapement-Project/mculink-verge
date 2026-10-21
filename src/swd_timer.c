@@ -21,7 +21,9 @@
 #define MCR_MR0S (1U << 2)
 #define MCR_MR3R (1U << 10)
 
-/** DMA1's trigger inputs for CTimer 2 and CTimer 4 match 0. */
+/** DMA1's trigger inputs for CTimer 2 and CTimer 4 match 0 (UM11126's DMA1 input mux table).
+ * The SDK's fsl_inputmux_connections.h calls input 7 CTimer 4's match 1 in some versions; it is
+ * match 0, the one the stop's MR0 drives. */
 #define ITRIG_CTIMER2_M0 6U
 #define ITRIG_CTIMER4_M0 7U
 

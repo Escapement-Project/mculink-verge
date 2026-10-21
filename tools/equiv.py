@@ -16,6 +16,11 @@ that they produce the same wire events and the same answer. Byte for byte, case 
 `--ignore-samples` leaves the loads of SWDIO and TDO out of the comparison. Generated code samples
 a bit up to two clocks after the edge that launched it, so its loads fall among different edges
 than ARM's; the edges, the levels and the answer still have to match.
+
+`--ignore-falls` leaves SWCLK's falling edges out too, for SWD, whose target acts on rising edges
+only. Reads at 50 MHz take their clock from CTimer 0 (src/swd_timer.h), which stops with SWCLK
+low: the probe takes SWDIO back after a fall ARM's path makes later, and SWCLK rests low. Every
+rising edge and the level on it still have to match.
 """
 
 import argparse
@@ -46,8 +51,9 @@ AP_DRW_READ, AP_DRW_WRITE = 0x0F, 0x0D
 # Off, so that a generated image's JTAG wire is ARM's exactly even when the target answers WAIT.
 ID_JTAG_PACING = 0x8B
 
-# Set by --ignore-samples and --clock.
+# Set by --ignore-samples, --ignore-falls and --clock.
 IGNORE_SAMPLES = False
+IGNORE_FALLS = False
 CLOCK_HZ = 10_000_000
 
 
@@ -55,6 +61,8 @@ def wire(trace: list[str]) -> list[str]:
     """The trace with TMS and TDI changes put in one order between clock edges, where a TAP cannot
     see which came first."""
     events = [event for event in trace if event not in ("S", "T")] if IGNORE_SAMPLES else list(trace)
+    if IGNORE_FALLS:
+        events = [event for event in events if event != "v"]
     i = 0
     while i < len(events):
         j = i
@@ -301,8 +309,10 @@ def run_transfer(
 
 # Every case above sends a two-word block. The loops that changed most recently derive the reply's
 # word count from the response pointer, so one word and a full packet are where an off-by-one
-# would show, and neither appeared anywhere in this file.
+# would show, and neither appeared anywhere in this file. A full packet is 127 words of reply, but
+# 126 of request: a write's five header bytes take the 127th.
 BLOCK_SIZES = (1, 3, 63, 127)
+WRITE_BLOCK_MAX = 126
 
 
 def sweep_sizes(reference: str, candidate: str, driver, verbose: bool) -> tuple[int, int]:
@@ -310,6 +320,7 @@ def sweep_sizes(reference: str, candidate: str, driver, verbose: bool) -> tuple[
     failures = 0
     for read in (True, False):
         for words in BLOCK_SIZES:
+            words = words if read else min(words, WRITE_BLOCK_MAX)
             total += 1
             name = f"{'read' if read else 'write'} {words}-word block"
             a = driver(reference, read, words)
@@ -341,10 +352,12 @@ def main() -> int:
     ap.add_argument("--command", choices=["block", "transfer", "sequence"], default="block")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--ignore-samples", action="store_true", help="compare without the SWDIO loads")
+    ap.add_argument("--ignore-falls", action="store_true", help="compare without SWCLK's falling edges (SWD)")
     ap.add_argument("--clock", type=float, default=10.0, help="SWD clock in MHz for the SWD cases")
     args = ap.parse_args()
-    global IGNORE_SAMPLES, CLOCK_HZ
+    global IGNORE_SAMPLES, IGNORE_FALLS, CLOCK_HZ
     IGNORE_SAMPLES = args.ignore_samples
+    IGNORE_FALLS = args.ignore_falls
     CLOCK_HZ = int(args.clock * 1e6)
 
     def compare(name: str, a: tuple[list[str], bytes], b: tuple[list[str], bytes]) -> int:
