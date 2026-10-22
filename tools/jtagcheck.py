@@ -103,7 +103,7 @@ def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire
     if two_pin:
         # Framing on without an activation: the target starts in Run-Test/Idle, framed, which is
         # where a host leaves it after driving the activation itself.
-        probe.command(cy.cjtag_enter(wire, False))
+        probe.command(cy.cjtag_enter(wire))
     if gen_latency:
         probe.command(bytes([ID_VENDOR_JTAG_GEN, gen_latency if two_pin else 0, 0 if two_pin else gen_latency, 0]))
     tap = cy.RecordingTap(dr, 35)

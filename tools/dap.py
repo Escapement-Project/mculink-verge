@@ -1771,7 +1771,7 @@ def sweep_block_reads(probe: Probe, index: int, args) -> None:
 
 
 def cmd_cjtag(args) -> int:
-    """Activate OScan1 with vendor 0x83, then read the first TAP's IDCODE over two pins.
+    """Activate OScan1, by default with TI's sequence, then read the first TAP's IDCODE over two pins.
 
     The TAP is reset with TMS high and walked straight to Shift-DR, which is how the working J-Link
     read does it: a reset leaves IDCODE selected, so no instruction is shifted. With framing on,
@@ -1791,7 +1791,7 @@ def cmd_cjtag(args) -> int:
         probe.command(bytes([DAP_SWJ_PINS, 0x80, 0x80]) + bytes(4))
         time.sleep(args.settle / 1000)
         print(f"  pulsed nRESET before the activation, then waited {args.settle} ms")
-    if args.ti:
+    if args.ti or not (args.synth or args.replay or args.no_activate):
         escapes = [("escape", int(n)) for n in args.ti_escape.split(",") if n]
         prefix = "e10,h200,l2,e7,l36" if args.ti_prefix == "jlink" else args.ti_prefix
         for token in filter(None, prefix.split(",")):
@@ -1822,9 +1822,6 @@ def cmd_cjtag(args) -> int:
         print(f"  replayed {len(writes)} pin writes from {args.replay}")
         reply = probe.command(bytes([DAP_VENDOR_CJTAG_CONTROL, 2]))
         print(f"  vendor 0x83 02 (frame as OScan1, no activation) -> status {reply[1]}")
-    elif not args.no_activate:
-        reply = probe.command(bytes([DAP_VENDOR_CJTAG_CONTROL, 1]))
-        print(f"  vendor 0x83 01 (activate OScan1) -> status {reply[1]}")
     ones = (1 << 64) - 1 if args.tdi else 0
     if args.pre_tms:
         # One sequence per run of equal TMS, carrying that run's TDI bits; with framing on, every
@@ -2014,7 +2011,7 @@ def main() -> int:
     cjtag.add_argument("--reset-clocks", type=int, default=9, help="TMS-high clocks in the reset")
     cjtag.add_argument("--repeat", type=int, default=1, help="IDCODE reads after one activation")
     cjtag.add_argument("--expect", type=lambda s: int(s, 0), default=0x3BB4102F)
-    cjtag.add_argument("--no-activate", action="store_true", help="skip vendor 0x83")
+    cjtag.add_argument("--no-activate", action="store_true", help="drive no activation and leave framing off")
     cjtag.add_argument("--keep", action="store_true", help="leave OScan1 framing on afterwards")
     cjtag.add_argument("--tlr-after", type=int, default=0, help="framed TMS-high clocks at the end of the run")
     cjtag.add_argument("--read", type=lambda v: int(v, 0), action="append", default=[], help="--mem: a word to read, repeatable")
@@ -2040,7 +2037,7 @@ def main() -> int:
     cjtag.add_argument("--tdi", type=int, default=1, choices=(0, 1), help="TDI level for every frame")
     cjtag.add_argument("--pre-tdi", default="", help="TDI bit per --pre-tms bit")
     cjtag.add_argument("--synth", action="store_true", help="drive the activation decoded from the J-Link's")
-    cjtag.add_argument("--ti", action="store_true", help="drive TI's XDS110 OScan1 sequence")
+    cjtag.add_argument("--ti", action="store_true", help="drive TI's XDS110 OScan1 sequence, the default")
     cjtag.add_argument("--ti-escape", default="", help="--ti: escapes to send first, e.g. 10 or 10,7")
     cjtag.add_argument("--ti-prefix", default="",
                        help="--ti: steps first: eN escape, hN/lN TMS-high/low clocks; 'jlink' = e10,h200,l2,e7,l36")

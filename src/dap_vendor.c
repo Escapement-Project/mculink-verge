@@ -289,10 +289,8 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
     }
 
     case ID_VENDOR_CJTAG_CONTROL: {
-        // 0 returns to four-wire framing, 1 drives OpenOCD's activation and frames, 2 frames
-        // OScan1 after an activation the host drove itself. A target whose adapter powers up
-        // online, as the CC13xx does, wants 2: OpenOCD's activation is for one that powers up
-        // offline. 3 takes two more bytes, a scan format (SCNFMT) and the TAP state it starts in
+        // 0 returns to four-wire framing, and 2 frames OScan1 after an activation the host drove
+        // itself. 1 is not a mode: the probe drives no activation of its own. 3 takes two more bytes, a scan format (SCNFMT) and the TAP state it starts in
         // (enum cjtag_tap), and frames that: the host has switched the target's format itself.
         // Mode 3 is a mode of its own rather than a byte after mode 2 because a vendor command
         // carries no length: an optional byte would be read from whatever command came next. 4
@@ -305,8 +303,6 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             response[1] = DAP_ERROR;
         } else if (mode == 0U) {
             cJTAG_Deactivate();
-        } else if (mode == 1U) {
-            cJTAG_Activate();
         } else if (mode == 2U) {
             (void)cJTAG_Enter(CJTAG_OSCAN1, CJTAG_TAP_IDLE);
         } else if (mode == 4U) {

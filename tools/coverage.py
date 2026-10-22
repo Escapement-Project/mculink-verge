@@ -111,7 +111,7 @@ def attach_icepick(probe: dap.Probe, two_pin: bool) -> int:
     probe.command(bytes([dap.DAP_JTAG_CONFIGURE, 1, 6]))
     if two_pin:
         # probe-rs's activate_oscan1: a reset escape and wake clocks, then TI's steps after their
-        # Test-Logic-Reset, which would drop OScan1 again. Vendor 0x83 01 does not bring a CC13xx up.
+        # Test-Logic-Reset, which would drop OScan1 again.
         wake = [("escape", 10), ("raw", "1" * 20), ("raw", "0"), ("pause", 200)]
         dap.run_ti_activation(probe, wake + dap.TI_OSCAN1[1:])
     else:

@@ -27,9 +27,7 @@ host rather than the probe.
 IDCODE and, through the ICEPick's routing, the Cortex-M4's CPUID over TCKC and TMSC alone, with
 TDI and TDO flat. Block reads of the boot ROM are correct from 1 to 25 MHz requested and fail at
 37.5. The host drives TI's own activation (the XDS110 routine, with the 200 us power-up wait
-TI requires) using standard commands, and vendor `0x83 0x02` turns on our framing; the
-firmware's own activation (`0x83 0x01`, OpenOCD's) is for adapters that power up offline and
-does not work on this part. The wire rules, the activation and the generator plan are in
+TI requires) using standard commands, and vendor `0x83 0x02` turns on our framing. The wire rules, the activation and the generator plan are in
 `CJTAGGEN.md`. Four-wire JTAG is still unmeasured on
 hardware.
 
@@ -325,7 +323,6 @@ mculink-stock-notes' `identity.md`.
 | command | meaning |
 | --- | --- |
 | `0x82` | identify. Magic, format version, capability flags, build string. Stock answers a bare `82` with no payload, which is the discriminator. |
-| `0x83 0x01` | drive OpenOCD's activation, then frame as OScan1 |
 | `0x83 0x02` | frame as OScan1 after an activation the host drove; the CC13xx needs this one |
 | `0x83 0x03 f s` | frame in scan format `f` (SCNFMT: 9 OScan1, 10 OScan2) from TAP state `s` (`enum cjtag_tap`, 1 Run-Test/Idle), after the host switched the target's format |
 | `0x83 0x04 m` | offer only the formats in the u32 LE mask `m` (OScan1 always) until the probe restarts; `verge cjtag --oscan1-only` |
@@ -903,18 +900,15 @@ The emulator still cannot run capture: CPU 0's clock setup never runs there, so 
 reads 0 Hz, SWO_Baudrate makes its rate from the main clock instead, and no capture is started. The
 ring and rate arithmetic is tested on the host instead (`tools/swo_ring_test.py`, in the gate).
 
-## 8. cJTAG activation on a CC13xx, with the analyser
+## 8. cJTAG on a CC13xx, with the analyser
 
-Send `0x83 0x01`, drive the activation, and capture. Decode with
-`find_oscan.py` and compare against the working J-Link reference capture
-`cc13xx-oscan1-working-2026-10-15.sal`.
+Drive TI's activation and an IDCODE read (`uv run tools/dap.py cjtag`) with the analyser on TCKC
+and TMSC, and capture.
 
 Proves the claim the whole firmware exists for: that the wire never moves while the clock rests
 high, which on a 1149.7 wire is an escape edge and is exactly what the stock firmware gets wrong.
 The gate already refuses a build that emits one in emulation, so a disagreement here means the
 emulator's pin model is wrong rather than the code.
-
-Check the activation is 17 clocks and matches the J-Link's edge for edge.
 
 ## 9. The two-pin data read
 

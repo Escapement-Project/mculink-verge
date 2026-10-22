@@ -124,14 +124,14 @@ Each of those is a bench failure that looks like something else: a device that d
 console that stays silent, a probe that stops answering for ninety seconds, a probe that resets
 under a host asking for more than it can hold.
 
-The wire gate requires seven things of a build:
+The wire gate requires six things of a build:
 
 - every transfer answers with the right data;
 - a block reply carries the word count that was asked for, at one word and at a full packet as
   well as in the middle, since that count is derived from the response pointer rather than kept;
 - the wire event stream matches `tools/baseline/` at both clock paths;
-- the cJTAG activation puts the same edges on the wire it always has;
-- so do the sequence commands a host uses to reset a line or walk a TAP by hand;
+- the sequence commands a host uses to reset a line or walk a TAP by hand put the same edges on
+  the wire they always have;
 - the two-pin path emits no transition while the clock is high, which on a 1149.7 wire is an
   escape edge and the reason this firmware exists;
 - and no wire clocks faster than the host asked for, beyond what

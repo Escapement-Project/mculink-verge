@@ -58,33 +58,6 @@ COMMAND_PATH bool cJTAG_TapEntered(void) { return entered; }
 /** One half-period of whatever clock the host asked for. */
 #define CJTAG_DELAY() PIN_DELAY_SLOW(DAP_Data.clock_delay)
 
-/* The activation table that stood here was transcribed from OpenOCD's ftdi.c, which is
- * GPL-2.0-or-later, so it is left out of the published history. The probe stopped driving an
- * activation of its own when it was licensed under Apache-2.0. */
-
-void cJTAG_Activate(void) {
-    PIN_SWDIO_OUT_ENABLE();
-
-    // OpenOCD sets both pins of a row in one write. Here they are two, so the order decides what
-    // the target sees: TMSC moves after a falling edge and before a rising one. Only the escape
-    // rows, where the clock is already high and stays high, move it with the clock high.
-    for (uint32_t i = 0U; i < sizeof(activation) / sizeof(activation[0]); i++) {
-        if (activation[i].tck != 0U) {
-            PIN_SWDIO_OUT(activation[i].tmsc);
-            PIN_SWCLK_TCK_SET();
-        } else {
-            PIN_SWCLK_TCK_CLR();
-            PIN_SWDIO_OUT(activation[i].tmsc);
-        }
-        CJTAG_DELAY();
-    }
-
-    // Leave the clock low and the wire ours, which is the state every frame below starts from.
-    PIN_SWCLK_TCK_CLR();
-    format = CJTAG_OSCAN1;
-    active = true;
-}
-
 bool cJTAG_Enter(uint32_t scan_format, uint32_t tap_state) {
     if ((scan_format >= 32U) || ((offered & (1UL << scan_format)) == 0U) || (tap_state >= CJTAG_TAP_STATES)) {
         return false;

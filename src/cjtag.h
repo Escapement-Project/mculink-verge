@@ -1,7 +1,7 @@
 /** IEEE 1149.7 two-pin (cJTAG) support, OScan1, OScan2, OScan5 and OScan6 formats.
  *
  * Enabled by a vendor command, because a probe cannot tell from the wire whether a target is
- * four-pin or two-pin, and driving the activation sequence at a four-pin target would disturb it.
+ * four-pin or two-pin. The host drives the target's activation, then turns framing on.
  */
 #ifndef CJTAG_H
 #define CJTAG_H
@@ -68,15 +68,6 @@ bool cJTAG_TapEntered(void);
 /** Whether the tracked TAP is in Shift-DR or Shift-IR, which decides the next frame's shape. */
 bool cJTAG_TapShift(void);
 
-/** Drive the online and OScan1 activation sequence, and mark the TAP as two-pin.
- *
- * Drives the wire; does not configure the pins. DAP_Connect has to have run, or the pins are
- * still inputs and the sequence goes nowhere without saying so.
- *
- * Safe to call when already active: the sequence begins from a TAP reset.
- */
-void cJTAG_Activate(void);
-
 /** Mark the TAP as two-pin in `format` without driving any activation, for a host that has driven
  * its own and left the TAP in `tap`, which OScan2, OScan5 and OScan6 need.
  *
@@ -100,7 +91,7 @@ void cJTAG_Deactivate(void);
  *
  * nTDI then TMS driven by us, then TDO with the wire released. Returns the TDO bit.
  *
- * Entered and left with TCKC low and the wire driven, which is what cJTAG_Activate leaves behind.
+ * Entered and left with TCKC low and the wire driven, which is what cJTAG_Enter leaves behind.
  *
  * Two copies, paced and not. The caller picks once per transfer; see the note in cjtag.c for why
  * it cannot be picked per frame.

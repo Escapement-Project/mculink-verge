@@ -169,10 +169,10 @@ def run_cjtag(
     probe.command(bytes([ID_SWJ_CLOCK]) + u32(50_000_000 if fast else 10_000_000))
     probe.command(bytes([ID_TRANSFER_CONFIG, idle]) + u16(2) + u16(0))
     probe.command(bytes([ID_JTAG_CONFIGURE, 1, 4]))
-    probe.command(cjtag_enter(wire_name, True))
+    probe.command(cjtag_enter(wire_name))
 
-    # The activation sequence ends in a TAP reset on a real target; start the model where the
-    # firmware's first transfer expects to find it.
+    # Framing on tells the firmware the TAP is in Run-Test/Idle, where a host leaves it after its own
+    # activation; start the model there too.
     probe.cjtag_tap = JtagTap(dr, 35)
     probe.cjtag_oscan2 = wire_name == "cjtag2"
     probe.cjtag_oscan5 = wire_name == "cjtag5"
@@ -213,7 +213,7 @@ def run_jtag_commands(
     probe.command(bytes([ID_TRANSFER_CONFIG, idle]) + u16(2) + u16(2))
     probe.command(bytes([ID_JTAG_CONFIGURE, len(chain)]) + bytes(chain))
     if two_pin:
-        probe.command(cjtag_enter(wire_name, True))
+        probe.command(cjtag_enter(wire_name))
         probe.cjtag_tap = JtagTap(dr, 35 + index)
         probe.cjtag_oscan2 = wire_name == "cjtag2"
         probe.cjtag_oscan5 = wire_name == "cjtag5"

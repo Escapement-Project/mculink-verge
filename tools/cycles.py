@@ -1202,20 +1202,20 @@ def u16(v: int) -> bytes:
     return v.to_bytes(2, "little")
 
 
-# The two-pin wires: OScan1, and OScan2, 5 and 6, which the probe frames from vendor 0x83 mode 3
-# with the TAP in Run-Test/Idle. OScan1's checks turn it on with OpenOCD's activation (mode 1) where they
-# always have, and a host's way (mode 2) where they always have.
+# The two-pin wires: OScan1, which the probe frames from vendor 0x83 mode 2, and OScan2, 5 and 6,
+# which it frames from mode 3. Either way the TAP starts in Run-Test/Idle, as a host leaves it after
+# driving the activation itself.
 TWO_PIN = ("cjtag", "cjtag2", "cjtag5", "cjtag6")
 
 
-def cjtag_enter(wire: str, activate: bool) -> bytes:
+def cjtag_enter(wire: str) -> bytes:
     if wire == "cjtag2":
         return bytes([ID_CJTAG_CONTROL, 3, 10, 1])
     if wire == "cjtag5":
         return bytes([ID_CJTAG_CONTROL, 3, 13, 1])
     if wire == "cjtag6":
         return bytes([ID_CJTAG_CONTROL, 3, 14, 1])
-    return bytes([ID_CJTAG_CONTROL, 1 if activate else 2])
+    return bytes([ID_CJTAG_CONTROL, 2])
 
 
 def u32(v: int) -> bytes:
@@ -1277,7 +1277,7 @@ def measure(
     else:
         probe.command(bytes([ID_JTAG_CONFIGURE, 1, 4]))
     if wire in TWO_PIN:
-        probe.command(cjtag_enter(wire, True))
+        probe.command(cjtag_enter(wire))
 
     request = AP_DRW_READ if read else AP_DRW_WRITE
     payload = bytes([ID_TRANSFER_BLOCK, 0]) + u16(words) + bytes([request])
@@ -1311,7 +1311,7 @@ def measure_transfer(
     else:
         probe.command(bytes([ID_JTAG_CONFIGURE, 1, 4]))
     if wire in TWO_PIN:
-        probe.command(cjtag_enter(wire, True))
+        probe.command(cjtag_enter(wire))
 
     if read:
         payload = bytes([ID_TRANSFER, 0, count]) + bytes([AP_DRW_READ]) * count
@@ -1538,7 +1538,7 @@ def timed_idcode_target(elf: str, model: Model, wire: str, latency: int, hz: int
     probe.command(bytes([ID_TRANSFER_CONFIG, 0]) + u16(100) + u16(0))
     if wire in TWO_PIN:
         # Framing on without an activation, where a host leaves the wire after driving it.
-        probe.command(cjtag_enter(wire, False))
+        probe.command(cjtag_enter(wire))
     tap = IdcodeTap(JTAG_DR_OK | (JTAG_WORD << 3), 35, DAP_IDCODE)
     probe.target = (TimedCjtagTarget(tap, latency=latency, oscan2=wire == "cjtag2", oscan5=wire == "cjtag5",
                                      oscan6=wire == "cjtag6")
@@ -1671,29 +1671,6 @@ def table(elf: str, model: Model, cpu_hz: int, words: int) -> int:
     return 0
 
 
-def activation_escapes(trace: list[str]) -> list[int]:
-    """Wire moves in each span the clock spends high, leaving out the spans with none.
-
-    The trace marks a rising edge `^..` and a falling one `v`. A span still high when the trace
-    starts counts, which is the state DAP_Connect leaves the clock in.
-    """
-    clocks = [token for token in trace if token[0] in "^v"]
-    high = bool(clocks) and clocks[0] == "v"
-    spans, moves = [], 0
-    for token in trace:
-        if token[0] == "^":
-            high, moves = True, 0
-        elif token == "v":
-            if high and moves:
-                spans.append(moves)
-            high = False
-        elif token[0] == "W" and high:
-            moves += 1
-    if high and moves:
-        spans.append(moves)
-    return spans
-
-
 def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
     """The gate: an optimisation may change the timing and must not change anything else.
 
@@ -1715,34 +1692,6 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
         if not model.engine:
             model = replace(model, engine=True)
 
-    # The activation sequence is the one thing here that has to match a published format rather
-    # than only match itself, and it is driven by a table extracted from OpenOCD's. Recording what
-    # the pin layer actually emits for it catches a change to the table, to the loop that walks it,
-    # or to the buffer handling around it.
-    probe = Machine(elf, Target([]), restart_at=set(), model=model)
-    probe.command(bytes([ID_CONNECT, 2]))
-    # The clock first: DAP_Setup normally leaves a default behind and the emulator skips it, so
-    # without this the pacing loop counts down from zero.
-    probe.command(bytes([ID_SWJ_CLOCK]) + u32(10_000_000))
-    probe.begin()
-    probe.command(bytes([ID_CJTAG_CONTROL, 1]))
-    activation = probe.end()
-    # The wire may move with the clock high only in the two escapes the activation is built from:
-    # eight edges to reset the adapter, then six to select it. One anywhere else is a stray escape
-    # in the middle of the activation packet.
-    escapes = activation_escapes(activation.trace)
-    if escapes != [8, 6]:
-        failures.append(f"cjtag activation: escape edges per clock-high span {escapes}, not [8, 6]")
-    path = os.path.join(baseline_dir, "cjtag-activation.trace")
-    body = "\n".join(activation.trace) + "\n"
-    if bless:
-        os.makedirs(baseline_dir, exist_ok=True)
-        open(path, "w").write(body)
-    elif not os.path.exists(path):
-        failures.append("cjtag-activation.trace: no baseline recorded")
-    elif open(path).read() != body:
-        failures.append("cjtag-activation.trace: the activation sequence changed on the wire")
-
     # The sequence commands are how a host resets a line, switches protocol and walks a TAP by
     # hand, so they run on every attach -- and no transfer reaches the code that serves them. In
     # particular the two-pin JTAG_Sequence entry point has nothing else exercising it.
@@ -1763,7 +1712,7 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
         probe.command(bytes([ID_CONNECT, 1 if wire == "swd" else 2]))
         probe.command(bytes([ID_SWJ_CLOCK]) + u32(10_000_000))
         if wire in TWO_PIN:
-            probe.command(cjtag_enter(wire, True))
+            probe.command(cjtag_enter(wire))
         probe.begin()
         reply = probe.command(payload)
         counts = probe.end()
@@ -1803,7 +1752,7 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
             else:
                 probe.command(bytes([ID_JTAG_CONFIGURE, 1, 4]))
             if wire in TWO_PIN:
-                probe.command(cjtag_enter(wire, True))
+                probe.command(cjtag_enter(wire))
                 probe.cjtag_tap = JtagTap(JTAG_DR_OK, 35)
             probe.begin()
             reply = probe.command(payload)
@@ -1929,7 +1878,7 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
         return 1
     print(
         "  all clear: every transfer answered OK with the right data, wire events match,"
-        f" the activation is {activation.tck_rise} clocks unchanged, no escape edges,"
+        " no escape edges,"
         f" {len(known)} known overshoots unchanged"
     )
     return 0
