@@ -167,12 +167,16 @@ uint32_t cJTAG_FrameTap(uint32_t tms, uint32_t tdi) {
         if (tms != 0U) {
             // Each escape edge, and the fall after the last, a whole period after the one before:
             // the standard's minimum is the target's shortest TCKC period, and the host's clock is
-            // no shorter.
+            // no shorter. Three half-period delays, not two: from 10 MHz up a delay is shorter
+            // than the half period it is for, which a packet's stores make up and a gap does not.
+            CJTAG_DELAY();
             CJTAG_DELAY();
             PIN_SWDIO_OUT(tdi);
             CJTAG_DELAY();
             CJTAG_DELAY();
+            CJTAG_DELAY();
             PIN_SWDIO_OUT(tdi ^ 1U);
+            CJTAG_DELAY();
             CJTAG_DELAY();
             CJTAG_DELAY();
         }

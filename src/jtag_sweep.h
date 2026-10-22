@@ -10,7 +10,7 @@
 
 struct jtag_sweep_result {
     struct latency_result result;
-    uint32_t wire;    // JTAG_GEN_FOUR_WIRE, JTAG_GEN_TWO_PIN or JTAG_GEN_OSCAN2
+    uint32_t wire;    // JTAG_GEN_FOUR_WIRE, _TWO_PIN, _OSCAN2 or _OSCAN5
     uint32_t cycles;  // the whole sweep, the final generation included
     uint32_t runs;    // sweeps since the probe started
     uint32_t rescues; // connections whose first transfer failed and ran right once measured

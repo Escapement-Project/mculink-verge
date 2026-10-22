@@ -51,7 +51,7 @@
 #define JTAG_GEN_PINS(wire) ((wire) == JTAG_GEN_FOUR_WIRE ? JTAG_GEN_FOUR_WIRE : JTAG_GEN_TWO_PIN)
 
 struct jtag_gen_config {
-    uint32_t wire;     // JTAG_GEN_FOUR_WIRE, JTAG_GEN_TWO_PIN or JTAG_GEN_OSCAN2
+    uint32_t wire;     // JTAG_GEN_FOUR_WIRE, _TWO_PIN, _OSCAN2 or _OSCAN5
     uint32_t period;   // core cycles per TCK clock or TCKC packet
     uint32_t latency;  // see JTAG_GEN_LATENCY_DEFAULT
     uint32_t before;   // the transfers' bypass bits before the DAP: its index in the chain
