@@ -59,9 +59,12 @@ def build_image(toolchain: str, codegen: bool) -> tuple[str, bool, str, float, s
     directory = os.path.join(BUILD, name(toolchain, codegen))
     flag = "ON" if codegen else "OFF"
     started = time.monotonic()
-    ok, output, _ = run(["cmake", "-B", directory, "-G", "Ninja", "-DBOARD=mcu_link",
-                         f"-DTOOLCHAIN={toolchain}", f"-DSWD_CODEGEN={flag}",
-                         f"-DJTAG_CODEGEN={flag}", "."])
+    configure = ["cmake", "-B", directory, "-G", "Ninja", "-DBOARD=mcu_link",
+                 f"-DTOOLCHAIN={toolchain}", f"-DSWD_CODEGEN={flag}", f"-DJTAG_CODEGEN={flag}"]
+    if (toolchain == "clang") and codegen:
+        configure.append("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON")
+    configure.append(".")
+    ok, output, _ = run(configure)
     if ok:
         jobs = max(1, (os.cpu_count() or 1) // len(IMAGES))
         ok, more, _ = run(["ninja", "-C", directory, "-j", str(jobs)])
@@ -98,6 +101,10 @@ def main() -> int:
         checks = {pool.submit(run, args): label for label, args in tasks}
         for future in concurrent.futures.as_completed(checks):
             report(checks[future], *future.result(), failures)
+
+    for _, _, directory in built:
+        if directory.endswith("clang-default"):
+            report("clang-tidy first-party C", *run([sys.executable, "tools/clang_tidy.py", directory]), failures)
 
     if failures:
         print(f"\n{len(failures)} failed: {', '.join(failures)} ({time.monotonic() - started:.1f} s)")

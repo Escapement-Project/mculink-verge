@@ -1,0 +1,4 @@
+Checks: '-*,clang-analyzer-core.*,bugprone-reserved-identifier'
+WarningsAsErrors: 'clang-analyzer-core.*,bugprone-reserved-identifier'
+HeaderFilterRegex: '^.*/mculink-verge/src/.*$'
+FormatStyle: none
