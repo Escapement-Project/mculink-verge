@@ -169,7 +169,7 @@ _Static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HI
  *     [44..47]  measurements since the probe started
  *     [48..55]  u64: the latencies every read agrees with, bit n - 1 for latency n
  *     [56..59]  connections whose first transfer failed and ran right once measured
- *     [60..63]  configurations copied back from the last build with transfers, not generated
+ *     [60..63]  configurations copied back from a kept build with transfers, not generated
  *
  * Status is DAP_ERROR for a latency or a mode out of range, which change nothing, and for a
  * measurement asked for while the port is not JTAG, which does not run. `ok` is 0 when the current

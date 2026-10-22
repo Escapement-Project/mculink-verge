@@ -108,7 +108,7 @@ extern jtag_gen_xfer_fn jtag_gen_read;
 extern jtag_gen_xfer_fn jtag_gen_write;
 
 /** How many configurations were generated, how many could not be and ran ARM's path, and how many
- * were copied back from the last one with transfers instead. */
+ * were copied back from a kept build with transfers instead. */
 extern uint32_t jtag_gen_builds;
 extern uint32_t jtag_gen_failures;
 extern uint32_t jtag_gen_restores;
@@ -128,7 +128,7 @@ extern uint32_t jtag_gen_restores;
 #define JTAG_GEN_LOG_TRANSFERS 0x01U     // this build has the transfers
 #define JTAG_GEN_LOG_LEARNED 0x02U       // after a WAIT taught one more idle clock
 #define JTAG_GEN_LOG_OK 0x04U
-#define JTAG_GEN_LOG_RESTORED 0x08U // copied back from the last build with transfers, not built
+#define JTAG_GEN_LOG_RESTORED 0x08U // copied back from a kept build with transfers, not built
 struct jtag_gen_log_entry {
     uint8_t command; // the DAP command it was generated in, jtag_gen_command
     uint8_t wire;

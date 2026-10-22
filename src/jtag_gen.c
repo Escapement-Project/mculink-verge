@@ -1493,13 +1493,17 @@ uint32_t jtag_gen_restores;
 uint8_t jtag_gen_command;
 struct jtag_gen_log_entry jtag_gen_log[JTAG_GEN_LOG_SIZE];
 
-// The last build that asked for transfers, whether or not they fitted, kept so that a host coming
-// back to its configuration gets it back with a copy rather than a build: a session switches to its
+// The last builds that asked for transfers, whether or not they fitted, kept so that a host coming
+// back to a configuration gets it back with a copy rather than a build: a session switches to its
 // two-pin wire and back to four-wire at either end, and each switch writes over SRAMX. A build
 // depends on its configuration alone, which regenerate already relies on when it keeps the code in
-// place. Its scans serve a scan-only request as well.
-static COLD_BSS struct {
+// place. Its scans serve a scan-only request as well. Two, because a connect builds at the default
+// latency and again at the one it measures, which differ for OScan5 from 25 MHz up; the least
+// recently used goes when a third comes.
+#define SAVED_BUILDS 2U
+static COLD_BSS struct saved_build {
     bool valid;
+    uint32_t used; // saved_uses when it was last saved or restored
     struct jtag_gen_config config;
     struct jtag_gen_info info;
     jtag_gen_scan_fn scan;
@@ -1509,7 +1513,8 @@ static COLD_BSS struct {
     jtag_gen_xfer_fn read;
     jtag_gen_xfer_fn write;
     uint32_t code[JTAG_GEN_SIZE / 4U];
-} saved;
+} saved[SAVED_BUILDS];
+static uint32_t saved_uses;
 
 /** The shortest period no faster than the clock asked for. */
 static uint32_t period_for(uint32_t hz) {
@@ -1599,17 +1604,24 @@ static __attribute__((noinline)) bool regenerate(uint32_t wire, bool transfers) 
     built_transfers = transfers;
     gen_owner = GEN_OWNER_JTAG;
     jtag_gen_info.ok = false;
-    if (saved.valid && (memcmp(&want, &saved.config, sizeof want) == 0)) {
-        memcpy((void*)JTAG_GEN_BASE, saved.code, saved.info.code_bytes);
+    struct saved_build* hit = NULL;
+    for (uint32_t i = 0U; i < SAVED_BUILDS; i++) {
+        if (saved[i].valid && (memcmp(&want, &saved[i].config, sizeof want) == 0)) {
+            hit = &saved[i];
+        }
+    }
+    if (hit != NULL) {
+        memcpy((void*)JTAG_GEN_BASE, hit->code, hit->info.code_bytes);
         __DSB();
         __ISB();
-        jtag_gen_info = saved.info;
-        jtag_gen_scan = saved.scan;
-        jtag_gen_tms = saved.tms;
-        jtag_gen_shift = saved.shift;
-        jtag_gen_eot = saved.eot;
-        jtag_gen_read = saved.read;
-        jtag_gen_write = saved.write;
+        jtag_gen_info = hit->info;
+        jtag_gen_scan = hit->scan;
+        jtag_gen_tms = hit->tms;
+        jtag_gen_shift = hit->shift;
+        jtag_gen_eot = hit->eot;
+        jtag_gen_read = hit->read;
+        jtag_gen_write = hit->write;
+        hit->used = ++saved_uses;
         built_transfers = true;
         built_ok = true;
         entry->cycles = TIMESTAMP_GET() - entry->at;
@@ -1630,16 +1642,23 @@ static __attribute__((noinline)) bool regenerate(uint32_t wire, bool transfers) 
         jtag_gen_failures++;
     }
     if (built_ok && transfers) {
-        saved.config = want;
-        saved.info = jtag_gen_info;
-        saved.scan = jtag_gen_scan;
-        saved.tms = jtag_gen_tms;
-        saved.shift = jtag_gen_shift;
-        saved.eot = jtag_gen_eot;
-        saved.read = jtag_gen_read;
-        saved.write = jtag_gen_write;
-        memcpy(saved.code, (const void*)JTAG_GEN_BASE, jtag_gen_info.code_bytes);
-        saved.valid = true;
+        struct saved_build* slot = &saved[0];
+        for (uint32_t i = 1U; i < SAVED_BUILDS; i++) {
+            if (!saved[i].valid || (slot->valid && (saved[i].used < slot->used))) {
+                slot = &saved[i];
+            }
+        }
+        slot->config = want;
+        slot->info = jtag_gen_info;
+        slot->scan = jtag_gen_scan;
+        slot->tms = jtag_gen_tms;
+        slot->shift = jtag_gen_shift;
+        slot->eot = jtag_gen_eot;
+        slot->read = jtag_gen_read;
+        slot->write = jtag_gen_write;
+        memcpy(slot->code, (const void*)JTAG_GEN_BASE, jtag_gen_info.code_bytes);
+        slot->used = ++saved_uses;
+        slot->valid = true;
     }
     return built_ok;
 }
