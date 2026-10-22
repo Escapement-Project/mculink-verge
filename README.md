@@ -179,7 +179,7 @@ reads them once when it starts, so fit or remove one with the probe unplugged.
 | --- | --- | --- | --- |
 | VCOM | J4 | J14 | no target serial port. The Pro's second one, on J26, stays |
 | SWD | J5 | J13 | no CMSIS-DAP interface, so no debugger can use the probe |
-| USB-SIO | | J15 | nothing yet: this firmware has no USB-SIO bridge |
+| USB-SIO | | J15 | the DIO pins on J19 stay inputs, and the host cannot drive them |
 
 A function that is off is left out of the USB configuration, not shown as an interface that does
 nothing. The interfaces after it are numbered down. CMSIS-DAP v2 is always interface 0 when it is
@@ -189,6 +189,20 @@ moves that interface to 1.
 
 With the SWD jumper fitted the probe still restarts into its bootloader when asked over USB, so
 it can still be updated.
+
+## The Pro's DIO pins
+
+On the MCU-Link Pro, the host can drive and read the four DIO pins on J19 (pins 2 to 5) as GPIO.
+Each group of pins sits behind level translators that turn round together, so DIO0, DIO1 and DIO2
+change direction together, and DIO3 on its own. The pins run at the voltage on J19 pin 14, or at
+3.3 V with nothing connected there.
+
+The pins keep their state between debug sessions, so a pin can hold a target's boot mode through
+a reset and a reconnect. LED6 (SIO) is lit while the probe drives any of them. They go back to
+inputs when the probe restarts.
+
+`uv run tools/dap.py dio` reads them, and its `--mask`, `--outputs` and `--levels` set them.
+Vendor command 0x8E, which it sends, is described in `src/dap_vendor.c`.
 
 ## Releases
 

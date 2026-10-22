@@ -132,6 +132,7 @@ typedef struct {
     volatile uint8_t led_connected;
     volatile uint8_t led_wire;  // LED_WIRE_*
     volatile uint8_t led_swo;   // SWO bytes have gone to the host
+    volatile uint8_t led_sio;   // the host drives a DIO pin (dio.h)
 
     /** BOARD_KIND_* and BOARD_JUMPER_* (board_straps.h), written by CPU 0 before CPU 1 starts. */
     volatile uint8_t board;

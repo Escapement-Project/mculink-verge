@@ -18,7 +18,8 @@
  *  - LED5 FUNC: the wire in use, by the shape of a repeating ramp. SWD rises from dark to light,
  *    two-pin cJTAG falls from light to dark, four-wire JTAG goes light to dark to light. Solid with
  *    the SWD jumper fitted, dark with no port connected.
- *  - LED6 SIO and LED7 NRG: dark until the functions they report exist.
+ *  - LED6 SIO: lit while the host drives any of J19's DIO pins (dio.h), which outlives a session.
+ *  - LED7 NRG: dark until energy measurement exists.
  *
  * Every fade moves evenly in CIE lightness (L*), so it looks even to the eye.
  *
@@ -60,6 +61,11 @@ static inline void led_wire(uint8_t wire) {
 /** CPU 1: SWO bytes have gone to the host. */
 static inline void led_swo(void) {
     dap_shared.led_swo = 1U;
+}
+
+/** CPU 1: whether the host drives any DIO pin. */
+static inline void led_sio(uint32_t on) {
+    dap_shared.led_sio = (on != 0U);
 }
 
 /** CPU 0: console bytes have moved, set by src/vcom.c and taken by the LED tick. */

@@ -16,6 +16,7 @@
 #include "dap_core.h"
 #include "dap_dispatch.h"
 #include "dap_shared.h"
+#include "dio.h"
 #include "hot.h"
 #include "led.h"
 #include "marker.h"
@@ -208,6 +209,7 @@ __attribute__((noreturn)) void core1_main(void) {
     board_timestamp_init();
     DAP_Setup();
     target_sense_init();
+    dio_init();
     dap_shared.transfer_abort = &DAP_TransferAbort;
     serve();
 }

@@ -64,6 +64,7 @@ DAP_VENDOR_SAMPLE = 0x87
 DAP_VENDOR_SWD_GEN = 0x89
 DAP_VENDOR_JTAG_GEN = 0x8A
 DAP_VENDOR_JTAG_LOG = 0x8D
+DAP_VENDOR_DIO = 0x8E
 
 INFO_FIELDS = {
     0x01: ("vendor", "str"),
@@ -637,6 +638,27 @@ def cmd_j8(args) -> int:
     print(f"  host owns pin {owned}; pins read {read:#06b}")
     probe.release()
     return 0
+
+
+def dio_bits(value: int) -> str:
+    return "".join("1" if value & (1 << n) else "0" for n in range(4))
+
+
+def cmd_dio(args) -> int:
+    """The Pro's J19 DIO pins (src/dio.h): set the pins in --mask, then print what the probe reports.
+    With no --mask it only reads, which shows what a host before this one left driving."""
+    probe = one(args)
+    print(f"{probe.serial}  {probe.product}")
+    reply = probe.command(bytes([DAP_VENDOR_DIO, args.mask, args.outputs & args.mask, args.levels & args.mask]))
+    if len(reply) < 7 or reply[0] != DAP_VENDOR_DIO:
+        raise RuntimeError(f"DIO answered {reply.hex()}")
+    status, outputs, latch, read, pins, count = reply[1:7]
+    groups = list(reply[7 : 7 + count])
+    print(f"  {'ok' if status == 0 else 'REFUSED'}; pins {dio_bits(pins)} (DIO0 first), groups "
+          f"{', '.join(dio_bits(g) for g in groups) or 'none'}")
+    print(f"  outputs {dio_bits(outputs)}  latch {dio_bits(latch)}  read {dio_bits(read)}")
+    probe.release()
+    return 0 if status == 0 else 1
 
 
 def cmd_core1(args) -> int:
@@ -1906,6 +1928,12 @@ def main() -> int:
     j8.add_argument("--levels", type=lambda s: int(s, 0), default=0x00, help="levels for those pins")
     j8.add_argument("--release", action="store_true", help="give all four back to the marker")
     j8.set_defaults(run=cmd_j8)
+
+    dio = sub.add_parser("dio", help="drive and read the Pro's J19 DIO pins")
+    dio.add_argument("--mask", type=lambda s: int(s, 0), default=0, help="pins to change, bit n DIOn; 0 only reads")
+    dio.add_argument("--outputs", type=lambda s: int(s, 0), default=0, help="which of them drive")
+    dio.add_argument("--levels", type=lambda s: int(s, 0), default=0, help="their output levels")
+    dio.set_defaults(run=cmd_dio)
 
     limit = sub.add_parser("limit", help="sweep every achievable rate and check the data")
     limit.add_argument("--cpu-hz", type=int, default=150_000_000, help="the probe's core clock")

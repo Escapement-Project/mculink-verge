@@ -15,6 +15,7 @@
 #include "board_pins.h"
 #include "cjtag.h"
 #include "dap_shared.h"
+#include "dio.h"
 #include "marker.h"
 #include "reboot.h"
 #include "sample_probe.h"
@@ -55,6 +56,8 @@
 #define ID_VENDOR_STAGE ID_DAP_Vendor12
 /// Reads back the JTAG generator's log of what each generation was for. See below.
 #define ID_VENDOR_JTAG_LOG ID_DAP_Vendor13
+/// Drives and reads the Pro's DIO pins on J19 (dio.h). See below.
+#define ID_VENDOR_DIO ID_DAP_Vendor14
 
 /** Answered by ID_VENDOR_CJTAG_INFO, so a host can recognise this firmware rather than assume it.
  *
@@ -102,6 +105,9 @@ _Static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HI
 #define CJTAG_CAP_OSCAN1_ENTER (1U << 4)
 /// Two-pin frames are generated at run time, and ID_VENDOR_JTAG_GEN is implemented.
 #define CJTAG_CAP_JTAG_CODEGEN (1U << 5)
+/// ID_VENDOR_DIO acts: a Pro whose J15 (USB-SIO off) was not fitted when the probe started. The
+/// jumpers are read once at boot, so this describes the running image.
+#define CJTAG_CAP_DIO (1U << 6)
 #ifdef SWD_CODEGEN
 #define CJTAG_CAPS_SWD CJTAG_CAP_SWD_CODEGEN
 #else
@@ -189,6 +195,26 @@ _Static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HI
  * DAP_ERROR, and nothing follows, for an n the log no longer holds.
  */
 
+/** ID_VENDOR_DIO takes `mask, outputs, levels`, always all three, so that it can sit inside
+ * DAP_ExecuteCommands. It sets the direction (1 an output) and the output level of each DIO pin in
+ * `mask`, bit n for DIOn, and leaves the rest. A mask of 0 only reads. It answers:
+ *
+ *     [1]      status
+ *     [2]      the pins the probe drives
+ *     [3]      each pin's output latch: what it drives, or will once it is an output
+ *     [4]      the levels on the probe's side of the translators, sampled as the command ends; an
+ *              output reads our own drive
+ *     [5]      the pins there are: 0 on a board without them or with J15 fitted
+ *     [6]      the number of groups g
+ *     [7..]    g masks, the pins that change direction together (Pro: 0x07, 0x08)
+ *
+ * Status is DAP_ERROR, and nothing changes, where there are no pins, for a pin that does not
+ * exist, and for a result that would split a group. [2..] are the state as it stands either way.
+ * The state outlives sessions and hosts, so a host that starts by reading with mask 0 sees what
+ * one before it left driving. Each pin's header level moves at most once per command.
+ */
+#define DIO_REPLY_FIXED 7U
+
 /** ID_VENDOR_STAGE takes `mode`: 0 has CPU 1 copy each command and reply itself, 1 has CPU 0 stage
  * them (the default), anything else leaves it. It answers `status, on`. Commands already received
  * keep the way they arrived, so the change reaches the ones after them.
@@ -248,7 +274,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         *out++ = (uint8_t)CJTAG_INFO_VERSION;
         const uint32_t two_pin = (board_kind != BOARD_KIND_ON_BOARD) ? (CJTAG_CAP_OSCAN1 | CJTAG_CAP_OSCAN1_ENTER) : 0U;
         *out++ = (uint8_t)(two_pin | CJTAG_CAP_TARGET_SENSE | CJTAG_CAPS_BUILT |
-                           (cJTAG_Active() ? CJTAG_CAP_OSCAN1_ACTIVE : 0U));
+                           (cJTAG_Active() ? CJTAG_CAP_OSCAN1_ACTIVE : 0U) | (dio_available() ? CJTAG_CAP_DIO : 0U));
         // The same string DAP_Info's product firmware version reports, so a host that knows
         // nothing about this command can still tell two builds apart.
         *out++ = (uint8_t)(sizeof(FIRMWARE_VERSION) - 1U);
@@ -319,6 +345,19 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         return (3U << 16) | 3U;
     }
 #endif
+
+    case ID_VENDOR_DIO: {
+        response[1] = dio_set(request[1], request[2], request[3]) ? DAP_OK : DAP_ERROR;
+        dio_state_t state;
+        dio_get(&state);
+        response[2] = state.outputs;
+        response[3] = state.levels;
+        response[4] = state.read;
+        response[5] = state.pins;
+        response[6] = state.groups;
+        memcpy(response + DIO_REPLY_FIXED, state.group, state.groups);
+        return (4U << 16) | (DIO_REPLY_FIXED + state.groups);
+    }
 
     case ID_VENDOR_REBOOT:
         // Only the two defined modes act. Anything else is refused rather than guessed at,

@@ -22,7 +22,7 @@
  *  nothing, and so does this firmware. */
 #define BOARD_JUMPER_VCOM_OFF (1U << 0)   // HW_VER_6: plain J4, Pro J14
 #define BOARD_JUMPER_SWD_OFF (1U << 1)    // HW_VER_7: plain J5, Pro J13
-#define BOARD_JUMPER_USBSIO_OFF (1U << 2) // HW_VER_2: Pro J15; nothing to turn off until USB-SIO exists
+#define BOARD_JUMPER_USBSIO_OFF (1U << 2) // HW_VER_2: Pro J15; the DIO pins (dio.h)
 
 /** Whether the debug interfaces exist, CMSIS-DAP v2 and v1. The SWD jumper removes them, as stock
  *  removes its CMSIS-DAP interface: another debugger owns the target's lines then. */

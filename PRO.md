@@ -61,7 +61,7 @@ The rest of the Pro's pins, from schematic page 1:
 | LEDs, active low | LED1 USB PIO1_12, LED2 SWO PIO1_13, LED3 status P0_5 (red), LED4 VCOM PIO1_15, LED5 FUNC PIO1_16, LED6 SIO PIO1_17, LED7 NRG PIO1_18 |
 | target supply | P0_8 TARGET_PWR_EN enables a TPS73601; its output reaches the target only through J6, at the voltage J5 picks |
 | second VCOM (J26) | Flexcomm 1: RXD PIO1_10, TXD PIO1_11. J26 is a 1x6 header labelled "firmware debug console" in the FTDI TTL-232R-3V3 cable's order (page 3): 1 GND, 4 the cable's TXD into PIO1_10 through 499R, 5 PIO1_11 out to the cable's RXD through 499R, 2, 3 and 6 not connected. ESD diodes, no level shifter: 3.3 V only. So a target's TXD goes to pin 4 and its RXD to pin 5; UM11673 section 4.3 says the reverse, which the schematic contradicts. Check on the bench before wiring a target |
-| USB-SIO SPI | the high-speed SPI: SSEL0 P0_20, MOSI P0_26, SCK PIO1_2, MISO PIO1_3, each also a GPIO (DIO0 to DIO3); level-shifter directions IO_DIR1 PIO1_1 and IO_DIR2 PIO1_25 |
+| USB-SIO SPI | the high-speed SPI: SSEL0 P0_20, MOSI P0_26, SCK PIO1_2, MISO PIO1_3, each also a GPIO (DIO0 to DIO3) on J19 pins 2 to 5; level-translator directions IO_DIR1 PIO1_1 (DIO0 to DIO2, U17 and U13) and IO_DIR2 PIO1_25 (DIO3, U12), high to drive the header, each with a 1K pull-down (netlist, 2026-10-22). The header side runs at J19 pin 14 (VDD_IO_REF, 1.2 to 5.5 V), or 3.3 V with nothing there |
 | USB-SIO I2C | Flexcomm 3: SDA P0_4, SCL P0_21. SWO's UART is Flexcomm 3 too, so the two exclude each other |
 | energy measurement | voltage ADC0_0 on P0_23; current ADC0_8 on P0_16 and ACMP0_IN_D on PIO1_14; CURR_RANGE_SET ADC0_4 on PIO1_8; CTRL_HIGH_CURR on P0_15 (ADC0_2) and P0_30 (input); CTRL_HIGH_CURR_EN P0_17; CTRL_HIGH_CURR_DIS P0_29 (CMP0_OUT); calibration CTRL_CAL_R1 to R4 on PIO1_22, PIO1_23, PIO1_26, PIO1_29 and CTRL_CAL_DISC on PIO1_24 |
 | triggers | SYNC_TRIG P0_6, SYNC_LEAD P0_7 (J2), MEAS_TRIG PIO1_7 |
@@ -175,8 +175,8 @@ lifted, the same blocks match at every clock from 1 to 50 MHz (31.2 KiB/s at 1 M
    but match 3 works on the Pro); the others switch, as GPIO.
    Decided 2026-10-21. The Pro's pins (schematic page 4): LED1 USB PIO1_12, LED2 SWO
    PIO1_13, LED3 status PIO0_5 (the plain board's LED), LED4 VCOM PIO1_15, LED5 FUNC PIO1_16, LED6
-   SIO PIO1_17, LED7 NRG PIO1_18. Meanings follow UM11673 Table 4 where we have the function; SIO
-   and NRG stay dark until phase 2.
+   SIO PIO1_17, LED7 NRG PIO1_18. Meanings follow UM11673 Table 4 where we have the function; NRG
+   stays dark until phase 2, and SIO is lit while the host drives a DIO pin (item 13).
    - The fade follows CIE lightness (L*), so it looks linear to the eye.
    - Activity flickers: each burst of traffic inverts the LED, on the status, SWO and VCOM LEDs.
    - LED5 FUNC shows the wire by its pattern: SWD a repeating dark-to-light ramp, two-pin cJTAG a
@@ -215,8 +215,13 @@ Phase 2, the extras (needs decisions b and c below):
 12. Energy measurement: the ADC front end at up to 100 kS/s; per configuration, two ranges that
     hardware switches up and firmware switches back down on a monitor interrupt; self-calibration
     at power-up behind isolating transistors.
-13. USBSIO, the SPI/I2C/GPIO bridge. NXP publishes its host library, LIBUSBSIO, so its protocol can
-    be met from public source (check that library's licence first).
+13. USBSIO, the SPI/I2C/GPIO bridge. GPIO first: the four DIO pins through
+    vendor 0x8E (`src/dio.c`, the transport-independent core; `src/dap_vendor.c` has the wire
+    format). LIBUSBSIO is BSD-3-Clause; its PyPI
+    package is a wrapper over prebuilt libraries, so its wire protocol needs NXP's C source. Its
+    GPIO calls take raw LPC port and pin numbers and a raw IOCON mode, and its own test suite says
+    the standalone Pro has no GPIO under stock. A LIBUSBSIO HID with SPI and I2C may follow; it
+    needs probe-rs's HID-as-v1 fix first (Cross-boundary, below).
 14. The analog trace input (J19 pin 12) and the LPC804's ISP and reset lines: last.
 
 ## Next round: board-aware USB (in progress)
@@ -288,7 +293,7 @@ Steps:
    packs its endpoints per state rather than keep them fixed; bcdDevice changes with every state;
    the "rXXX" in the product string is the straps.
 1. Read the straps on CPU 0: the board (HW_VER_3, HW_VER_4) and the feature jumpers (HW_VER_6 VCOM
-   off, HW_VER_7 SWD off; HW_VER_2 USB-SIO off is read but means nothing until USB-SIO exists).
+   off, HW_VER_7 SWD off; HW_VER_2 USB-SIO off, which keeps the DIO pins of item 13 off).
    `src/board_straps.c` on CPU 0 writes the board and the jumpers into `dap_shared` before
    `start_core1`, and CPU 1 takes the board from there rather than reading the pins again.
 2. Descriptors built at boot from the board and the jumpers: the vendor interface stays interface 0
@@ -389,7 +394,9 @@ points from it, adopted:
 
 a. The schematic: done, `references/docs/MCU-LINK-PRO-SCH.pdf`.
 b. How the extras reach a host: the second VCOM as a standard CDC interface;
-   USB-SIO in NXP's public LIBUSBSIO protocol, so NXP's tools and library work; target supply and
+   USB-SIO in NXP's public LIBUSBSIO protocol, so NXP's tools and library work (amended 2026-10-22,
+   GPIO first as a CMSIS-DAP vendor command over a transport-independent core, LIBUSBSIO
+   later if at all); target supply and
    energy measurement as vendor commands on the CMSIS-DAP interface, with probe-rs support.
 c. Before publishing: phases 0 and 1 and the second VCOM. USB-SIO, the target
    supply, energy measurement, the analog input and the LPC804 come after publishing.

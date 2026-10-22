@@ -146,6 +146,7 @@ static void pro_tick(uint32_t now) {
     led_switch(LED_USB_PIN, (tud_mounted() && !tud_suspended()) ? LED_LIGHT : 0U);
     led_switch(LED_SWO_PIN, flicker(&swo_flicker, take(&dap_shared.led_swo), 0U));
     led_switch(LED_VCOM_PIN, flicker(&vcom_flicker, take(&led_vcom_seen), 0U));
+    led_switch(LED_SIO_PIN, (dap_shared.led_sio != 0U) ? LED_LIGHT : 0U);
     CTIMER1->MSR[3] = led_levels[func_lightness(now)];
 }
 

@@ -50,6 +50,7 @@ from cycles import (  # noqa: E402
     u16,
     u32,
 )
+from unicorn import UC_HOOK_MEM_WRITE  # noqa: E402
 from unicorn.arm_const import UC_ARM_REG_PC, UC_ARM_REG_R0  # noqa: E402
 
 UUID_ADDRESS = 0x0009FC70
@@ -319,6 +320,7 @@ DAP_COMMANDS = {
     # check_sample_probe runs it connected.
     0x87: b"\x00\x00\xff\x00\x00\x00\x00\x00\x00",
     0x8C: b"\xff",  # our STAGE, asking only
+    0x8E: b"\x00\x00\x00",  # our DIO, only reading
 }
 ID_DAP_INVALID = 0xFF
 SWO_COMMANDS = (0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1E)
@@ -933,6 +935,134 @@ def check_board(c: Checker, elf: str, request_slots: int) -> None:
            "the target's ISP pin released on both")
 
 
+# The Pro's DIO pins (src/dio.c): DIO0 to DIO3, then IO_DIR1 and IO_DIR2, as (port, pin), and the
+# direction pin each DIO pin's translator takes.
+DIO_PINS = ((0, 20), (0, 26), (1, 2), (1, 3), (1, 1), (1, 25))
+DIO_DIR_OF = (4, 4, 4, 5)
+CAP_DIO = 1 << 6
+# The ordinary GPIO's port-wide registers, which the hook below sees: SET, CLR, NOT, DIRSET, DIRCLR,
+# DIRNOT, one word per port each.
+GPIO_PORT_REGS = {0x2200: "SET", 0x2280: "CLR", 0x2300: "NOT", 0x2380: "DIRSET", 0x2400: "DIRCLR", 0x2480: "DIRNOT"}
+
+
+class DioPins:
+    """Every store to the ordinary GPIO's port registers, replayed onto the DIO pins: each pin's
+    translator input (A) and header (B) level after each store. A is driven by the probe's pin while
+    it is an output, by the translator from the header while its direction pin is low, and otherwise
+    keeps its level; the header follows A while the direction pin is high and is the target's ("z")
+    otherwise. A direction pin is high only as an output with its latch set: the pull-down holds it
+    low as an input."""
+
+    def __init__(self, probe) -> None:
+        self.latch = [0, 0]
+        self.dir = [0, 0]
+        self.stores: list[tuple[str, int, int]] = []
+        self.a = ["z"] * 4
+        self.header = ["z"] * 4
+        self.moves = [0] * 4
+        self.fights: list[str] = []
+        base = ORDINARY_GPIO + min(GPIO_PORT_REGS)
+        probe.uc.hook_add(UC_HOOK_MEM_WRITE, self._store, begin=base, end=base + 0x300 - 1)
+
+    def bit(self, words: list[int], index: int) -> int:
+        port, pin = DIO_PINS[index]
+        return (words[port] >> pin) & 1
+
+    def _store(self, uc, access, address, size, value, user) -> None:
+        offset = address - ORDINARY_GPIO
+        reg, port = GPIO_PORT_REGS.get(offset & ~0x7F, "?"), (offset & 0x7F) // 4
+        self.stores.append((reg, port, value))
+        if port > 1 or reg not in ("SET", "CLR", "DIRSET", "DIRCLR"):
+            self.fights.append(f"{reg}[{port}] {value:#x}")
+            return
+        words = self.latch if reg in ("SET", "CLR") else self.dir
+        words[port] = words[port] | value if reg in ("SET", "DIRSET") else words[port] & ~value
+        for n in range(4):
+            toward_header = self.bit(self.dir, DIO_DIR_OF[n]) and self.bit(self.latch, DIO_DIR_OF[n])
+            driving = self.bit(self.dir, n)
+            if driving and not toward_header:
+                self.fights.append(f"DIO{n}: the probe and the translator both drive A after {reg}[{port}]")
+            self.a[n] = str(self.bit(self.latch, n)) if driving else "z" if not toward_header else self.a[n]
+            header = self.a[n] if toward_header else "z"
+            if header != self.header[n]:
+                self.moves[n] += 1
+                self.header[n] = header
+
+    def step(self) -> None:
+        self.stores.clear()
+        self.moves = [0] * 4
+        self.fights.clear()
+
+
+def check_dio(c: Checker, elf: str, request_slots: int) -> None:
+    """Vendor 0x8E drives the Pro's DIO pins and nothing else's: refused, and no pin stored to, on
+    the other boards and with J15 fitted. On the Pro it turns a group round whole or not at all,
+    the probe and a translator never drive the same line, each header moves at most once a
+    command, and every reply carries the state and the groups."""
+    if "dio_init" not in symbols(elf):
+        c.problems.append("no dio_init symbol, so the DIO pins' setup cannot be run")
+        return
+    offsets = shared_offsets(request_slots, "board", "jumpers", "led_sio", small_enums=short_enums(elf))
+    for name, board, jumpers in (("plain", 0, 0), ("on-board", 2, 0), ("Pro", BOARD_PRO, 0), ("Pro with J15", BOARD_PRO, 4)):
+        probe = Machine(elf, Target([0] * 64), restart_at=set(), model=Model())
+        shared = probe.sym["dap_shared"]
+        probe.uc.mem_write(shared + offsets["board"], bytes([board]))
+        probe.uc.mem_write(shared + offsets["jumpers"], bytes([jumpers]))
+        probe.call("board_debug_pins_init")
+        pins = DioPins(probe)
+        probe.call("dio_init")
+        iocon = [int.from_bytes(probe.uc.mem_read(IOCON + 4 * (32 * port + pin), 4), "little") for port, pin in DIO_PINS]
+        flags = probe.command(bytes([0x82]))[7]
+
+        def dio(mask: int, outputs: int, levels: int) -> tuple[bool, list[int]]:
+            pins.step()
+            reply = probe.command(bytes([0x8E, mask, outputs, levels]))
+            return reply[1] == 0, [reply[2], reply[3], reply[5], *reply[6:]]
+
+        if name != "Pro":
+            # PIO1_1 to PIO1_3 are J8's on the plain board, which the marker takes.
+            mine = [v for (port, pin), v in zip(DIO_PINS, iocon) if board != 0 or port != 1 or pin > 3]
+            c.check(not any(mine) and not pins.stores,
+                    f"{name} board: the DIO pins were set up: IOCON {[hex(v) for v in iocon]}, stores {pins.stores}")
+            c.check(not flags & CAP_DIO, f"{name} board: vendor 0x82 claims the DIO pins")
+            ok, state = dio(0x0F, 0x0F, 0x0F)
+            c.check(not ok and state == [0, 0, 0, 0] and not pins.stores,
+                    f"{name} board: vendor 0x8E answered {ok}, {state}, stores {pins.stores}")
+            continue
+        c.check(all(v & 0x13F == 0x100 for v in iocon), f"{name}: the DIO pins are not plain digital GPIO: "
+                f"IOCON {[hex(v) for v in iocon]}")
+        c.check(not pins.fights and pins.dir[1] & 0x2000002 == 0x2000002 and not pins.latch[1] & 0x2000002
+                and all(not pins.bit(pins.dir, n) for n in range(4)),
+                f"{name}: dio_init left the directions {pins.dir}, latches {pins.latch}: {pins.fights}")
+        c.check(bool(flags & CAP_DIO), f"{name}: vendor 0x82 flags {flags:#04x} lack the DIO pins")
+        # (mask, outputs, levels), whether it is taken, and outputs, latch and the LED after it.
+        steps = (
+            ((0x00, 0x00, 0x00), True, 0x00, 0x00, 0),
+            ((0x01, 0x01, 0x01), False, 0x00, 0x00, 0),  # DIO0 alone splits its group
+            ((0x10, 0x10, 0x10), False, 0x00, 0x00, 0),  # no DIO4
+            ((0x07, 0x07, 0x05), True, 0x07, 0x05, 1),
+            ((0x01, 0x00, 0x00), False, 0x07, 0x05, 1),  # DIO0 back alone splits it too
+            ((0x08, 0x08, 0x08), True, 0x0F, 0x0D, 1),
+            ((0x02, 0x02, 0x02), True, 0x0F, 0x0F, 1),  # a level alone, the group staying out
+            ((0x0F, 0x07, 0x02), True, 0x07, 0x02, 1),  # DIO3 in while the others change level
+            ((0x0F, 0x08, 0x08), True, 0x08, 0x08, 1),  # both groups turned at once
+            ((0x0F, 0x00, 0x00), True, 0x00, 0x00, 0),
+        )
+        for request, taken, outputs, latch, lit in steps:
+            ok, state = dio(*request)
+            sio = probe.uc.mem_read(shared + offsets["led_sio"], 1)[0]
+            want = [outputs, latch, 0x0F, 2, 0x07, 0x08]
+            c.check(ok == taken and state == want and sio == lit,
+                    f"{name}: vendor 0x8E {bytes(request).hex()} answered {ok}, {[hex(v) for v in state]}, SIO LED {sio}; "
+                    f"wanted {taken}, {[hex(v) for v in want]}, {lit}")
+            headers = ["z" if not outputs >> n & 1 else str(latch >> n & 1) for n in range(4)]
+            c.check(not pins.fights and max(pins.moves) <= 1 and pins.header == headers and (taken or not pins.stores),
+                    f"{name}: vendor 0x8E {bytes(request).hex()} left headers {pins.header} (wanted {headers}), "
+                    f"moved them {pins.moves} times, {pins.fights or 'no fights'}, stores {pins.stores}")
+    c.note("DIO: vendor 0x8E on the Pro only, J15 honoured, groups turned whole without a fight or a double move, "
+           "state and groups in every reply")
+
+
 def check_sample_probe(c: Checker, elf: str) -> None:
     """Vendor 0x87 frames a DPIDR read the way a target expects, in both shapes and every position.
 
@@ -1233,8 +1363,8 @@ class LedTick:
                       ("board_clocks_init", "led_init", "CTIMER3_IRQHandler", "dap_shared", "led_ticks"))
         if not self.ok:
             return
-        fields = shared_offsets(request_slots, "led_activity", "led_connected", "led_wire", "led_swo", "board",
-                                "jumpers", small_enums=short_enums(elf))
+        fields = shared_offsets(request_slots, "led_activity", "led_connected", "led_wire", "led_swo", "led_sio",
+                                "board", "jumpers", small_enums=short_enums(elf))
         self.shared = {name: self.probe.sym["dap_shared"] + offset for name, offset in fields.items()}
         self.write("board", board)
         self.write("jumpers", jumpers)
@@ -1476,8 +1606,12 @@ def check_pro_leds(c: Checker, elf: str, request_slots: int) -> None:
                     f"the USB LED: lit {unmounted} unconfigured, {mounted} configured, {suspended} suspended")
     else:
         c.problems.append("the image lacks _usbd_dev, tud_mounted or tud_suspended, so the USB LED cannot be run")
-    untouched = [pin for pin in (PRO_LED_SIO, PRO_LED_NRG) if led.pin(pin) != LED_PIN_SENTINEL]
-    c.check(not untouched, f"the tick drove PIO1_{untouched} after leaving them dark")
+    c.check(led.pin(PRO_LED_NRG) == LED_PIN_SENTINEL, "the tick drove NRG's PIO1_18 after leaving it dark")
+    sio = []
+    for driving in (0, 1, 0):
+        led.write("led_sio", driving)
+        sio.append(all(led.run(5, pin_lit(PRO_LED_SIO))))
+    c.check(sio == [False, True, False], f"the SIO LED is not lit exactly while the host drives a DIO pin: {sio}")
     c.note(f"Pro LEDs: FUNC ramps in {512 * led.tick_ms:.0f} ms (SWD up, two-pin down, four-wire both), solid "
            f"with the SWD jumper, dark with no port; SWO and VCOM flicker, USB lit while configured")
 
@@ -1707,6 +1841,7 @@ def main() -> int:
     check_request_bounds(c, args.core1)
     check_identity(c, args.core1, args.code_lab)
     check_board(c, args.core1, slots)
+    check_dio(c, args.core1, slots)
     check_straps(c, args.elf, args.core1, slots)
     check_unconnected_block(c, args.core1)
     check_image_boards(c, args.elf)
