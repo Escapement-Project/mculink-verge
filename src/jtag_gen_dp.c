@@ -295,7 +295,7 @@ static uint32_t block_whole(const uint8_t* request, uint8_t* response) {
     }
     const uint32_t request_value = *request++;
     // The generated transfers are for one chain position: this command's.
-    if (!jtag_gen_ready(jtag_gen_wire()) || !transfers_fit()) {
+    if (!jtag_gen_ready_transfers(jtag_gen_wire()) || !transfers_fit()) {
         return jgen_BlockImpl(request - 4, response_head);
     }
     const uint32_t ir = (request_value & DAP_TRANSFER_APnDP) != 0U ? JTAG_APACC : JTAG_DPACC;

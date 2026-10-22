@@ -58,7 +58,7 @@ void jtag_sweep_watch(const uint8_t* request) {
 /** Whether the code generated for the latency in use samples less than CONNECT_MARGIN cycles after
  * it anywhere. */
 static bool short_margin(uint32_t wire) {
-    if (!jtag_gen_ready(wire)) {
+    if (!jtag_gen_ready_transfers(wire)) {
         return false;
     }
     int32_t last = jtag_gen_info.scan_last;
@@ -120,7 +120,7 @@ void jtag_sweep(void) {
     }
     // SRAMX holds the last candidate's code, which nothing describes.
     gen_owner = GEN_OWNER_NONE;
-    (void)jtag_gen_ready(wire);
+    (void)jtag_gen_ready_transfers(wire);
     jtag_sweep_last.wire = wire;
     jtag_sweep_last.cycles = DWT->CYCCNT - start;
     jtag_sweep_last.runs++;

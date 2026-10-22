@@ -72,7 +72,7 @@ void sweep(void) {
         DAP_Data.transfer.idle_cycles = chains[c][2];
         jtag_gen_latency[JTAG_GEN_PINS(wire)] = lat;
         jtag_gen_clock_hz = (CPU_CLOCK + period - 1U) / period;
-        const bool ok = jtag_gen_ready(wire);
+        const bool ok = jtag_gen_ready_transfers(wire);
         const uint32_t h = ok ? fnv((const uint8_t*)JTAG_GEN_BASE, jtag_gen_info.code_bytes) : 2166136261U;
         char* q = line;
         q = hex(q, 0x4A000000U | (c << 16) | (wire << 12) | (lat << 4));

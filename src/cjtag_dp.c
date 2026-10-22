@@ -30,6 +30,11 @@
 #ifdef JTAG_CODEGEN
 #define CJTAG_ROUTE(name) (jtag_gen_ready(jtag_gen_wire()) ? jgen_##name : CJTAG_PICK(name))
 #define JTAG4_ROUTE(name) (jtag_gen_ready(JTAG_GEN_FOUR_WIRE) ? jgen_##name : jtag4_##name)
+// A transfer builds the transfers too, and so does an IR scan, which ARM's DAP_JTAG_Transfer sends
+// just before its transfers: a chain change inside the command then costs one generation, not two.
+// Everything else needs the scans alone.
+#define CJTAG_ROUTE_TRANSFERS(name) (jtag_gen_ready_transfers(jtag_gen_wire()) ? jgen_##name : CJTAG_PICK(name))
+#define JTAG4_ROUTE_TRANSFERS(name) (jtag_gen_ready_transfers(JTAG_GEN_FOUR_WIRE) ? jgen_##name : jtag4_##name)
 
 uint32_t jtag_gen_wire(void) {
     if (!cJTAG_Active()) {
@@ -40,6 +45,8 @@ uint32_t jtag_gen_wire(void) {
 #else
 #define CJTAG_ROUTE(name) CJTAG_PICK(name)
 #define JTAG4_ROUTE(name) jtag4_##name
+#define CJTAG_ROUTE_TRANSFERS(name) CJTAG_PICK(name)
+#define JTAG4_ROUTE_TRANSFERS(name) jtag4_##name
 #endif
 
 void JTAG_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo) {
@@ -52,9 +59,9 @@ void JTAG_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo) {
 
 void JTAG_IR(uint32_t ir) {
     if (cJTAG_Active()) {
-        CJTAG_ROUTE(IR)(ir);
+        CJTAG_ROUTE_TRANSFERS(IR)(ir);
     } else {
-        JTAG4_ROUTE(IR)(ir);
+        JTAG4_ROUTE_TRANSFERS(IR)(ir);
     }
 }
 
@@ -69,5 +76,5 @@ void JTAG_WriteAbort(uint32_t data) {
 }
 
 uint8_t JTAG_Transfer(uint32_t request, uint32_t* data) {
-    return cJTAG_Active() ? CJTAG_ROUTE(Transfer)(request, data) : JTAG4_ROUTE(Transfer)(request, data);
+    return cJTAG_Active() ? CJTAG_ROUTE_TRANSFERS(Transfer)(request, data) : JTAG4_ROUTE_TRANSFERS(Transfer)(request, data);
 }

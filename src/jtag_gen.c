@@ -1368,9 +1368,15 @@ jtag_gen_xfer_fn jtag_gen_read;
 jtag_gen_xfer_fn jtag_gen_write;
 
 static struct jtag_gen_config built;
-static struct jtag_gen_config asked; // `built` as the host configured it, before pacing
 static bool built_once;
 static bool built_ok;
+static bool built_transfers; // the last build has its transfers, those that fit
+// The idle clocks each wire learned last, and the host's configuration they were learned for, before
+// pacing. A host passes through other configurations, and other wires, on its way back to it: an
+// OScan2 attach frames OScan1 and a one-TAP chain before its own.
+static struct jtag_gen_config learned_for[JTAG_GEN_OSCAN2 + 1U];
+static uint32_t learned[JTAG_GEN_OSCAN2 + 1U];
+static bool learning; // jtag_gen_paced has one more clock for regenerate to record
 uint32_t jtag_gen_builds;
 uint32_t jtag_gen_failures;
 
@@ -1389,7 +1395,8 @@ COMMAND_PATH void jtag_gen_waited(void) { waited = true; }
 COMMAND_PATH void jtag_gen_learn(uint32_t wire) {
     if (waited && jtag_gen_pacing && (jtag_gen_paced < JTAG_GEN_PACED_MAX)) {
         jtag_gen_paced++;
-        (void)jtag_gen_ready(wire);
+        learning = true;
+        (void)jtag_gen_ready_transfers(wire);
     }
     waited = false;
 }
@@ -1417,21 +1424,29 @@ struct jtag_gen_config jtag_gen_inputs(uint32_t wire) {
 }
 
 /** Out of line, so the check every transfer command makes does not pay its frame or its divide. */
-static __attribute__((noinline)) bool regenerate(uint32_t wire) {
+static __attribute__((noinline)) bool regenerate(uint32_t wire, bool transfers) {
     struct jtag_gen_config want = host_config(wire);
-    if (!jtag_gen_pacing || (built_once && (memcmp(&want, &asked, sizeof want) != 0))) {
-        jtag_gen_paced = 0U;
+    if (learning) {
+        learned_for[wire] = want;
+        learned[wire] = jtag_gen_paced;
+        learning = false;
     }
-    asked = want;
+    jtag_gen_paced = (jtag_gen_pacing && (memcmp(&want, &learned_for[wire], sizeof want) == 0)) ? learned[wire] : 0U;
     want.idle = paced_idle(want.idle);
-    if (built_once && (gen_owner == GEN_OWNER_JTAG) && (memcmp(&want, &built, sizeof want) == 0)) {
+    if (built_once && (gen_owner == GEN_OWNER_JTAG) && (memcmp(&want, &built, sizeof want) == 0) &&
+        (built_transfers || !transfers)) {
         return built_ok;
     }
     built = want;
     built_once = true;
+    built_transfers = transfers;
     gen_owner = GEN_OWNER_JTAG;
     jtag_gen_info.ok = false;
-    built_ok = jtag_gen_build(&want, &jtag_gen_scan, &jtag_gen_read, &jtag_gen_write);
+    // A scan-only build writes over the transfers the last one left.
+    jtag_gen_read = NULL;
+    jtag_gen_write = NULL;
+    built_ok = jtag_gen_build(&want, &jtag_gen_scan, transfers ? &jtag_gen_read : NULL,
+                              transfers ? &jtag_gen_write : NULL);
     if (built_ok) {
         jtag_gen_builds++;
     } else {
@@ -1456,13 +1471,14 @@ struct jtag_gen_inputs {
 
 static struct jtag_gen_inputs seen;
 static bool seen_once;
+static bool seen_transfers;
 
 static inline bool same_inputs(const struct jtag_gen_inputs* a, const struct jtag_gen_inputs* b) {
     return (a->wire == b->wire) && (a->hz == b->hz) && (a->latency == b->latency) && (a->index == b->index) &&
            (a->count == b->count) && (a->idle == b->idle) && (a->paced == b->paced) && (a->pacing == b->pacing);
 }
 
-COMMAND_PATH bool jtag_gen_ready(uint32_t wire) {
+__attribute__((always_inline)) static inline bool ready(uint32_t wire, bool transfers) {
     const struct jtag_gen_inputs now = {
         .wire = wire,
         .hz = jtag_gen_clock_hz,
@@ -1473,12 +1489,17 @@ COMMAND_PATH bool jtag_gen_ready(uint32_t wire) {
         .paced = jtag_gen_paced,
         .pacing = jtag_gen_pacing,
     };
-    if (seen_once && (gen_owner == GEN_OWNER_JTAG) && same_inputs(&now, &seen)) {
+    if (seen_once && (gen_owner == GEN_OWNER_JTAG) && same_inputs(&now, &seen) && (seen_transfers || !transfers)) {
         return built_ok;
     }
-    const bool ok = regenerate(wire);
+    const bool ok = regenerate(wire, transfers);
     seen = now;
-    seen.paced = jtag_gen_paced; // regenerate starts pacing again when the configuration changed
+    seen.paced = jtag_gen_paced; // regenerate keeps each wire's pacing, and restarts a changed one's
     seen_once = true;
+    seen_transfers = built_transfers;
     return ok;
 }
+
+COMMAND_PATH bool jtag_gen_ready(uint32_t wire) { return ready(wire, false); }
+
+COMMAND_PATH bool jtag_gen_ready_transfers(uint32_t wire) { return ready(wire, true); }

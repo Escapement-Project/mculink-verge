@@ -103,6 +103,10 @@ extern uint32_t jtag_gen_failures;
  * changed since the last call. Only one wire's code exists at a time. False when it cannot be
  * generated: the caller runs ARM's path instead. */
 bool jtag_gen_ready(uint32_t wire);
+/** jtag_gen_ready with the transfers too, where they fit. jtag_gen_ready alone builds the scans, so a
+ * framing switch or a new configuration costs no transfer generation until a transfer needs one;
+ * a scan-only build leaves jtag_gen_read and jtag_gen_write NULL. */
+bool jtag_gen_ready_transfers(uint32_t wire);
 
 /** The wire the probe drives now, for jtag_gen_ready. In src/cjtag_dp.c. */
 uint32_t jtag_gen_wire(void);
@@ -111,9 +115,12 @@ uint32_t jtag_gen_wire(void);
 struct jtag_gen_config jtag_gen_inputs(uint32_t wire);
 
 /** Run-Test/Idle clocks the generated transfers add to the host's after each transfer, learned from
- * the target's WAITs: one more after each command that met one, up to JTAG_GEN_PACED_MAX, and none
- * again once the host changes the clock or the configuration. A target that answers WAIT to a
- * transfer close behind the last one stops doing so, and one that never does sees ARM's wire. */
+ * the target's WAITs: one more after each command that met one, up to JTAG_GEN_PACED_MAX. A target
+ * that answers WAIT to a transfer close behind the last one stops doing so, and one that never does
+ * sees ARM's wire. Each wire keeps what it learned for one configuration, the clock and the chain,
+ * and uses it whenever the host comes back to that configuration; any other starts from none. A
+ * host that frames OScan1 and a shorter chain on its way to an OScan2 session so learns nothing
+ * twice. This is the wire in use's. */
 extern uint32_t jtag_gen_paced;
 #define JTAG_GEN_PACED_MAX 32U
 /** Whether WAITs teach jtag_gen_paced. Off, the wire is ARM's exactly. */

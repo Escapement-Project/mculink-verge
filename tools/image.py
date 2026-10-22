@@ -1689,7 +1689,8 @@ def main() -> int:
     # the transfers when an input changed, and the first DAP_Transfer after a line reset or a
     # DAP_JTAG_Configure, which may measure the read latency. The generated JTAG path only where it
     # is built.
-    jtag_gen = ("jgen_TransferBlock", "block_whole", "jgen_IR", "jtag_gen_ready", "jtag_gen_learn", "jgen_Transfer")
+    jtag_gen = ("jgen_TransferBlock", "block_whole", "jgen_IR", "jtag_gen_ready", "jtag_gen_ready_transfers",
+                "jtag_gen_learn", "jgen_Transfer")
     if not any(name.split(".")[0] == "jtag_gen_ready" for name in symbols_with_size(args.core1)):
         jtag_gen = ()
     check_sram_code(c, args.core1, "CPU 1 runs a command's dispatch",

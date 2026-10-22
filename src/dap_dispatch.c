@@ -114,7 +114,7 @@ COMMAND_PATH static uint32_t transfer_block(const uint8_t* request, uint8_t* res
     }
 #ifdef JTAG_CODEGEN
     const uint32_t wire = jtag_gen_wire();
-    if (jtag_gen_ready(wire)) {
+    if (jtag_gen_ready_transfers(wire)) {
         const uint32_t length = jgen_TransferBlock(request, response);
         jtag_gen_learn(wire);
         return length;
@@ -224,7 +224,9 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
 #else
     const uint32_t result = arm_command(request, response);
 #endif
-    // Generate now rather than in the first transfer, which would carry the time it takes.
+    // Generate now rather than in the first transfer, which would carry the time it takes; for
+    // JTAG the scans alone, since a host often changes the chain or the framing again before it
+    // transfers, and the first transfer builds the transfers (jtag_gen_ready_transfers).
     // The two generators share SRAMX, so only the port in use generates.
 #ifdef SWD_CODEGEN
     if ((*request == ID_DAP_SWJ_Clock) || (*request == ID_DAP_SWD_Configure) ||

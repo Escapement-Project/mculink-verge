@@ -249,6 +249,17 @@ registers.
   (no detach, either SYSCTRL) is attached by the escape-first sequence 12/12, in OScan1 or OScan2.
   probe-rs's OScan2 activation (its wip-cmsisdap-cjtag tree) read 64 ROM words at 1, 5 and 10 MHz
   byte-identical to a four-wire read, CNFG0 logged each time (2026-10-22).
+- Attach cost (2026-10-22). probe-rs on d373110 found an OScan2 attach 13-38 ms slower than
+  OScan1 (115-122 against 83 ms at 12.5 MHz) while its 256 KiB reads ran 1.5-3.3% faster. Every
+  framing switch regenerated scans and transfers: 16.2-17.5 ms at 12.5 MHz, 5.9-6.3 at 50. An
+  OScan2 attach frames OScan1 first and switches, and its learned idle clocks restarted with every
+  configuration change, so it relearned them each session, a regeneration a clock. Two changes:
+  `jtag_gen_ready` builds the scans alone, and `jtag_gen_ready_transfers` the transfers when a
+  transfer command needs them (a switch now costs 0.6-0.8 ms); learned clocks are kept per wire
+  for the configuration they were learned for, and come back when the host does. A dap.py attach
+  at 12.5 MHz now pays one generation in either format, at its first transfer (17.1 ms OScan2,
+  18.5 ms OScan1), where it paid four in OScan2 and two in OScan1 before; the first OScan2 session
+  after power-up still learns its clocks.
 - Before generating OScan5/6: the clock sweep 2026-10-21 put OScan1 at 7.8 us a word at 50 MHz
   and 9.2 at 25 (127-word blocks), so about 1.3 us of a word at 50 MHz scales with the clock.
 
