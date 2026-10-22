@@ -259,7 +259,11 @@ registers.
   for the configuration they were learned for, and come back when the host does. A dap.py attach
   at 12.5 MHz now pays one generation in either format, at its first transfer (17.1 ms OScan2,
   18.5 ms OScan1), where it paid four in OScan2 and two in OScan1 before; the first OScan2 session
-  after power-up still learns its clocks.
+  after power-up still learns its clocks. Through probe-rs (its CLI, 256 KiB, 5 interleaved reps,
+  2026-10-22): attach OScan1/OScan2 78.2/73.7 ms at 12.5 MHz (was 79.9/117.8),
+  80.2/81.8 at 25, 81.7/80.7 at 50; reads 774/737, 563/540, 473/444 ms, OScan2 +5.1, +4.3 and
+  +6.7% (577 KiB/s at 50 MHz); all 30 reads matched four-wire. What is left is in both formats:
+  BACKLOG 23.
 - Before generating OScan5/6: the clock sweep 2026-10-21 put OScan1 at 7.8 us a word at 50 MHz
   and 9.2 at 25 (127-word blocks), so about 1.3 us of a word at 50 MHz scales with the clock.
 
