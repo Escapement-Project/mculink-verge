@@ -267,6 +267,24 @@ registers.
 - Before generating OScan5/6: the clock sweep 2026-10-21 put OScan1 at 7.8 us a word at 50 MHz
   and 9.2 at 25 (127-word blocks), so about 1.3 us of a word at 50 MHz scales with the clock.
 
+## OScan5 on ARM's path (2026-10-22)
+
+- The TAP-tracked copy of ARM's JTAG_DP.c (`cjtagt_*`, `src/cjtag_jtag_dp_tracked.c`, was
+  `cjtag2_*`) frames OScan5 too, through `cJTAG_FrameTap`: OScan1's three packets outside Shift,
+  nTDI and TDO in Shift, and TMS 1 in Shift as an EOT escape on the nTDI packet (TCKC held high,
+  TMSC to its inverse and back, each edge and the fall a host period after the last; Figure
+  25-11). Every OScan5 frame carries TDO, so detach needs no trailing frame. Vendor 0x83 mode 3
+  takes SCNFMT 13 and 0x82 offers it. `JTAG_GEN_OSCAN5` (3) exists so the generator refuses it and
+  the routes fall back to ARM's copy; generating it is the next step.
+- `dap.py cjtag --ti --format 13 --switch command`: STFMT 13 as an OScan1 command, mode 3 at
+  Run-Test/Idle, ECL framed in OScan5 with 7 raw clocks after it (a non-Shift OScan5 SP is OScan1's
+  three bits, then the 4-clock CP; Table C-17). With the robust attach (`--ti-from 1 --ti-prefix
+  e10,h20,l1,p200 --reset-clocks 0 --mem --sysctrl 0x81000000`) it reads CPUID, and 64-word ROM
+  blocks match the 1 MHz read 20/20 at 1, 2, 5, 10, 12.5, 15, 20 and 25 MHz (CJ6B19D4E7, CC1312R1).
+- Decoded on the wire (escape edges
+  counted inside each TCKC high phase): every rise of the capture accounted for, 30 EOT escapes for
+  30 Shift exits, no TMSC edge with TCKC high anywhere else, the TAP back in Run-Test/Idle.
+
 ## Architecture
 
 - **One JTAG transfer scheduler**, two clock emitters. A transfer is the TAP walk

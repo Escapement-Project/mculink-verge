@@ -1567,8 +1567,10 @@ def ti_steps(scan_format: int, switch: str) -> list:
         return steps[: stfmt + 1] + [("format", scan_format)] + steps[stfmt + 1 :]
     # The last three steps are ECL's, which closes the window. After a command's last Update-DR
     # comes one SP that does not move the TAP, then the 4-clock check packet (1149.7 Table 21-5):
-    # TI's 7 raw clocks are OScan1's 3-bit SP and the CP. An OScan2 SP outside Shift is one bit.
-    ecl = [step if step[0] != "csm" else ("csm", 1 + 4) for step in steps[-3:]]
+    # TI's 7 raw clocks are OScan1's 3-bit SP and the CP. Outside Shift an OScan2 or OScan6 SP is
+    # one TMS bit, an OScan5 SP OScan1's three (Table 25-1).
+    sp = 1 if scan_format in (OSCAN1 + 1, OSCAN1 + 5) else 3
+    ecl = [step if step[0] != "csm" else ("csm", sp + 4) for step in steps[-3:]]
     return steps[:-3] + [("frames", command_frames(3, scan_format)), ("csm", 7), ("format", scan_format)] + ecl
 
 
@@ -2011,7 +2013,7 @@ def main() -> int:
     cjtag.add_argument("--ti-prefix", default="",
                        help="--ti: steps first: eN escape, hN/lN TMS-high/low clocks; 'jlink' = e10,h200,l2,e7,l36")
     cjtag.add_argument("--ti-from", type=int, default=0, help="--ti: skip TI's first N steps")
-    cjtag.add_argument("--format", type=int, default=OSCAN1, help="--ti: scan format (SCNFMT) to end in: 9 OScan1, 10 OScan2")
+    cjtag.add_argument("--format", type=int, default=OSCAN1, help="--ti: scan format (SCNFMT) to end in: 9 OScan1, 10 OScan2, 13 OScan5")
     cjtag.add_argument("--switch", choices=("command", "jscan"), default="command",
                        help="--format: select it with an OScan1 command before the window closes, or in JScan")
     cjtag.add_argument("--escape-a", type=int, default=10, help="synth: edges in the first escape")

@@ -1,8 +1,8 @@
 /** The JTAG entry points, routed to four-wire or two-pin.
  *
  * ARM's JTAG_DP.c is compiled several times, with its five entry points renamed each time: once
- * normally as `jtag4_*`, and through src/cjtag_jtag_dp.c as `cjtag_*`, `cjtagf_*` and `cjtag2_*`,
- * where the wire layer is replaced by OScan1 or OScan2 frames (src/jtag_dp.h). This file owns the
+ * normally as `jtag4_*`, and through src/cjtag_jtag_dp.c as `cjtag_*`, `cjtagf_*` and `cjtagt_*`,
+ * where the wire layer is replaced by OScan1, OScan2 or OScan5 frames (src/jtag_dp.h). This file owns the
  * real names and picks a path once per call, so no path carries a per-bit branch and none
  * duplicates another's TAP logic.
  */
@@ -17,14 +17,14 @@
 #include "jtag_gen.h"
 #endif
 
-/** Which of the copies a call goes to: four-wire, OScan1 paced or not, or OScan2.
+/** Which of the copies a call goes to: four-wire, OScan1 paced or not, or the TAP-tracked one.
  *
  * The OScan1 choice is made here rather than inside the frame because making it there costs a
  * cycle in the paced path, which is enough to take a 10 MHz request past the clock the host asked
  * for. Once per call it costs nothing measurable.
  */
 #define CJTAG_PICK(name) \
-    (cJTAG_Format() != CJTAG_OSCAN1 ? cjtag2_##name : DAP_Data.fast_clock ? cjtagf_##name : cjtag_##name)
+    (cJTAG_Format() != CJTAG_OSCAN1 ? cjtagt_##name : DAP_Data.fast_clock ? cjtagf_##name : cjtag_##name)
 
 /** The generated clocks when they could be built for this clock and wire, ARM's copies when not. */
 #ifdef JTAG_CODEGEN
@@ -40,7 +40,14 @@ uint32_t jtag_gen_wire(void) {
     if (!cJTAG_Active()) {
         return JTAG_GEN_FOUR_WIRE;
     }
-    return cJTAG_Format() == CJTAG_OSCAN2 ? JTAG_GEN_OSCAN2 : JTAG_GEN_TWO_PIN;
+    switch (cJTAG_Format()) {
+    case CJTAG_OSCAN2:
+        return JTAG_GEN_OSCAN2;
+    case CJTAG_OSCAN5:
+        return JTAG_GEN_OSCAN5;
+    default:
+        return JTAG_GEN_TWO_PIN;
+    }
 }
 #else
 #define CJTAG_ROUTE(name) CJTAG_PICK(name)

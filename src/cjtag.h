@@ -1,4 +1,4 @@
-/** IEEE 1149.7 two-pin (cJTAG) support, OScan1 and OScan2 formats.
+/** IEEE 1149.7 two-pin (cJTAG) support, OScan1, OScan2 and OScan5 formats.
  *
  * Enabled by a vendor command, because a probe cannot tell from the wire whether a target is
  * four-pin or two-pin, and driving the activation sequence at a four-pin target would disturb it.
@@ -12,8 +12,9 @@
 /** Scan formats, numbered as the standard's SCNFMT register and its STFMT command number them. */
 #define CJTAG_OSCAN1 9U
 #define CJTAG_OSCAN2 10U
+#define CJTAG_OSCAN5 13U
 /** The formats this probe frames, bit n for SCNFMT n. */
-#define CJTAG_FORMATS ((1UL << CJTAG_OSCAN1) | (1UL << CJTAG_OSCAN2))
+#define CJTAG_FORMATS ((1UL << CJTAG_OSCAN1) | (1UL << CJTAG_OSCAN2) | (1UL << CJTAG_OSCAN5))
 
 /** The formats offered a host, in vendor 0x82 and to ID_VENDOR_CJTAG_CONTROL mode 3: CJTAG_FORMATS
  * until cJTAG_Offer limits them, which lasts until the probe restarts. */
@@ -46,19 +47,20 @@ enum cjtag_tap {
 /** Whether the TAP is being driven over two pins rather than four-wire JTAG. */
 bool cJTAG_Active(void);
 
-/** The scan format two-pin frames take, CJTAG_OSCAN1 or CJTAG_OSCAN2. */
+/** The scan format two-pin frames take, CJTAG_OSCAN1, CJTAG_OSCAN2 or CJTAG_OSCAN5. */
 uint32_t cJTAG_Format(void);
 
-/** OScan2's frame depends on the TAP state the frame is clocked in, so the probe follows the TAP
- * from the TMS it sends. Every OScan2 frame has to go through cJTAG_TapClock, or the next frame
- * takes the wrong shape and the target loses the frame boundaries. A clock the probe does not
+/** OScan2's and OScan5's frames depend on the TAP state the frame is clocked in, so the probe
+ * follows the TAP from the TMS it sends. Every frame in those formats has to go through
+ * cJTAG_TapClock, or the next frame takes the wrong shape and the target loses the frame
+ * boundaries. A clock the probe does not
  * frame -- DAP_SWJ_Sequence, DAP_SWD_Sequence, DAP_SWJ_Pins, DAP_Connect -- moves the target's
  * TAP and not this one, so a host that sends one owes ID_VENDOR_CJTAG_CONTROL mode 3 again. */
 uint32_t cJTAG_Tap(void);
 /** Moves the tracked TAP by one clock with TMS `tms`, returning whether that clock was in a Shift
- * state, where an OScan2 frame is three packets rather than one. */
+ * state, which decides that frame's shape in OScan2 and OScan5. */
 bool cJTAG_TapClock(uint32_t tms);
-/** Whether the tracked TAP is in Shift-DR or Shift-IR, so the next OScan2 frame is three packets. */
+/** Whether the tracked TAP is in Shift-DR or Shift-IR, which decides the next frame's shape. */
 bool cJTAG_TapShift(void);
 
 /** Drive the online and OScan1 activation sequence, and mark the TAP as two-pin.
@@ -71,7 +73,7 @@ bool cJTAG_TapShift(void);
 void cJTAG_Activate(void);
 
 /** Mark the TAP as two-pin in `format` without driving any activation, for a host that has driven
- * its own and left the TAP in `tap`, which only OScan2 needs.
+ * its own and left the TAP in `tap`, which OScan2 and OScan5 need.
  *
  * Lowers the clock and takes the wire at the level it already holds, which is the state every
  * frame starts from. Nothing else moves, so the target sees no edge it was not sent. False, and
@@ -101,9 +103,14 @@ void cJTAG_Deactivate(void);
 uint32_t cJTAG_FrameSlow(uint32_t tms, uint32_t tdi);
 uint32_t cJTAG_FrameFast(uint32_t tms, uint32_t tdi);
 
-/** One OScan2 frame, paced: OScan1's three packets in a Shift state, and outside one a single TMS
- * packet, for which the target sends nothing back and this returns 1, the level a released wire
- * reads there. Moves the tracked TAP. */
-uint32_t cJTAG_Frame2(uint32_t tms, uint32_t tdi);
+/** One frame in OScan2 or OScan5, paced, by the tracked TAP state, which it moves.
+ *
+ * OScan2: OScan1's three packets in a Shift state, and outside one a single TMS packet, for which
+ * the target sends nothing back and this returns 1, the level a released wire reads there.
+ *
+ * OScan5: OScan1's three packets outside a Shift state, and in one nTDI and TDO alone, the TMS of
+ * which is 0 unless the nTDI packet carries an EOT escape, two TMSC edges with TCKC high (1149.7
+ * Figure 25-11). So TMS 1 in Shift, the move to Exit1, is that escape. */
+uint32_t cJTAG_FrameTap(uint32_t tms, uint32_t tdi);
 
 #endif

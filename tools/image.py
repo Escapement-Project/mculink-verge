@@ -619,9 +619,10 @@ def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
         c.problems.append(f"vendor 0x82 magic is {magic!r}, wanted b'CJTAG'")
     if version != 4:
         c.problems.append(f"vendor 0x82 format version is {version}, wanted 4")
-    # The plain board, then the scan formats it frames: OScan1 and OScan2 (SCNFMT 9 and 10).
-    if reply[9 + length : 14 + length] != bytes([0]) + ((1 << 9) | (1 << 10)).to_bytes(4, "little"):
-        c.problems.append(f"vendor 0x82 ends {reply[9 + length :].hex()!r}, wanted the plain board's 00 00060000")
+    # The plain board, then the scan formats it frames: OScan1, OScan2 and OScan5 (SCNFMT 9, 10, 13).
+    formats = ((1 << 9) | (1 << 10) | (1 << 13)).to_bytes(4, "little")
+    if reply[9 + length : 14 + length] != bytes([0]) + formats:
+        c.problems.append(f"vendor 0x82 ends {reply[9 + length :].hex()!r}, wanted the plain board's 00 {formats.hex()}")
     if not flags & 0x01:
         c.problems.append(f"vendor 0x82 flags {flags:#04x} do not claim OScan1, which is the point")
     if flags & 0x02:
@@ -642,7 +643,7 @@ def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
     probe.command(bytes([0x83, 0]))
     if limit[:2] != bytes([0x83, 0]) or refused[:2] != bytes([0x83, 0xFF]):
         c.problems.append(f"vendor 0x83 mode 4 answered {limit.hex()}, then mode 3 OScan2 {refused.hex()}")
-    if limited != (1 << 9).to_bytes(4, "little") or restored != ((1 << 9) | (1 << 10)).to_bytes(4, "little"):
+    if limited != (1 << 9).to_bytes(4, "little") or restored != formats:
         c.problems.append(f"vendor 0x82 offered {limited.hex()} limited and {restored.hex()} restored")
 
     # DAP_Info 0x09, the product firmware version. ARM leaves it a stub returning nothing.

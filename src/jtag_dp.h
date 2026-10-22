@@ -1,8 +1,8 @@
 /** The compiled copies of ARM's JTAG_DP entry points.
  *
  * JTAG_DP.c is built four times with its five entry points renamed each time: jtag4_* drives four
- * wires, cjtag_* drives paced OScan1 frames, cjtagf_* drives them without pacing, and cjtag2_*
- * drives OScan2 frames. cjtag_dp.c
+ * wires, cjtag_* drives paced OScan1 frames, cjtagf_* drives them without pacing, and cjtagt_*
+ * drives OScan2 and OScan5 frames, which follow the TAP. cjtag_dp.c
  * owns the names ARM's DAP.c calls and picks a copy per call.
  *
  * Every set is declared here so the dispatcher and the copies cannot drift: a prototype that
@@ -37,13 +37,13 @@ void cjtagf_WriteAbort(uint32_t data);
 uint8_t cjtagf_Transfer(uint32_t request, uint32_t* data);
 uint32_t cjtagf_TransferBlock(const uint8_t* request, uint8_t* response);
 
-// OScan2, paced, src/cjtag_jtag_dp_oscan2.c.
-void cjtag2_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo);
-void cjtag2_IR(uint32_t ir);
-uint32_t cjtag2_ReadIDCode(void);
-void cjtag2_WriteAbort(uint32_t data);
-uint8_t cjtag2_Transfer(uint32_t request, uint32_t* data);
-uint32_t cjtag2_TransferBlock(const uint8_t* request, uint8_t* response);
+// OScan2 and OScan5, paced, src/cjtag_jtag_dp_tracked.c.
+void cjtagt_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo);
+void cjtagt_IR(uint32_t ir);
+uint32_t cjtagt_ReadIDCode(void);
+void cjtagt_WriteAbort(uint32_t data);
+uint8_t cjtagt_Transfer(uint32_t request, uint32_t* data);
+uint32_t cjtagt_TransferBlock(const uint8_t* request, uint8_t* response);
 
 // Two-pin over the generated frames, src/jtag_gen_dp.c, when JTAG_CODEGEN is on.
 void jgen_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo);

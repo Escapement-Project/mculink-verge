@@ -93,11 +93,12 @@ bool cJTAG_Enter(uint32_t scan_format, uint32_t tap_state) {
 
 void cJTAG_Deactivate(void) {
     // After DAP_Disconnect the pins are the target's again, and a frame would take them back.
+    // OScan5's frames all carry TDO, so its TAP has advanced by the end of each.
     if (active && (format == CJTAG_OSCAN2) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {
         if (tap == CJTAG_TAP_RESET) {
-            (void)cJTAG_Frame2(1U, 1U);
+            (void)cJTAG_FrameTap(1U, 1U);
         } else if (tap == CJTAG_TAP_IDLE) {
-            (void)cJTAG_Frame2(0U, 1U);
+            (void)cJTAG_FrameTap(0U, 1U);
         }
     }
     active = false;
@@ -152,13 +153,34 @@ void cJTAG_Deactivate(void) {
 CJTAG_FRAME_FUNCTION(Slow, CJTAG_DELAY())
 CJTAG_FRAME_FUNCTION(Fast, PIN_DELAY_FAST())
 
-uint32_t cJTAG_Frame2(uint32_t tms, uint32_t tdi) {
-    if (!cJTAG_TapClock(tms)) {
+uint32_t cJTAG_FrameTap(uint32_t tms, uint32_t tdi) {
+    const bool shift = cJTAG_TapClock(tms);
+    if ((format == CJTAG_OSCAN2) && !shift) {
         CJTAG_PACKET(tms, CJTAG_DELAY());
         return 1U;
     }
-    CJTAG_PACKET(tdi ^ 1U, CJTAG_DELAY());
-    CJTAG_PACKET(tms, CJTAG_DELAY());
+    if ((format == CJTAG_OSCAN5) && shift) {
+        PIN_SWDIO_OUT(tdi ^ 1U);
+        CJTAG_DELAY();
+        PIN_SWCLK_TCK_SET();
+        CJTAG_DELAY();
+        if (tms != 0U) {
+            // Each escape edge, and the fall after the last, a whole period after the one before:
+            // the standard's minimum is the target's shortest TCKC period, and the host's clock is
+            // no shorter.
+            CJTAG_DELAY();
+            PIN_SWDIO_OUT(tdi);
+            CJTAG_DELAY();
+            CJTAG_DELAY();
+            PIN_SWDIO_OUT(tdi ^ 1U);
+            CJTAG_DELAY();
+            CJTAG_DELAY();
+        }
+        PIN_SWCLK_TCK_CLR();
+    } else {
+        CJTAG_PACKET(tdi ^ 1U, CJTAG_DELAY());
+        CJTAG_PACKET(tms, CJTAG_DELAY());
+    }
 
     PIN_SWDIO_OUT_DISABLE();
     CJTAG_DELAY();

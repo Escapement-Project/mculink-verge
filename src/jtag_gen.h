@@ -1,5 +1,5 @@
-/** The JTAG wire paths, four-wire and two-pin (IEEE 1149.7 OScan1 and OScan2), generated at run
- * time for the clock the host asked for.
+/** The JTAG wire paths, four-wire and two-pin (IEEE 1149.7 OScan1 and OScan2; OScan5 runs ARM's
+ * path), generated at run time for the clock the host asked for.
  *
  * src/jtag_gen.c writes them into SRAMX with every edge and sample placed to the core cycle, as
  * src/swd_gen.c does for SWD. src/jtag_gen_dp.c builds ARM's JTAG entry points on them.
@@ -45,6 +45,8 @@
 #define JTAG_GEN_FOUR_WIRE 0U
 #define JTAG_GEN_TWO_PIN 1U // OScan1
 #define JTAG_GEN_OSCAN2 2U  // two-pin in OScan2: one TMS packet a clock outside Shift
+#define JTAG_GEN_OSCAN5 3U  // two-pin in OScan5: nTDI and TDO in Shift, leaving it by an escape; not generated yet
+#define JTAG_GEN_WIRES 4U
 /** The index of jtag_gen_latency a wire uses: both two-pin formats read the same TDO packet. */
 #define JTAG_GEN_PINS(wire) ((wire) == JTAG_GEN_FOUR_WIRE ? JTAG_GEN_FOUR_WIRE : JTAG_GEN_TWO_PIN)
 

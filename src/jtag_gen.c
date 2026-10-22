@@ -1374,8 +1374,8 @@ static bool built_transfers; // the last build has its transfers, those that fit
 // The idle clocks each wire learned last, and the host's configuration they were learned for, before
 // pacing. A host passes through other configurations, and other wires, on its way back to it: an
 // OScan2 attach frames OScan1 and a one-TAP chain before its own.
-static struct jtag_gen_config learned_for[JTAG_GEN_OSCAN2 + 1U];
-static uint32_t learned[JTAG_GEN_OSCAN2 + 1U];
+static struct jtag_gen_config learned_for[JTAG_GEN_WIRES];
+static uint32_t learned[JTAG_GEN_WIRES];
 static bool learning; // jtag_gen_paced has one more clock for regenerate to record
 uint32_t jtag_gen_builds;
 uint32_t jtag_gen_failures;

@@ -124,7 +124,7 @@ COMMAND_PATH static uint32_t transfer_block(const uint8_t* request, uint8_t* res
         return JTAG_TransferBlock(request, response);
     }
     if (cJTAG_Format() != CJTAG_OSCAN1) {
-        return cjtag2_TransferBlock(request, response);
+        return cjtagt_TransferBlock(request, response);
     }
     if (DAP_Data.fast_clock) {
         return cjtagf_TransferBlock(request, response);
