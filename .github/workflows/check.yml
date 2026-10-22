@@ -1,0 +1,43 @@
+# The gate on every push and pull request: the host checks, then gcc and clang images, each in the
+# default configuration and with generation off, held to their baselines in the emulator.
+# AGENTS.md has what it covers.
+
+name: check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    # The same container and archive day as the release build: the baselines record what these
+    # compilers emit, so a compiler moves only in a commit that moves both and re-blesses.
+    container: archlinux@sha256:e43f1fd80e073992c5f173efbbbf65144170bf60aeb7369940087d63eacea8f4 # latest, 2026-10-19
+    steps:
+      - name: Install the toolchains as Arch had them on 2026-10-20
+        run: |
+          # pacman expands $repo and $arch.
+          # shellcheck disable=SC2016
+          echo 'Server =https://archive.archlinux.org/repos/2026/10/20/$repo/os/$arch' > /etc/pacman.d/mirrorlist
+          pacman -Syuu --noconfirm --needed \
+            git python cmake ninja uv gcc clang lld llvm qemu-system-arm \
+            arm-none-eabi-gcc arm-none-eabi-newlib arm-none-eabi-binutils
+
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          # The firmware's version is `git describe --tags`.
+          fetch-depth: 0
+
+      - name: Let git work in a checkout another user owns
+        run: git config --global --add safe.directory '*'
+
+      - name: Fetch TinyUSB's NXP dependencies
+        run: python external/tinyusb/tools/get_deps.py lpc55
+
+      - name: Gate
+        run: uv run tools/gate.py
