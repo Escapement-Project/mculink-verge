@@ -220,8 +220,8 @@ Phase 2, the extras (needs decisions b and c below):
     format). LIBUSBSIO is BSD-3-Clause; its PyPI
     package is a wrapper over prebuilt libraries, so its wire protocol needs NXP's C source. Its
     GPIO calls take raw LPC port and pin numbers and a raw IOCON mode, and its own test suite says
-    the standalone Pro has no GPIO under stock. A LIBUSBSIO HID with SPI and I2C may follow; it
-    needs probe-rs's HID-as-v1 fix first (Cross-boundary, below). On the Pro 2026-10-22 (`968ea22`):
+    the standalone Pro has no GPIO under stock. No LIBUSBSIO HID is planned (decision b). Should
+    one come back, probe-rs's conditions are in Cross-boundary, below. On the Pro 2026-10-22 (`968ea22`):
     with DIO0 looped to DIO3, levels read back
     both ways, one command hands the loop from one group to the other without an edge, a split is
     refused, each header moves once a command and LED6 lights; DIO2 follows DIO0 and DIO1 by about
@@ -389,6 +389,12 @@ points from it, adopted:
   condition: no HID other than CMSIS-DAP v1 on an image whose product string contains
   "CMSIS-DAP", since probe-rs takes any HID of such a device as v1 (it does so with stock's power
   and LPCSIO HIDs, a probe-rs bug). USB-SIO's HID will need this settled first.
+  Settled 2026-10-22 for a HID that may never come (decision b): probe-rs's fix keys on the
+  interface string (`dc81021d2`, local). A second HID would need an interface string without
+  "CMSIS-DAP", a higher interface number than the v1 HID, and to drop anything but its own
+  requests: released probe-rs, unable to claim v2, opens the first HID with the probe's serial.
+  The v1 and v2 interfaces are not arbitrated: they share one command ring and one DAP state, and
+  two debug sessions on one probe are the user's error.
 - Stock's pending notification read was observed on the Pro. Whether a host sees a NAK (pending) or
   no handshake (transaction errors, and xHCI halts the endpoint) depends on the controller's answer
   to an endpoint it lacks: check it with usbmon on the plain board running ours before relying on
@@ -399,8 +405,10 @@ points from it, adopted:
 a. The schematic: done, `references/docs/MCU-LINK-PRO-SCH.pdf`.
 b. How the extras reach a host: the second VCOM as a standard CDC interface;
    USB-SIO in NXP's public LIBUSBSIO protocol, so NXP's tools and library work (amended 2026-10-22,
-   GPIO first as a CMSIS-DAP vendor command over a transport-independent core, LIBUSBSIO
-   later if at all); target supply and
+   the GPIO as a CMSIS-DAP vendor command over a transport-independent core, not LIBUSBSIO.
+   The vendor path is faster, 67 us a round trip against 375 us for a HID polled every
+   microframe, runs in order with debug commands inside
+   DAP_ExecuteCommands, and adds no HID for probe-rs to mistake for CMSIS-DAP v1); target supply and
    energy measurement as vendor commands on the CMSIS-DAP interface, with probe-rs support.
 c. Before publishing: phases 0 and 1 and the second VCOM. USB-SIO, the target
    supply, energy measurement, the analog input and the LPC804 come after publishing.
