@@ -175,6 +175,7 @@ def run_cjtag(
     # firmware's first transfer expects to find it.
     probe.cjtag_tap = JtagTap(dr, 35)
     probe.cjtag_oscan2 = wire_name == "cjtag2"
+    probe.cjtag_oscan5 = wire_name == "cjtag5"
 
     payload = bytes([ID_TRANSFER_BLOCK, 0]) + u16(words) + bytes([AP_DRW_READ if read else AP_DRW_WRITE])
     if not read:
@@ -214,6 +215,7 @@ def run_jtag_commands(
         probe.command(cjtag_enter(wire_name, True))
         probe.cjtag_tap = JtagTap(dr, 35 + index)
         probe.cjtag_oscan2 = wire_name == "cjtag2"
+        probe.cjtag_oscan5 = wire_name == "cjtag5"
     else:
         probe.tap = JtagTap(dr, 35 + index)
     probe.begin()
@@ -250,6 +252,12 @@ def cjtag_sequence_cases(word: int) -> dict[str, list[bytes]]:
         "stale tdi 1 then write": [jtag_sequence((5, False, False, 0x1F)), write],
         "stale tdi 0 then idcode": [jtag_sequence((3, False, False, 0)), bytes([0x16, 0])],
         "write abort": [jtag_sequence((2, False, False, 0)), bytes([0x08, 0]) + u32(word)],
+        # A cJTAG command part: Exit2-DR into Shift-DR for one bit, whose TMS 1 leaves it again.
+        # In OScan5 that one Shift frame is also the EOT escape.
+        "exit2 one-bit shift": [
+            jtag_sequence(*[(1, tms, False, 1) for tms in (True, False, True, False, True, False)],
+                          (1, True, True, 0), (1, True, False, 1), (1, False, False, 1))
+        ],
     }
 
 
@@ -382,7 +390,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("reference")
     ap.add_argument("candidate")
-    ap.add_argument("--wire", choices=["swd", "jtag", "cjtag", "cjtag2"], default="swd")
+    ap.add_argument("--wire", choices=["swd", "jtag", "cjtag", "cjtag2", "cjtag5"], default="swd")
     ap.add_argument("--command", choices=["block", "transfer", "sequence"], default="block")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--ignore-samples", action="store_true", help="compare without the SWDIO loads")
@@ -392,7 +400,7 @@ def main() -> int:
     set_globals(args.ignore_samples, int(args.clock * 1e6))
 
     # Each case: (name, runner, args, kwargs); the runner takes the image first.
-    if args.wire in ("cjtag", "cjtag2", "jtag") and args.command != "block":
+    if args.wire in ("cjtag", "cjtag2", "cjtag5", "jtag") and args.command != "block":
         cases = [(name, run_jtag_commands, (args.wire, *case), {}) for name, case in jtag_command_cases(args.command)]
         summary = f"{'two-pin' if args.wire in TWO_PIN else 'four-wire'} {args.command} cases"
     elif args.command == "transfer":

@@ -5,10 +5,12 @@
 # 2026-10-16, not from a change to the code. The analyser agrees: at 10 MHz requested five bit
 # positions measured 10.28 to 10.30 MHz. The OScan2 copy (cjtag2) paces
 # as the OScan1 one does.
-cjtag2@10MHz
-cjtag2@20MHz
 cjtag@10MHz
 cjtag@20MHz
+cjtag2@10MHz
+cjtag2@20MHz
+cjtag5@10MHz
+cjtag5@20MHz
 jtag@10MHz
 jtag@20MHz
 jtag@50MHz

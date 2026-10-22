@@ -1129,11 +1129,16 @@ def latencies(mask: int) -> str:
     return ",".join(runs) or "none"
 
 
+# The generator's wires, JTAG_GEN_* (src/jtag_gen.h).
+JLOG_WIRES = ("four-wire", "OScan1", "OScan2", "OScan5")
+
+
 def describe_sweep(sweep: dict, cpu_hz: int = 150_000_000, word: str = "DPIDR") -> str:
     outcome = sweep["outcome"]
     text = LATENCY_OUTCOMES[outcome] if outcome < len(LATENCY_OUTCOMES) else f"outcome {outcome}"
     if "wire" in sweep and outcome != 0:
-        text = f"{('four-wire', 'two-pin', 'two-pin OScan2')[sweep['wire']]} {text}"
+        wire = sweep["wire"]
+        text = f"{JLOG_WIRES[wire] if wire < len(JLOG_WIRES) else f'wire {wire}'} {text}"
     if sweep["latency"]:
         text += f": latency {sweep['latency']}"
     if outcome != 0:
@@ -1240,7 +1245,6 @@ JLOG_COMMANDS = {0x02: "Connect", 0x03: "Disconnect", 0x04: "TransferConfigure",
                  0x06: "TransferBlock", 0x11: "SWJ_Clock", 0x12: "SWJ_Sequence", 0x14: "JTAG_Sequence",
                  0x15: "JTAG_Configure", 0x83: "cJTAG control", 0x8A: "JTAG gen", 0x8B: "JTAG pacing"}
 JLOG_CHANGED = ("first", "owner", "wire", "period", "latency", "chain", "idle", "transfers")
-JLOG_WIRES = ("four-wire", "OScan1", "OScan2")
 CORE_HZ = 150e6
 
 
@@ -1567,9 +1571,9 @@ def ti_steps(scan_format: int, switch: str) -> list:
         return steps[: stfmt + 1] + [("format", scan_format)] + steps[stfmt + 1 :]
     # The last three steps are ECL's, which closes the window. After a command's last Update-DR
     # comes one SP that does not move the TAP, then the 4-clock check packet (1149.7 Table 21-5):
-    # TI's 7 raw clocks are OScan1's 3-bit SP and the CP. Outside Shift an OScan2 or OScan6 SP is
+    # TI's 7 raw clocks are OScan1's 3-bit SP and the CP. Outside Shift an OScan2, 3, 6 or 7 SP is
     # one TMS bit, an OScan5 SP OScan1's three (Table 25-1).
-    sp = 1 if scan_format in (OSCAN1 + 1, OSCAN1 + 5) else 3
+    sp = 1 if scan_format in (OSCAN1 + 1, OSCAN1 + 2, OSCAN1 + 5, OSCAN1 + 6) else 3
     ecl = [step if step[0] != "csm" else ("csm", sp + 4) for step in steps[-3:]]
     return steps[:-3] + [("frames", command_frames(3, scan_format)), ("csm", 7), ("format", scan_format)] + ecl
 

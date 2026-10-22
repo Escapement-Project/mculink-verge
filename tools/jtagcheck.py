@@ -107,7 +107,10 @@ def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire
     if gen_latency:
         probe.command(bytes([ID_VENDOR_JTAG_GEN, gen_latency if two_pin else 0, 0 if two_pin else gen_latency, 0]))
     tap = cy.RecordingTap(dr, 35)
-    target = (cy.TimedCjtagTarget(tap, latency=latency, oscan2=wire == "cjtag2") if two_pin
+    # An escape edge a host's clock period after the last: the standard asks for the target's
+    # shortest TCKC period, which a host running at that clock or slower meets.
+    target = (cy.TimedCjtagTarget(tap, latency=latency, oscan2=wire == "cjtag2", oscan5=wire == "cjtag5",
+                                  escape_gap=-(-cpu_hz // hz)) if two_pin
               else cy.TimedJtagTarget(tap, latency=latency))
     probe.target = target
 
@@ -149,8 +152,9 @@ def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire
     problems += target.problems[:4]
     if len(target.problems) > 4:
         problems.append(f"... {len(target.problems) - 4} more from the target")
-    if two_pin and counts.moves_while_high:
-        problems.append(f"{counts.moves_while_high} TMSC moves with TCKC high")
+    if two_pin and counts.moves_while_high != target.escape_edges:
+        problems.append(f"{counts.moves_while_high - target.escape_edges} TMSC moves with TCKC high outside an "
+                        "EOT escape")
     outside = [r for r in target.reads if r.early < 0 or (r.late is not None and r.late < 0)]
     if outside:
         r = outside[0]
@@ -191,7 +195,7 @@ def run_point(args: tuple[str, int, int, int, int, str]) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("elf", nargs="?", default="build-gen/mculink_cjtag_core1.elf", help="CPU 1's image")
-    ap.add_argument("--wire", choices=["cjtag", "cjtag2", "jtag"], default="cjtag")
+    ap.add_argument("--wire", choices=["cjtag", "cjtag2", "cjtag5", "jtag"], default="cjtag")
     ap.add_argument("--mhz", type=float, nargs="*")
     ap.add_argument("--latency", type=int, default=8, help="cycles from the TDO packet's fall to valid TDO")
     ap.add_argument("--gen-latency", type=int, default=0, help="the latency to generate for, with vendor 0x8A; 0 leaves the image's")
