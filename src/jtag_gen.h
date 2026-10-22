@@ -99,6 +99,39 @@ extern jtag_gen_xfer_fn jtag_gen_write;
 extern uint32_t jtag_gen_builds;
 extern uint32_t jtag_gen_failures;
 
+/** The last JTAG_GEN_LOG_SIZE generations, so a host can say what each one was for. Entry n is
+ * generation n (jtag_gen_builds + jtag_gen_failures before it) modulo the size. The sweep's
+ * candidates are not generations; the one after it shows JTAG_GEN_CHANGED_OWNER. */
+#define JTAG_GEN_LOG_SIZE 16U
+#define JTAG_GEN_CHANGED_FIRST 0x01U     // the first since the probe started
+#define JTAG_GEN_CHANGED_OWNER 0x02U     // SRAMX held other code: SWD's, or a sweep's candidate
+#define JTAG_GEN_CHANGED_WIRE 0x04U
+#define JTAG_GEN_CHANGED_PERIOD 0x08U
+#define JTAG_GEN_CHANGED_LATENCY 0x10U
+#define JTAG_GEN_CHANGED_CHAIN 0x20U     // the DAP's position in the chain
+#define JTAG_GEN_CHANGED_IDLE 0x40U      // the host's idle clocks plus the learned ones
+#define JTAG_GEN_CHANGED_TRANSFERS 0x80U // the last build was scans only
+#define JTAG_GEN_LOG_TRANSFERS 0x01U     // this build has the transfers
+#define JTAG_GEN_LOG_LEARNED 0x02U       // after a WAIT taught one more idle clock
+#define JTAG_GEN_LOG_OK 0x04U
+struct jtag_gen_log_entry {
+    uint8_t command; // the DAP command it was generated in, jtag_gen_command
+    uint8_t wire;
+    uint8_t changed; // JTAG_GEN_CHANGED_*, against the last generation
+    uint8_t flags;   // JTAG_GEN_LOG_*
+    uint8_t latency;
+    uint8_t before;
+    uint8_t after;
+    uint8_t idle;  // learned clocks included
+    uint8_t paced; // of which learned
+    uint16_t period;
+    uint32_t at;     // TIMESTAMP_GET, the core clock's cycles, when it started
+    uint32_t cycles; // how long it took
+};
+extern struct jtag_gen_log_entry jtag_gen_log[JTAG_GEN_LOG_SIZE];
+/** The id of the DAP command being processed, set by DAP_ProcessCommand for the log. */
+extern uint8_t jtag_gen_command;
+
 /** Generates for `wire` at the current clock, latency, chain position and idle cycles if any
  * changed since the last call. Only one wire's code exists at a time. False when it cannot be
  * generated: the caller runs ARM's path instead. */

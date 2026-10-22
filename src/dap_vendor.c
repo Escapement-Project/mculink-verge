@@ -53,6 +53,8 @@
 #define ID_VENDOR_JTAG_PACING ID_DAP_Vendor11
 /// Switches whether CPU 0 stages commands for CPU 1 (dap_stage in dap_shared.h). See below.
 #define ID_VENDOR_STAGE ID_DAP_Vendor12
+/// Reads back the JTAG generator's log of what each generation was for. See below.
+#define ID_VENDOR_JTAG_LOG ID_DAP_Vendor13
 
 /** Answered by ID_VENDOR_CJTAG_INFO, so a host can recognise this firmware rather than assume it.
  *
@@ -178,6 +180,12 @@ _Static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HI
 /** ID_VENDOR_JTAG_PACING takes `mode`: 0 turns the learned idle clocks off, so the generated wire
  * is ARM's exactly, 1 turns them on (the default), anything else leaves them. It answers `status,
  * on, paced`: whether pacing is on and the idle clocks learned so far (jtag_gen_paced).
+ */
+
+/** ID_VENDOR_JTAG_LOG takes `n` and answers `status`, then generation n back from the newest, 0
+ * the newest: the count of generations so far as a little-endian u32, then struct
+ * jtag_gen_log_entry's fields in order, the last three little-endian (jtag_gen.h). Status is
+ * DAP_ERROR, and nothing follows, for an n the log no longer holds.
  */
 
 /** ID_VENDOR_STAGE takes `mode`: 0 has CPU 1 copy each command and reply itself, 1 has CPU 0 stage
@@ -468,6 +476,27 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
                                   jtag_sweep_last.rescues};
         out = put_u32s(out, sweep, sizeof sweep / sizeof sweep[0]);
         return (4U << 16) | (uint32_t)(out - response);
+    }
+
+    case ID_VENDOR_JTAG_LOG: {
+        const uint32_t count = jtag_gen_builds + jtag_gen_failures;
+        const uint32_t back = request[1];
+        if ((back >= count) || (back >= JTAG_GEN_LOG_SIZE)) {
+            response[1] = DAP_ERROR;
+            return (2U << 16) | 2U;
+        }
+        const struct jtag_gen_log_entry* entry = &jtag_gen_log[(count - 1U - back) % JTAG_GEN_LOG_SIZE];
+        response[1] = DAP_OK;
+        uint8_t* out = put_u32s(response + 2, &count, 1U);
+        const uint8_t bytes[] = {entry->command, entry->wire,   entry->changed, entry->flags, entry->latency,
+                                 entry->before,  entry->after,  entry->idle,    entry->paced};
+        memcpy(out, bytes, sizeof bytes);
+        out += sizeof bytes;
+        *out++ = (uint8_t)entry->period;
+        *out++ = (uint8_t)(entry->period >> 8);
+        const uint32_t times[] = {entry->at, entry->cycles};
+        out = put_u32s(out, times, 2U);
+        return (2U << 16) | (uint32_t)(out - response);
     }
 
     case ID_VENDOR_JTAG_PACING:

@@ -133,6 +133,9 @@ COMMAND_PATH static uint32_t transfer_block(const uint8_t* request, uint8_t* res
 }
 
 COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* response) {
+#ifdef JTAG_CODEGEN
+    jtag_gen_command = *request;
+#endif
     if ((*request == ID_DAP_Delay) && (request[1] == 0U) && (request[2] == 0U)) {
         // ARM's pacing loop decrements before it tests, so a count of zero runs 2^32 times:
         // about ninety seconds with the probe answering nothing and the host waiting. A zero

@@ -59,5 +59,7 @@ _Static_assert(offsetof(GPIO_Type, DIRCLR) == 0x2400, "LPC55S69 GPIO layout");
 #define DBGIF_GPIO GPIO
 #define __DSB() ((void)0)
 #define __ISB() ((void)0)
+/** The generation log's clock; nothing here times it. */
+static inline uint32_t TIMESTAMP_GET(void) { return 0U; }
 
 #endif

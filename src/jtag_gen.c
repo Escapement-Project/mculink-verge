@@ -1379,6 +1379,8 @@ static uint32_t learned[JTAG_GEN_OSCAN2 + 1U];
 static bool learning; // jtag_gen_paced has one more clock for regenerate to record
 uint32_t jtag_gen_builds;
 uint32_t jtag_gen_failures;
+uint8_t jtag_gen_command;
+struct jtag_gen_log_entry jtag_gen_log[JTAG_GEN_LOG_SIZE];
 
 /** The shortest period no faster than the clock asked for. */
 static uint32_t period_for(uint32_t hz) {
@@ -1426,6 +1428,7 @@ struct jtag_gen_config jtag_gen_inputs(uint32_t wire) {
 /** Out of line, so the check every transfer command makes does not pay its frame or its divide. */
 static __attribute__((noinline)) bool regenerate(uint32_t wire, bool transfers) {
     struct jtag_gen_config want = host_config(wire);
+    const bool recorded = learning;
     if (learning) {
         learned_for[wire] = want;
         learned[wire] = jtag_gen_paced;
@@ -1437,6 +1440,30 @@ static __attribute__((noinline)) bool regenerate(uint32_t wire, bool transfers) 
         (built_transfers || !transfers)) {
         return built_ok;
     }
+    struct jtag_gen_log_entry* entry = &jtag_gen_log[(jtag_gen_builds + jtag_gen_failures) % JTAG_GEN_LOG_SIZE];
+    *entry = (struct jtag_gen_log_entry){
+        .command = jtag_gen_command,
+        .wire = (uint8_t)want.wire,
+        .latency = (uint8_t)want.latency,
+        .before = (uint8_t)want.before,
+        .after = (uint8_t)want.after,
+        .idle = (uint8_t)want.idle,
+        .paced = (uint8_t)jtag_gen_paced,
+        .period = (uint16_t)want.period,
+        .at = TIMESTAMP_GET(),
+    };
+    if (!built_once) {
+        entry->changed = JTAG_GEN_CHANGED_FIRST;
+    } else {
+        entry->changed = (gen_owner != GEN_OWNER_JTAG ? JTAG_GEN_CHANGED_OWNER : 0U) |
+                         (want.wire != built.wire ? JTAG_GEN_CHANGED_WIRE : 0U) |
+                         (want.period != built.period ? JTAG_GEN_CHANGED_PERIOD : 0U) |
+                         (want.latency != built.latency ? JTAG_GEN_CHANGED_LATENCY : 0U) |
+                         ((want.before != built.before) || (want.after != built.after) ? JTAG_GEN_CHANGED_CHAIN : 0U) |
+                         (want.idle != built.idle ? JTAG_GEN_CHANGED_IDLE : 0U) |
+                         (transfers && !built_transfers ? JTAG_GEN_CHANGED_TRANSFERS : 0U);
+    }
+    entry->flags = (transfers ? JTAG_GEN_LOG_TRANSFERS : 0U) | (recorded ? JTAG_GEN_LOG_LEARNED : 0U);
     built = want;
     built_once = true;
     built_transfers = transfers;
@@ -1447,6 +1474,8 @@ static __attribute__((noinline)) bool regenerate(uint32_t wire, bool transfers) 
     jtag_gen_write = NULL;
     built_ok = jtag_gen_build(&want, &jtag_gen_scan, transfers ? &jtag_gen_read : NULL,
                               transfers ? &jtag_gen_write : NULL);
+    entry->cycles = TIMESTAMP_GET() - entry->at;
+    entry->flags |= built_ok ? JTAG_GEN_LOG_OK : 0U;
     if (built_ok) {
         jtag_gen_builds++;
     } else {

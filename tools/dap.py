@@ -63,6 +63,7 @@ DAP_VENDOR_TARGET = 0x86
 DAP_VENDOR_SAMPLE = 0x87
 DAP_VENDOR_SWD_GEN = 0x89
 DAP_VENDOR_JTAG_GEN = 0x8A
+DAP_VENDOR_JTAG_LOG = 0x8D
 
 INFO_FIELDS = {
     0x01: ("vendor", "str"),
@@ -1232,6 +1233,48 @@ def cmd_jgen(args) -> int:
     return 0 if state["ok"] & 1 else 1
 
 
+JLOG_COMMANDS = {0x02: "Connect", 0x03: "Disconnect", 0x04: "TransferConfigure", 0x05: "Transfer",
+                 0x06: "TransferBlock", 0x11: "SWJ_Clock", 0x12: "SWJ_Sequence", 0x14: "JTAG_Sequence",
+                 0x15: "JTAG_Configure", 0x83: "cJTAG control", 0x8A: "JTAG gen", 0x8B: "JTAG pacing"}
+JLOG_CHANGED = ("first", "owner", "wire", "period", "latency", "chain", "idle", "transfers")
+JLOG_WIRES = ("four-wire", "OScan1", "OScan2")
+CORE_HZ = 150e6
+
+
+def cmd_jlog(args) -> int:
+    """Vendor 0x8D: the JTAG generator's last generations, oldest first, each with the command it
+    ran in and what had changed since the one before."""
+    probe = one(args)
+    entries = []
+    try:
+        for back in range(args.last):
+            reply = probe.command(bytes([DAP_VENDOR_JTAG_LOG, back]))
+            if reply[1] != 0:
+                break
+            count, = struct.unpack_from("<I", reply, 2)
+            command, wire, changed, flags, latency, before, after, idle, paced = reply[6:15]
+            period, at, cycles = struct.unpack_from("<HII", reply, 15)
+            entries.append((count - 1 - back, command, wire, changed, flags, latency, before, after, idle, paced,
+                            period, at, cycles))
+    finally:
+        probe.release()
+    if not entries:
+        print("no generations logged")
+        return 0
+    newest = entries[0][11]
+    for (n, command, wire, changed, flags, latency, before, after, idle, paced, period, at,
+         cycles) in reversed(entries):
+        why = ",".join(name for bit, name in enumerate(JLOG_CHANGED) if changed >> bit & 1) or "nothing"
+        since = ((at - newest + (1 << 31)) & 0xFFFFFFFF) - (1 << 31)
+        print(f"#{n:<5} {since / CORE_HZ * 1e3:>+9.2f} ms "
+              f"{JLOG_COMMANDS.get(command, f'0x{command:02X}'):<17} "
+              f"{JLOG_WIRES[wire] if wire < len(JLOG_WIRES) else wire:<9} {why:<22} "
+              f"{'xfers' if flags & 1 else 'scans'}{' learned' if flags & 2 else ''}{'' if flags & 4 else ' FAILED'}  "
+              f"period {period} lat {latency} chain {before}/{after} idle {idle} (paced {paced})  "
+              f"{cycles / CORE_HZ * 1e3:.2f} ms")
+    return 0
+
+
 def cmd_sample(args) -> int:
     """Where a read has to sample SWDIO: the instrument behind vendor 0x87.
 
@@ -1923,6 +1966,9 @@ def main() -> int:
     jgen.add_argument("--pin", action="store_true", help="stop the probe measuring the latencies on its own")
     jgen.add_argument("--automatic", action="store_true", help="let the probe measure the latencies on its own")
     jgen.set_defaults(run=cmd_jgen)
+    jlog = sub.add_parser("jlog", help="the JTAG generator's last generations and what each was for")
+    jlog.add_argument("--last", type=int, default=16, help="how many, newest back (the probe keeps 16)")
+    jlog.set_defaults(run=cmd_jlog)
 
     cjtag = sub.add_parser("cjtag", help="activate OScan1 and read an IDCODE over two pins")
     cjtag.add_argument("--hz", type=int, default=1_000_000, help="TCKC rate to ask for")
