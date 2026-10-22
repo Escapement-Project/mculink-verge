@@ -92,11 +92,50 @@ COMMAND_PATH static uint32_t frames_oscan5(uint32_t tdi, uint32_t count, uint32_
     return tdo;
 }
 
-/** Up to 32 frames with TMS held and TDI from `tdi`, least significant bit first. */
-static uint32_t frames(uint32_t tdi, uint32_t count, uint32_t tms) {
-    // jtag_gen_tms exists exactly when the code was generated for OScan2, jtag_gen_eot for OScan5.
+/** OScan6's frames: runs outside Shift through the TMS packets; in Shift as OScan5's, except that
+ * the first frame after entering carries a PAD packet, framed by the scan function, or by
+ * jtag_gen_eot_pad where TMS 1 also leaves. Either sends the PAD from its TMS argument, which here is
+ * the frame's nTDI, so that the PAD moves nothing, as ARM's path sends it. */
+COMMAND_PATH static uint32_t frames_oscan6(uint32_t tdi, uint32_t count, uint32_t tms) {
+    uint32_t tdo = 0U;
+    for (uint32_t done = 0U; done < count;) {
+        uint32_t n = 0U;
+        jtag_gen_scan_fn fn = jtag_gen_tms;
+        if (cJTAG_TapShift()) {
+            (void)cJTAG_TapClock(tms);
+            n = 1U;
+            if (cJTAG_TapEntered()) {
+                fn = tms != 0U ? jtag_gen_eot_pad : jtag_gen_scan;
+            } else if (tms != 0U) {
+                fn = jtag_gen_eot;
+            } else {
+                fn = jtag_gen_shift;
+                n = count - done;
+            }
+        } else {
+            do {
+                (void)cJTAG_TapClock(tms);
+                n++;
+            } while ((done + n < count) && !cJTAG_TapShift());
+        }
+        const uint32_t pad = ((tdi >> done) & 1U) ^ 1U;
+        const uint32_t out = fn(tdi >> done, n, (fn == jtag_gen_scan) || (fn == jtag_gen_eot_pad) ? pad : tms);
+        const uint32_t mask = n < 32U ? (1U << n) - 1U : 0xFFFFFFFFU;
+        tdo |= (out & mask) << done;
+        done += n;
+    }
+    return tdo;
+}
+
+/** Up to 32 frames with TMS held and TDI from `tdi`, least significant bit first. In SRAM by name,
+ * as hold() is: with OScan6's branch gcc stopped inlining it into the SRAM callers. */
+COMMAND_PATH static uint32_t frames(uint32_t tdi, uint32_t count, uint32_t tms) {
+    // Which formats the code was generated for: jtag_gen_tms for OScan2, jtag_gen_eot for OScan5,
+    // and both for OScan6.
     uint32_t tdo;
-    if (jtag_gen_tms != NULL) {
+    if ((jtag_gen_tms != NULL) && (jtag_gen_eot != NULL)) {
+        tdo = frames_oscan6(tdi, count, tms);
+    } else if (jtag_gen_tms != NULL) {
         tdo = frames_oscan2(tdi, count, tms);
     } else if (jtag_gen_eot != NULL) {
         tdo = frames_oscan5(tdi, count, tms);

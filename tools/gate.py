@@ -93,7 +93,7 @@ def main() -> int:
              for toolchain, codegen, directory in built]
     tasks += [(f"timed {wire} clocks {name(toolchain, codegen)}",
                ["uv", "run", "tools/jtagcheck.py", os.path.join(directory, "mculink_cjtag_core1.elf"), "--wire", wire])
-              for toolchain, codegen, directory in built if codegen for wire in ("cjtag", "cjtag2", "cjtag5", "jtag")]
+              for toolchain, codegen, directory in built if codegen for wire in ("cjtag", "cjtag2", "cjtag5", "cjtag6", "jtag")]
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(tasks))) as pool:
         checks = {pool.submit(run, args): label for label, args in tasks}
         for future in concurrent.futures.as_completed(checks):

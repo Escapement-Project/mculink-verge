@@ -322,13 +322,45 @@ registers.
   in it with the EOT escape for TMS 1, and in the first Shift frame after one outside it a PAD
   packet between nTDI and TDO (rule 25.4.2 g, Figure 25-12), driven at nTDI's level so that it
   moves nothing. The tracker says which frame that is (`cJTAG_TapEntered`). Its frames outside
-  Shift carry no TDO, so detach sends OScan2's trailing frame. `JTAG_GEN_OSCAN6` (4) is refused by
-  the generator for now. dap.py `--format 14`: ECL then 5 raw clocks (a one-bit SP and the CP).
+  Shift carry no TDO, so detach sends OScan2's trailing frame. `JTAG_GEN_OSCAN6` (4) was refused by
+  the generator at first; generated since (next section). dap.py `--format 14`: ECL then 5 raw clocks (a one-bit SP and the CP).
 - Bench (CJ6B19D4E7, robust attach): CPUID, the 96-bit DR pattern, 64-word blocks 20/20 at 1 to 50
   MHz. Decoded: 927 frames using all 2125 rises,
   30 EOT escapes for 30 Shift exits, 30 PAD packets for 30 Shift entries, no stray edge.
 - Emulator: both target models take `cjtag6`; the timed one passes ARM's path at 1 to 25 MHz and
   fails it when the probe frames OScan5 instead (no PAD), so the PAD is checked.
+
+## OScan6 generated (2026-10-22)
+
+- Wire `JTAG_GEN_OSCAN6` (4) takes OScan2's TMS packets (`jtag_gen_tms`) outside Shift and OScan5's
+  `jtag_gen_shift` and `jtag_gen_eot` in it. The first Shift frame after one outside it has the PAD:
+  `frames_oscan6` (src/jtag_gen_dp.c) frames it through the scan function, OScan1's three packets
+  with the PAD in the TMS packet's place, or through `jtag_gen_eot_pad` (one block, the escape then
+  the PAD) where it also leaves. The PAD goes out at the frame's nTDI level, as ARM's path sends it.
+  Transfers send their first Shift frame the same way; `x->d1` became the last store that reads the
+  nTDI register, so that the next frame's nTDI is not computed into it before the PAD is sent (the
+  first equiv run caught that: the PAD carried the next bit's level). `frames()` and `hold()` are
+  `COMMAND_PATH` now: each grew past gcc's inlining with another format's branch, and the image
+  check caught the veneer into flash.
+- Checks: gen_host 8550 configurations, 1134 OScan6, all with transfers, four builds agree;
+  `jtagcheck.py --wire cjtag6` clean at all 41 clocks; equiv against ARM's path 128/128, 1080/1080,
+  840/840; the gate runs cjtag6. Bench: decode clean (927 frames, every rise, 30 escapes, 30 PADs),
+  blocks 20/20 at 1 to 50 MHz.
+- Rates, all four formats in one run on one image (127-word blocks, 300 after 300; two rounds within
+  1%):
+
+  | MHz | OScan1 | OScan2 | OScan5 | OScan6 |
+  | --- | --- | --- | --- | --- |
+  | 12.5 | 306 KiB/s | 304-305 | 392-394 | 397-398 |
+  | 25 | 454-456 | 427-433 | 510-514 | 438 |
+  | 50 | 519-523 | 502-511 | 560 | 547-548 |
+
+  OScan5 is the fastest on this target from 25 MHz up and level with OScan6 at 12.5. OScan6 and
+  OScan2 send the clocks outside Shift as one packet, and the CC1312's AP answers WAIT when a
+  Capture-DR comes too soon after an Update-DR, so pacing adds idle clocks there. Every figure here
+  is 5-12% below the afternoon's (OScan5 table): the afternoon's image `c5285a6`, measured again in
+  this run, matched these within 2%, so the bench changed, not the firmware. OScan2 fell most, which
+  points at the target answering WAIT more (not measured).
 
 ## Architecture
 

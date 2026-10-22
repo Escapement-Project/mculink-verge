@@ -1,4 +1,4 @@
-/** The JTAG wire paths, four-wire and two-pin (IEEE 1149.7 OScan1, OScan2 and OScan5), generated
+/** The JTAG wire paths, four-wire and two-pin (IEEE 1149.7 OScan1, OScan2, OScan5 and OScan6), generated
  * at run time for the clock the host asked for.
  *
  * src/jtag_gen.c writes them into SRAMX with every edge and sample placed to the core cycle, as
@@ -46,7 +46,7 @@
 #define JTAG_GEN_TWO_PIN 1U // OScan1
 #define JTAG_GEN_OSCAN2 2U  // two-pin in OScan2: one TMS packet a clock outside Shift
 #define JTAG_GEN_OSCAN5 3U  // two-pin in OScan5: nTDI and TDO in Shift, leaving it by an escape
-#define JTAG_GEN_OSCAN6 4U  // two-pin in OScan6: OScan2 outside Shift, OScan5 in it; not generated yet
+#define JTAG_GEN_OSCAN6 4U  // two-pin in OScan6: OScan2 outside Shift, OScan5 in it, a PAD on entering
 #define JTAG_GEN_WIRES 5U
 /** The index of jtag_gen_latency a wire uses: every two-pin format reads the same TDO packet. */
 #define JTAG_GEN_PINS(wire) ((wire) == JTAG_GEN_FOUR_WIRE ? JTAG_GEN_FOUR_WIRE : JTAG_GEN_TWO_PIN)
@@ -68,18 +68,21 @@ struct jtag_gen_config {
  * every frame ends with. Four-wire: entered and left with TCK high, as ARM's clocks leave it. */
 typedef uint32_t (*jtag_gen_scan_fn)(uint32_t tdi, uint32_t count, uint32_t tms);
 
-/** OScan2 only: `count` frames of one TMS packet each, for clocks outside Shift-DR and Shift-IR,
+/** OScan2 and OScan6: `count` frames of one TMS packet each, for clocks outside Shift-DR and Shift-IR,
  * with TMS held at `tms`. `tdi` goes nowhere, and the frames bring nothing back, so this returns
  * all ones, what a capture there reads in OScan1. Entered and left as the scan function is. */
 extern jtag_gen_scan_fn jtag_gen_tms;
 
-/** OScan5 only. The scan function frames OScan1's three packets, for clocks outside Shift-DR and
- * Shift-IR; jtag_gen_shift frames those in them, nTDI and TDO with TMS 0, and jtag_gen_eot the one
- * that leaves them, TMS 1 by an EOT escape on its nTDI packet. jtag_gen_eot is one block: `count`
- * above 1 enters it before its start, in jtag_gen_shift's code. Both return TDO as
+/** OScan5 and OScan6. In OScan5 the scan function frames OScan1's three packets, for clocks outside
+ * Shift-DR and Shift-IR; in OScan6 jtag_gen_tms does. jtag_gen_shift frames those in them, nTDI
+ * and TDO with TMS 0, and jtag_gen_eot the one that leaves them, TMS 1 by an EOT escape on its nTDI
+ * packet. OScan6's first frame after entering Shift has a PAD packet: the scan function frames it,
+ * or jtag_gen_eot_pad where it also leaves Shift, either sending the PAD from its TMS argument. jtag_gen_eot and jtag_gen_eot_pad are
+ * one block: `count` above 1 enters them before their start, in the code before. All return TDO as
  * the scan function does, and are entered and left as it is. */
 extern jtag_gen_scan_fn jtag_gen_shift;
 extern jtag_gen_scan_fn jtag_gen_eot;
+extern jtag_gen_scan_fn jtag_gen_eot_pad;
 
 /** Runs `count` transfers of one request back to back, each as ARM's JTAG_Transfer clocks it, and
  * stops at the first that does not acknowledge OK. `request` is DAP's request byte; `words` is read
@@ -88,10 +91,10 @@ extern jtag_gen_scan_fn jtag_gen_eot;
  * transfers not completed, the one that stopped it included. ARM's TDI is high afterwards. */
 typedef uint64_t (*jtag_gen_xfer_fn)(uint32_t request, uint8_t* words, uint32_t count, uint32_t tdi);
 
-/** Generates for `config` into SRAMX: the scan function, OScan2's TMS packets (jtag_gen_tms) or
- * OScan5's Shift frames (jtag_gen_shift, jtag_gen_eot), then
- * the read and write transfers if they fit, NULL where they do not. With `read` and `write` NULL,
- * no transfers. False if the
+/** Generates for `config` into SRAMX: the scan function, OScan2's and OScan6's TMS packets
+ * (jtag_gen_tms), OScan5's and OScan6's Shift frames (jtag_gen_shift, jtag_gen_eot,
+ * jtag_gen_eot_pad), then the read and write transfers if they fit, NULL where they do not. With
+ * `read` and `write` NULL, no transfers. False if the
  * configuration is out of range or the scan function does not fit, in which case nothing generated
  * earlier is usable either. */
 bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan, jtag_gen_xfer_fn* read,

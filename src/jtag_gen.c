@@ -1,12 +1,13 @@
 /** Generate the JTAG wire paths at run time, placed to the cycle: four-wire, and two-pin
- * (IEEE 1149.7 OScan1, OScan2 and OScan5).
+ * (IEEE 1149.7 OScan1, OScan2, OScan5 and OScan6).
  *
  * CJTAGGEN.md has the wire this places by, measured on a CC1312R1. TIMING.md has the cycle rules,
  * and src/swd_gen.c is the SWD counterpart. In brief:
  *
  * - The generated function is 32 blocks of straight-line code, one JTAG clock each, entered at the
- *   block that leaves `count` of them to run (OScan5's EOT frame is a function of one). Every block has the same instructions in the same
- *   cycles and only their shift amounts differ, so the entry is a multiply away and no clock pays
+ *   block that leaves `count` of them to run (the EOT frames, OScan5's and OScan6's, are functions
+ *   of one). Every block has the same instructions in the same cycles and only their shift amounts
+ *   differ, so the entry is a multiply away and no clock pays
  *   for a loop.
  * - Four-wire: a clock is a store to the masked port register that lowers TCK and sets TDI
  *   together, then a rising-edge store; TMS is set once for the call. TDO is on its pin from
@@ -111,13 +112,13 @@ enum slot {
     S_DATA,    // the next clock's TDI
     S_CONSUME, // a sample into its bit
     S_SAMPLE,
-    S_ESCAPE, // two-pin: one edge of OScan5's EOT escape, TMSC turned over with TCKC high
+    S_ESCAPE, // two-pin: one edge of the EOT escape (OScan5, OScan6), TMSC turned over with TCKC high
 };
 
 #define SLOTS_MAX 24U
 
 struct block {
-    uint32_t blocks; // in the function: JTAG_GEN_FRAMES_MAX, or 1 for OScan5's EOT frame
+    uint32_t blocks; // in the function: JTAG_GEN_FRAMES_MAX, or 1 for an EOT frame
     uint32_t cycles; // from one block's first cycle to the next one's
     uint32_t n;
     struct {
@@ -238,9 +239,16 @@ static bool layout_four_wire(struct block* b, uint32_t period, uint32_t latency,
     return false;
 }
 
-/** The packets of a two-pin frame: OScan1's three, or in OScan5's Shift states nTDI and TDO,
- * the last of a Shift run with an EOT escape on its nTDI packet (1149.7 Table 25-1, Figure 25-11). */
-enum frame_shape { SHAPE_THREE, SHAPE_SHIFT, SHAPE_EOT };
+/** The packets of a two-pin frame: OScan1's three; in OScan5's and OScan6's Shift states nTDI and
+ * TDO, the last of a Shift run with an EOT escape on its nTDI packet (1149.7 Table 25-1, Figure
+ * 25-11); and in OScan6 a PAD packet between them in the first after entering Shift, which is
+ * OScan1's three for timing, the PAD in the TMS packet's place. */
+enum frame_shape { SHAPE_THREE, SHAPE_SHIFT, SHAPE_EOT, SHAPE_EOT_PAD };
+
+static bool shape_escapes(enum frame_shape shape) { return (shape == SHAPE_EOT) || (shape == SHAPE_EOT_PAD); }
+
+/** Whether the probe drives a packet between nTDI and TDO: TMS, or OScan6's PAD. */
+static bool shape_middle(enum frame_shape shape) { return (shape == SHAPE_THREE) || (shape == SHAPE_EOT_PAD); }
 
 /** A two-pin frame, from the fall that ends the last frame's TDO packet. */
 static bool layout_two_pin(struct block* b, uint32_t period, uint32_t latency, bool earliest,
@@ -248,7 +256,7 @@ static bool layout_two_pin(struct block* b, uint32_t period, uint32_t latency, b
     const uint32_t p = period;
     const uint32_t low = p == 3U ? 2U : p / 2U;
     const uint32_t high = p - low;
-    b->blocks = shape == SHAPE_EOT ? 1U : BLOCKS;
+    b->blocks = shape_escapes(shape) ? 1U : BLOCKS;
     b->masked = p < TWO_PIN_MASK_WHOLE_BELOW;
     gen_schedule_reset(&layout, layout_events, sizeof layout_events / sizeof layout_events[0]);
     put(0U, S_FALL);
@@ -259,18 +267,19 @@ static bool layout_two_pin(struct block* b, uint32_t period, uint32_t latency, b
     put(r1, S_RISE);
     uint32_t rose = r1; // the TDO packet's rise comes a whole period after this
     uint32_t f2 = later(r1 + high, p);
-    if (shape == SHAPE_THREE) {
+    if (shape_escapes(shape)) {
+        // Each escape edge, and the fall after the last, a whole period after the one before.
+        put(r1 + p, S_ESCAPE);
+        put(r1 + 2U * p, S_ESCAPE);
+        f2 = later(f2, r1 + 3U * p);
+    }
+    if (shape_middle(shape)) {
         const uint32_t f1 = f2;
         put(f1, S_FALL);
         put(f1 + 1U, S_TMS);
         rose = later(f1 + later(low, 2U), r1 + p);
         put(rose, S_RISE);
         f2 = later(rose + high, f1 + p);
-    } else if (shape == SHAPE_EOT) {
-        // Each escape edge, and the fall after the last, a whole period after the one before.
-        put(r1 + p, S_ESCAPE);
-        put(r1 + 2U * p, S_ESCAPE);
-        f2 = later(f2, r1 + 3U * p);
     }
     if (!b->masked) {
         // As late as possible, so that as little as possible runs masked.
@@ -511,7 +520,8 @@ static bool emit_tms(struct gen_emitter* e, uint32_t period) {
 
 /* OScan2 sends the clocks a transfer takes outside Shift as one TMS packet each, and the rest as
  * OScan1 frames. OScan5 sends those outside Shift as OScan1 frames, and the ones in Shift without
- * their TMS packet, the last leaving it by an EOT escape. */
+ * their TMS packet, the last leaving it by an EOT escape. OScan6 sends OScan2's outside Shift and
+ * OScan5's in it, the first after entering Shift with a PAD packet in the TMS packet's place. */
 
 /* A transfer function runs `count` transfers of one request back to back, each as ARM's
  * JTAG_Transfer clocks it: Select-DR, Capture-DR and Shift-DR with ARM's held TDI and the bypass
@@ -552,6 +562,8 @@ struct xfer {
     bool two_pin;
     bool oscan2;   // two-pin frames outside Shift are one TMS packet
     bool oscan5;   // two-pin frames in Shift are nTDI and TDO, and leave it by an EOT escape
+    bool oscan6;   // and the first after entering Shift has a PAD packet
+    bool entering; // OScan6: the last frame was outside Shift
     bool released; // two-pin: the last frame ended with the wire released
     bool masked;
     uint32_t p, low, high; // a four-wire clock, or a two-pin packet the probe drives
@@ -560,7 +572,7 @@ struct xfer {
     uint32_t ready;  // the earliest cycle the next clock's data is in its register
     uint32_t fall;   // four-wire: the last clock's falling edge
     uint32_t rise;   // the last rising edge
-    uint32_t d1;     // two-pin: the last frame's nTDI store
+    uint32_t d1;     // two-pin: the last frame's last store from its nTDI register, nTDI or OScan6's PAD
     uint32_t first;  // the first clock's falling edge, or the first frame's start
     uint32_t start;  // the last clock's falling edge, or the last frame's start
     uint32_t data_at[32]; // and each data bit's
@@ -848,21 +860,27 @@ static void cx_shaped(struct xfer* x, uint32_t ntdi, uint32_t tms, bool decide, 
     uint32_t rose = r1; // the TDO packet's rise comes a whole period after this
     uint32_t stored = d1; // the last store before the TDO packet's fall
     uint32_t f2 = later(r1 + x->high, s + p);
-    if (shape == SHAPE_THREE) {
-        const uint32_t f1 = x_free(x, f2, false);
-        gen_put(&x->q, f1, t_str(X_ONE, X_PORT, OFF_CLR));
-        stored = x_free(x, f1 + 1U, false);
-        gen_put(&x->q, stored, t_strb(tms, X_GPIO, OFF_B_TMS));
-        rose = x_free(x, later(later(f1 + later(x->low, 2U), r1 + p), stored + 1U), false);
-        gen_put(&x->q, rose, t_str(X_ONE, X_PORT, OFF_SET));
-        f2 = later(rose + x->high, f1 + p);
-    } else if (shape == SHAPE_EOT) {
+    if (shape_escapes(shape)) {
         // Each escape edge, and the fall after the last, a whole period after the one before.
         for (uint32_t edge = 0U; edge < 2U; edge++) {
             stored = x_free(x, (edge == 0U ? r1 : stored) + p, false);
             gen_put(&x->q, stored, t_str(X_PIN, X_PORT, OFF_NOT));
         }
         f2 = later(f2, stored + p);
+    }
+    // The last store that reads `ntdi`: the next frame's nTDI may go into its register after it.
+    uint32_t read_ntdi = d1;
+    if (shape_middle(shape)) {
+        const uint32_t f1 = x_free(x, f2, false);
+        gen_put(&x->q, f1, t_str(X_ONE, X_PORT, OFF_CLR));
+        stored = x_free(x, f1 + 1U, false);
+        gen_put(&x->q, stored, t_strb(tms, X_GPIO, OFF_B_TMS));
+        if (tms == ntdi) {
+            read_ntdi = stored; // OScan6's PAD, sent from nTDI's register
+        }
+        rose = x_free(x, later(later(f1 + later(x->low, 2U), r1 + p), stored + 1U), false);
+        gen_put(&x->q, rose, t_str(X_ONE, X_PORT, OFF_SET));
+        f2 = later(rose + x->high, f1 + p);
     }
     while (gen_taken(&x->q, f2) || gen_taken(&x->q, f2 + 1U) || gen_taken(&x->q, f2 + 2U)) {
         f2++;
@@ -895,7 +913,7 @@ static void cx_shaped(struct xfer* x, uint32_t ntdi, uint32_t tms, bool decide, 
     const uint32_t otherwise = later(later(f2 + p, last + 2U), later(r3 + x->high, r3 + p - later(4U, x->low)));
     x->t = later(f2 + x->latency + MARGIN + 1U, otherwise);
     x->bound = x->bound || (x->t != otherwise);
-    x->d1 = d1;
+    x->d1 = read_ntdi;
     x->rise = r3;
     x->tdo_fall = f2;
     x->released = true;
@@ -905,13 +923,18 @@ static void cx_frame(struct xfer* x, uint32_t ntdi, uint32_t tms, bool decide) {
     cx_shaped(x, ntdi, tms, decide, SHAPE_THREE);
 }
 
-/** A frame in Shift-DR: OScan1's three packets, or OScan5's two, with the EOT escape for TMS 1. */
+/** A frame in Shift-DR: OScan1's three packets, or OScan5's two, with the EOT escape for TMS 1;
+ * OScan6's first after entering Shift has its PAD packet. */
 static void cx_shift_frame(struct xfer* x, uint32_t ntdi, uint32_t tms, bool decide) {
     if (!x->oscan5) {
         cx_frame(x, ntdi, tms, decide);
+    } else if (x->oscan6 && x->entering) {
+        // The PAD at nTDI's level, as ARM's path sends it, so that it moves nothing.
+        cx_shaped(x, ntdi, ntdi, decide, tms == X_ONE ? SHAPE_EOT_PAD : SHAPE_THREE);
     } else {
         cx_shaped(x, ntdi, tms, decide, tms == X_ONE ? SHAPE_EOT : SHAPE_SHIFT);
     }
+    x->entering = false;
 }
 
 /** OScan2's frame outside Shift: one TMS packet from `tms` (a register holding 1 or 0), with the
@@ -945,8 +968,9 @@ static void cx_tms_frame(struct xfer* x, uint32_t tms) {
     x->released = false;
 }
 
-/** A frame outside Shift: OScan2's one packet, or OScan1's three. */
+/** A frame outside Shift: OScan2's and OScan6's one packet, or OScan1's three. */
 static void cx_idle_frame(struct xfer* x, uint32_t tms) {
+    x->entering = true;
     if (x->oscan2) {
         cx_tms_frame(x, tms);
     } else {
@@ -1110,6 +1134,7 @@ struct xfer_cfg {
     bool two_pin;
     bool oscan2;
     bool oscan5;
+    bool oscan6;
     uint32_t period, latency, before, after, idle;
     bool loop; // the data bits as a loop, which is smaller and takes the same cycles
 };
@@ -1176,6 +1201,7 @@ static bool lay_xfer(const struct xfer_cfg* c, bool read, uint32_t p) {
     *x = (struct xfer){.two_pin = c->two_pin,
                        .oscan2 = c->oscan2,
                        .oscan5 = c->oscan5,
+                       .oscan6 = c->oscan6,
                        .latency = c->latency,
                        .first = UINT32_MAX,
                        .uniform = c->loop,
@@ -1309,7 +1335,7 @@ static bool emit_xfer(struct gen_emitter* e, const struct xfer_cfg* c, bool read
     gen_delay(e, x->high);
     if (c->two_pin) {
         gen_emit(e, t_bic(X_DATA, X_ONE, X_REQ, T_LSR, 2U));
-        // From Shift-DR: three packets in OScan1 and OScan2, OScan5's EOT frame.
+        // From Shift-DR: three packets in OScan1 and OScan2, the EOT frame in OScan5 and OScan6.
         if (c->oscan5) {
             slow_eot_frame(e, x, X_DATA);
         } else {
@@ -1349,13 +1375,15 @@ static bool emit_xfer(struct gen_emitter* e, const struct xfer_cfg* c, bool read
 bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan, jtag_gen_xfer_fn* read,
                     jtag_gen_xfer_fn* write) {
     if ((config->period < JTAG_GEN_PERIOD_MIN) || (config->period > JTAG_GEN_PERIOD_MAX) || (config->latency == 0U) ||
-        (config->latency > 64U) || (config->wire > JTAG_GEN_OSCAN5) || (config->before > 7U) ||
+        (config->latency > 64U) || (config->wire > JTAG_GEN_OSCAN6) || (config->before > 7U) ||
         (config->after > 7U) || (config->idle > 255U)) {
         return false;
     }
     const bool two_pin = config->wire != JTAG_GEN_FOUR_WIRE;
-    const bool oscan2 = config->wire == JTAG_GEN_OSCAN2;
-    const bool oscan5 = config->wire == JTAG_GEN_OSCAN5;
+    const bool oscan6 = config->wire == JTAG_GEN_OSCAN6;
+    // One TMS packet a frame outside Shift (OScan2, OScan6); nTDI and TDO in it (OScan5, OScan6).
+    const bool oscan2 = (config->wire == JTAG_GEN_OSCAN2) || oscan6;
+    const bool oscan5 = (config->wire == JTAG_GEN_OSCAN5) || oscan6;
     static struct block b;
     const bool earliest = config->earliest != 0U;
     if (earliest && (read != NULL)) {
@@ -1375,11 +1403,13 @@ bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan
     if (oscan2 && !emit_tms(&e, config->period)) {
         return false;
     }
-    // OScan5's frames in Shift, and the one that leaves it. Their samples bound the latency too.
+    // OScan5's and OScan6's frames in Shift, the one that leaves it, and OScan6's one that leaves it
+    // straight after entering, with a PAD. Their samples bound the latency too.
     int32_t scan_last = (int32_t)b.offset;
     bool scan_bound = b.bound;
     const uint32_t shift_at = e.pos;
     uint32_t eot_at = e.pos;
+    uint32_t eot_pad_at = e.pos;
     if (oscan5) {
         static struct block shift;
         static struct block eot;
@@ -1396,12 +1426,23 @@ bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan
         scan_last = (int32_t)fewest < scan_last ? (int32_t)fewest : scan_last;
         scan_bound = scan_bound || shift.bound || eot.bound;
     }
+    if (oscan6) {
+        static struct block eot_pad;
+        eot_pad_at = e.pos;
+        if (!layout_two_pin(&eot_pad, config->period, config->latency, earliest, SHAPE_EOT_PAD) ||
+            !emit_scan(&e, &eot_pad, true)) {
+            return false;
+        }
+        scan_last = (int32_t)eot_pad.offset < scan_last ? (int32_t)eot_pad.offset : scan_last;
+        scan_bound = scan_bound || eot_pad.bound;
+    }
 
     // The transfers, if they fit beside it. The delay register is X_DELAY, the filler the same.
     struct xfer_cfg xc = {
         .two_pin = two_pin,
         .oscan2 = oscan2,
         .oscan5 = oscan5,
+        .oscan6 = oscan6,
         .period = config->period,
         .latency = config->latency,
         .before = config->before,
@@ -1458,6 +1499,7 @@ bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan
     jtag_gen_tms = oscan2 ? (jtag_gen_scan_fn)(JTAG_GEN_BASE + 4U * tms_at + 1U) : NULL;
     jtag_gen_shift = oscan5 ? (jtag_gen_scan_fn)(JTAG_GEN_BASE + 4U * shift_at + 1U) : NULL;
     jtag_gen_eot = oscan5 ? (jtag_gen_scan_fn)(JTAG_GEN_BASE + 4U * eot_at + 1U) : NULL;
+    jtag_gen_eot_pad = oscan6 ? (jtag_gen_scan_fn)(JTAG_GEN_BASE + 4U * eot_pad_at + 1U) : NULL;
     if (read != NULL) {
         *read = transfers ? (jtag_gen_xfer_fn)(JTAG_GEN_BASE + 4U * read_at + 1U) : NULL;
         *write = transfers ? (jtag_gen_xfer_fn)(JTAG_GEN_BASE + 4U * write_at + 1U) : NULL;
@@ -1474,6 +1516,7 @@ jtag_gen_scan_fn jtag_gen_scan;
 jtag_gen_scan_fn jtag_gen_tms;
 jtag_gen_scan_fn jtag_gen_shift;
 jtag_gen_scan_fn jtag_gen_eot;
+jtag_gen_scan_fn jtag_gen_eot_pad;
 jtag_gen_xfer_fn jtag_gen_read;
 jtag_gen_xfer_fn jtag_gen_write;
 
@@ -1510,6 +1553,7 @@ static COLD_BSS struct saved_build {
     jtag_gen_scan_fn tms;
     jtag_gen_scan_fn shift;
     jtag_gen_scan_fn eot;
+    jtag_gen_scan_fn eot_pad;
     jtag_gen_xfer_fn read;
     jtag_gen_xfer_fn write;
     uint32_t code[JTAG_GEN_SIZE / 4U];
@@ -1619,6 +1663,7 @@ static __attribute__((noinline)) bool regenerate(uint32_t wire, bool transfers) 
         jtag_gen_tms = hit->tms;
         jtag_gen_shift = hit->shift;
         jtag_gen_eot = hit->eot;
+        jtag_gen_eot_pad = hit->eot_pad;
         jtag_gen_read = hit->read;
         jtag_gen_write = hit->write;
         hit->used = ++saved_uses;
@@ -1654,6 +1699,7 @@ static __attribute__((noinline)) bool regenerate(uint32_t wire, bool transfers) 
         slot->tms = jtag_gen_tms;
         slot->shift = jtag_gen_shift;
         slot->eot = jtag_gen_eot;
+        slot->eot_pad = jtag_gen_eot_pad;
         slot->read = jtag_gen_read;
         slot->write = jtag_gen_write;
         memcpy(slot->code, (const void*)JTAG_GEN_BASE, jtag_gen_info.code_bytes);
