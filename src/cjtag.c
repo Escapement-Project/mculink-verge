@@ -9,10 +9,15 @@
 static bool active;
 static uint8_t format = CJTAG_OSCAN1;
 static uint8_t tap = CJTAG_TAP_IDLE;
+static uint32_t offered = CJTAG_FORMATS;
 
 bool cJTAG_Active(void) { return active; }
 
 uint32_t cJTAG_Format(void) { return format; }
+
+uint32_t cJTAG_Offered(void) { return offered; }
+
+void cJTAG_Offer(uint32_t mask) { offered = (mask & CJTAG_FORMATS) | (1UL << CJTAG_OSCAN1); }
 
 COMMAND_PATH uint32_t cJTAG_Tap(void) { return tap; }
 
@@ -75,7 +80,7 @@ void cJTAG_Activate(void) {
 }
 
 bool cJTAG_Enter(uint32_t scan_format, uint32_t tap_state) {
-    if ((scan_format >= 32U) || ((CJTAG_FORMATS & (1UL << scan_format)) == 0U) || (tap_state >= CJTAG_TAP_STATES)) {
+    if ((scan_format >= 32U) || ((offered & (1UL << scan_format)) == 0U) || (tap_state >= CJTAG_TAP_STATES)) {
         return false;
     }
     PIN_SWCLK_TCK_CLR();

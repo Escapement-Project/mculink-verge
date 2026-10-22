@@ -15,6 +15,13 @@
 /** The formats this probe frames, bit n for SCNFMT n. */
 #define CJTAG_FORMATS ((1UL << CJTAG_OSCAN1) | (1UL << CJTAG_OSCAN2))
 
+/** The formats offered a host, in vendor 0x82 and to ID_VENDOR_CJTAG_CONTROL mode 3: CJTAG_FORMATS
+ * until cJTAG_Offer limits them, which lasts until the probe restarts. */
+uint32_t cJTAG_Offered(void);
+/** Offers the formats in `mask` that this probe frames, and OScan1 whatever the mask says, so that
+ * a person can keep a host to OScan1 while looking at the wire. A format already framed stays. */
+void cJTAG_Offer(uint32_t mask);
+
 /** TAP controller states, in the numbering ID_VENDOR_CJTAG_CONTROL mode 3 takes them. */
 enum cjtag_tap {
     CJTAG_TAP_RESET,

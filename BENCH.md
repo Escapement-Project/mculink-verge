@@ -328,6 +328,7 @@ mculink-stock-notes' `identity.md`.
 | `0x83 0x01` | drive OpenOCD's activation, then frame as OScan1 |
 | `0x83 0x02` | frame as OScan1 after an activation the host drove; the CC13xx needs this one |
 | `0x83 0x03 f s` | frame in scan format `f` (SCNFMT: 9 OScan1, 10 OScan2) from TAP state `s` (`enum cjtag_tap`, 1 Run-Test/Idle), after the host switched the target's format |
+| `0x83 0x04 m` | offer only the formats in the u32 LE mask `m` (OScan1 always) until the probe restarts; `verge cjtag --oscan1-only` |
 | `0x83 0x00` | stop framing |
 
 `0x82` is read-only, so a host may send it blindly to any probe.
@@ -368,7 +369,7 @@ The vendor `0x82` reply, after the echoed id:
 [7]     build string length n
 [8..]   build string, n bytes, not terminated
 [8+n]   board                  0 MCU-Link, 1 MCU-Link Pro, 2 on-board; format 3 on
-[9+n]   scan formats, u32 LE   bit n: two-pin frames in SCNFMT n (9 OScan1, 10 OScan2); format 4 on
+[9+n]   scan formats, u32 LE   bit n: SCNFMT n offered (9 OScan1, 10 OScan2; 0x83 04 limits it); format 4 on
 ```
 
 Check the magic to know it is us, the flags to know what may be used, the string to know which

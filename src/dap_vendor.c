@@ -64,7 +64,7 @@
  *     [7]     build string length n
  *     [8..]   build string, n bytes, not terminated
  *     [8+n]   board                   BOARD_KIND_* (board_pins.h); format 3 on
- *     [9+n]   scan formats, u32 LE    bit n: two-pin frames in SCNFMT n (cjtag.h); format 4 on
+ *     [9+n]   scan formats, u32 LE    bit n: SCNFMT n offered (cJTAG_Offered); format 4 on
  *
  * A host checks the magic to know it is us, the flags to know what it may use, and the build
  * string to know which image it is talking to. The capability flags are what makes this worth
@@ -246,7 +246,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         memcpy(out, FIRMWARE_VERSION, sizeof(FIRMWARE_VERSION) - 1U);
         out += sizeof(FIRMWARE_VERSION) - 1U;
         *out++ = board_kind;
-        const uint32_t formats = (board_kind != BOARD_KIND_ON_BOARD) ? CJTAG_FORMATS : 0U;
+        const uint32_t formats = (board_kind != BOARD_KIND_ON_BOARD) ? cJTAG_Offered() : 0U;
         for (uint32_t i = 0U; i < 4U; i++) {
             *out++ = (uint8_t)(formats >> (8U * i));
         }
@@ -260,9 +260,11 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         // offline. 3 takes two more bytes, a scan format (SCNFMT) and the TAP state it starts in
         // (enum cjtag_tap), and frames that: the host has switched the target's format itself.
         // Mode 3 is a mode of its own rather than a byte after mode 2 because a vendor command
-        // carries no length: an optional byte would be read from whatever command came next.
+        // carries no length: an optional byte would be read from whatever command came next. 4
+        // takes a u32 mask of the formats to offer from now until the probe restarts
+        // (cJTAG_Offer), and frames nothing.
         const uint32_t mode = request[1];
-        const uint32_t consumed = mode == 3U ? 4U : 2U;
+        const uint32_t consumed = mode == 3U ? 4U : mode == 4U ? 6U : 2U;
         response[1] = DAP_OK;
         if ((mode != 0U) && (board_kind == BOARD_KIND_ON_BOARD)) {
             response[1] = DAP_ERROR;
@@ -272,6 +274,9 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             cJTAG_Activate();
         } else if (mode == 2U) {
             (void)cJTAG_Enter(CJTAG_OSCAN1, CJTAG_TAP_IDLE);
+        } else if (mode == 4U) {
+            cJTAG_Offer((uint32_t)request[2] | ((uint32_t)request[3] << 8) | ((uint32_t)request[4] << 16) |
+                        ((uint32_t)request[5] << 24));
         } else if ((mode != 3U) || !cJTAG_Enter(request[2], request[3])) {
             response[1] = DAP_ERROR;
         }

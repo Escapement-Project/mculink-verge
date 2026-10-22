@@ -629,6 +629,22 @@ def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
     if not build:
         c.problems.append("vendor 0x82 carries no build string, so two builds look identical")
 
+    # 0x83 mode 4 limits the scan formats offered: OScan1 alone, then every one again. A limited
+    # format is refused by mode 3, and 0x82 reports the limit.
+    def offered() -> bytes:
+        reply = probe.command(bytes([0x82]))
+        return reply[10 + reply[8] : 14 + reply[8]]
+    limit = probe.command(bytes([0x83, 4]) + (1 << 9).to_bytes(4, "little"))
+    refused = probe.command(bytes([0x83, 3, 10, 1]))
+    limited = offered()
+    probe.command(bytes([0x83, 4]) + bytes([0xFF] * 4))
+    restored = offered()
+    probe.command(bytes([0x83, 0]))
+    if limit[:2] != bytes([0x83, 0]) or refused[:2] != bytes([0x83, 0xFF]):
+        c.problems.append(f"vendor 0x83 mode 4 answered {limit.hex()}, then mode 3 OScan2 {refused.hex()}")
+    if limited != (1 << 9).to_bytes(4, "little") or restored != ((1 << 9) | (1 << 10)).to_bytes(4, "little"):
+        c.problems.append(f"vendor 0x82 offered {limited.hex()} limited and {restored.hex()} restored")
+
     # DAP_Info 0x09, the product firmware version. ARM leaves it a stub returning nothing.
     info = probe.command(bytes([0x00, 0x09]))
     reported = info[2 : 2 + info[1]].rstrip(b"\x00").decode("ascii", "replace") if len(info) > 1 else ""
