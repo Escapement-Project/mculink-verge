@@ -211,7 +211,7 @@ checkout, `uv run tools/dap.py dio` does the same. Both send vendor command 0x8E
 `.github/workflows/release.yml` publishes a release when a tag starting with `v` is pushed. It
 attaches three files in the layout verge, the update tool, reads: the image as an S-record, its
 checksum, and a minisign signature whose trusted comment names the file and the tag. verge's
-README says what it checks. The workflow has never run, and cannot until this repository is
+README says what it checks. `LICENSE` and `THIRD-PARTY-NOTICES.md` go with them. The workflow has never run, and cannot until this repository is
 public.
 
 It has three jobs, so that the secret key never sits on a machine that ran code the build fetched:
@@ -255,6 +255,12 @@ arm-none-eabi-objcopy -O srec build/mculink_cjtag.elf mculink-verge-v0.3.0.s19
 sha256sum mculink-verge-v0.3.0.s19 > mculink-verge-v0.3.0.s19.sha256
 minisign -S -s verge.key -m mculink-verge-v0.3.0.s19 -t "file:mculink-verge-v0.3.0.s19 tag:v0.3.0"
 ```
+
+## Licence
+
+Apache-2.0, in `LICENSE`. Files changed from Arm's CMSIS-DAP carry Arm's notice and say what was
+changed. The image also contains TinyUSB (MIT) and NXP's SDK drivers (BSD-3-Clause):
+`THIRD-PARTY-NOTICES.md` has their notices.
 
 ## Where to read next
 

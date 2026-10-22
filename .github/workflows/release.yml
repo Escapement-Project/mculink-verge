@@ -6,6 +6,9 @@
 #   mculink-verge-<tag>.s19.minisig  minisign's signature; its trusted comment names the file
 #                                    and the tag
 #
+# LICENSE and THIRD-PARTY-NOTICES.md go with them: the image carries TinyUSB's MIT code and NXP's
+# BSD-3-Clause drivers, whose licences ask for their notices to travel with a binary.
+#
 # The secret key never shares a machine with code the build fetched and ran. `build` has no
 # secret, and hands the image and its checksum on as an artifact. `sign` runs only minisign, in
 # the `release` environment, which holds the key and waits for a required reviewer. `publish`
@@ -70,6 +73,7 @@ jobs:
           mkdir out
           arm-none-eabi-objcopy -O srec build/mculink_cjtag.elf "out/$name"
           (cd out && sha256sum "$name" > "$name.sha256")
+          cp LICENSE THIRD-PARTY-NOTICES.md out/
 
       - uses: actions/upload-artifact@v7
         with:
@@ -154,4 +158,5 @@ jobs:
             gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes ""
           fi
           gh release upload "$GITHUB_REF_NAME" --clobber \
-            "out/$name" "out/$name.sha256" "out/$name.minisig"
+            "out/$name" "out/$name.sha256" "out/$name.minisig" \
+            out/LICENSE out/THIRD-PARTY-NOTICES.md

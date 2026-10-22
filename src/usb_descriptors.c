@@ -7,7 +7,8 @@
  *
  * The MS OS 2.0 descriptor below is generated rather than hand-written, because its three nested
  * length fields have to agree with the bytes that follow them and nothing at run time reports a
- * mismatch -- the device simply fails to bind.
+ * mismatch -- the device simply fails to bind. Its request handling follows TinyUSB's
+ * webusb_serial example (MIT, THIRD-PARTY-NOTICES.md).
  */
 // DAP_config.h first: DAP.h reads the DAP_SWD and DAP_JTAG settings it defines, so a sorted
 // include block that puts DAP.h ahead of it will not compile. The names the probe answers to
