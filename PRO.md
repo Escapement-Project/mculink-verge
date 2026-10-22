@@ -221,7 +221,11 @@ Phase 2, the extras (needs decisions b and c below):
     package is a wrapper over prebuilt libraries, so its wire protocol needs NXP's C source. Its
     GPIO calls take raw LPC port and pin numbers and a raw IOCON mode, and its own test suite says
     the standalone Pro has no GPIO under stock. A LIBUSBSIO HID with SPI and I2C may follow; it
-    needs probe-rs's HID-as-v1 fix first (Cross-boundary, below).
+    needs probe-rs's HID-as-v1 fix first (Cross-boundary, below). On the Pro 2026-10-22 (`968ea22`):
+    with DIO0 looped to DIO3, levels read back
+    both ways, one command hands the loop from one group to the other without an edge, a split is
+    refused, each header moves once a command and LED6 lights; DIO2 follows DIO0 and DIO1 by about
+    40 ns, a store apart on another port.
 14. The analog trace input (J19 pin 12) and the LPC804's ISP and reset lines: last.
 
 ## Next round: board-aware USB (in progress)

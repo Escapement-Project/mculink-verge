@@ -5,6 +5,9 @@
  * pull-down on each makes all four inputs until the firmware says otherwise. A direction is
  * therefore a group's, and a request that would split a group is refused.
  *
+ * DIO0 and DIO1 are on port 0 and DIO2 and DIO3 on port 1, so one command moves the two ports a
+ * store apart: DIO2 follows DIO0 and DIO1 by about 40 ns.
+ *
  * Nothing here knows the transport: ID_VENDOR_DIO (dap_vendor.c) is one front end, and USB-SIO
  * would be another.
  *

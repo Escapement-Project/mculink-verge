@@ -194,8 +194,9 @@ it can still be updated.
 
 On the MCU-Link Pro, the host can drive and read the four DIO pins on J19 (pins 2 to 5) as GPIO.
 Each group of pins sits behind level translators that turn round together, so DIO0, DIO1 and DIO2
-change direction together, and DIO3 on its own. The pins run at the voltage on J19 pin 14, or at
-3.3 V with nothing connected there.
+change direction together, and DIO3 on its own. DIO2 and DIO3 switch a moment after DIO0 and
+DIO1: DIO2 was 40 ns behind them. The pins run at the voltage on J19 pin 14, or at 3.3 V with
+nothing connected there.
 
 The pins keep their state between debug sessions, so a pin can hold a target's boot mode through
 a reset and a reconnect. LED6 (SIO) is lit while the probe drives any of them. They go back to
