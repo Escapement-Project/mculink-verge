@@ -54,7 +54,7 @@ link-time register allocation landing differently rather than the change doing a
 not shown this. Attribute a small JTAG move from the disassembly or not at all.
 
 Stock measured 476 KiB/s read and 502 KiB/s write at its best setting. KiB/s of wire time, 64-word
-block, before and after tonight:
+block, before and after the changes below:
 
 | | asked | before | after | |
 | --- | --- | --- | --- | --- |
@@ -401,7 +401,8 @@ at 10 MHz and 44% over at 50.
 The cause is structural rather than a slip. `Set_Clock_Delay` models a bit as
 `2 * (IO_PORT_WRITE_CYCLES + delay * DELAY_SLOW_CYCLES)` with one constant for every protocol, and
 a SWD bit really is three stores while a bare `JTAG_CYCLE_TCK` is two. The constant is calibrated
-for three. ARM's reference has the same shape.
+for three. ARM's reference has the same shape. Stock's wire fits the same formula with a larger
+constant (BENCH.md).
 
 **This is a decision, not a fix, because both ways out cost throughput.** Measured:
 
@@ -459,7 +460,7 @@ is spilled and its invariant parts are rematerialised rather than kept. Six atte
 landed on that wall from different directions, and every one is recorded above: hoisting the packet
 (slower, and 5 KB larger), `restrict` on the block pointers (no change), hoisting the retry count
 (no change), hoisting the idle cycles (no change), a serial shift chain that cannot be hoisted
-(byte-identical image), and before tonight the inlining parameters (33 KB for one cycle) and the
+(byte-identical image), and, earlier, the inlining parameters (33 KB for one cycle) and the
 allocator's own knobs (`-fsched-pressure` and `-fno-schedule-insns2` change nothing,
 `-fira-algorithm=priority` costs 2%).
 

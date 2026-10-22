@@ -172,7 +172,7 @@ the jumper still fitted a reset returns it to the bootloader, and it would be fl
 unit stays in the bootloader until unplugged. `rblhost`
 addresses a probe by VID:PID alone, so **only one unit may be in ISP mode at a time**.
 
-That script is also the recovery path from a bad image of ours, so the sequence is: fit the jumper,
+The same path recovers a unit from a bad image of ours, so the sequence is: fit the jumper,
 plug in, flash, unplug, remove the jumper, plug in.
 
 `uv run tools/flash.py` writes our image the same way and verifies it; `--check` says what every
@@ -222,7 +222,7 @@ mculink-stock-notes' `identity.md`.
 | --- | --- |
 | `0x82` | identify. Magic, format version, capability flags, build string. Stock answers a bare `82` with no payload, which is the discriminator. |
 | `0x83 0x02` | frame as OScan1 after an activation the host drove; the CC13xx needs this one |
-| `0x83 0x03 f s` | frame in scan format `f` (SCNFMT: 9 OScan1, 10 OScan2) from TAP state `s` (`enum cjtag_tap`, 1 Run-Test/Idle), after the host switched the target's format |
+| `0x83 0x03 f s` | frame in scan format `f` (SCNFMT: 9 OScan1, 10 OScan2, 13 OScan5, 14 OScan6) from TAP state `s` (`enum cjtag_tap`, 1 Run-Test/Idle), after the host switched the target's format |
 | `0x83 0x04 m` | offer only the formats in the u32 LE mask `m` (OScan1 always) until the probe restarts; `verge cjtag --oscan1-only` |
 | `0x83 0x00` | stop framing |
 
@@ -260,11 +260,11 @@ The vendor `0x82` reply, after the echoed id:
 [5]     format version         4
 [6]     capability flags       bit 0 OScan1 supported, bit 1 OScan1 active now,
                                bit 2 target sense, bit 3 generated SWD, bit 4 0x83 mode 2,
-                               bit 5 generated JTAG
+                               bit 5 generated JTAG, bit 6 DIO pins (0x8E)
 [7]     build string length n
 [8..]   build string, n bytes, not terminated
 [8+n]   board                  0 MCU-Link, 1 MCU-Link Pro, 2 on-board; format 3 on
-[9+n]   scan formats, u32 LE   bit n: SCNFMT n offered (9 OScan1, 10 OScan2; 0x83 04 limits it); format 4 on
+[9+n]   scan formats, u32 LE   bit n: SCNFMT n offered (9 OScan1, 10 OScan2, 13 OScan5, 14 OScan6; 0x83 04 limits it); format 4 on
 ```
 
 Check the magic to know it is us, the flags to know what may be used, the string to know which
@@ -315,7 +315,7 @@ keeps driving the wire otherwise, and releasing the wire is the whole of OScan1.
 | symptom | first suspect |
 | --- | --- |
 | comes up as `1fc9:0021`, not as a probe | the ISP jumper is still fitted. Check this first |
-| device does not enumerate at all | the unique-id read at `0x0009_FC70` in `src/ser_num.c`, which is untested on hardware. If that region faults it faults inside `GetSerialNum`, before USB comes up |
+| device does not enumerate at all | the unique-id read at `0x0009_FC70` in `src/ser_num.c`. If that region faults it faults inside `GetSerialNum`, before USB comes up |
 | enumerates, console silent | `FRO_HF` or its divider not running. `board_clocks_init` starts both; a Flexcomm with no clock reports no error and never reaches a baud rate |
 | enumerates, SWO silent | same clock, and NXP's driver also waits on a status bit |
 | probe stops answering for about ninety seconds | `DAP_Delay(0)`, ARM's pacing loop counting down from 2³². Guarded in `src/dap_dispatch.c`, so seeing this means the guard is not in the image you flashed |
@@ -364,7 +364,7 @@ range, and 255 periods of the same burst brings it to 0.04 ns.
 
 What stock gave, both units agreeing to 0.01 ns over 20 bursts each:
 
-| asked | period | wire | `clock_delay` |
+| asked | period | wire | `clock_delay` by ARM's formula |
 | --- | --- | --- | --- |
 | 50 MHz | 127.48 ns | 7.844 MHz | 1 |
 | 10 MHz | 167.49 ns | 5.971 MHz | 2 |
@@ -386,7 +386,7 @@ and sets `SystemCoreClock` to 144000000. Two board files, two clocks, and the on
 `src/DAP_config.h` matched the one we compiled. Ours has since moved to PLL0 at 150 MHz ("Taken: the
 core now runs at 150 MHz", below).
 
-### What it does not settle, and why the plan was wrong about that
+### What it does not settle
 
 **`DAP_SWJ_Sequence` does not isolate the store cost.** `SWJ_Sequence` at
 `external/CMSIS-DAP/Firmware/Source/SW_DP.c` is a software loop around each clock -- byte refill,
@@ -397,7 +397,7 @@ like the 2 that `IO_PORT_WRITE_CYCLES` declares. The extra 4.5 cycles are that l
 
 So the differences give the delay cost and the core clock, which is most of the value. The
 intercept gives the cost of a command we do not care about. **The store cost needs the transfer
-path**, which means step 5: a `DAP_Transfer` block at a known clock, where the per-bit cost is the
+path**: a `DAP_Transfer` block at a known clock, where the per-bit cost is the
 unrolled code the emulator actually models.
 
 ### The store cost, measured on the transfer path instead
@@ -417,7 +417,7 @@ finer than the 10 ns sample period.
 
 Stock, reading 512 words at three requested clocks:
 
-| asked | `clock_delay` | period | wire | cycles at 150 MHz |
+| asked | `clock_delay` by ARM's formula | period | wire | cycles at 150 MHz |
 | --- | --- | --- | --- | --- |
 | 1 MHz | 25 | 1066.774 ns | 0.937 MHz | 160.016 |
 | 5 MHz | 5 | 266.774 ns | 3.748 MHz | 40.016 |
@@ -432,14 +432,14 @@ lands at 68% of a 10 MHz request, 75% of 5 MHz and 94% of 1 MHz. The one bench n
 before the bench work -- 0.94 MHz for a 1 MHz request -- is reproduced exactly.
 
 **That constant may be about right for us.** Our bit paths are unrolled, and the emulator puts a
-SWD data bit at 5 cycles, which is 2.5 per half-bit against the 2 declared. Stock pays 6. The comparison to make after flashing is ours at the same three rates.
+SWD data bit at 5 cycles, which is 2.5 per half-bit against the 2 declared. Stock pays 6.
 
 ### The target sets the ceiling, not the probe
 
 The MSPM0L1306 on this bench connects at 1, 5 and 10 MHz and fails to connect at 20, 30 and
 50 MHz with the compiled bit paths. (Later measured: that is the probe's sampling. Placed by the
 timing model, the same part reads and writes clean at 37.5 MHz; see "The cost model now times the
-bus".) **Step 5 cannot sweep above 10 MHz here**, so the steps the specialisation work aims at
+bus".) **A throughput sweep cannot go above 10 MHz here**, so the steps the specialisation work aims at
 sit above anything this target will answer. Sizing that work needs either a faster target or a
 capture with no target attached at all, which `tools/dap.py sweep` already does.
 
@@ -595,8 +595,8 @@ between two copies today. That fills in the gap, costs a `nop` rather than a bra
 the dispatch is once per transfer and already paid. It costs a couple of KB of flash per copy,
 which is affordable.
 
-Choosing the right copy for a requested clock still needs the store cost, so it waits on step 5
-rather than on this capture. `PACING.md` has the full trace through the source.
+Choosing the right copy for a requested clock still needs the store cost, so it waits on a transfer-path
+measurement rather than on this capture. `PACING.md` has the full trace through the source.
 
 ## Throughput against stock
 
@@ -637,7 +637,7 @@ each run to its last byte, so a refused rate cannot pass as a slower one).
 
 19.2 Mbaud is the UART's fastest from its 96 MHz clock (oversampling 5). The same image started
 and stopped SWO capture 20 times at 8 MHz while both consoles streamed at 3 and 12 Mbaud: every
-console byte back, every capture unbroken. With a 24 MHz SWO sweep image (§7) and both consoles
+console byte back, every capture unbroken. With a 24 MHz SWO sweep image ("SWO", below) and both consoles
 run to 19.2 Mbaud during the capture, 20 s of SWO lost nothing; an earlier 15 s run lost three
 gaps, 7,305 bytes, all after the consoles had finished.
 
@@ -755,8 +755,8 @@ averaged over every transfer:
 | 10 MHz | 22.0, every bit | 22, 20, 34, 54 | 494.3 | 269.4 |
 | 20 MHz | 16.0, every bit | 22, 16, 23, 23 | 640.0 | 382.5 |
 
-Stock holds one period for the whole data phase, to the cycle, at every setting -- exactly
-`2 * (6 + PIN_DELAY_SLOW(delay))`, so its fixed cost is 6.0 cycles per half-bit and ARM's model
+Stock holds one period for the whole data phase, to the cycle, at every setting, matching
+`2 * (6 + PIN_DELAY_SLOW(delay))` exactly, so its fixed cost is 6.0 cycles per half-bit and ARM's model
 describes it perfectly. **Ours repeats a four-bit cycle** and does it to within a few nanoseconds
 over thousands of transfers.
 
@@ -1023,7 +1023,7 @@ Measured on a 64-word block read at 10 MHz asked:
 can fix: with one in flight the wire sits idle while the host notices the reply and sends the next
 request. The third adds nothing, and the fourth does not work.
 
-`DAP_Info` said eight packets, copied from ARM's reference. It is now 2, which is what the stack
+`DAP_Info` said eight packets, copied from ARM's reference. It became 2, which is what the stack
 can actually hold: one packet in the endpoint buffer and one in the class buffer.
 
 **TinyUSB's vendor class is a byte stream, not a packet interface**, and that is the whole reason.
@@ -1122,7 +1122,7 @@ to read replies, which deadlocks against its own backpressure -- `tools/dap.py` 
 and so would anything using synchronous bulk transfers. The probe recovers the moment the host
 drains: a depth-8 run against two slots times out, and the next depth-2 run measures 669.5.
 
-So the knob stays at two, which is honest and saturating. It is worth re-measuring against a
+So the knob stayed at two then, which was honest and saturating (three since, above). It is worth re-measuring against a
 target that answers far above 10 MHz, where the wire would stop being 92% of a block read and the
 link could become the limit again.
 
@@ -1372,7 +1372,7 @@ probe and the link. 50 MHz, DP reads, queue 8, three runs each, identical to 0.1
 | + TinyUSB in SRAM | 30,399 | 1,618 | 2,351 |
 | clang, same, buffers aligned | 33,476 | 1,686 | 2,383 |
 
-The shipping configuration (ARM's C paths, 10 MHz) gains from TinyUSB in SRAM too: 25,235 to
+The configuration that shipped then (ARM's C paths, 10 MHz) gains from TinyUSB in SRAM too: 25,235 to
 35,103 one-word commands a second, 717 to 729 KiB/s at 126 words.
 
 **Where a command's time went, from the marker** (126-word blocks, before → after the two changes):

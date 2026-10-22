@@ -199,8 +199,7 @@ static void pro_init(void) {
     CTIMER1->TCR = CTIMER_TCR_CEN_MASK;
 }
 
-/** PIO0_5's function 3 is CTIMER3's match 0 output. Driving it from CTIMER3 MR0 gives the
- * fade an idle stock probe shows.
+/** PIO0_5's function 3 is CTIMER3's match 0 output, so the status LED fades as a PWM.
  *
  * P0_5 is also ISP1, which the ROM samples out of reset to choose between the bootloader and the
  * firmware, and the LED's own resistor is what pulls it up when nothing drives it. A reset returns

@@ -1,9 +1,9 @@
 /** Vendor commands.
  *
- * CMSIS-DAP leaves 0x80..0x9F to the probe, so anything from 0x82 up is free.
- *
- * Stock answers vendor 0x80 and 0x81. Neither is
- * implemented here, so any LinkServer feature resting on them will not work against this image.
+ * CMSIS-DAP leaves 0x80..0x9F to the probe. NXP's V3.172 answers 0x80 and 0x81, and echoes 0x82
+ * with nothing after it, which is how a host tells the two images apart (mculink-stock-notes'
+ * identity.md has the replies). Neither 0x80 nor 0x81 is implemented here, so any LinkServer
+ * feature resting on them will not work against this image.
  */
 #include <string.h>
 

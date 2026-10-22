@@ -8,8 +8,10 @@ The firmware image contains code from these projects. Each one's notice and lice
 | CMSIS 6 Core headers (TinyUSB's `lib/CMSIS_6`), Arm Limited | register and core definitions | Apache-2.0 |
 | TinyUSB (`external/tinyusb`), Ha Thach | the USB device stack | MIT |
 | NXP MCUXpresso SDK (fetched by TinyUSB's `get_deps.py`), NXP and Freescale | the clock, power, reset, GPIO, Flexcomm, USART and ADC drivers, and the system initialisation | BSD-3-Clause |
+| newlib-nano and libgloss's nosys stubs, from the toolchain | the C library's string formatting and system call stubs | a collection of BSD-style licences, in newlib's `COPYING.NEWLIB` and `COPYING.LIBGLOSS` |
 
-The Apache-2.0 text is in `LICENSE`.
+The Apache-2.0 text is in `LICENSE`. Each release carries newlib's two licence files beside the
+image, as the toolchain that built it ships them.
 
 ## CMSIS-DAP and CMSIS 6
 

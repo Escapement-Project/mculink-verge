@@ -72,9 +72,9 @@ the host asks for the rate, so whoever runs the probe decides whether to use the
 Where the figures come from: SWD from the wire on the bench (mculink-bench's README, "The wire").
 JTAG and cJTAG from the clock length the firmware reports for each delay (vendor 0x8A, run in the
 emulator); four-wire's 30 MHz is also measured on the bench (CJTAGGEN.md). The console from
-loopbacks on the bench (BENCH.md §6). SWO from captures on the bench (BENCH.md §7). Stock's SWD
+loopbacks on the bench (BENCH.md, "The console"). SWO from captures on the bench (BENCH.md, "SWO"). Stock's SWD
 from the wire on the bench (mculink-stock-notes' `wire.md`, and mculink-bench's README), the rest
-as BENCH.md §6 and mculink-bench's `results/throughput/2026-10-21-stock.json` record it.
+as BENCH.md "The console" and mculink-bench's `results/throughput/2026-10-21-stock.json` record it.
 
 ## Build
 
@@ -86,7 +86,12 @@ Produces `build/mculink_cjtag.{elf,hex,bin}`. `-DLTO=OFF` and `-DCMAKE_BUILD_TYP
 for bisecting a miscompilation.
 
 Clone with `--recurse-submodules`: TinyUSB supplies the toolchain file, startup code, linker script
-and USB driver, and ARM's CMSIS-DAP supplies the protocol.
+and USB driver, and ARM's CMSIS-DAP supplies the protocol. Before the first build, fetch the NXP
+SDK files TinyUSB's LPC55 support uses:
+
+```
+python external/tinyusb/tools/get_deps.py lpc55
+```
 
 ## Check
 
@@ -211,7 +216,8 @@ checkout, `uv run tools/dap.py dio` does the same. Both send vendor command 0x8E
 `.github/workflows/release.yml` publishes a release when a tag starting with `v` is pushed. It
 attaches three files in the layout verge, the update tool, reads: the image as an S-record, its
 checksum, and a minisign signature whose trusted comment names the file and the tag. verge's
-README says what it checks. `LICENSE` and `THIRD-PARTY-NOTICES.md` go with them.
+README says what it checks. `LICENSE`, `THIRD-PARTY-NOTICES.md` and newlib's licence files go with
+them.
 
 It has three jobs, so that the secret key never sits on a machine that ran code the build fetched:
 
@@ -259,7 +265,7 @@ minisign -S -s verge.key -m mculink-verge-v0.3.0.s19 -t "file:mculink-verge-v0.3
 ## Licence
 
 Apache-2.0, in `LICENSE`. Files changed from Arm's CMSIS-DAP carry Arm's notice and say what was
-changed. The image also contains TinyUSB (MIT) and NXP's SDK drivers (BSD-3-Clause):
+changed. The image also contains TinyUSB (MIT), NXP's SDK drivers (BSD-3-Clause) and newlib-nano:
 `THIRD-PARTY-NOTICES.md` has their notices.
 
 ## Not done yet

@@ -168,7 +168,7 @@ Clause 25 covers the OScan formats, 10.4 the escapes, and 9.10 the configuration
 ## OScan2 on ARM's path (2026-10-21)
 
 - The probe frames OScan2 through a fourth copy of ARM's JTAG_DP.c (`cjtag2_*`,
-  `src/cjtag_jtag_dp_oscan2.c`, paced only, not flattened: +10 KB). `cJTAG_Frame2` follows the TAP
+  `src/cjtag_jtag_dp_tracked.c`, paced only, not flattened: +10 KB). `cJTAG_Frame2` follows the TAP
   from the TMS it sends: three packets in Shift-DR/IR, one TMS packet elsewhere, which returns
   TDO 1, as OScan1's joint drive gives outside Shift. The generated paths are OScan1 only for now
   (`jtag_gen_usable`), and the connect-time latency sweep is skipped in OScan2.
@@ -353,7 +353,7 @@ Clause 25 covers the OScan formats, 10.4 the escapes, and 9.10 the configuration
   `count` transfers of one request and stops at the first non-OK ack.
 - **SRAMX**: SWD has 0x0400_0000..0x0400_3FFF and uses part of it; the lab arena has the upper
   16 KB. Estimate ~1.6 KB per generated JTAG transfer variant (126 TCKC clocks, ~3 stores each),
-  four variants (read/write x four-wire/OScan1). Budget it explicitly before step 3.
+  four variants (read/write x four-wire/OScan1).
 - **Expected wire throughput**: at the measured 17-19-cycle frame, ~42 JTAG clocks a word cost
   ~750 cycles = 5 us, ~780 KiB/s wire time for OScan1 (vs ~230 KiB/s with USB today); four-wire
   42 clocks at P = 4 = 1.1 us a word. USB will bound both, as it does SWD (BENCH.md "The USB path
@@ -400,8 +400,8 @@ Clause 25 covers the OScan formats, 10.4 the escapes, and 9.10 the configuration
   write. One contiguous run: 5 MHz 8 clocks pass; 10 MHz 16 fail, 20 pass; 30 MHz 20 fail. A wait
   without clocks after it does not help (the next command's DP access leaves Run-Test/Idle at
   once). Two-pin frames are slow enough that 10 clocks happened to cover it.
-- Fix in probe-rs `icepick.rs`: `SD_TAP_JOIN_CLOCKS` 10 -> 256 (over 5 us up to 50 MHz).
-  Uncommitted in probe-rs's tree.
+- The fix belongs in the host: probe-rs's cJTAG branch joins in `icepick.rs` with 256 clocks
+  rather than 10, over 5 us up to 50 MHz.
 
 ## Four-wire on this part (measured 2026-10-17)
 

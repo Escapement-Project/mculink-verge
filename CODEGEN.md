@@ -51,7 +51,6 @@ Everything here was measured on the bench 2026-10-16 unless marked otherwise. BE
   P3 read 203/176 write 164/143; P4 210/184, 197/184; from P = 29 exactly the floor. Gate: generated
   images run on the engine against `tools/baseline`, ARM's against `tools/baseline-armwire` (S
   positions differ).
-  Hardware (L1306): see Bench state.
 
 ## The timing model (exact from SRAMX; see TIMING.md for prose)
 

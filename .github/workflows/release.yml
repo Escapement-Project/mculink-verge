@@ -6,8 +6,9 @@
 #   mculink-verge-<tag>.s19.minisig  minisign's signature; its trusted comment names the file
 #                                    and the tag
 #
-# LICENSE and THIRD-PARTY-NOTICES.md go with them: the image carries TinyUSB's MIT code and NXP's
-# BSD-3-Clause drivers, whose licences ask for their notices to travel with a binary.
+# LICENSE and THIRD-PARTY-NOTICES.md go with them, and newlib's COPYING.NEWLIB and COPYING.LIBGLOSS
+# from the build's own package: the image carries TinyUSB's MIT code, NXP's BSD-3-Clause drivers
+# and newlib-nano, whose licences ask for their notices to travel with a binary.
 #
 # The secret key never shares a machine with code the build fetched and ran. `build` has no
 # secret, and hands the image and its checksum on as an artifact. `sign` runs only minisign, in
@@ -74,6 +75,8 @@ jobs:
           arm-none-eabi-objcopy -O srec build/mculink_cjtag.elf "out/$name"
           (cd out && sha256sum "$name" > "$name.sha256")
           cp LICENSE THIRD-PARTY-NOTICES.md out/
+          cp /usr/share/licenses/arm-none-eabi-newlib/COPYING.NEWLIB \
+            /usr/share/licenses/arm-none-eabi-newlib/COPYING.LIBGLOSS out/
 
       - uses: actions/upload-artifact@v7
         with:
@@ -159,4 +162,4 @@ jobs:
           fi
           gh release upload "$GITHUB_REF_NAME" --clobber \
             "out/$name" "out/$name.sha256" "out/$name.minisig" \
-            out/LICENSE out/THIRD-PARTY-NOTICES.md
+            out/LICENSE out/THIRD-PARTY-NOTICES.md out/COPYING.NEWLIB out/COPYING.LIBGLOSS

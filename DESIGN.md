@@ -70,7 +70,19 @@ the same three packets the same way, with TCK resting low between them.
 | 0x82 | `CJTAG_INFO` | answers "CJTAG", a format version, a capability bitmap and the build string. Read-only, so a host may send it blindly: stock V3.172 echoes the command with nothing after it, which is how a host tells the two images apart. `BENCH.md` has the byte layout. |
 | 0x83 | `CJTAG_CONTROL` | a mode byte: 0 returns to four-wire framing, 2 frames as OScan1 after an activation the host drove, 3 with two more bytes frames scan format `f` from TAP state `s`, and 4 with a u32 mask limits the formats offered. Anything else answers `DAP_ERROR`. |
 
-Anything else in 0x80..0x9F answers `ID_DAP_Invalid` here. `DAP_ProcessCommand` returns what
+| 0x84 | `J8` | hands J8's four pins to the host, on the plain MCU-Link |
+| 0x85 | `REBOOT` | resets the probe, optionally into the ROM bootloader |
+| 0x86 | `TARGET` | reads the target's supply and J6 pin 9's detect line |
+| 0x87 | `SAMPLE` | DPIDR reads with the SWDIO sample placed by the host; an instrument |
+| 0x88 | `LAB` | runs host-supplied code from RAM; built only with `CODE_LAB` |
+| 0x89 | `SWD_GEN` | reports the generated SWD paths and sets the read latency they are generated for |
+| 0x8A | `JTAG_GEN` | the same for the generated JTAG and two-pin paths |
+| 0x8B | `JTAG_PACING` | switches the generated JTAG transfers' learned pacing |
+| 0x8C | `STAGE` | switches whether CPU 0 stages commands for CPU 1 |
+| 0x8D | `JTAG_LOG` | reads back the JTAG generator's log of what each generation was for |
+| 0x8E | `DIO` | drives and reads the Pro's DIO pins on J19 |
+
+`src/dap_vendor.c` has each command's bytes. Anything else in 0x80..0x9F answers `ID_DAP_Invalid` here. `DAP_ProcessCommand` returns what
 `DAP_ProcessVendorCommand` returns without inspecting it, so the rejection has to be written by the
 default case rather than left to the caller.
 
@@ -167,8 +179,8 @@ No open-source probe firmware implementing OScan1 end to end was found.
 
 ### In this repo
 
-- `external/tinyusb` — TinyUSB's master with one change for caller-owned vendor buffers, from a
-  fork until it is upstreamed.
+- `external/tinyusb` — TinyUSB's master with three changes (caller-owned vendor buffers, an
+  endpoint bounds check and placeholder endpoints), from a fork until they are upstreamed.
 - `external/CMSIS-DAP` — pinned at v2.1.2. `Firmware/Source` has DAP.c, SW_DP.c, JTAG_DP.c, SWO.c
   (not built: `src/swo.c` replaces it), UART.c and DAP_vendor.c; `Firmware/Examples/MCU-LINK/` has the board headers this started from.
 
