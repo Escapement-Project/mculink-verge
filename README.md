@@ -1,11 +1,11 @@
 # mculink-verge
 
-CMSIS-DAP firmware for the NXP MCU-Link, with IEEE 1149.7 two-pin cJTAG support that the stock
-firmware does not have.
+CMSIS-DAP firmware for the NXP MCU-Link, with IEEE 1149.7 two-pin cJTAG support, in the OScan1 and
+OScan2 formats, that the stock firmware does not have.
 
 ## Limits
 
-The fastest each transport runs, on the MCU-Link and the MCU-Link Pro alike, as of 2026-10-21,
+The fastest each transport runs, on the MCU-Link and the MCU-Link Pro alike, as of 2026-10-22,
 beside NXP's stock firmware on the same probe.
 This table is the record of where the firmware stands: a change that moves one of these limits
 updates it in the same commit, so the history of this table is the history of the optimisations.
@@ -15,7 +15,7 @@ updates it in the same commit, so the history of this table is the history of th
 | SWD writes | 50 MHz | Nothing | 10.7 MHz |
 | SWD reads | 37.5 MHz | Nothing | 9.6 MHz |
 | JTAG, four wires (reads and writes) | 30 MHz | The target's TDO delay | Not measured yet |
-| cJTAG, two pins (reads and writes) | 50 MHz per wire packet, 8.3 MHz per JTAG clock | The target's TDO delay | Not supported |
+| cJTAG, two pins (reads and writes) | 50 MHz per wire packet, 8.3 MHz per JTAG clock in Shift | The target's TDO delay | Not supported |
 | Console (VCOM) | 19.2 Mbaud | Nothing | 3 Mbaud or more; its limit not measured yet |
 | SWO | 30 Mbaud, UART encoding only | Nothing | Not measured yet |
 | USB | High speed, 512-byte packets, 3 commands held | Nothing | 512-byte packets, 8 commands reported |
@@ -34,7 +34,10 @@ fastest gets the fastest.
   and 11 after a system reset.
 - **cJTAG, two pins.** The wire carries packets at up to 50 MHz, and three packets make one JTAG
   clock. That frame takes 18 core cycles at the CC1312R1's delay of 8, or 8.3 MHz. A target with
-  a longer delay adds a cycle to the frame for each cycle of delay.
+  a longer delay adds a cycle to the frame for each cycle of delay. In OScan2, a clock outside
+  Shift-DR and Shift-IR is a single packet. Through probe-rs that reads a CC1312R1 4 to 7% faster
+  than OScan1. A host uses OScan2 where both the probe and the target offer it, and
+  `verge cjtag --oscan1-only` holds it to OScan1 until the probe restarts.
 - **Console.** A console loops back clean at 19.2 Mbaud, and so do both of the Pro's at once.
   That is the fastest rate the UART's clock can make. Above 10 Mbaud is past NXP's limit (below).
 - **Stock.** Its SWD figures are the data bits on the wire from 25 MHz asked, where they stop
@@ -148,7 +151,7 @@ four-wire JTAG at 50 MHz too. That directory's `known-overshoot.txt` records the
 OPTIMISATIONS.md.
 
 `tools/equiv.py` is the heavier check, for replacing code rather than tuning it. It drives two
-builds over 536 SWD block cases, 188 four-wire JTAG cases, 128 two-pin cases and, with
+builds over 536 SWD block cases, 188 four-wire JTAG cases, 128 two-pin cases in each format and, with
 `--command transfer`, 360 single-register cases -- every acknowledge a target can give, every
 turnaround length and chain layout, with and without the data phase and idle cycles, all sixteen
 address patterns, block sizes from one word to a full packet, and the match values, match masks and
