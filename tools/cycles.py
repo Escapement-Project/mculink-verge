@@ -658,8 +658,12 @@ class Machine:
         restart_at: set[int],
         model: "Model | None" = None,
         engine: "Engine | None" = None,
+        timed: bool = True,
     ):
         self.sym = symbols(elf)
+        # False runs every instruction untimed: the wire's events and levels without their cycles,
+        # which is all tools/equiv.py compares, at native speed.
+        self.timed = timed
         self.model = model or Model()
         # When set, issue and bus cycles come from tools/m33.py instead of the per-class model.
         if engine is None and self.model.engine:
@@ -726,8 +730,24 @@ class Machine:
             self.uc.mem_write(vma, bytes(self.uc.mem_read(lma, size)))
         # The only hook. unicorn 2.1.4 runs an IT block wrongly when a memory hook fires on a load
         # or store inside it, and has the next branch's target skip its first instruction, so
-        # nothing here hooks memory: see _code and _fresh.
-        self.uc.hook_add(UC_HOOK_CODE, self._code)
+        # nothing here hooks memory: see _code and _fresh. It is a Python call per instruction, so
+        # it is in place only while counting: a generated image's setup builds its code under it
+        # twenty times slower. emu_start's `until` stops a call at RETURN_MAGIC without it.
+        self._hook: int | None = None
+        if restart_at:
+            self._hook_code(True)
+
+    def _hook_code(self, on: bool) -> None:
+        if on == (self._hook is not None) or (not on and self.restart_at):
+            return
+        if on:
+            self._hook = self.uc.hook_add(UC_HOOK_CODE, self._code)
+        else:
+            self.uc.hook_del(self._hook)
+            self._hook = None
+        # A code hook is compiled into each translated block, so blocks translated before the
+        # change keep the old one.
+        self.uc.ctl_flush_tb()
 
     def _fresh(self, address: int, size: int) -> None:
         """Forgets an SRAMX instruction decoded from bytes that have since been rewritten."""
@@ -1095,11 +1115,13 @@ class Machine:
         self.counts = Counts()
         self.cycle = 0
         self.counting = True
+        self._hook_code(self.timed)
         if self.engine is not None:
             self.engine.reset()
 
     def end(self) -> Counts:
         self.counting = False
+        self._hook_code(False)
         if self.engine is not None:
             self.counts.span = self.cycle
         if isinstance(self.target, TimedSwdTarget):

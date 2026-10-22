@@ -19,7 +19,9 @@ than ARM's; the edges, the levels and the answer still have to match.
 """
 
 import argparse
+import concurrent.futures
 import itertools
+import os
 import sys
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
@@ -106,7 +108,7 @@ def run(
     bad_parity: bool,
     words: int = 2,
 ) -> tuple[list[str], bytes]:
-    probe = Machine(elf, SwdTarget(ack, word, bad_parity), restart_at=set(), model=Model())
+    probe = Machine(elf, SwdTarget(ack, word, bad_parity), restart_at=set(), model=Model(), timed=False)
     probe.resync_on_release = True
     probe.command(bytes([ID_CONNECT, 1]))
     probe.command(bytes([ID_SWJ_CLOCK]) + u32(CLOCK_HZ))
@@ -134,7 +136,7 @@ def run_jtag(
     # The acknowledge leaves the TAP in the order JTAG_Transfer reassembles it: first bit out is
     # ack[1], then ack[0], then ack[2]. Then the data word.
     dr = ((ack >> 1) & 1) | ((ack & 1) << 1) | (((ack >> 2) & 1) << 2) | (word << 3)
-    probe = Machine(elf, Target([]), restart_at=set(), model=Model())
+    probe = Machine(elf, Target([]), restart_at=set(), model=Model(), timed=False)
     probe.tap = JtagTap(dr, 35)
     probe.command(bytes([ID_CONNECT, 2]))
     probe.command(bytes([ID_JTAG_PACING, 0]))
@@ -161,7 +163,7 @@ def run_cjtag(
     anything in the firmware, so it stays in step with either compiled copy.
     """
     dr = ((ack >> 1) & 1) | ((ack & 1) << 1) | (((ack >> 2) & 1) << 2) | (word << 3)
-    probe = Machine(elf, Target([]), restart_at=set(), model=Model())
+    probe = Machine(elf, Target([]), restart_at=set(), model=Model(), timed=False)
     probe.command(bytes([ID_CONNECT, 2]))
     probe.command(bytes([ID_JTAG_PACING, 0]))
     probe.command(bytes([ID_SWJ_CLOCK]) + u32(50_000_000 if fast else 10_000_000))
@@ -198,7 +200,7 @@ def run_jtag_commands(
     are in BYPASS during a DR scan, one zero each ahead of its DR."""
     dr = (((ack >> 1) & 1) | ((ack & 1) << 1) | (((ack >> 2) & 1) << 2) | (word << 3)) << index
     two_pin = wire_name in TWO_PIN
-    probe = Machine(elf, Target([]), restart_at=set(), model=Model())
+    probe = Machine(elf, Target([]), restart_at=set(), model=Model(), timed=False)
     probe.command(bytes([ID_CONNECT, 2]))
     probe.command(bytes([ID_JTAG_PACING, 0]))
     probe.command(bytes([ID_JTAG_GEN, 0, 0, JTAG_GEN_PIN]))
@@ -260,7 +262,7 @@ def run_transfer(
     the firmware on a path of its own. Anyone rewriting DAP_SWD_Transfer needs these to pass as
     well as the block cases; the command is ARM's most intricate and the gate only sees its wire.
     """
-    probe = Machine(elf, SwdTarget(ack, word, False), restart_at=set(), model=Model())
+    probe = Machine(elf, SwdTarget(ack, word, False), restart_at=set(), model=Model(), timed=False)
     probe.resync_on_release = True
     probe.command(bytes([ID_CONNECT, 1]))
     probe.command(bytes([ID_SWJ_CLOCK]) + u32(CLOCK_HZ))
@@ -317,33 +319,63 @@ BLOCK_SIZES = (1, 3, 63, 127)
 WRITE_BLOCK_MAX = 126
 
 
-def sweep_sizes(reference: str, candidate: str, driver, verbose: bool) -> tuple[int, int]:
-    total = 0
-    failures = 0
+def size_cases(driver, **fixed) -> list[tuple]:
+    """A read and a write block at every size in BLOCK_SIZES, writes capped at WRITE_BLOCK_MAX, as
+    cases of `driver` with the arguments in `fixed`."""
+    cases = []
     for read in (True, False):
         for words in BLOCK_SIZES:
             words = words if read else min(words, WRITE_BLOCK_MAX)
-            total += 1
-            name = f"{'read' if read else 'write'} {words}-word block"
-            a = driver(reference, read, words)
-            b = driver(candidate, read, words)
-            if a[0] != b[0]:
-                first = next(
-                    (i for i, (x, y) in enumerate(zip(a[0], b[0])) if x != y),
-                    min(len(a[0]), len(b[0])),
-                )
-                print(f"  WIRE   {name}")
-                print(
-                    f"         diverges at event {first} of {len(a[0])}/{len(b[0])}:"
-                    f" {a[0][first : first + 6]} against {b[0][first : first + 6]}"
-                )
-                failures += 1
-            elif a[1] != b[1]:
-                print(f"  REPLY  {name}\n         {a[1].hex()} against {b[1].hex()}")
-                failures += 1
-            elif verbose:
-                print(f"  ok     {name}  ({len(a[0])} events, {len(a[1])}B reply)")
-    return total, failures
+            cases.append((f"{'read' if read else 'write'} {words}-word block", driver, (),
+                          {**fixed, "read": read, "words": words}))
+    return cases
+
+
+def set_globals(ignore_samples: bool, clock_hz: int) -> None:
+    global IGNORE_SAMPLES, CLOCK_HZ
+    IGNORE_SAMPLES = ignore_samples
+    CLOCK_HZ = clock_hz
+
+
+def compare_case(job: tuple) -> tuple[str, str | None, str]:
+    """Runs one case on both images: its name, what differed (None if nothing) and the verbose line."""
+    reference, candidate, (name, runner, args, kwargs) = job
+    a = runner(reference, *args, **kwargs)
+    b = runner(candidate, *args, **kwargs)
+    if a[0] != b[0]:
+        first = next((i for i, (x, y) in enumerate(zip(a[0], b[0])) if x != y), min(len(a[0]), len(b[0])))
+        return name, (f"  WIRE   {name}\n         diverges at event {first} of {len(a[0])}/{len(b[0])}:"
+                      f" {a[0][first : first + 6]} against {b[0][first : first + 6]}"), ""
+    if a[1] != b[1]:
+        return name, f"  REPLY  {name}\n         {a[1].hex()} against {b[1].hex()}", ""
+    return name, None, f"  ok     {name}  ({len(a[0])} events, {len(a[1])}B reply)"
+
+
+def jtag_command_cases(command: str) -> list[tuple]:
+    # Two TAPs as the CC13xx's ICEPick puts them, the DAP at either end, so the IR and DR scans
+    # cross bypass bits on both sides.
+    chains = ((4,), (4, 6))
+    cases = []
+    for ack, word, fast, idle, chain in itertools.product(
+        (0, 1, 2, 4, 7), (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF), (False, True), (0, 3), chains
+    ):
+        if command == "sequence":
+            for label, commands in cjtag_sequence_cases(word).items():
+                cases.append((f"{label} ack={ack} word=0x{word:08x} {'fast' if fast else 'paced'} idle={idle} chain={chain}",
+                              (ack, word, fast, idle, commands, chain)))
+        else:
+            for index in range(len(chain)):
+                for kind, payload in (
+                    ("read", bytes([ID_TRANSFER, index, 3]) + bytes([AP_DRW_READ]) * 3),
+                    ("write", bytes([ID_TRANSFER, index, 2]) + (bytes([AP_DRW_WRITE]) + u32(word)) * 2),
+                    ("dp", bytes([ID_TRANSFER, index, 2, 0x02, 0x06])),
+                    ("match", bytes([ID_TRANSFER, index, 2, 0x20]) + u32(0xFFFF0000) + bytes([0x1F]) + u32(word)),
+                    ("timestamped", bytes([ID_TRANSFER, index, 2, AP_DRW_READ | 0x80, AP_DRW_READ])),
+                    ("block", bytes([ID_TRANSFER_BLOCK, index]) + u16(3) + bytes([AP_DRW_READ])),
+                ):
+                    cases.append((f"{kind} index={index} ack={ack} word=0x{word:08x} {'fast' if fast else 'paced'} idle={idle} chain={chain}",
+                                  (ack, word, fast, idle, [payload], chain, index)))
+    return cases
 
 
 def main() -> int:
@@ -355,218 +387,69 @@ def main() -> int:
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--ignore-samples", action="store_true", help="compare without the SWDIO loads")
     ap.add_argument("--clock", type=float, default=10.0, help="SWD clock in MHz for the SWD cases")
+    ap.add_argument("--jobs", type=int, default=os.cpu_count(), help="processes to run the cases in")
     args = ap.parse_args()
-    global IGNORE_SAMPLES, CLOCK_HZ
-    IGNORE_SAMPLES = args.ignore_samples
-    CLOCK_HZ = int(args.clock * 1e6)
+    set_globals(args.ignore_samples, int(args.clock * 1e6))
 
-    def compare(name: str, a: tuple[list[str], bytes], b: tuple[list[str], bytes]) -> int:
-        if a[0] != b[0]:
-            first = next((i for i, (x, y) in enumerate(zip(a[0], b[0])) if x != y), min(len(a[0]), len(b[0])))
-            print(f"  WIRE   {name}")
-            print(
-                f"         diverges at event {first} of {len(a[0])}/{len(b[0])}:"
-                f" {a[0][first : first + 6]} against {b[0][first : first + 6]}"
-            )
-            return 1
-        if a[1] != b[1]:
-            print(f"  REPLY  {name}\n         {a[1].hex()} against {b[1].hex()}")
-            return 1
-        if args.verbose:
-            print(f"  ok     {name}  ({len(a[0])} events, {len(a[1])}B reply)")
-        return 0
-
+    # Each case: (name, runner, args, kwargs); the runner takes the image first.
     if args.wire in ("cjtag", "cjtag2", "jtag") and args.command != "block":
-        # Two TAPs as the CC13xx's ICEPick puts them, the DAP at either end, so the IR and DR
-        # scans cross bypass bits on both sides.
-        chains = ((4,), (4, 6))
-        cases = []
-        for ack, word, fast, idle, chain in itertools.product(
-            (0, 1, 2, 4, 7), (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF), (False, True), (0, 3), chains
-        ):
-            if args.command == "sequence":
-                for label, commands in cjtag_sequence_cases(word).items():
-                    cases.append((f"{label} ack={ack} word=0x{word:08x} {'fast' if fast else 'paced'} idle={idle} chain={chain}",
-                                  (ack, word, fast, idle, commands, chain)))
-            else:
-                for index in range(len(chain)):
-                    for kind, payload in (
-                        ("read", bytes([ID_TRANSFER, index, 3]) + bytes([AP_DRW_READ]) * 3),
-                        ("write", bytes([ID_TRANSFER, index, 2]) + (bytes([AP_DRW_WRITE]) + u32(word)) * 2),
-                        ("dp", bytes([ID_TRANSFER, index, 2, 0x02, 0x06])),
-                        ("match", bytes([ID_TRANSFER, index, 2, 0x20]) + u32(0xFFFF0000) + bytes([0x1F]) + u32(word)),
-                        ("timestamped", bytes([ID_TRANSFER, index, 2, AP_DRW_READ | 0x80, AP_DRW_READ])),
-                        ("block", bytes([ID_TRANSFER_BLOCK, index]) + u16(3) + bytes([AP_DRW_READ])),
-                    ):
-                        cases.append((f"{kind} index={index} ack={ack} word=0x{word:08x} {'fast' if fast else 'paced'} idle={idle} chain={chain}",
-                                      (ack, word, fast, idle, [payload], chain, index)))
-        two_pin = args.wire in TWO_PIN
-        failures = sum(
-            compare(
-                name,
-                run_jtag_commands(args.reference, args.wire, *case),
-                run_jtag_commands(args.candidate, args.wire, *case),
-            )
-            for name, case in cases
-        )
-        kind = "two-pin" if two_pin else "four-wire"
-        print(f"\n{len(cases) - failures}/{len(cases)} {kind} {args.command} cases identical on the wire and in the reply")
-        return 1 if failures else 0
-
-    if args.command == "transfer":
-        failures = 0
-        total = 0
+        cases = [(name, run_jtag_commands, (args.wire, *case), {}) for name, case in jtag_command_cases(args.command)]
+        summary = f"{'two-pin' if args.wire in TWO_PIN else 'four-wire'} {args.command} cases"
+    elif args.command == "transfer":
         kinds = ("read", "write", "match-hit", "match-miss", "timestamped", "address-sweep")
-        cases = itertools.product(ACKS, kinds, (1, 2), (0, 3), (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF))
-        for ack, kind, turnaround, idle, word in cases:
-            total += 1
-            name = f"ack={ack} {kind} turnaround={turnaround} idle={idle} word=0x{word:08x}"
-            a = run_transfer(args.reference, ack, kind, turnaround, idle, word)
-            b = run_transfer(args.candidate, ack, kind, turnaround, idle, word)
-            if a[0] != b[0]:
-                first = next(
-                    (i for i, (x, y) in enumerate(zip(a[0], b[0])) if x != y),
-                    min(len(a[0]), len(b[0])),
-                )
-                print(f"  WIRE   {name}")
-                print(
-                    f"         diverges at event {first} of {len(a[0])}/{len(b[0])}:"
-                    f" {a[0][first : first + 6]} against {b[0][first : first + 6]}"
-                )
-                failures += 1
-            elif a[1] != b[1]:
-                print(f"  REPLY  {name}\n         {a[1].hex()} against {b[1].hex()}")
-                failures += 1
-            elif args.verbose:
-                print(f"  ok     {name}  ({len(a[0])} events, {len(a[1])}B reply)")
-        print(f"\n{total - failures}/{total} DAP_Transfer cases identical on the wire and in the reply")
-        return 1 if failures else 0
-
-    if args.wire in TWO_PIN:
-        failures = 0
-        total = 0
-        cases = itertools.product(
-            (0, 1, 2, 4, 7), (True, False), (0, 3), (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF), (False, True)
-        )
-        for ack, read, idle, word, fast in cases:
-            total += 1
-            name = (
-                f"ack={ack} {'read' if read else 'write'} idle={idle} word=0x{word:08x}"
-                f" {'delay-free' if fast else 'paced'}"
-            )
-            a = run_cjtag(args.reference, ack, read, idle, word, fast, wire_name=args.wire)
-            b = run_cjtag(args.candidate, ack, read, idle, word, fast, wire_name=args.wire)
-            if a[0] != b[0]:
-                first = next(
-                    (i for i, (x, y) in enumerate(zip(a[0], b[0])) if x != y),
-                    min(len(a[0]), len(b[0])),
-                )
-                print(f"  WIRE   {name}")
-                print(
-                    f"         diverges at event {first} of {len(a[0])}/{len(b[0])}:"
-                    f" {a[0][first : first + 6]} against {b[0][first : first + 6]}"
-                )
-                failures += 1
-            elif a[1] != b[1]:
-                print(f"  REPLY  {name}\n         {a[1].hex()} against {b[1].hex()}")
-                failures += 1
-            elif args.verbose:
-                print(f"  ok     {name}  ({len(a[0])} events, {len(a[1])}B reply)")
-        extra, bad = sweep_sizes(
-            args.reference,
-            args.candidate,
-            lambda elf, read, words: run_cjtag(elf, 2, read, 0, 0xA5A5_5A5A, False, words, wire_name=args.wire),
-            args.verbose,
-        )
-        total += extra
-        failures += bad
-        print(f"\n{total - failures}/{total} two-pin cases identical on the wire and in the reply")
-        return 1 if failures else 0
-
-    if args.wire == "jtag":
-        failures = 0
-        total = 0
+        cases = [
+            (f"ack={ack} {kind} turnaround={turnaround} idle={idle} word=0x{word:08x}", run_transfer,
+             (ack, kind, turnaround, idle, word), {})
+            for ack, kind, turnaround, idle, word in itertools.product(
+                ACKS, kinds, (1, 2), (0, 3), (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF))
+        ]
+        summary = "DAP_Transfer cases"
+    elif args.wire in TWO_PIN:
+        cases = [
+            (f"ack={ack} {'read' if read else 'write'} idle={idle} word=0x{word:08x} {'delay-free' if fast else 'paced'}",
+             run_cjtag, (ack, read, idle, word, fast), {"wire_name": args.wire})
+            for ack, read, idle, word, fast in itertools.product(
+                (0, 1, 2, 4, 7), (True, False), (0, 3), (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF), (False, True))
+        ]
+        cases += size_cases(run_cjtag, ack=2, idle=0, word=0xA5A5_5A5A, fast=False, wire_name=args.wire)
+        summary = "two-pin cases"
+    elif args.wire == "jtag":
         # A chain of one never reaches the bypass branches, which is where a rewritten data phase
         # is least likely to be noticed. (2, 0) puts a bypass after the data, (2, 1) before it.
         chains = ((1, 0), (2, 0), (2, 1))
-        cases = itertools.product(
-            (0, 1, 2, 4, 7), (True, False), (0, 3), (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF), chains
-        )
-        for ack, read, idle, word, (count, index) in cases:
-            total += 1
-            name = (
-                f"ack={ack} {'read' if read else 'write'} idle={idle} word=0x{word:08x} chain={count}/{index}"
-            )
-            a = run_jtag(args.reference, ack, read, idle, word, count, index)
-            b = run_jtag(args.candidate, ack, read, idle, word, count, index)
-            if a[0] != b[0]:
-                first = next(
-                    (i for i, (x, y) in enumerate(zip(a[0], b[0])) if x != y),
-                    min(len(a[0]), len(b[0])),
-                )
-                print(f"  WIRE   {name}")
-                print(
-                    f"         diverges at event {first} of {len(a[0])}/{len(b[0])}:"
-                    f" {a[0][first : first + 6]} against {b[0][first : first + 6]}"
-                )
-                failures += 1
-            elif a[1] != b[1]:
-                print(f"  REPLY  {name}\n         {a[1].hex()} against {b[1].hex()}")
+        cases = [
+            (f"ack={ack} {'read' if read else 'write'} idle={idle} word=0x{word:08x} chain={count}/{index}",
+             run_jtag, (ack, read, idle, word, count, index), {})
+            for ack, read, idle, word, (count, index) in itertools.product(
+                (0, 1, 2, 4, 7), (True, False), (0, 3), (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF), chains)
+        ]
+        cases += size_cases(run_jtag, ack=2, idle=0, word=0xA5A5_5A5A, count=1, index=0)
+        summary = "JTAG cases"
+    else:
+        cases = [
+            (f"ack={ack} {'read' if read else 'write'} turnaround={turnaround} data_phase={int(data_phase)}"
+             f" idle={idle} word=0x{word:08x}{' bad-parity' if bad_parity else ''}",
+             run, (ack, read, turnaround, data_phase, idle, word, bad_parity), {})
+            for ack, read, turnaround, data_phase, idle, word in itertools.product(
+                ACKS, (True, False), (1, 2, 3, 4), (True, False), (0, 3), (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF))
+            for bad_parity in ((False, True) if (ack == "ok" and read) else (False,))
+        ]
+        cases += size_cases(run, ack="ok", turnaround=1, data_phase=False, idle=0, word=0xA5A5_5A5A,
+                            bad_parity=False)
+        summary = "cases"
+
+    jobs = [(args.reference, args.candidate, case) for case in cases]
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=args.jobs, initializer=set_globals, initargs=(IGNORE_SAMPLES, CLOCK_HZ)
+    ) as pool:
+        failures = 0
+        for _, failure, ok in pool.map(compare_case, jobs, chunksize=4):
+            if failure is not None:
+                print(failure)
                 failures += 1
             elif args.verbose:
-                print(f"  ok     {name}  ({len(a[0])} events, {len(a[1])}B reply)")
-        extra, bad = sweep_sizes(
-            args.reference,
-            args.candidate,
-            lambda elf, read, words: run_jtag(elf, 2, read, 0, 0xA5A5_5A5A, 1, 0, words),
-            args.verbose,
-        )
-        total += extra
-        failures += bad
-        print(f"\n{total - failures}/{total} JTAG cases identical on the wire and in the reply")
-        return 1 if failures else 0
-
-    cases = itertools.product(
-        ACKS, (True, False), (1, 2, 3, 4), (True, False), (0, 3), (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF)
-    )
-    failures = 0
-    total = 0
-    for ack, read, turnaround, data_phase, idle, word in cases:
-        for bad_parity in (False, True) if (ack == "ok" and read) else (False,):
-            total += 1
-            name = (
-                f"ack={ack} {'read' if read else 'write'} turnaround={turnaround}"
-                f" data_phase={int(data_phase)} idle={idle} word=0x{word:08x}"
-                f"{' bad-parity' if bad_parity else ''}"
-            )
-            a = run(args.reference, ack, read, turnaround, data_phase, idle, word, bad_parity)
-            b = run(args.candidate, ack, read, turnaround, data_phase, idle, word, bad_parity)
-            if a[0] != b[0]:
-                first = next(
-                    (i for i, (x, y) in enumerate(zip(a[0], b[0])) if x != y), min(len(a[0]), len(b[0]))
-                )
-                print(f"  WIRE   {name}")
-                print(
-                    f"         diverges at event {first} of {len(a[0])}/{len(b[0])}:"
-                    f" {a[0][first : first + 6]} against {b[0][first : first + 6]}"
-                )
-                failures += 1
-            elif a[1] != b[1]:
-                print(f"  REPLY  {name}")
-                print(f"         {a[1].hex()} against {b[1].hex()}")
-                failures += 1
-            elif args.verbose:
-                print(f"  ok     {name}  ({len(a[0])} events, {len(a[1])} byte reply)")
-
-    extra, bad = sweep_sizes(
-        args.reference,
-        args.candidate,
-        lambda elf, read, words: run(elf, "ok", read, 1, False, 0, 0xA5A5_5A5A, False, words),
-        args.verbose,
-    )
-    total += extra
-    failures += bad
-    print(f"\n{total - failures}/{total} cases identical on the wire and in the reply")
+                print(ok)
+    print(f"\n{len(cases) - failures}/{len(cases)} {summary} identical on the wire and in the reply")
     return 1 if failures else 0
 
 
