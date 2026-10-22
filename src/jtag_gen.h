@@ -46,7 +46,8 @@
 #define JTAG_GEN_TWO_PIN 1U // OScan1
 #define JTAG_GEN_OSCAN2 2U  // two-pin in OScan2: one TMS packet a clock outside Shift
 #define JTAG_GEN_OSCAN5 3U  // two-pin in OScan5: nTDI and TDO in Shift, leaving it by an escape
-#define JTAG_GEN_WIRES 4U
+#define JTAG_GEN_OSCAN6 4U  // two-pin in OScan6: OScan2 outside Shift, OScan5 in it; not generated yet
+#define JTAG_GEN_WIRES 5U
 /** The index of jtag_gen_latency a wire uses: every two-pin format reads the same TDO packet. */
 #define JTAG_GEN_PINS(wire) ((wire) == JTAG_GEN_FOUR_WIRE ? JTAG_GEN_FOUR_WIRE : JTAG_GEN_TWO_PIN)
 

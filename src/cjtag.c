@@ -9,6 +9,8 @@
 static bool active;
 static uint8_t format = CJTAG_OSCAN1;
 static uint8_t tap = CJTAG_TAP_IDLE;
+static bool last_shift;  // the frame before the last one clocked was in a Shift state
+static bool entered;     // the last frame clocked was a Shift state's first
 static uint32_t offered = CJTAG_FORMATS;
 
 bool cJTAG_Active(void) { return active; }
@@ -45,9 +47,13 @@ COMMAND_PATH bool cJTAG_TapShift(void) { return (tap == CJTAG_TAP_SHIFT_DR) || (
 
 COMMAND_PATH bool cJTAG_TapClock(uint32_t tms) {
     const bool shift = cJTAG_TapShift();
+    entered = shift && !last_shift;
+    last_shift = shift;
     tap = tap_next[tap][tms & 1U];
     return shift;
 }
+
+COMMAND_PATH bool cJTAG_TapEntered(void) { return entered; }
 
 /** One half-period of whatever clock the host asked for. */
 #define CJTAG_DELAY() PIN_DELAY_SLOW(DAP_Data.clock_delay)
@@ -87,6 +93,8 @@ bool cJTAG_Enter(uint32_t scan_format, uint32_t tap_state) {
     PIN_SWDIO_OUT_ENABLE();
     format = (uint8_t)scan_format;
     tap = (uint8_t)tap_state;
+    // A host that leaves the TAP in a Shift state was clocking it there.
+    last_shift = cJTAG_TapShift();
     active = true;
     return true;
 }
@@ -94,7 +102,7 @@ bool cJTAG_Enter(uint32_t scan_format, uint32_t tap_state) {
 void cJTAG_Deactivate(void) {
     // After DAP_Disconnect the pins are the target's again, and a frame would take them back.
     // OScan5's frames all carry TDO, so its TAP has advanced by the end of each.
-    if (active && (format == CJTAG_OSCAN2) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {
+    if (active && ((format == CJTAG_OSCAN2) || (format == CJTAG_OSCAN6)) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {
         if (tap == CJTAG_TAP_RESET) {
             (void)cJTAG_FrameTap(1U, 1U);
         } else if (tap == CJTAG_TAP_IDLE) {
@@ -155,11 +163,11 @@ CJTAG_FRAME_FUNCTION(Fast, PIN_DELAY_FAST())
 
 uint32_t cJTAG_FrameTap(uint32_t tms, uint32_t tdi) {
     const bool shift = cJTAG_TapClock(tms);
-    if ((format == CJTAG_OSCAN2) && !shift) {
+    if (((format == CJTAG_OSCAN2) || (format == CJTAG_OSCAN6)) && !shift) {
         CJTAG_PACKET(tms, CJTAG_DELAY());
         return 1U;
     }
-    if ((format == CJTAG_OSCAN5) && shift) {
+    if (((format == CJTAG_OSCAN5) || (format == CJTAG_OSCAN6)) && shift) {
         PIN_SWDIO_OUT(tdi ^ 1U);
         CJTAG_DELAY();
         PIN_SWCLK_TCK_SET();
@@ -181,6 +189,10 @@ uint32_t cJTAG_FrameTap(uint32_t tms, uint32_t tdi) {
             CJTAG_DELAY();
         }
         PIN_SWCLK_TCK_CLR();
+        if ((format == CJTAG_OSCAN6) && entered) {
+            // The PAD packet, at nTDI's level, so that it moves nothing.
+            CJTAG_PACKET(tdi ^ 1U, CJTAG_DELAY());
+        }
     } else {
         CJTAG_PACKET(tdi ^ 1U, CJTAG_DELAY());
         CJTAG_PACKET(tms, CJTAG_DELAY());

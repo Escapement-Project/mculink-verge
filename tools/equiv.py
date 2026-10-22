@@ -176,6 +176,7 @@ def run_cjtag(
     probe.cjtag_tap = JtagTap(dr, 35)
     probe.cjtag_oscan2 = wire_name == "cjtag2"
     probe.cjtag_oscan5 = wire_name == "cjtag5"
+    probe.cjtag_oscan6 = wire_name == "cjtag6"
 
     payload = bytes([ID_TRANSFER_BLOCK, 0]) + u16(words) + bytes([AP_DRW_READ if read else AP_DRW_WRITE])
     if not read:
@@ -216,6 +217,7 @@ def run_jtag_commands(
         probe.cjtag_tap = JtagTap(dr, 35 + index)
         probe.cjtag_oscan2 = wire_name == "cjtag2"
         probe.cjtag_oscan5 = wire_name == "cjtag5"
+        probe.cjtag_oscan6 = wire_name == "cjtag6"
     else:
         probe.tap = JtagTap(dr, 35 + index)
     probe.begin()
@@ -390,7 +392,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("reference")
     ap.add_argument("candidate")
-    ap.add_argument("--wire", choices=["swd", "jtag", "cjtag", "cjtag2", "cjtag5"], default="swd")
+    ap.add_argument("--wire", choices=["swd", "jtag", "cjtag", "cjtag2", "cjtag5", "cjtag6"], default="swd")
     ap.add_argument("--command", choices=["block", "transfer", "sequence"], default="block")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--ignore-samples", action="store_true", help="compare without the SWDIO loads")
@@ -400,7 +402,7 @@ def main() -> int:
     set_globals(args.ignore_samples, int(args.clock * 1e6))
 
     # Each case: (name, runner, args, kwargs); the runner takes the image first.
-    if args.wire in ("cjtag", "cjtag2", "cjtag5", "jtag") and args.command != "block":
+    if args.wire in ("cjtag", "cjtag2", "cjtag5", "cjtag6", "jtag") and args.command != "block":
         cases = [(name, run_jtag_commands, (args.wire, *case), {}) for name, case in jtag_command_cases(args.command)]
         summary = f"{'two-pin' if args.wire in TWO_PIN else 'four-wire'} {args.command} cases"
     elif args.command == "transfer":

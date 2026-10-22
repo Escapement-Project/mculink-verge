@@ -2,7 +2,7 @@
  *
  * ARM's JTAG_DP.c is compiled several times, with its five entry points renamed each time: once
  * normally as `jtag4_*`, and through src/cjtag_jtag_dp.c as `cjtag_*`, `cjtagf_*` and `cjtagt_*`,
- * where the wire layer is replaced by OScan1, OScan2 or OScan5 frames (src/jtag_dp.h). This file owns the
+ * where the wire layer is replaced by OScan1, OScan2, OScan5 or OScan6 frames (src/jtag_dp.h). This file owns the
  * real names and picks a path once per call, so no path carries a per-bit branch and none
  * duplicates another's TAP logic.
  */
@@ -45,6 +45,8 @@ uint32_t jtag_gen_wire(void) {
         return JTAG_GEN_OSCAN2;
     case CJTAG_OSCAN5:
         return JTAG_GEN_OSCAN5;
+    case CJTAG_OSCAN6:
+        return JTAG_GEN_OSCAN6;
     default:
         return JTAG_GEN_TWO_PIN;
     }

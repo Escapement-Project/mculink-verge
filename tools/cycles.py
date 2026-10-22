@@ -409,13 +409,14 @@ class IdcodeTap(RecordingTap):
 
 
 class TimedCjtagTarget:
-    """A two-pin target (IEEE 1149.7, OScan1, OScan2 or OScan5) that answers by time.
+    """A two-pin target (IEEE 1149.7, OScan1, OScan2, OScan5 or OScan6) that answers by time.
 
     A JTAG clock is three TCKC packets; with `oscan2`, only in Shift-DR and Shift-IR, and one TMS
     packet everywhere else, with nothing driven back. With `oscan5`, two in Shift, nTDI and TDO,
     whose TMS is 1 only when TMSC moves twice while TCKC is high in the nTDI packet, an EOT escape
     (1149.7 Figure 25-11); each of those edges, and the fall after them, has to come `escape_gap`
-    cycles or more after the one before. The target reads nTDI and TMS on the rising edges of the
+    cycles or more after the one before. With `oscan6`, OScan2's frames outside Shift and OScan5's
+    in it, the first after entering Shift with a PAD packet between nTDI and TDO. The target reads nTDI and TMS on the rising edges of the
     first two (the activation sets SEDGE=1), and drives TDO in the third: on the probe's pin from
     `latency` cycles after the falling edge that starts that packet, until `hold` cycles after the
     falling edge that ends it (CJTAGGEN.md, measured on a CC1312R1). A read outside that sees
@@ -428,11 +429,14 @@ class TimedCjtagTarget:
     """
 
     def __init__(self, tap: "RecordingTap", latency: int = 8, hold: int = 7, release_by: int = 3,
-                 oscan2: bool = False, oscan5: bool = False, escape_gap: int = 0):
+                 oscan2: bool = False, oscan5: bool = False, escape_gap: int = 0, oscan6: bool = False):
         self.tap = tap
         self.latency, self.hold, self.release_by = latency, hold, release_by
-        self.oscan2 = oscan2
-        self.oscan5, self.escape_gap = oscan5, escape_gap
+        self.oscan2 = oscan2 or oscan6  # one TMS packet outside Shift
+        self.oscan5, self.escape_gap = oscan5 or oscan6, escape_gap  # two packets in it
+        self.oscan6 = oscan6
+        self.prev_shift = False  # the last frame was in a Shift state
+        self.pad = False  # the frame under way has OScan6's PAD packet, still to come
         self.shift5 = False  # the frame under way is OScan5's two packets in Shift
         self.rose_at = 0
         self.escape: list[int] = []
@@ -480,8 +484,13 @@ class TimedCjtagTarget:
             return
         self.single = self.packet == 0 and self.oscan2 and self.tap.state not in ("shdr", "shir")
         if self.packet == 0:
-            self.shift5 = self.oscan5 and self.tap.state in ("shdr", "shir")
+            shift = self.tap.state in ("shdr", "shir")
+            self.shift5 = self.oscan5 and shift
+            self.pad = self.oscan6 and shift and not self.prev_shift
+            self.prev_shift = shift
             self.rose_at, self.escape = cycle, []
+        elif self.packet == 1 and self.pad:
+            return  # OScan6's PAD packet carries nothing
         if self.packet == 0 and not self.single:
             self.tdi = 1 - int(driven)
             return
@@ -513,7 +522,10 @@ class TimedCjtagTarget:
             if self.tap.state == "tlr":
                 self.problems.append(f"frame {self.frames} entered Test-Logic-Reset, which drops OScan1")
             self.packet = 1
+            if self.pad:
+                return  # the PAD packet comes before TDO's
         if self.packet == 1:
+            self.pad = False
             self.tdo_fall = cycle
             self.drive_from, self.drive_until = cycle + self.latency, None
         elif self.packet == 2:
@@ -722,6 +734,9 @@ class Machine:
         self.cjtag_tap: "JtagTap | None" = None
         self.cjtag_oscan2 = False
         self.cjtag_oscan5 = False
+        self.cjtag_oscan6 = False
+        self._prev_shift = False  # the last frame was in a Shift state
+        self._pad = False  # OScan6's PAD packet comes next
         self._shift5 = False  # OScan5's two-packet frame in Shift is under way
         self._escape = 0  # TMSC moves while TCKC is high in that frame's nTDI packet
         self._packet = 0
@@ -1002,11 +1017,17 @@ class Machine:
                 # the frame's TDO, the bit the TMS packet's clock shifted out, through the whole
                 # packet, so a sample after its rising edge reads the same bit as one before.
                 # OScan2 outside Shift sends TMS alone, and the target drives nothing.
-                single = self.cjtag_oscan2 and self._packet == 0 and self.cjtag_tap.state not in ("shdr", "shir")
+                shift = self.cjtag_tap.state in ("shdr", "shir")
+                single = (self.cjtag_oscan2 or self.cjtag_oscan6) and self._packet == 0 and not shift
+                pad = self._pad and self._packet == 1
                 if self._packet == 0:
-                    self._shift5 = self.cjtag_oscan5 and self.cjtag_tap.state in ("shdr", "shir")
+                    self._shift5 = (self.cjtag_oscan5 or self.cjtag_oscan6) and shift
+                    self._pad = self.cjtag_oscan6 and shift and not self._prev_shift
+                    self._prev_shift = shift
                     self._escape = 0
-                if single:
+                if pad:
+                    self._pad = False  # OScan6's PAD packet carries nothing
+                elif single:
                     self._frame_tdo = 1
                     self.cjtag_tap.clock((self.level >> PIN_SWDIO) & 1)
                     self._packet = 2
@@ -1181,10 +1202,10 @@ def u16(v: int) -> bytes:
     return v.to_bytes(2, "little")
 
 
-# The two-pin wires: OScan1, and OScan2 and OScan5, which the probe frames from vendor 0x83 mode 3
+# The two-pin wires: OScan1, and OScan2, 5 and 6, which the probe frames from vendor 0x83 mode 3
 # with the TAP in Run-Test/Idle. OScan1's checks turn it on with OpenOCD's activation (mode 1) where they
 # always have, and a host's way (mode 2) where they always have.
-TWO_PIN = ("cjtag", "cjtag2", "cjtag5")
+TWO_PIN = ("cjtag", "cjtag2", "cjtag5", "cjtag6")
 
 
 def cjtag_enter(wire: str, activate: bool) -> bytes:
@@ -1192,6 +1213,8 @@ def cjtag_enter(wire: str, activate: bool) -> bytes:
         return bytes([ID_CJTAG_CONTROL, 3, 10, 1])
     if wire == "cjtag5":
         return bytes([ID_CJTAG_CONTROL, 3, 13, 1])
+    if wire == "cjtag6":
+        return bytes([ID_CJTAG_CONTROL, 3, 14, 1])
     return bytes([ID_CJTAG_CONTROL, 1 if activate else 2])
 
 
@@ -1234,6 +1257,7 @@ def build(elf: str, wire: str, read: bool, model: Model) -> Machine:
         probe.cjtag_tap = JtagTap(JTAG_DR_OK, 35)
         probe.cjtag_oscan2 = wire == "cjtag2"
         probe.cjtag_oscan5 = wire == "cjtag5"
+        probe.cjtag_oscan6 = wire == "cjtag6"
     return probe
 
 
@@ -1516,7 +1540,8 @@ def timed_idcode_target(elf: str, model: Model, wire: str, latency: int, hz: int
         # Framing on without an activation, where a host leaves the wire after driving it.
         probe.command(cjtag_enter(wire, False))
     tap = IdcodeTap(JTAG_DR_OK | (JTAG_WORD << 3), 35, DAP_IDCODE)
-    probe.target = (TimedCjtagTarget(tap, latency=latency, oscan2=wire == "cjtag2", oscan5=wire == "cjtag5")
+    probe.target = (TimedCjtagTarget(tap, latency=latency, oscan2=wire == "cjtag2", oscan5=wire == "cjtag5",
+                                     oscan6=wire == "cjtag6")
                     if wire in TWO_PIN
                     else TimedJtagTarget(tap, latency=latency))
     return probe
@@ -1616,7 +1641,7 @@ def calibrate(elf: str, wire: str, words: int, cpu_hz: int, model: Model, config
     return 0
 
 
-CHECK_WIRES = ("swd", "jtag", "cjtag", "cjtag2", "cjtag5")
+CHECK_WIRES = ("swd", "jtag", "cjtag", "cjtag2", "cjtag5", "cjtag6")
 CHECK_CLOCKS = (1, 5, 10, 20, 50)
 BASELINE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "baseline")
 
@@ -1732,6 +1757,7 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
         ("cjtag", "jtag-sequence", bytes([ID_JTAG_SEQUENCE, 2, 0x08, 0xA5, 0x80 | 0x40 | 0x08, 0x3C])),
         ("cjtag2", "jtag-sequence", bytes([ID_JTAG_SEQUENCE, 2, 0x08, 0xA5, 0x80 | 0x40 | 0x08, 0x3C])),
         ("cjtag5", "jtag-sequence", bytes([ID_JTAG_SEQUENCE, 2, 0x08, 0xA5, 0x80 | 0x40 | 0x08, 0x3C])),
+        ("cjtag6", "jtag-sequence", bytes([ID_JTAG_SEQUENCE, 2, 0x08, 0xA5, 0x80 | 0x40 | 0x08, 0x3C])),
     ):
         probe = Machine(elf, Target([0, 1] * 64), restart_at=set(), model=model)
         probe.command(bytes([ID_CONNECT, 1 if wire == "swd" else 2]))
@@ -1755,7 +1781,7 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
     # DAP_Transfer, which is how a host reaches a single register and most of what an attach is
     # made of. src/dap_dispatch.c routes every command, and until this nothing but the block was
     # checked, so a mistake in the forwarding would have been invisible.
-    for wire, port in (("swd", 1), ("jtag", 2), ("cjtag", 2), ("cjtag2", 2), ("cjtag5", 2)):
+    for wire, port in (("swd", 1), ("jtag", 2), ("cjtag", 2), ("cjtag2", 2), ("cjtag5", 2), ("cjtag6", 2)):
         for label, payload in (
             ("transfer-read", bytes([ID_TRANSFER, 0, 4]) + bytes([0x0F]) * 4),
             ("transfer-write", bytes([ID_TRANSFER, 0, 2]) + (bytes([0x0D]) + u32(0xA5A5_5A5A)) * 2),
@@ -1912,7 +1938,7 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("elf", nargs="?", default="build/mculink_cjtag_core1.elf", help="CPU 1's image")
-    ap.add_argument("--wire", choices=["swd", "jtag", "cjtag", "cjtag2", "cjtag5"], default="swd")
+    ap.add_argument("--wire", choices=["swd", "jtag", "cjtag", "cjtag2", "cjtag5", "cjtag6"], default="swd")
     ap.add_argument("--words", type=int, default=16, help="words in the measured DAP_TransferBlock")
     ap.add_argument(
         "--clock", type=float, nargs="*", default=[1, 5, 10, 14, 25, 50], help="requested wire clocks, MHz"

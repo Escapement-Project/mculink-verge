@@ -316,6 +316,20 @@ registers.
   against three), and 6% at 50 MHz, where the TDO latency sets most of a Shift frame (16 core cycles
   against OScan1's 18 at latency 8) and USB starts to bound the rest.
 
+## OScan6 on ARM's path (2026-10-22)
+
+- `cJTAG_FrameTap` frames OScan6: OScan2's single TMS packet outside Shift, OScan5's nTDI and TDO
+  in it with the EOT escape for TMS 1, and in the first Shift frame after one outside it a PAD
+  packet between nTDI and TDO (rule 25.4.2 g, Figure 25-12), driven at nTDI's level so that it
+  moves nothing. The tracker says which frame that is (`cJTAG_TapEntered`). Its frames outside
+  Shift carry no TDO, so detach sends OScan2's trailing frame. `JTAG_GEN_OSCAN6` (4) is refused by
+  the generator for now. dap.py `--format 14`: ECL then 5 raw clocks (a one-bit SP and the CP).
+- Bench (CJ6B19D4E7, robust attach): CPUID, the 96-bit DR pattern, 64-word blocks 20/20 at 1 to 50
+  MHz. Decoded: 927 frames using all 2125 rises,
+  30 EOT escapes for 30 Shift exits, 30 PAD packets for 30 Shift entries, no stray edge.
+- Emulator: both target models take `cjtag6`; the timed one passes ARM's path at 1 to 25 MHz and
+  fails it when the probe frames OScan5 instead (no PAD), so the PAD is checked.
+
 ## Architecture
 
 - **One JTAG transfer scheduler**, two clock emitters. A transfer is the TAP walk

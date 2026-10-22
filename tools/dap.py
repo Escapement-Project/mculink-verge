@@ -1130,7 +1130,7 @@ def latencies(mask: int) -> str:
 
 
 # The generator's wires, JTAG_GEN_* (src/jtag_gen.h).
-JLOG_WIRES = ("four-wire", "OScan1", "OScan2", "OScan5")
+JLOG_WIRES = ("four-wire", "OScan1", "OScan2", "OScan5", "OScan6")
 
 
 def describe_sweep(sweep: dict, cpu_hz: int = 150_000_000, word: str = "DPIDR") -> str:
@@ -2017,7 +2017,7 @@ def main() -> int:
     cjtag.add_argument("--ti-prefix", default="",
                        help="--ti: steps first: eN escape, hN/lN TMS-high/low clocks; 'jlink' = e10,h200,l2,e7,l36")
     cjtag.add_argument("--ti-from", type=int, default=0, help="--ti: skip TI's first N steps")
-    cjtag.add_argument("--format", type=int, default=OSCAN1, help="--ti: scan format (SCNFMT) to end in: 9 OScan1, 10 OScan2, 13 OScan5")
+    cjtag.add_argument("--format", type=int, default=OSCAN1, help="--ti: scan format (SCNFMT) to end in: 9 OScan1, 10 OScan2, 13 OScan5, 14 OScan6")
     cjtag.add_argument("--switch", choices=("command", "jscan"), default="command",
                        help="--format: select it with an OScan1 command before the window closes, or in JScan")
     cjtag.add_argument("--escape-a", type=int, default=10, help="synth: edges in the first escape")
