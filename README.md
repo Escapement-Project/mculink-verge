@@ -12,15 +12,15 @@ commands.
 ## Limits
 
 These are saved figures, measured or reported on 2026-10-20 and 2026-10-21. The SWD rows show the
-normal firmware path from build `4a7ca13`, measured beside stock V3.172. A separate 2026-10-21
-experiment reached 50 MHz SWD reads with a timer-driven path, but that change was removed. None of
+normal firmware path measured beside stock V3.172 on 2026-10-20. A separate experiment on
+2026-10-21 reached 50 MHz SWD reads with a timer-driven path, but that change was removed. None of
 these figures measures this source revision. The [bench results](https://github.com/Escapement-Project/mculink-bench#measured-2026-10-20-ours-with-gcc-and-clang-against-stock-v3172)
 record the builds and methods.
 
 | Transport | Ours | Evidence | Ours depends on | NXP's stock V3.172 |
 | --- | --- | --- | --- | --- |
-| SWD writes | 50 MHz | Bench, normal path, build `4a7ca13` | Nothing | 10.7 MHz |
-| SWD reads | 37.5 MHz | Bench, normal path, build `4a7ca13` | Nothing | 9.6 MHz |
+| SWD writes | 50 MHz | Bench, normal path, 2026-10-20 | Nothing | 10.7 MHz |
+| SWD reads | 37.5 MHz | Bench, normal path, 2026-10-20 | Nothing | 9.6 MHz |
 | JTAG, four wires (reads and writes) | 30 MHz | Bench and firmware timing report | The target's TDO delay | Not measured yet |
 | cJTAG, two pins (reads and writes) | 50 MHz per wire packet; per JTAG clock in Shift, 8.3 MHz in OScan1 and OScan2, 9.4 MHz in OScan5 and OScan6 | Firmware timing report; target-dependent | The target's TDO delay | Not supported |
 | Console (VCOM) | 19.2 Mbaud | Bench loopback | Nothing | 3 Mbaud or more; its limit not measured yet |

@@ -20,10 +20,9 @@ target power, energy measurement and analog trace are not implemented.
 ## Performance figures
 
 The [limits table](README.md#limits) labels each figure by its evidence. Its SWD values come from
-the 2026-10-20 normal-path comparison using build `4a7ca13`; they do not measure the current source
-revision. A separate timer-driven read experiment on build `34431f1` reached 50 MHz, then was
-removed. The J-Link results are a separate probe and target comparison and do not replace an
-MCU-Link run.
+the 2026-10-20 normal-path comparison; they do not measure the current source revision. A separate
+timer-driven read experiment on 2026-10-21 reached 50 MHz, then was removed. The J-Link results are
+a separate probe and target comparison and do not replace an MCU-Link run.
 
 The firmware reports its maximum SWO baud as 30 Mbaud. Bench captures reached 30 Mbaud on the full
 MCU-Link and 24 Mbaud on the Pro. The Pro result is limited by the available trace source, which
