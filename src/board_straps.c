@@ -77,7 +77,7 @@ typedef struct {
     uint32_t boards;
 } image_boards_t;
 
-_Static_assert(sizeof(image_boards_t) == 16U, "verge reads sixteen bytes at format 1");
+static_assert(sizeof(image_boards_t) == 16U, "verge reads sixteen bytes at format 1");
 
 __attribute__((section(".image_boards"), used)) const image_boards_t image_boards = {
     .magic = {'V', 'E', 'R', 'G', 'E', 'I', 'M', 'G'},

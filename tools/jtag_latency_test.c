@@ -32,7 +32,7 @@ static void try_latency(uint32_t period, uint32_t latency, struct latency_try* o
     struct jtag_gen_config config = config_for(t->wire, period, latency);
     config.earliest = 1U;
     jtag_gen_scan_fn scan;
-    if (!jtag_gen_build(&config, &scan, NULL, NULL)) {
+    if (!jtag_gen_build(&config, &scan, nullptr, nullptr)) {
         return;
     }
     out->generated = true;
@@ -65,7 +65,7 @@ static void test_safe_period(void) {
         struct jtag_gen_config config = config_for(w, JTAG_GEN_SAFE_PERIOD, LATENCY_MAX);
         config.earliest = 1U;
         jtag_gen_scan_fn scan;
-        assert(jtag_gen_build(&config, &scan, NULL, NULL));
+        assert(jtag_gen_build(&config, &scan, nullptr, nullptr));
         assert(jtag_gen_info.scan_last >= (int32_t)LATENCY_MAX);
     }
 }
@@ -87,7 +87,7 @@ static void test_same_below(void) {
                     jtag_gen_scan_fn scan;
                     jtag_gen_xfer_fn read;
                     jtag_gen_xfer_fn write;
-                    const bool built = scan_only ? jtag_gen_build(&config, &scan, NULL, NULL)
+                    const bool built = scan_only ? jtag_gen_build(&config, &scan, nullptr, nullptr)
                                                  : jtag_gen_build(&config, &scan, &read, &write);
                     if (!built) {
                         continue;

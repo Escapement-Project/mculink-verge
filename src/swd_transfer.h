@@ -24,7 +24,7 @@
 
 /* The generator resolved five `#if (TIMESTAMP_CLOCK != 0U)` blocks by keeping their bodies, so
  * the generated code is only correct while that holds. */
-_Static_assert(TIMESTAMP_CLOCK != 0U, "swd_transfer.h was generated with timestamps enabled");
+static_assert(TIMESTAMP_CLOCK != 0U, "swd_transfer.h was generated with timestamps enabled");
 
 #define SWD_TRANSFER_FUNCTION(name, xfer) \
 static uint32_t name(const uint8_t *request, uint8_t *response) {                                           \
@@ -110,7 +110,7 @@ static uint32_t name(const uint8_t *request, uint8_t *response) {               
           /* Post AP read */                                                                                \
           retry = DAP_Data.transfer.retry_count;                                                            \
           do {                                                                                              \
-            response_value = xfer(request_value, NULL);                                                     \
+            response_value = xfer(request_value, nullptr);                                                  \
           } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort);                 \
           if (response_value != DAP_TRANSFER_OK) {                                                          \
             break;                                                                                          \
@@ -140,7 +140,7 @@ static uint32_t name(const uint8_t *request, uint8_t *response) {               
           if (post_read == 0U) {                                                                            \
             /* Post AP read */                                                                              \
             do {                                                                                            \
-              response_value = xfer(request_value, NULL);                                                   \
+              response_value = xfer(request_value, nullptr);                                                \
             } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort);               \
             if (response_value != DAP_TRANSFER_OK) {                                                        \
               break;                                                                                        \
@@ -268,7 +268,7 @@ static uint32_t name(const uint8_t *request, uint8_t *response) {               
       /* Check last write */                                                                                \
       retry = DAP_Data.transfer.retry_count;                                                                \
       do {                                                                                                  \
-        response_value = xfer(DP_RDBUFF | DAP_TRANSFER_RnW, NULL);                                          \
+        response_value = xfer(DP_RDBUFF | DAP_TRANSFER_RnW, nullptr);                                       \
       } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort);                     \
     }                                                                                                       \
   }                                                                                                         \

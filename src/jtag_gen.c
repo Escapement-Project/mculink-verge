@@ -61,11 +61,11 @@
 #define TMSC (1U << TMS_PIN)
 #define TXEN (1U << DBGIF_TMS_SWDIO_TXEN_PIN)
 
-_Static_assert((DBGIF_TCK_SWCLK_PORT == 0U) && (DBGIF_TMS_SWDIO_PORT == 0U) && (DBGIF_TMS_SWDIO_TXEN_PORT == 0U) &&
+static_assert((DBGIF_TCK_SWCLK_PORT == 0U) && (DBGIF_TMS_SWDIO_PORT == 0U) && (DBGIF_TMS_SWDIO_TXEN_PORT == 0U) &&
                    (DBGIF_TDI_PORT == 0U) && (DBGIF_TDO_SWO_PORT == 0U),
                "the generated code reaches port 0 only");
-_Static_assert(TCK == 1U, "R_ONE is the clock mask and also the 1 a byte-register store takes");
-_Static_assert((TMSC < 256U) && (TDI < 256U), "R_PIN is loaded as an 8-bit immediate");
+static_assert(TCK == 1U, "R_ONE is the clock mask and also the 1 a byte-register store takes");
+static_assert((TMSC < 256U) && (TDI < 256U), "R_PIN is loaded as an 8-bit immediate");
 
 #define PORT_BASE ((uint32_t)&DBGIF_GPIO->MPIN[0])
 #define PORT_OFFSET(field) ((uint32_t)(offsetof(GPIO_Type, field) - offsetof(GPIO_Type, MPIN)))
@@ -404,6 +404,9 @@ static void patch_const(struct gen_emitter* e, uint32_t at, uint32_t rd, uint32_
 }
 
 static bool emit_scan(struct gen_emitter* e, const struct block* b, bool two_pin) {
+    if (b->blocks == 0U) {
+        return false;
+    }
     gen_emit(e, t_push(0x4FF0U)); // r4-r11, lr
     gen_load_const(e, R_GPIO, (uint32_t)DBGIF_GPIO);
     gen_load_const(e, R_PORT, PORT_BASE);
@@ -1386,7 +1389,7 @@ bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan
     const bool oscan5 = (config->wire == JTAG_GEN_OSCAN5) || oscan6;
     static struct block b;
     const bool earliest = config->earliest != 0U;
-    if (earliest && (read != NULL)) {
+    if (earliest && (read != nullptr)) {
         return false;
     }
     if (!(two_pin ? layout_two_pin(&b, config->period, config->latency, earliest, SHAPE_THREE)
@@ -1458,7 +1461,7 @@ bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan
     // Unrolled where that fits in JTAG_GEN_UNROLLED_MAX, which leaves the fastest clocks the fewest
     // instructions; the data bits in a loop otherwise; unrolled into the whole region where the
     // loop does not fit either.
-    for (uint32_t loop = 0U; (read != NULL) && (loop < 3U) && !transfers; loop++) {
+    for (uint32_t loop = 0U; (read != nullptr) && (loop < 3U) && !transfers; loop++) {
         xc.loop = loop == 1U;
         e.cap = loop == 0U ? JTAG_GEN_UNROLLED_MAX / 4U : JTAG_GEN_SIZE / 4U;
         e.pos = scan_end;
@@ -1490,19 +1493,19 @@ bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan
         .write_last = transfers ? (int32_t)xs.offset : scan_last,
         // Transfers that did not fit at this latency might at a lower one.
         .same_below =
-            (!scan_bound && ((read == NULL) || (transfers && !read_bound && !xs.bound))) ? config->latency + 1U : 0U,
+            (!scan_bound && ((read == nullptr) || (transfers && !read_bound && !xs.bound))) ? config->latency + 1U : 0U,
     };
     // The code was written as data; the core has to fetch what is there now.
     __DSB();
     __ISB();
     *scan = (jtag_gen_scan_fn)(JTAG_GEN_BASE + 4U * scan_at + 1U);
-    jtag_gen_tms = oscan2 ? (jtag_gen_scan_fn)(JTAG_GEN_BASE + 4U * tms_at + 1U) : NULL;
-    jtag_gen_shift = oscan5 ? (jtag_gen_scan_fn)(JTAG_GEN_BASE + 4U * shift_at + 1U) : NULL;
-    jtag_gen_eot = oscan5 ? (jtag_gen_scan_fn)(JTAG_GEN_BASE + 4U * eot_at + 1U) : NULL;
-    jtag_gen_eot_pad = oscan6 ? (jtag_gen_scan_fn)(JTAG_GEN_BASE + 4U * eot_pad_at + 1U) : NULL;
-    if (read != NULL) {
-        *read = transfers ? (jtag_gen_xfer_fn)(JTAG_GEN_BASE + 4U * read_at + 1U) : NULL;
-        *write = transfers ? (jtag_gen_xfer_fn)(JTAG_GEN_BASE + 4U * write_at + 1U) : NULL;
+    jtag_gen_tms = oscan2 ? (jtag_gen_scan_fn)(JTAG_GEN_BASE + 4U * tms_at + 1U) : nullptr;
+    jtag_gen_shift = oscan5 ? (jtag_gen_scan_fn)(JTAG_GEN_BASE + 4U * shift_at + 1U) : nullptr;
+    jtag_gen_eot = oscan5 ? (jtag_gen_scan_fn)(JTAG_GEN_BASE + 4U * eot_at + 1U) : nullptr;
+    jtag_gen_eot_pad = oscan6 ? (jtag_gen_scan_fn)(JTAG_GEN_BASE + 4U * eot_pad_at + 1U) : nullptr;
+    if (read != nullptr) {
+        *read = transfers ? (jtag_gen_xfer_fn)(JTAG_GEN_BASE + 4U * read_at + 1U) : nullptr;
+        *write = transfers ? (jtag_gen_xfer_fn)(JTAG_GEN_BASE + 4U * write_at + 1U) : nullptr;
     }
     return true;
 }
@@ -1648,13 +1651,13 @@ static __attribute__((noinline)) bool regenerate(uint32_t wire, bool transfers) 
     built_transfers = transfers;
     gen_owner = GEN_OWNER_JTAG;
     jtag_gen_info.ok = false;
-    struct saved_build* hit = NULL;
+    struct saved_build* hit = nullptr;
     for (uint32_t i = 0U; i < SAVED_BUILDS; i++) {
         if (saved[i].valid && (memcmp(&want, &saved[i].config, sizeof want) == 0)) {
             hit = &saved[i];
         }
     }
-    if (hit != NULL) {
+    if (hit != nullptr) {
         memcpy((void*)JTAG_GEN_BASE, hit->code, hit->info.code_bytes);
         __DSB();
         __ISB();
@@ -1675,10 +1678,10 @@ static __attribute__((noinline)) bool regenerate(uint32_t wire, bool transfers) 
         return true;
     }
     // A scan-only build writes over the transfers the last one left.
-    jtag_gen_read = NULL;
-    jtag_gen_write = NULL;
-    built_ok = jtag_gen_build(&want, &jtag_gen_scan, transfers ? &jtag_gen_read : NULL,
-                              transfers ? &jtag_gen_write : NULL);
+    jtag_gen_read = nullptr;
+    jtag_gen_write = nullptr;
+    built_ok = jtag_gen_build(&want, &jtag_gen_scan, transfers ? &jtag_gen_read : nullptr,
+                              transfers ? &jtag_gen_write : nullptr);
     entry->cycles = TIMESTAMP_GET() - entry->at;
     entry->flags |= built_ok ? JTAG_GEN_LOG_OK : 0U;
     if (built_ok) {

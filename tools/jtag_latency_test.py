@@ -37,7 +37,7 @@ def main() -> int:
             if shutil.which(compiler) is None:
                 raise SystemExit(f"{compiler} is not installed")
             executable = os.path.join(work, compiler)
-            run([compiler, "-std=c11", "-O2", "-fsanitize=address,undefined", "-fno-sanitize-recover=all", *GEN_BASE,
+            run([compiler, "-std=gnu23", "-O2", "-fsanitize=address,undefined", "-fno-sanitize-recover=all", *GEN_BASE,
                  "-I.", "jtag_gen.c", "gen.c", "jtag_latency_test.c", "-o", executable], work, os.environ.copy())
             env = os.environ.copy()
             env["ASAN_OPTIONS"] = ":".join(filter(None, (env.get("ASAN_OPTIONS"), "detect_leaks=0")))

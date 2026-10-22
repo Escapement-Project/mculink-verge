@@ -194,8 +194,8 @@ uint8_t const* tud_descriptor_configuration_cb(uint8_t index) {
 static char const* string_desc[] = {
     [0] = (const char[]){0x09, 0x04}, // English (US)
     [1] = DAP_VENDOR_NAME,
-    [2] = NULL,                          // the product, which names the board: DAP_ProductName
-    [3] = NULL,                          // serial, filled in from the part's unique id
+    [2] = nullptr,                       // the product, which names the board: DAP_ProductName
+    [3] = nullptr,                       // serial, filled in from the part's unique id
     [STRID_VENDOR_ITF] = "CMSIS-DAP v2", // the prefix host tools match on
     [STRID_VCOM] = "Verge VCOM",
     [STRID_HID] = "CMSIS-DAP v1", // the same prefix, on the HID interface
@@ -213,7 +213,7 @@ uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
         count = 1;
     } else {
         if (index >= TU_ARRAY_SIZE(string_desc)) {
-            return NULL;
+            return nullptr;
         }
         char const* text = (index == 2)   ? DAP_ProductName(dap_shared.board)
                            : (index == 3) ? GetSerialNum()
@@ -243,7 +243,7 @@ static uint8_t const desc_bos[] = {
     TUD_BOS_MS_OS_20_DESCRIPTOR(MS_OS_20_DESC_LEN, VENDOR_REQUEST_MICROSOFT),
 };
 
-uint8_t const* tud_descriptor_bos_cb(void) { return ((functions() & FUNCTION_DEBUG) != 0U) ? desc_bos : NULL; }
+uint8_t const* tud_descriptor_bos_cb(void) { return ((functions() & FUNCTION_DEBUG) != 0U) ? desc_bos : nullptr; }
 
 // clang-format off: the layout mirrors the descriptor structure, which is the only thing that
 // makes these bytes readable.

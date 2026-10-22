@@ -7,7 +7,7 @@
 #include "dap_shared.h"
 #include "marker.h"
 
-_Static_assert(DBGIF_TCK_SWCLK_PORT == DBGIF_PORT && DBGIF_TDI_PORT == DBGIF_PORT &&
+static_assert(DBGIF_TCK_SWCLK_PORT == DBGIF_PORT && DBGIF_TDI_PORT == DBGIF_PORT &&
                    DBGIF_TMS_SWDIO_PORT == DBGIF_PORT && DBGIF_TDO_SWO_PORT == DBGIF_PORT &&
                    DBGIF_TMS_SWDIO_TXEN_PORT == DBGIF_PORT && DBGIF_RESET_PORT == DBGIF_PORT &&
                    DBGIF_RESET_TXEN_PORT == DBGIF_PORT && DBGIF_ISP_CTRL_PORT == DBGIF_PORT,

@@ -88,7 +88,7 @@
 /// The id, the magic, the version, the flags, the length, the board and the scan formats, around
 /// the build string. A v1 HID report holds 64 bytes, and a longer reply loses its last fields.
 #define CJTAG_INFO_FIXED 14U
-_Static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID_REPORT_SIZE,
+static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID_REPORT_SIZE,
                "the build string pushes vendor 0x82's last fields out of a HID report");
 
 /// Two-pin OScan1 JTAG is implemented. Cleared on an on-board MCU-Link, where nobody has framed

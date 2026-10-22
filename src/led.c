@@ -34,7 +34,7 @@
  *  so the status LED's heartbeat is not mistaken for it. */
 #define LED_BREATH_SHIFT 11U
 
-_Static_assert((LED_RAMP_SHIFT >= 9U) && (LED_BREATH_SHIFT >= 9U), "a ramp has 256 steps of at least a tick");
+static_assert((LED_RAMP_SHIFT >= 9U) && (LED_BREATH_SHIFT >= 9U), "a ramp has 256 steps of at least a tick");
 
 /** How long a flicker inverts an LED, then how long it leaves it alone before activity can invert
  *  it again: 32 ticks, 65 ms each. Steady traffic flickers at 7.6 Hz. */

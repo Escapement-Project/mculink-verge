@@ -28,8 +28,8 @@
  *
  *---------------------------------------------------------------------------*/
 
-#ifndef __DAP_CONFIG_H__
-#define __DAP_CONFIG_H__
+#ifndef DAP_CONFIG_H_
+#define DAP_CONFIG_H_
 
 
 //**************************************************************************************************
@@ -696,4 +696,4 @@ __STATIC_INLINE uint8_t RESET_TARGET (void) {
 ///@}
 
 
-#endif /* __DAP_CONFIG_H__ */
+#endif /* DAP_CONFIG_H_ */

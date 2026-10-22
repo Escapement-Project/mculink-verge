@@ -11,7 +11,7 @@ static int semihost(int op, const void* arg) {
 }
 void out(const char* s) { semihost(0x04, s); }
 
-__attribute__((noreturn)) void reset(void) {
+[[noreturn]] void reset(void) {
     // The FPU on, as the firmware's SystemInit leaves it: the compilers use its registers anyway.
     *(volatile uint32_t*)0xE000ED88U |= (3U << 20) | (3U << 22); // CPACR: CP10 and CP11
     __asm__ volatile("dsb\n isb" ::: "memory");
@@ -21,7 +21,7 @@ __attribute__((noreturn)) void reset(void) {
     semihost(0x18, (const void*)0x20026); /* ADP_Stopped_ApplicationExit */
     for (;;) {}
 }
-__attribute__((noreturn)) static void fault(void) {
+[[noreturn]] static void fault(void) {
     out("FAULT\n");
     semihost(0x18, (const void*)0x20023); /* ADP_Stopped_RunTimeErrorUnknown */
     for (;;) {}

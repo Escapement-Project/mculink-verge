@@ -373,7 +373,7 @@ COMMAND_PATH uint32_t SWD_TransferCommand(const uint8_t* request, uint8_t* respo
                 /* Post AP read */                                                                        \
                 retry = DAP_Data.transfer.retry_count;                                                    \
                 do {                                                                                      \
-                    response_value = SWD_Transfer##speed(request_value, NULL);                            \
+                    response_value = SWD_Transfer##speed(request_value, nullptr);                       \
                 } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort);         \
                 if (response_value != DAP_TRANSFER_OK) {                                                  \
                     goto read_done;                                                                       \
@@ -428,7 +428,7 @@ COMMAND_PATH uint32_t SWD_TransferCommand(const uint8_t* request, uint8_t* respo
             /* Check last write */                                                                        \
             retry = DAP_Data.transfer.retry_count;                                                        \
             do {                                                                                          \
-                response_value = SWD_Transfer##speed(SWD_WithParity(DP_RDBUFF | DAP_TRANSFER_RnW), NULL); \
+                response_value = SWD_Transfer##speed(SWD_WithParity(DP_RDBUFF | DAP_TRANSFER_RnW), nullptr);\
             } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort);             \
         }                                                                                                 \
                                                                                                           \
@@ -556,7 +556,7 @@ static inline uint8_t transfer_one(const struct transfer_fns* fns, uint32_t requ
     }
     const uint32_t ack = (uint32_t)fn(swd_gen_packet(request), (uint8_t*)&word, 1U);
     if (ack == DAP_TRANSFER_OK) {
-        if (((request & DAP_TRANSFER_RnW) != 0U) && (data != NULL)) {
+        if (((request & DAP_TRANSFER_RnW) != 0U) && (data != nullptr)) {
             *data = word;
         }
         if ((request & DAP_TRANSFER_TIMESTAMP) != 0U) {

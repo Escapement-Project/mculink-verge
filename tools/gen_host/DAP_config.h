@@ -46,13 +46,13 @@ typedef struct {
     volatile uint32_t DIRCLR[4];
 } GPIO_Type;
 
-_Static_assert(offsetof(GPIO_Type, W) == 0x1000, "LPC55S69 GPIO layout");
-_Static_assert(offsetof(GPIO_Type, MASK) == 0x2080, "LPC55S69 GPIO layout");
-_Static_assert(offsetof(GPIO_Type, MPIN) == 0x2180, "LPC55S69 GPIO layout");
-_Static_assert(offsetof(GPIO_Type, SET) == 0x2200, "LPC55S69 GPIO layout");
-_Static_assert(offsetof(GPIO_Type, CLR) == 0x2280, "LPC55S69 GPIO layout");
-_Static_assert(offsetof(GPIO_Type, DIRSET) == 0x2380, "LPC55S69 GPIO layout");
-_Static_assert(offsetof(GPIO_Type, DIRCLR) == 0x2400, "LPC55S69 GPIO layout");
+static_assert(offsetof(GPIO_Type, W) == 0x1000, "LPC55S69 GPIO layout");
+static_assert(offsetof(GPIO_Type, MASK) == 0x2080, "LPC55S69 GPIO layout");
+static_assert(offsetof(GPIO_Type, MPIN) == 0x2180, "LPC55S69 GPIO layout");
+static_assert(offsetof(GPIO_Type, SET) == 0x2200, "LPC55S69 GPIO layout");
+static_assert(offsetof(GPIO_Type, CLR) == 0x2280, "LPC55S69 GPIO layout");
+static_assert(offsetof(GPIO_Type, DIRSET) == 0x2380, "LPC55S69 GPIO layout");
+static_assert(offsetof(GPIO_Type, DIRCLR) == 0x2400, "LPC55S69 GPIO layout");
 
 #define GPIO_ADDR 0x38180000U
 #define GPIO ((GPIO_Type*)GPIO_ADDR)

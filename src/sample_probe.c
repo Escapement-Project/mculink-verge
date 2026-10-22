@@ -55,7 +55,7 @@
 
 // The filler's repeat count in the asm, which has to be a bare number.
 #define FILL_REPT 32
-_Static_assert(FILL_REPT == SAMPLE_FILL_MAX, "the asm filler and SAMPLE_FILL_MAX disagree");
+static_assert(FILL_REPT == SAMPLE_FILL_MAX, "the asm filler and SAMPLE_FILL_MAX disagree");
 #define STR_(x) #x
 #define STR(x) STR_(x)
 
@@ -85,7 +85,7 @@ struct timing {
 
 // CLR sits 0x80 past SET in every port's block, which lets one base register reach both.
 #define GPIO_CLR_OFFSET 0x80
-_Static_assert(offsetof(GPIO_Type, CLR) - offsetof(GPIO_Type, SET) == GPIO_CLR_OFFSET,
+static_assert(offsetof(GPIO_Type, CLR) - offsetof(GPIO_Type, SET) == GPIO_CLR_OFFSET,
                "the GPIO layout the clock stores assume");
 #define ASM_RISE "str %[clk], [%[gpio]]\n\t"
 #define ASM_FALL "str %[clk], [%[gpio], #" STR(GPIO_CLR_OFFSET) "]\n\t"

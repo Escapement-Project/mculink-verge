@@ -133,11 +133,11 @@ COMMAND_PATH static uint32_t frames(uint32_t tdi, uint32_t count, uint32_t tms) 
     // Which formats the code was generated for: jtag_gen_tms for OScan2, jtag_gen_eot for OScan5,
     // and both for OScan6.
     uint32_t tdo;
-    if ((jtag_gen_tms != NULL) && (jtag_gen_eot != NULL)) {
+    if ((jtag_gen_tms != nullptr) && (jtag_gen_eot != nullptr)) {
         tdo = frames_oscan6(tdi, count, tms);
-    } else if (jtag_gen_tms != NULL) {
+    } else if (jtag_gen_tms != nullptr) {
         tdo = frames_oscan2(tdi, count, tms);
-    } else if (jtag_gen_eot != NULL) {
+    } else if (jtag_gen_eot != nullptr) {
         tdo = frames_oscan5(tdi, count, tms);
     } else {
         tdo = jtag_gen_scan(tdi, count, tms);
@@ -248,8 +248,8 @@ void jgen_WriteAbort(uint32_t data) {
  * a frame's shape depends on where the TAP is, so a host that left it elsewhere gets the scans,
  * which follow the tracked state. */
 static bool transfers_fit(void) {
-    return (jtag_gen_read != NULL) &&
-           (((jtag_gen_tms == NULL) && (jtag_gen_eot == NULL)) || (cJTAG_Tap() == CJTAG_TAP_IDLE));
+    return (jtag_gen_read != nullptr) &&
+           (((jtag_gen_tms == nullptr) && (jtag_gen_eot == nullptr)) || (cJTAG_Tap() == CJTAG_TAP_IDLE));
 }
 
 /** One generated transfer, where they exist. */
@@ -264,7 +264,7 @@ static uint8_t transfer_one(uint32_t request, uint32_t* data) {
     if (ack == DAP_TRANSFER_WAIT) {
         jtag_gen_waited();
     }
-    if ((ack == DAP_TRANSFER_OK) && ((request & DAP_TRANSFER_RnW) != 0U) && (data != NULL)) {
+    if ((ack == DAP_TRANSFER_OK) && ((request & DAP_TRANSFER_RnW) != 0U) && (data != nullptr)) {
         *data = word;
     }
     if ((request & DAP_TRANSFER_TIMESTAMP) != 0U) {
@@ -290,7 +290,7 @@ COMMAND_PATH uint8_t jgen_Transfer(uint32_t request, uint32_t* data) {
     } else if ((request & DAP_TRANSFER_RnW) != 0U) {
         uint32_t val = frames(held(), 31U, 0U); // D0..D30
         val |= last_bit(tdi_now()) << 31;
-        if (data != NULL) {
+        if (data != nullptr) {
             *data = val;
         }
     } else {

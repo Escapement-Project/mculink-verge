@@ -55,10 +55,10 @@
 #define SWDIO (1U << SWDIO_PIN)
 #define TXEN (1U << DBGIF_TMS_SWDIO_TXEN_PIN)
 
-_Static_assert((DBGIF_TCK_SWCLK_PORT == 0U) && (DBGIF_TMS_SWDIO_PORT == 0U) && (DBGIF_TMS_SWDIO_TXEN_PORT == 0U),
+static_assert((DBGIF_TCK_SWCLK_PORT == 0U) && (DBGIF_TMS_SWDIO_PORT == 0U) && (DBGIF_TMS_SWDIO_TXEN_PORT == 0U),
                "the generated code reaches port 0 only");
-_Static_assert(SWCLK == 1U, "R_ONE is the clock mask and also the 1 a byte-register store takes");
-_Static_assert(SWDIO < 256U, "R_FOUR is loaded as an 8-bit immediate");
+static_assert(SWCLK == 1U, "R_ONE is the clock mask and also the 1 a byte-register store takes");
+static_assert(SWDIO < 256U, "R_FOUR is loaded as an 8-bit immediate");
 
 #define PORT_BASE ((uint32_t)&DBGIF_GPIO->MPIN[0])
 #define PORT_OFFSET(field) ((uint32_t)(offsetof(GPIO_Type, field) - offsetof(GPIO_Type, MPIN)))

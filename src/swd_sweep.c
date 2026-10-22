@@ -100,14 +100,14 @@ static bool short_margin(void) {
     return false;
 }
 
-/** The target the last line reset selected, among those measured, or NULL. */
+/** The target the last line reset selected, among those measured, or nullptr. */
 static struct known* known_target(void) {
     for (uint32_t i = 0U; i < known_count; i++) {
         if ((known[i].multidrop == swd_sweep_line.multidrop) && (known[i].targetsel == swd_sweep_line.targetsel)) {
             return &known[i];
         }
     }
-    return NULL;
+    return nullptr;
 }
 
 /** Measures for the target the last line reset selected, and keeps what it found. A target that
@@ -119,7 +119,7 @@ static void measure_target(void) {
         return;
     }
     struct known* target = known_target();
-    if (target == NULL) {
+    if (target == nullptr) {
         target = &known[known_count < KNOWN_TARGETS ? known_count++ : KNOWN_TARGETS - 1U];
     }
     *target = (struct known){swd_sweep_line.multidrop, swd_sweep_line.targetsel, swd_gen_latency};
@@ -158,7 +158,7 @@ __attribute__((noinline)) uint32_t swd_sweep_connect(const uint8_t* request, uin
     }
     bool measured = false;
     const struct known* target = known_target();
-    if (target != NULL) {
+    if (target != nullptr) {
         if (target->latency != swd_gen_latency) {
             swd_gen_latency = target->latency;
             swd_gen_changed();

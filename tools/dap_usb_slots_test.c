@@ -52,7 +52,7 @@ static void test_rx_completion_during_arm(void) {
     uint8_t tail = 0U;
     volatile uint8_t armed = 0U;
     uint16_t request_len[SLOT_COUNT] = {0};
-    struct completion_context context = {NULL, &armed, &tail, request_len, SLOT_COUNT, true};
+    struct completion_context context = {nullptr, &armed, &tail, request_len, SLOT_COUNT, true};
 
     assert(dap_usb_arm_rx(true, tail, &armed, complete_rx, &context));
     assert(armed == 0U);
@@ -67,7 +67,7 @@ static void test_rx_completion_during_arm(void) {
 
 static void test_tx_completion_during_start(void) {
     volatile bool busy = false;
-    struct completion_context context = {&busy, NULL, NULL, NULL, SLOT_COUNT, true};
+    struct completion_context context = {&busy, nullptr, nullptr, nullptr, SLOT_COUNT, true};
 
     assert(dap_usb_start_tx(&busy, 2U, 64U, complete_tx, &context));
     assert(!busy);
@@ -275,7 +275,7 @@ static void test_shared_state_initialization(void) {
         assert(dap_usb_slot_free(state.hid_request_len, (uint8_t)i));
     }
     assert(state.response_head == 0U && state.response_tail == 0U);
-    assert(state.transfer_abort == NULL);
+    assert(state.transfer_abort == nullptr);
     assert(state.reboot_mode == REBOOT_NONE);
     assert(state.stage_commands == 1U);
 }

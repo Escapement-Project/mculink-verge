@@ -129,7 +129,7 @@ def shared_offsets(request_slots: int, *fields: str, small_enums: bool = True) -
     with tempfile.TemporaryDirectory() as tmp:
         c_file, obj, raw = (os.path.join(tmp, n) for n in ("layout.c", "layout.o", "layout.bin"))
         open(c_file, "w").write(source)
-        subprocess.run(["arm-none-eabi-gcc", "-mthumb", "-mcpu=cortex-m33", f"-DREQUEST_SLOTS={request_slots}U",
+        subprocess.run(["arm-none-eabi-gcc", "-std=gnu23", "-mthumb", "-mcpu=cortex-m33", f"-DREQUEST_SLOTS={request_slots}U",
                         "-fshort-enums" if small_enums else "-fno-short-enums",
                         f"-I{os.path.join(ROOT, 'src')}", "-c", c_file, "-o", obj], check=True)
         subprocess.run(["arm-none-eabi-objcopy", "-O", "binary", "-j", ".rodata", obj, raw], check=True)

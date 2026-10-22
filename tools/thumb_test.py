@@ -92,7 +92,7 @@ def main() -> int:
             for expr, _ in CASES:
                 fh.write(f'    printf("%08x\\n", (unsigned)({expr}));\n')
             fh.write("    return 0;\n}\n")
-        subprocess.run(["cc", "-std=c11", "-Wall", "-Werror", "-I", SRC, "-o", exe, c], check=True)
+        subprocess.run(["cc", "-std=gnu23", "-Wall", "-Werror", "-I", SRC, "-o", exe, c], check=True)
         words = [int(line, 16) for line in subprocess.run([exe], capture_output=True, text=True, check=True).stdout.split()]
 
         src = os.path.join(tmp, "t.s")

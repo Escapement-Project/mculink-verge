@@ -29,7 +29,7 @@ static void try_latency(uint32_t period, uint32_t latency, struct latency_try* o
     config.period = period;
     config.earliest = 1U;
     // jgen_ReadIDCode clocks through jtag_gen_scan.
-    if (!jtag_gen_build(&config, &jtag_gen_scan, NULL, NULL)) {
+    if (!jtag_gen_build(&config, &jtag_gen_scan, nullptr, nullptr)) {
         return;
     }
     out->generated = true;

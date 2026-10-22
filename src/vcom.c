@@ -80,11 +80,11 @@ static const vcom_uart_t vcom2_uart = {
  *  1.6 ms behind before it loses the oldest bytes. */
 #define VCOM_RX_SEGMENTS 4U
 #define VCOM_RX_RING_BYTES (VCOM_RX_SEGMENTS * DMA_RING_SEGMENT_BYTES)
-_Static_assert(VCOM_RX_SEGMENTS >= 3U, "dma_ring_resync needs three segments");
+static_assert(VCOM_RX_SEGMENTS >= 3U, "dma_ring_resync needs three segments");
 
 /** A send is as much as TinyUSB holds from the host, in one descriptor. */
 #define VCOM_TX_BYTES CFG_TUD_CDC_RX_BUFSIZE
-_Static_assert(VCOM_TX_BYTES <= DMA_RING_SEGMENT_BYTES, "a send is one descriptor");
+static_assert(VCOM_TX_BYTES <= DMA_RING_SEGMENT_BYTES, "a send is one descriptor");
 
 #define VCOM_RX_XFERCFG                                                                             \
     (DMA_CHANNEL_XFERCFG_CFGVALID_MASK | DMA_CHANNEL_XFERCFG_RELOAD_MASK |                          \

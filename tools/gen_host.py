@@ -44,7 +44,7 @@ def run(args: list[str], cwd: str, merge: bool = False, env: dict[str, str] | No
 
 def host(cc: str, work: str) -> str:
     exe = os.path.join(work, f"host-{cc}")
-    run([cc, "-g", "-O2", "-fsanitize=address,undefined", "-fno-sanitize-recover=all", *GEN_BASE, "-I.",
+    run([cc, "-std=gnu23", "-g", "-O2", "-fsanitize=address,undefined", "-fno-sanitize-recover=all", *GEN_BASE, "-I.",
          "swd_gen.c", "jtag_gen.c", "gen.c", "gen_main.c", "host_main.c", "-o", exe], work)
     env = os.environ.copy()
     env["ASAN_OPTIONS"] = ":".join(filter(None, (env.get("ASAN_OPTIONS"), "detect_leaks=0")))
@@ -54,13 +54,13 @@ def host(cc: str, work: str) -> str:
 def qemu(cc: str, work: str) -> str:
     elf = os.path.join(work, f"qemu-{cc}.elf")
     if cc == "gcc":
-        compile_ = ["arm-none-eabi-gcc", *M33, *GEN_BASE, "-I."]
+        compile_ = ["arm-none-eabi-gcc", "-std=gnu23", *M33, *GEN_BASE, "-I."]
         lto = ["-flto=auto", "-fno-fat-lto-objects"]
         libc = ["-ffreestanding", "-fno-builtin", "-fno-tree-loop-distribute-patterns"]
         link = ["arm-none-eabi-gcc", *M33, "-flto=auto", "-nostdlib", "-Wl,-T,qemu.ld", "-Wl,--gc-sections"]
         libs = ["-lgcc"]
     else:
-        compile_ = ["clang", "--target=arm-none-eabi", *M33, *GEN_BASE, "-I."]
+        compile_ = ["clang", "-std=gnu23", "--target=arm-none-eabi", *M33, *GEN_BASE, "-I."]
         lto = ["-flto=thin"]
         libc = ["-ffreestanding", "-fno-builtin"]
         link = ["clang", "--target=arm-none-eabi", *M33, "-flto=thin", "-nostdlib", "-fuse-ld=lld",

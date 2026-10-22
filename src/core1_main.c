@@ -23,8 +23,8 @@
 #include "reboot.h"
 #include "target_sense.h"
 
-_Static_assert(DAP_PACKET_SIZE == DAP_SHARED_PACKET_SIZE, "dap_shared.h repeats DAP_PACKET_SIZE");
-_Static_assert(DAP_RESPONSE_SIZE == DAP_SHARED_RESPONSE_SIZE, "dap_shared.h repeats DAP_RESPONSE_SIZE");
+static_assert(DAP_PACKET_SIZE == DAP_SHARED_PACKET_SIZE, "dap_shared.h repeats DAP_PACKET_SIZE");
+static_assert(DAP_RESPONSE_SIZE == DAP_SHARED_RESPONSE_SIZE, "dap_shared.h repeats DAP_RESPONSE_SIZE");
 
 dap_shared_t dap_shared __attribute__((section(".dap_shared")));
 dap_stage_t dap_stage __attribute__((section(".dap_stage")));
@@ -159,8 +159,8 @@ COMMAND_PATH static bool dap_task(void) {
 
 /** Every exception CPU 1 takes is a fault: it runs with interrupts off. Record it where CPU 0 can
  *  report it over USB, then stop. `frame` is the stacked exception frame, from core1_start.S. */
-__attribute__((noreturn, used)) void core1_fault(const uint32_t* frame);
-__attribute__((noreturn, used)) void core1_fault(const uint32_t* frame) {
+[[noreturn]] __attribute__((used)) void core1_fault(const uint32_t* frame);
+[[noreturn]] __attribute__((used)) void core1_fault(const uint32_t* frame) {
     dap_shared.core1.cfsr = SCB->CFSR;
     dap_shared.core1.hfsr = SCB->HFSR;
     dap_shared.core1.bfar = SCB->BFAR;
@@ -190,7 +190,7 @@ __attribute__((noinline, section(".data_core1_wait"))) static void wait_for_mail
 }
 
 /** Run each request CPU 0 publishes, and wait for the next. */
-__attribute__((noreturn)) COMMAND_PATH static void serve(void) {
+[[noreturn]] COMMAND_PATH static void serve(void) {
     for (;;) {
         if (dap_task()) {
             continue;
@@ -205,7 +205,7 @@ __attribute__((noreturn)) COMMAND_PATH static void serve(void) {
 }
 
 /** Bring the DAP up, then wait for CPU 0 to publish another request. */
-__attribute__((noreturn)) void core1_main(void) {
+[[noreturn]] void core1_main(void) {
     board_timestamp_init();
     DAP_Setup();
     target_sense_init();

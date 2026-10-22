@@ -93,8 +93,8 @@ typedef uint64_t (*jtag_gen_xfer_fn)(uint32_t request, uint8_t* words, uint32_t 
 
 /** Generates for `config` into SRAMX: the scan function, OScan2's and OScan6's TMS packets
  * (jtag_gen_tms), OScan5's and OScan6's Shift frames (jtag_gen_shift, jtag_gen_eot,
- * jtag_gen_eot_pad), then the read and write transfers if they fit, NULL where they do not. With
- * `read` and `write` NULL, no transfers. False if the
+ * jtag_gen_eot_pad), then the read and write transfers if they fit, nullptr where they do not. With
+ * `read` and `write` nullptr, no transfers. False if the
  * configuration is out of range or the scan function does not fit, in which case nothing generated
  * earlier is usable either. */
 bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan, jtag_gen_xfer_fn* read,
@@ -106,7 +106,7 @@ extern uint32_t jtag_gen_clock_hz;
 extern uint32_t jtag_gen_latency[2];
 
 extern jtag_gen_scan_fn jtag_gen_scan;
-/** NULL when they did not fit: ARM's transfers then run as scans. */
+/** nullptr when they did not fit: ARM's transfers then run as scans. */
 extern jtag_gen_xfer_fn jtag_gen_read;
 extern jtag_gen_xfer_fn jtag_gen_write;
 
@@ -156,7 +156,7 @@ extern uint8_t jtag_gen_command;
 bool jtag_gen_ready(uint32_t wire);
 /** jtag_gen_ready with the transfers too, where they fit. jtag_gen_ready alone builds the scans, so a
  * framing switch or a new configuration costs no transfer generation until a transfer needs one;
- * a scan-only build leaves jtag_gen_read and jtag_gen_write NULL, though code kept or restored with
+ * a scan-only build leaves jtag_gen_read and jtag_gen_write nullptr, though code kept or restored with
  * its transfers for a scan-only request leaves them set. */
 bool jtag_gen_ready_transfers(uint32_t wire);
 

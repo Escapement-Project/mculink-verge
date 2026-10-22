@@ -59,7 +59,7 @@ BANNER = '''/*
 
 /* The generator resolved five `#if (TIMESTAMP_CLOCK != 0U)` blocks by keeping their bodies, so
  * the generated code is only correct while that holds. */
-_Static_assert(TIMESTAMP_CLOCK != 0U, "swd_transfer.h was generated with timestamps enabled");
+static_assert(TIMESTAMP_CLOCK != 0U, "swd_transfer.h was generated with timestamps enabled");
 
 #define SWD_TRANSFER_FUNCTION(name, xfer) \\
 '''
@@ -98,6 +98,7 @@ def transform(lines: list[str]) -> list[str]:
         if re.fullmatch(r"\s*uint32_t\s+data;", line):
             line = line.replace("data;", "data = 0U;")
             initialised += 1
+        line = re.sub(r"\bNULL\b", "nullptr", line)
         out.append(line.rstrip())
     out[0] = out[0].replace(
         "static uint32_t DAP_SWD_Transfer(const uint8_t *request, uint8_t *response) {",

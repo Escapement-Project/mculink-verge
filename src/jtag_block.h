@@ -73,7 +73,7 @@
             /* Post read */                                                                       \
             retry = DAP_Data.transfer.retry_count;                                                \
             do {                                                                                  \
-                response_value = xfer(request_value, NULL);                                       \
+                response_value = xfer(request_value, nullptr);                                      \
             } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort);     \
             if (response_value != DAP_TRANSFER_OK) {                                              \
                 goto read_done;                                                                   \
@@ -124,7 +124,7 @@
             }                                                                                     \
             retry = DAP_Data.transfer.retry_count;                                                \
             do {                                                                                  \
-                response_value = xfer(DP_RDBUFF | DAP_TRANSFER_RnW, NULL);                        \
+                response_value = xfer(DP_RDBUFF | DAP_TRANSFER_RnW, nullptr);                       \
             } while ((response_value == DAP_TRANSFER_WAIT) && retry-- && !DAP_TransferAbort);     \
         }                                                                                         \
                                                                                                   \

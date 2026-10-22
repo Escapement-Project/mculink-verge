@@ -36,8 +36,8 @@
 #include "led.h"
 #include "swo_ring.h"
 
-_Static_assert(SWO_BUFFER_SIZE == SWO_USABLE_BYTES, "DAP_Info reports SWO_BUFFER_SIZE as the buffer");
-_Static_assert(SWO_STREAM == 0, "no streaming endpoint yet");
+static_assert(SWO_BUFFER_SIZE == SWO_USABLE_BYTES, "DAP_Info reports SWO_BUFFER_SIZE as the buffer");
+static_assert(SWO_STREAM == 0, "no streaming endpoint yet");
 
 #define SWO_FLEXCOMM 3U
 #define SWO_USART USART3

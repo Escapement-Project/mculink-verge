@@ -31,8 +31,8 @@
 
 #include "DAP.h"
 
-_Static_assert(DAP_PACKET_SIZE == DAP_SHARED_PACKET_SIZE, "dap_shared.h repeats DAP_PACKET_SIZE");
-_Static_assert(CFG_TUD_HID_EP_BUFSIZE == DAP_SHARED_HID_REPORT_SIZE, "dap_shared.h repeats the HID report size");
+static_assert(DAP_PACKET_SIZE == DAP_SHARED_PACKET_SIZE, "dap_shared.h repeats DAP_PACKET_SIZE");
+static_assert(CFG_TUD_HID_EP_BUFSIZE == DAP_SHARED_HID_REPORT_SIZE, "dap_shared.h repeats the HID report size");
 
 dap_shared_t dap_shared __attribute__((section(".dap_shared")));
 dap_stage_t dap_stage __attribute__((section(".dap_stage")));
@@ -415,7 +415,7 @@ __attribute__((noinline, used)) void dap_core_security_init(void) {
 /** CPU 0's loop. It and everything a command passes through on CPU 0 run from SRAM: from flash
  *  they were the limit on short commands. tools/image.py checks that none of it branches back
  *  into flash. */
-__attribute__((section(".ramfunc"), noinline, noreturn)) static void serve(void) {
+[[noreturn]] __attribute__((section(".ramfunc"), noinline)) static void serve(void) {
     for (;;) {
         tud_task();
         usb_transport_task();

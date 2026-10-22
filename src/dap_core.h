@@ -15,7 +15,7 @@ static inline bool dap_core_has_work(bool response_free, bool bulk_ready, bool h
 }
 
 /** CPU 1's entry, from core1_start.S once .data and .bss are set up. */
-void core1_main(void) __attribute__((noreturn));
+[[noreturn]] void core1_main(void);
 
 /** CPU 0: open the memory CPU 1 needs to CPU 1, before starting it. */
 void dap_core_security_init(void);
