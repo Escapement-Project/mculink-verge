@@ -62,7 +62,7 @@ void sweep(void) {
     // only the transfers: every latency at the first, the default latency at the rest.
     static const uint8_t chains[][3] = {{1, 0, 0}, {2, 1, 3}, {3, 0, 5}, {5, 3, 40}};
     for (unsigned c = 0; c < sizeof chains / sizeof chains[0]; c++)
-    for (unsigned wire = 0; wire <= JTAG_GEN_OSCAN2; wire++)
+    for (unsigned wire = 0; wire < JTAG_GEN_WIRES; wire++)
     for (unsigned lat = c == 0 ? 1 : JTAG_GEN_LATENCY_DEFAULT; lat <= (c == 0 ? 24 : JTAG_GEN_LATENCY_DEFAULT); lat++)
     for (unsigned p = 3; p <= 44; p++) {
         static const uint32_t far[] = {75, 150, 1500, 150000};

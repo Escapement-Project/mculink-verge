@@ -1,7 +1,7 @@
 # mculink-verge
 
-CMSIS-DAP firmware for the NXP MCU-Link, with IEEE 1149.7 two-pin cJTAG support, in the OScan1 and
-OScan2 formats, that the stock firmware does not have.
+CMSIS-DAP firmware for the NXP MCU-Link, with IEEE 1149.7 two-pin cJTAG support, in the OScan1,
+OScan2 and OScan5 formats, that the stock firmware does not have.
 
 ## Limits
 
@@ -15,7 +15,7 @@ updates it in the same commit, so the history of this table is the history of th
 | SWD writes | 50 MHz | Nothing | 10.7 MHz |
 | SWD reads | 37.5 MHz | Nothing | 9.6 MHz |
 | JTAG, four wires (reads and writes) | 30 MHz | The target's TDO delay | Not measured yet |
-| cJTAG, two pins (reads and writes) | 50 MHz per wire packet, 8.3 MHz per JTAG clock in Shift | The target's TDO delay | Not supported |
+| cJTAG, two pins (reads and writes) | 50 MHz per wire packet; per JTAG clock in Shift, 8.3 MHz in OScan1 and OScan2, 9.4 MHz in OScan5 | The target's TDO delay | Not supported |
 | Console (VCOM) | 19.2 Mbaud | Nothing | 3 Mbaud or more; its limit not measured yet |
 | SWO | 30 Mbaud, UART encoding only | Nothing | Not measured yet |
 | USB | High speed, 512-byte packets, 3 commands held | Nothing | 512-byte packets, 8 commands reported |
@@ -36,8 +36,11 @@ fastest gets the fastest.
   clock. That frame takes 18 core cycles at the CC1312R1's delay of 8, or 8.3 MHz. A target with
   a longer delay adds a cycle to the frame for each cycle of delay. In OScan2, a clock outside
   Shift-DR and Shift-IR is a single packet. Through probe-rs that reads a CC1312R1 4 to 7% faster
-  than OScan1. A host uses OScan2 where both the probe and the target offer it, and
-  `verge cjtag --oscan1-only` holds it to OScan1 until the probe restarts.
+  than OScan1. In OScan5, a clock in Shift-DR and Shift-IR is two packets, and the last one leaves
+  with an escape. That frame takes 16 core cycles at the same delay, or 9.4 MHz. dap.py reads a
+  CC1312R1 27% faster in OScan5 than in OScan1 at 12.5 MHz, 15% faster at 25 MHz and 6% faster
+  at 50 MHz, where USB starts to set the rate. A host picks one of the formats both the probe and
+  the target offer, and `verge cjtag --formats` limits the probe's offer until it restarts.
 - **Console.** A console loops back clean at 19.2 Mbaud, and so do both of the Pro's at once.
   That is the fastest rate the UART's clock can make. Above 10 Mbaud is past NXP's limit (below).
 - **Stock.** Its SWD figures are the data bits on the wire from 25 MHz asked, where they stop

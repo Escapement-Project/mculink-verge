@@ -1,5 +1,5 @@
-/** The JTAG wire paths, four-wire and two-pin (IEEE 1149.7 OScan1 and OScan2; OScan5 runs ARM's
- * path), generated at run time for the clock the host asked for.
+/** The JTAG wire paths, four-wire and two-pin (IEEE 1149.7 OScan1, OScan2 and OScan5), generated
+ * at run time for the clock the host asked for.
  *
  * src/jtag_gen.c writes them into SRAMX with every edge and sample placed to the core cycle, as
  * src/swd_gen.c does for SWD. src/jtag_gen_dp.c builds ARM's JTAG entry points on them.
@@ -45,9 +45,9 @@
 #define JTAG_GEN_FOUR_WIRE 0U
 #define JTAG_GEN_TWO_PIN 1U // OScan1
 #define JTAG_GEN_OSCAN2 2U  // two-pin in OScan2: one TMS packet a clock outside Shift
-#define JTAG_GEN_OSCAN5 3U  // two-pin in OScan5: nTDI and TDO in Shift, leaving it by an escape; not generated yet
+#define JTAG_GEN_OSCAN5 3U  // two-pin in OScan5: nTDI and TDO in Shift, leaving it by an escape
 #define JTAG_GEN_WIRES 4U
-/** The index of jtag_gen_latency a wire uses: both two-pin formats read the same TDO packet. */
+/** The index of jtag_gen_latency a wire uses: every two-pin format reads the same TDO packet. */
 #define JTAG_GEN_PINS(wire) ((wire) == JTAG_GEN_FOUR_WIRE ? JTAG_GEN_FOUR_WIRE : JTAG_GEN_TWO_PIN)
 
 struct jtag_gen_config {
@@ -72,6 +72,14 @@ typedef uint32_t (*jtag_gen_scan_fn)(uint32_t tdi, uint32_t count, uint32_t tms)
  * all ones, what a capture there reads in OScan1. Entered and left as the scan function is. */
 extern jtag_gen_scan_fn jtag_gen_tms;
 
+/** OScan5 only. The scan function frames OScan1's three packets, for clocks outside Shift-DR and
+ * Shift-IR; jtag_gen_shift frames those in them, nTDI and TDO with TMS 0, and jtag_gen_eot the one
+ * that leaves them, TMS 1 by an EOT escape on its nTDI packet. jtag_gen_eot is one block: `count`
+ * above 1 enters it before its start, in jtag_gen_shift's code. Both return TDO as
+ * the scan function does, and are entered and left as it is. */
+extern jtag_gen_scan_fn jtag_gen_shift;
+extern jtag_gen_scan_fn jtag_gen_eot;
+
 /** Runs `count` transfers of one request back to back, each as ARM's JTAG_Transfer clocks it, and
  * stops at the first that does not acknowledge OK. `request` is DAP's request byte; `words` is read
  * into or written from, four bytes a transfer, unaligned allowed; `tdi` is the level ARM's TDI holds
@@ -79,7 +87,8 @@ extern jtag_gen_scan_fn jtag_gen_tms;
  * transfers not completed, the one that stopped it included. ARM's TDI is high afterwards. */
 typedef uint64_t (*jtag_gen_xfer_fn)(uint32_t request, uint8_t* words, uint32_t count, uint32_t tdi);
 
-/** Generates for `config` into SRAMX: the scan function, OScan2's TMS packets (jtag_gen_tms), then
+/** Generates for `config` into SRAMX: the scan function, OScan2's TMS packets (jtag_gen_tms) or
+ * OScan5's Shift frames (jtag_gen_shift, jtag_gen_eot), then
  * the read and write transfers if they fit, NULL where they do not. With `read` and `write` NULL,
  * no transfers. False if the
  * configuration is out of range or the scan function does not fit, in which case nothing generated

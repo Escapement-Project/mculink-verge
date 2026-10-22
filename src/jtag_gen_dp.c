@@ -66,16 +66,50 @@ COMMAND_PATH static uint32_t frames_oscan2(uint32_t tdi, uint32_t count, uint32_
     return tdo;
 }
 
+/** OScan5's frames: runs outside Shift through the scan function, OScan1's three packets; in Shift
+ * with TMS 0 through jtag_gen_shift, which stays there; and TMS 1 in Shift through jtag_gen_eot,
+ * one frame, which leaves it. */
+COMMAND_PATH static uint32_t frames_oscan5(uint32_t tdi, uint32_t count, uint32_t tms) {
+    uint32_t tdo = 0U;
+    for (uint32_t done = 0U; done < count;) {
+        uint32_t n = 0U;
+        jtag_gen_scan_fn fn = jtag_gen_scan;
+        if (cJTAG_TapShift()) {
+            fn = tms != 0U ? jtag_gen_eot : jtag_gen_shift;
+            n = tms != 0U ? 1U : count - done;
+            (void)cJTAG_TapClock(tms);
+        } else {
+            do {
+                (void)cJTAG_TapClock(tms);
+                n++;
+            } while ((done + n < count) && !cJTAG_TapShift());
+        }
+        const uint32_t out = fn(tdi >> done, n, tms);
+        const uint32_t mask = n < 32U ? (1U << n) - 1U : 0xFFFFFFFFU;
+        tdo |= (out & mask) << done;
+        done += n;
+    }
+    return tdo;
+}
+
 /** Up to 32 frames with TMS held and TDI from `tdi`, least significant bit first. */
 static uint32_t frames(uint32_t tdi, uint32_t count, uint32_t tms) {
-    // jtag_gen_tms exists exactly when the code was generated for OScan2.
-    const uint32_t tdo = jtag_gen_tms != NULL ? frames_oscan2(tdi, count, tms) : jtag_gen_scan(tdi, count, tms);
+    // jtag_gen_tms exists exactly when the code was generated for OScan2, jtag_gen_eot for OScan5.
+    uint32_t tdo;
+    if (jtag_gen_tms != NULL) {
+        tdo = frames_oscan2(tdi, count, tms);
+    } else if (jtag_gen_eot != NULL) {
+        tdo = frames_oscan5(tdi, count, tms);
+    } else {
+        tdo = jtag_gen_scan(tdi, count, tms);
+    }
     tdi_level = (tdi >> (count - 1U)) & 1U;
     return tdo;
 }
 
-/** Any number of frames with TMS held and TDI where the last frame left it. */
-static void hold(uint32_t count, uint32_t tms) {
+/** Any number of frames with TMS held and TDI where the last frame left it. In SRAM by name: once
+ * frames() had OScan5's branch too, gcc stopped inlining this into the SRAM callers. */
+COMMAND_PATH static void hold(uint32_t count, uint32_t tms) {
     while (count != 0U) {
         const uint32_t n = count < JTAG_GEN_FRAMES_MAX ? count : JTAG_GEN_FRAMES_MAX;
         (void)frames(held(), n, tms);
@@ -171,11 +205,12 @@ void jgen_WriteAbort(uint32_t data) {
     set_tdi(1U);
 }
 
-/** Whether the generated transfers may run: they walk from Run-Test/Idle, and in OScan2 a frame's
- * shape depends on where the TAP is, so a host that left it elsewhere gets the scans, which follow
- * the tracked state. */
+/** Whether the generated transfers may run: they walk from Run-Test/Idle, and in OScan2 and OScan5
+ * a frame's shape depends on where the TAP is, so a host that left it elsewhere gets the scans,
+ * which follow the tracked state. */
 static bool transfers_fit(void) {
-    return (jtag_gen_read != NULL) && ((jtag_gen_tms == NULL) || (cJTAG_Tap() == CJTAG_TAP_IDLE));
+    return (jtag_gen_read != NULL) &&
+           (((jtag_gen_tms == NULL) && (jtag_gen_eot == NULL)) || (cJTAG_Tap() == CJTAG_TAP_IDLE));
 }
 
 /** One generated transfer, where they exist. */

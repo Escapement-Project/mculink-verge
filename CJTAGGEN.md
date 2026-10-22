@@ -285,6 +285,37 @@ registers.
   counted inside each TCKC high phase): every rise of the capture accounted for, 30 EOT escapes for
   30 Shift exits, no TMSC edge with TCKC high anywhere else, the TAP back in Run-Test/Idle.
 
+## OScan5 generated (2026-10-22)
+
+- Wire `JTAG_GEN_OSCAN5` (3). Outside Shift a frame is OScan1's three packets, so the scan function
+  is OScan1's. In Shift, `jtag_gen_shift` frames nTDI and TDO alone (TMS 0), and `jtag_gen_eot`, one
+  block, the frame that leaves with an EOT escape: two stores of TMSC's mask to the GPIO NOT
+  register with TCKC high, each a period after the rise or the last edge, the fall a period after
+  that. No data-dependent register is needed for the escape. `layout_two_pin` and the transfers'
+  `cx_shaped` take the frame's shape (three packets, Shift, EOT); `frames_oscan5`
+  (src/jtag_gen_dp.c) splits scans by the tracked TAP as OScan2's does. Transfers walk from
+  Run-Test/Idle: bypass, request and data bits in Shift as two-packet frames, the last with the
+  escape; a failing acknowledge leaves by `slow_eot_frame`.
+- Checks: gen_host 7416 configurations, 1134 OScan5, all with transfers, four builds agree;
+  `jtagcheck.py --wire cjtag5` clean at all 41 clocks (escape spacing included; a second escape
+  edge one cycle after the first fails it at every clock); equiv against ARM's OScan5 path: block
+  128/128, transfer 1080/1080, sequence 840/840 (including a command part's one-bit Shift entered
+  from Exit2-DR); the gate runs cjtag5 for both compilers.
+- Bench (CJ6B19D4E7, CC1312R1, dap.py robust attach then STFMT 13): the capture decodes as
+  intended (926 frames, every rise used, 30 escapes for 30 Shift exits, no stray edge), CPUID,
+  64-word blocks 20/20 at 1 to 50 MHz. Rates, 127-word ROM blocks, 300 a clock after 300 to let
+  pacing learn, two rounds within 1%:
+
+  | MHz | OScan1 | OScan2 | OScan5 |
+  | --- | --- | --- | --- |
+  | 12.5 | 327-329 KiB/s | 349-350 | 415-419 |
+  | 25 | 471 | 477-482 | 542-546 |
+  | 50 | 551-556 | 567-569 | 588-592 |
+
+  OScan5 is 27% faster than OScan1 at 12.5 MHz, where the packets set the rate (two a Shift clock
+  against three), and 6% at 50 MHz, where the TDO latency sets most of a Shift frame (16 core cycles
+  against OScan1's 18 at latency 8) and USB starts to bound the rest.
+
 ## Architecture
 
 - **One JTAG transfer scheduler**, two clock emitters. A transfer is the TAP walk
