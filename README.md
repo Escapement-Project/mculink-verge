@@ -202,8 +202,9 @@ The pins keep their state between debug sessions, so a pin can hold a target's b
 a reset and a reconnect. LED6 (SIO) is lit while the probe drives any of them. They go back to
 inputs when the probe restarts.
 
-`uv run tools/dap.py dio` reads them, and its `--mask`, `--outputs` and `--levels` set them.
-Vendor command 0x8E, which it sends, is described in `src/dap_vendor.c`.
+`verge dio` reads them, and `verge dio --high 0 --low 1,2` sets them (see verge's README). From a
+checkout, `uv run tools/dap.py dio` does the same. Both send vendor command 0x8E, which
+`src/dap_vendor.c` describes.
 
 ## Releases
 
