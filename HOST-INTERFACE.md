@@ -1,0 +1,72 @@
+# Host interface
+
+The firmware implements CMSIS-DAP for SWD, four-wire JTAG, two-pin cJTAG, SWO capture and target
+serial ports. Standard commands follow CMSIS-DAP. This page covers the vendor commands that other
+supported host tools use. Command and reply buffers include the command byte at index 0.
+
+All multi-byte integer fields below are little-endian. A host should check reply lengths before
+reading fields. An unknown command receives the CMSIS-DAP invalid-command reply.
+
+## Identify firmware: `0x82`
+
+Send `[0x82]`. The reply contains:
+
+| Offset from reply byte 1 | Field | Added in format |
+| --- | --- | --- |
+| 0–4 | ASCII `CJTAG` | 1 |
+| 5 | Format version | 1 |
+| 6 | Capability flags | 1 |
+| 7 | Build string length `n` | 1 |
+| 8 through `7+n` | `n` bytes of build string, without a terminator | 1 |
+| `8+n` | Board kind: 0 full MCU-Link, 1 MCU-Link Pro, 2 on-board MCU-Link | 3 |
+| `9+n` through `12+n` | Offered cJTAG formats as a u32 bit mask, bit `k` for SCNFMT `k` | 4 |
+
+The current capability flag bits are: bit 0 OScan1 support; bit 1 cJTAG framing active; bit 2
+target-sense command support; bit 3 generated SWD paths; bit 4 host-driven OScan1 entry; bit 5
+generated JTAG paths; bit 6 Pro DIO available. Bits 0 and 4 are clear on the unsupported on-board
+variant. Bit 6 is clear if the Pro's J15 jumper disabled USB-SIO when the probe started.
+
+Fields are appended in later formats. Use the format version before reading fields added by a
+later format. Ignore fields you do not understand. The format 4 cJTAG mask reports what the
+firmware offers; it does not prove that the target supports those formats.
+
+## cJTAG control: `0x83`
+
+The command starts with `[0x83, mode]`. Supported modes are:
+
+| Mode | Extra request bytes | Action |
+| --- | --- | --- |
+| 0 | None | Stop two-pin framing and return to four-wire framing. |
+| 2 | None | Start OScan1 framing after the host has activated OScan1 on the target. |
+| 3 | `[format, tap_state]` | Start framing for the selected SCNFMT and TAP state after the host has switched the target. |
+| 4 | Four-byte little-endian format mask; bit `k` selects SCNFMT `k` | Change the formats offered to hosts until the probe restarts. OScan1 remains offered. |
+
+The reply is `[0x83, status]`, where `DAP_OK` is `0x00` and `DAP_ERROR` is `0xff`. Mode 1 is not
+defined. Starting cJTAG on the unsupported on-board variant returns `DAP_ERROR`. A host must
+switch the target and probe together; this command does not change the target's scan format.
+
+## Pro DIO: `0x8E`
+
+Send `[0x8E, mask, outputs, levels]`. Bit `k` names DIO pin `k`. Within `mask`, `outputs` sets
+direction (`1` means output) and `levels` sets the output value. Bits outside `mask` are unchanged.
+A zero mask reads the current state.
+
+The reply is `[0x8E, status, outputs, levels, read, pins, group_count, groups...]`. `read` is the
+sampled pin level; an output reads its own drive. `pins` is `0x0f` on a Pro with DIO available and
+zero otherwise. Each group byte is a mask of pins that must change direction together. The Pro
+reports groups `0x07` (DIO0–2) and `0x08` (DIO3).
+
+An invalid pin, unavailable DIO, or direction change that splits a group returns `DAP_ERROR`
+(`0xff`) and leaves the state unchanged. `DAP_OK` is `0x00`. The reply still reports the current
+state. The state persists across
+debug sessions and hosts, and resets to inputs when the probe restarts. J15 disables DIO when
+fitted at startup.
+
+The `verge dio` command is the supported user interface for these pins. It checks group changes
+before sending them and shows the reply state.
+
+## Other commands
+
+Commands `0x84` through `0x8D` are implemented for board control, target measurements and
+development instruments. They are not documented here as a stable host API. `0x80` and `0x81` are
+not implemented by this firmware.

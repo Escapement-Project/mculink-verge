@@ -3,22 +3,29 @@
 CMSIS-DAP firmware for the NXP MCU-Link, with IEEE 1149.7 two-pin cJTAG support, in the OScan1,
 OScan2, OScan5 and OScan6 formats, that the stock firmware does not have.
 
+It supports the standalone full MCU-Link and MCU-Link Pro. It does not support the MCU-Link built
+into an evaluation board. Both boards provide SWD, four-wire JTAG, cJTAG, SWO capture, and one USB
+serial port. The Pro adds a second serial port and four GPIO pins. The [capability guide](CAPABILITIES.md)
+lists board conditions and the [host interface](HOST-INTERFACE.md) documents the supported vendor
+commands.
+
 ## Limits
 
-The fastest each transport runs, on the MCU-Link and the MCU-Link Pro alike, as of 2026-10-22,
-beside NXP's stock firmware on the same probe.
-This table is the record of where the firmware stands: a change that moves one of these limits
-updates it in the same commit, so the history of this table is the history of the optimisations.
+These are saved figures, measured or reported on 2026-10-20 and 2026-10-21. The SWD rows show the
+normal firmware path from build `4a7ca13`, measured beside stock V3.172. A separate 2026-10-21
+experiment reached 50 MHz SWD reads with a timer-driven path, but that change was removed. None of
+these figures measures this source revision. The [bench results](https://github.com/Escapement-Project/mculink-bench#measured-2026-10-20-ours-with-gcc-and-clang-against-stock-v3172)
+record the builds and methods.
 
-| Transport | Ours | Ours depends on | NXP's stock V3.172 |
-| --- | --- | --- | --- |
-| SWD writes | 50 MHz | Nothing | 10.7 MHz |
-| SWD reads | 37.5 MHz | Nothing | 9.6 MHz |
-| JTAG, four wires (reads and writes) | 30 MHz | The target's TDO delay | Not measured yet |
-| cJTAG, two pins (reads and writes) | 50 MHz per wire packet; per JTAG clock in Shift, 8.3 MHz in OScan1 and OScan2, 9.4 MHz in OScan5 and OScan6 | The target's TDO delay | Not supported |
-| Console (VCOM) | 19.2 Mbaud | Nothing | 3 Mbaud or more; its limit not measured yet |
-| SWO | 30 Mbaud, UART encoding only | Nothing | Not measured yet |
-| USB | High speed, 512-byte packets, 3 commands held | Nothing | 512-byte packets, 8 commands reported |
+| Transport | Ours | Evidence | Ours depends on | NXP's stock V3.172 |
+| --- | --- | --- | --- | --- |
+| SWD writes | 50 MHz | Bench, normal path, build `4a7ca13` | Nothing | 10.7 MHz |
+| SWD reads | 37.5 MHz | Bench, normal path, build `4a7ca13` | Nothing | 9.6 MHz |
+| JTAG, four wires (reads and writes) | 30 MHz | Bench and firmware timing report | The target's TDO delay | Not measured yet |
+| cJTAG, two pins (reads and writes) | 50 MHz per wire packet; per JTAG clock in Shift, 8.3 MHz in OScan1 and OScan2, 9.4 MHz in OScan5 and OScan6 | Firmware timing report; target-dependent | The target's TDO delay | Not supported |
+| Console (VCOM) | 19.2 Mbaud | Bench loopback | Nothing | 3 Mbaud or more; its limit not measured yet |
+| SWO | 30 Mbaud, UART encoding only | Bench capture | Nothing | Not measured yet |
+| USB | High speed, 512-byte packets, 3 commands held | Firmware report | Nothing | 512-byte packets, 8 commands reported |
 
 The core runs at 150 MHz, and every clock is a whole number of its cycles. A host that asks for a
 clock gets it, or the next slower step: 30 MHz is 5 cycles, 18.75 MHz is 8. A request above the
