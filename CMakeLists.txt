@@ -445,6 +445,11 @@ file(WRITE ${LD_FILE_GNU} "${_ld}")
 
 family_configure_device_example(${PROJECT_NAME} noos)
 
+# The firmware targets mix project C with upstream C. Apply C23 only to project-owned
+# translation units so upstream sources keep the dialect selected by their own toolchain.
+file(GLOB FIRST_PARTY_C_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c")
+set_property(SOURCE ${FIRST_PARTY_C_SOURCES} APPEND PROPERTY COMPILE_OPTIONS "-std=gnu23")
+
 if(USB_RAM)
   get_target_property(_sources ${PROJECT_NAME} SOURCES)
   list(FILTER _sources INCLUDE REGEX "/tinyusb/src/")
