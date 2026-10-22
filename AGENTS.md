@@ -41,6 +41,10 @@ generator under ASan and UBSan with gcc and clang, and for QEMU's Cortex-M33 boa
 requires all four to generate identical code. New logic that does not touch hardware gets the same
 treatment.
 
+**Nothing read out of NXP's firmware image goes in this repository.** Describe the stock firmware
+only by what USB or the wire shows, and say how it was observed. mculink-stock-notes holds those
+observations.
+
 ## Known traps
 
 - **unicorn 2.1.4 mis-executes with memory hooks over SRAM.** It skipped one load in a clang image

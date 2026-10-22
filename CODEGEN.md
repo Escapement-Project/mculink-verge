@@ -1,25 +1,8 @@
 # Runtime code generation of the bit paths
 
-Companion to TIMING.md (the human-readable rules). Read TIMING.md first, then this.
-Dense on purpose. Everything here was measured on the bench 2026-10-16 unless marked otherwise.
-BENCH.md section "The cost model now times the bus, and reproduces every SWD result so far" has
-the evidence.
-
-## Goal and decisions
-
-- Emit straight-line Thumb-2 for each wire path at runtime, per clock setting, with every store
-  and sample placed to the cycle. The reasons: cycle-exact placement; timing independent of
-  the optimiser (Debug clocks like Release); more optimisation room; much finer rate selection
-  (1-cycle periods instead of today's 6-cycle steps).
-- **Generated code lives in SRAMX** (0x0400_0000, 32 KB, unused by the image; C-AHB fetch).
-  Replacing the unrolled `.ramfunc` C paths (~146 KB of SRAM today, see below) frees SRAM
-  for stack and buffers.
-- Per-rate choice of sample placement and interrupt masking belongs to the generator. The
-  `SWD_SAMPLE_AFTER_EDGE` CMake option (off) was the stopgap; the generator supersedes it.
-- Flash is not a constraint; SRAM is (m_data ~85% today).
-- Repo conventions: commit subject `scope: what changed`.
-  Gate: `ninja -C build check`.
-  Never put LED or other work in a bit path. Fix unbounded accesses when found.
+A companion to TIMING.md, which has the rules in prose: read it first. Dense on purpose.
+Everything here was measured on the bench 2026-10-16 unless marked otherwise. BENCH.md section
+"The cost model now times the bus, and reproduces every SWD result so far" has the evidence.
 
 ## The generator as built (src/swd_gen.c, behind SWD_CODEGEN, on by default since 2026-10-20)
 
@@ -70,30 +53,6 @@ the evidence.
   positions differ).
   Hardware (L1306): see Bench state.
 
-## Timer-clocked SWCLK (lab prototype, 2026-10-16)
-
-- PIO0_0 FUNC 3 = CTIMER0_MAT0. CTIMERCLKSEL0 = 0 (main clock = core clock), AHBCLKCTRL1 bits
-  26/27 (CTimer 0/1), PR 0, PWMC bit 0, MR3 = period-1 with MR3R, MR0 = low cycles (output low for
-  TC < MR0). Locked to the core: P = 2..10 exact, first rising edge read 6 + low cycles after the
-  start store, deterministic.
-- Any store to a CTimer register (APB) stalls the core ~4 cycles (CYCCNT: +4 for one, +10 for two;
-  a CTimer load ~+9). A TCR = 0 store freezes the clock at the level a read 9 cycles later would
-  see; what follows the store runs 3 cycles late. At P = 3 that stall always swallows one sample
-  window, so the stop is a DMA write: CTimer 1 one-shot (MR0 = delay, MR0S) started a cycle after
-  CTimer 0, its match 0 -> DMA0 ch 0 (INPUTMUX DMA0_ITRIG_INMUX0 = 6, input mux clock
-  AHBCLKCTRL0 bit 11), one word 0 -> CTIMER0 TCR; clear CTimer 1 IR after setting MR0 (TC = MR0 =
-  0 after reset raises the request). Deterministic only if the core keeps off the SRAM bank the DMA
-  reads: keep samples in registers.
-- Prototype read (timerdma.py): packet on GPIO, pin switch, both starts, 38 edges from the timer at
-  P = 3, samples at 9 + 3k in that frame (window ~[7.5, 9.5] + 3k), delay 92/93 freezes high after
-  edge 37, pin back to GPIO: 2000/2000 DPIDR reads, LA 38 edges at exactly 50.0 MHz.
-- Fillers must not read a load's destination (mov.w r12, r12 after ldrb r12 stalls a cycle): with
-  a free-running clock every stall drifts the later samples.
-- Generator integration not done. Per transfer it costs the pin switch twice, two starts and a DMA
-  re-arm (APB stores, ~5 cycles each), so a read transfer gains ~10% unless the timer clocks the
-  whole transfer and only stops at the acknowledge decision. probe-rs throughput is USB-bound at
-  ~half the 37.5 MHz wire rate already.
-
 ## The timing model (exact from SRAMX; see TIMING.md for prose)
 
 All costs in core cycles at 150 MHz (6.67 ns). Issue cycle = cycle an instruction enters execute.
@@ -128,48 +87,20 @@ All costs in core cycles at 150 MHz (6.67 ns). Issue cycle = cycle an instructio
   bit k iff `A <= d <= P + A - 1` (P = period in cycles, assuming uniform period; in general
   `A <= d < (R_{k+1} - R_k) + A`). d < A reads bit k-1 ("behind"), d >= next + A reads k+1
   ("ahead"). Boundaries sharp, deterministic, no mixtures seen in thousands of reads.
-- **A = 7 against the U575 (CJ6B19D4E7) and the MSPM0L1306 (CJ3E7A91C2)**, at P = 8..30
-  Internal self-loop 3 (store to B[SWDIO], load sees it 3 cycles later)
+- **A = 7 against the U575 and the MSPM0L1306**, at P = 8..30. Internal self-loop 3 (store to B[SWDIO], load sees it 3 cycles later)
   + 4 external (buffers, cable, target). Calibrate at connect anyway (sweep d on DPIDR reads,
   A = smallest passing d); A is in core cycles: recompute if the core clock changes.
 - **The L1306's "fails above 10 MHz" was the probe's sampling.** With model placement it reads
   and writes clean at P = 4 (37.5 MHz) and every P up to 40.
 - From SRAM (not where generated code goes) the model is approximate: fetch and data share S-AHB
   one transaction a cycle; misses are -1 at the straddling alignment after a CYCCNT read (tried
-  and rejected: a separate SRAM buffer depth, PPB ordering applied to fetch). Irrelevant to the generator
-  except for comparing against the old C paths.
+  and rejected: a separate SRAM buffer depth, PPB ordering applied to fetch). Irrelevant to the
+  generator except for comparing against the old C paths.
 
 Verified end to end: `tools/lab.py swd_read_pipelined` at P = 4..8 (37.5..18.75 MHz), all
 non-colliding sample delays, 45/45 configurations predicted exactly (verdict and cycle count) on
 the U575. Soak: 200 reads each at P=4 d=9 (margin 1),
 P=4 d=7 (margin 0, window edge), P=5 d=9, P=8 d=10: all clean, 7,200 target bits each.
-
-## Scheduler prototype (validated end to end)
-
-`tools/lab.py swd_schedule(period, transfers, latency=7)` + `schedule_asm()`: given a period and
-`[("w", req, value), ("r", req), ...]`, lays every clock (fall at +0, SWDIO store at +1 for
-probe-driven bits, rise at +P//2), samples each target bit at the max-margin cycle of its window
-avoiding edge cycles, stores samples to the buffer in r1 by the next free cycle (rotating r0,
-r12, lr), and inserts a `settle()` barrier where the probe takes the wire back (waits for all
-outstanding samples; only ever lengthens a clock). Runs of >= 3 empty cycles become
-`movw r7,#n; subs.w; bne.w` loops (3n cycles; all instructions 32-bit so every head is aligned;
-the body start is `.balign 4`). Registers: r5 clock mask (also the data-1 source), r6 = 0,
-r2 SWDIO mask, r3 TXEN mask, r8 B, r9 SET, r10 CLR, r11 DIRSET, r4 CYCCNT, r7 loop counter.
-
-Bench: sequence = write TAR X, AP read TAR,
-read RDBUFF (= X), read DPIDR, write TAR Y, AP read TAR, read RDBUFF (= Y). Every period 4..40
-(37.5..3.75 MHz), 10 runs each: all acks, data and parity correct, and hardware cycle count ==
-model cycle count at all 37 periods. Pitfall found on the way: **each transfer needs the second
-turnaround clock** (after the ack for writes, after parity for reads); without it the target
-loses step and every later ack reads 7.
-
-Rate granularity (P = ceil(150 MHz / requested), never above the request): worst shortfall
-20% in 20-37.5 MHz, 11% in 10-20, 6% in 5-10, 3% in 1-5; today's ladder 56/33/24/13% and it
-overshoots some requests (16 -> 16.67, 7 -> 7.14).
-
-Calibration procedure (validated): sweep the sample delay d with `swd_read_pipelined` at P >= 8;
-A = smallest passing d; the passing range is exactly P wide (A = 7
-at P = 8, 12, 16).
 
 ## Throughput limits implied
 
@@ -178,8 +109,7 @@ at P = 8, 12, 16).
 - Write clock: fall store, data store (`strb` of a register holding 0/1 to B[SWDIO]), rise
   store = 3 if the data bit is already in a register -> P >= 3 (50 MHz). Extracting bits from a
   word costs an extra instruction per bit (`lsr`/`ubfx`) unless precomputed.
-- **Write window (measured with `tools/lab.py swd_write_asm`):** AP TAR writes with the SWDIO
-  store `lead` cycles before the rising
+- **Write window (measured, `tools/lab.py swd_write_asm`):** AP TAR writes with the SWDIO store `lead` cycles before the rising
   edge, lead 1..P-1, P = 3,4,5,6,8,10, 10 writes each, read back at 1 MHz: all land. So setup
   and hold at the target are each under one cycle; any placement off the edge cycles works.
   50 MHz writes (P = 3) work on this harness, request phase included.
@@ -196,16 +126,6 @@ at P = 8, 12, 16).
   shorter than requested (the old gate's "overshoot" check). Finer steps at the top would need a
   different core clock (PLL) - not explored; USB has its own PHY clock but SWO baud/timers derive
   from the core.
-
-## Interrupts
-
-- A sample placed after the next rising edge (d >= P, i.e. always when P <= A) must run with
-  interrupts masked: an interrupt between that edge and the sample delays the sample past its
-  window ("ahead"). A sample before the next rising edge is interrupt-safe (an interrupt only
-  stretches the clock). With A=7, interrupt-safe placement exists only for P >= 8 (d in [7, P-1]).
-- SWO receives by USART3 interrupt into a 16-entry FIFO (`RTE_USART3_DMA_EN 0`); fills in ~20 us
-  at 8 MHz SWO. A transfer masked for longer than that drops SWO bytes. Keep masked spans short
-  (per transfer, not per command), or enable SWO DMA. VCOM is polled from the main loop.
 
 ## CMSIS-DAP semantics the generated paths must keep (from src/swd_dp.c, ARM's SW_DP.c/DAP.c)
 
@@ -229,32 +149,9 @@ at P = 8, 12, 16).
   AP read or an RDBUFF read). DAP_TransferBlock: read block posts the AP read once, loops,
   reads the last word from RDBUFF (peeled into `SWD_TransferTail*`); write block checks the last
   write with an RDBUFF read.
-- Equivalence: `tools/equiv.py` drives two builds over 528 cases (every ack, turnaround, data
+- Equivalence: `tools/equiv.py` drives two builds over 536 SWD block cases (every ack, turnaround, data
   phase, idle cycles) and requires identical wire events and replies. A generated path must
   pass it against ARM's build; it is how the current C paths were proven.
-
-## Current code map (what the generator replaces or plugs into)
-
-- `src/swd_dp.c`: `SWD_TransferFunction(Fast|Slow)` (ARM's transfer, unrolled data phase),
-  `SWD_TransferCommand{Fast,Slow}` (DAP_Transfer, generated macro `src/swd_transfer.h` from
-  `tools/extract_swd_transfer.py`), `SWD_TransferBlock{Fast,Slow}` + `SWD_TransferTail*`.
-  `DAP_Data.fast_clock` picks Fast (no delay loop) vs Slow (`PIN_DELAY_SLOW(clock_delay)`).
-- `src/dap_dispatch.c`: owns `DAP_ProcessCommand`/`DAP_ExecuteCommand` (ARM's renamed to
-  `arm_*`), routes SWD DAP_Transfer/TransferBlock to swd_dp.c; JTAG and cJTAG to their files.
-- `src/hot.h`: `HOT_PATH` = noinline + `.ramfunc` (SRAM). Read its warnings: anything added to
-  `.ramfunc` moves every bit path.
-- `src/DAP_config.h`: pin macros (`PIN_SWCLK_TCK_SET/CLR`, `PIN_SWDIO_OUT(_ENABLE/_DISABLE)`,
-  `PIN_SWDIO_IN`), `CPU_CLOCK`, `IO_PORT_WRITE_CYCLES 2`, `DAP_PACKET_SIZE 512`.
-- ARM's `Set_Clock_Delay` (external/CMSIS-DAP/Firmware/Source/DAP.c:61): fast path when
-  clock >= (CPU/2)/IO_PORT_WRITE_CYCLES (37.5 MHz request at 150 MHz; its wire rate is 30 MHz),
-  else delay = ceil((ceil((CPU/2)/clock) - 2) / 3). Wire periods today: delay d -> 6d+3 cycles
-  (delay 1 = 9 = 16.67 MHz, delay 2 = 15 = 10 MHz). PACING.md has the whole story. The generator replaces
-  this mapping with period P = ceil(CPU / clock).
-- `src/jtag_dp_block.c`, `src/cjtag_*.c`: JTAG/two-pin paths (two-pin `cjtag_BlockImpl` and
-  `cjtagf_BlockImpl` are 35+32 KB of .ramfunc). Out of the generator's first scope; same approach later.
-  JTAG samples TDO after the falling edge (half-period window); no timed TAP model exists yet.
-- `.ramfunc` today (bytes): cjtag_BlockImpl 35k, cjtagf_BlockImpl 32k, SWD_TransferCommandSlow
-  27k, Fast 16k, SWD_TransferBlockSlow 11k, Fast 6k, tails 4k, JTAG_TransferBlock 8k+5k.
 
 ## Pins and addresses (LPC55S69, non-secure aliases as the image uses)
 
@@ -284,38 +181,3 @@ at P = 8, 12, 16).
   from the launching edge, stored to a buffer) are working generator prototypes.
 - `tools/dap.py`: `swd_reset` (line reset + DPIDR), `limit`, `block`, `sample` (vendor 0x87).
 
-## Bench state and hygiene
-
-- 2026-10-16 evening: `CJ3E7A91C2` runs `5f3db32+codegen+lab` (build-genlab/), MSPM0L1306
-  (erased, SWD stays up, DPIDR 0x6BA02477) with the analyser at the target: D0 NRST, D1 SWDIO,
-  D2 SWCLK, D3 probe J8 pin 4 (command marker); 100 MS/s only with two channels. Results there:
-  a lab sweep (DPIDR blocks + CTRL/STAT writes checked on 18 bits) clean at every P 3..40,
-  50, 75, 150, 1500; probe-rs SRAM write+readback clean 0.1..50 MHz; probe-rs 64 KB read
-  1407 KiB/s at 50 MHz, 1312 at 37.5, 629 at 10 (default build: fails above 10, 577 at 10).
-- Probe `CJ6B19D4E7` runs `0f301e9+lab` (not on the bench now). Flash: `uv run tools/flash.py --cycle --serial
-  CJ6B19D4E7 --elf <elf>`. Target NUCLEO-U575ZI-Q on J6 (SWD), DPIDR 0x0BE12477. Analyser
-  Logic 8 (no settable threshold): D0 SWDIO, D1 SWCLK at J6; 100 MS/s; cannot resolve 1-2 cycle
-  pulses.
-- A failed write leaves WDATAERR sticky: write ABORT 0x1E before trusting later acks. AP access
-  needs CTRL/STAT = 0x5000_0000 (debug power-up) first. A second RDBUFF read returns 0 on this DP.
-- Lab blobs: stay inside the template's stack scratch ([sp, #0..28]); a store above it corrupts
-  the saved registers (that hung the probe once; lab builds now reset on HardFault, but an
-  infinite loop with interrupts masked still needs a replug).
-
-## Open questions for the generator
-
-- A calibration at connect (A sweep) vs a fixed A with margin: answered, measured at connect
-  (src/swd_sweep.c). Margin at P=4 is still only 1
-  on one side.
-- Reads above 37.5 MHz: done in a lab prototype with a timer-made clock (below); not in the
-  generator. Without a peripheral: not in software. A read clock is 2 edge stores + 1 load + 1 use, and the
-  core pairs nothing but a 16-bit NOP or b<cc>: the corpus timed `ldr sp/adds`, `adds/ldr sp`,
-  `str sp/adds`, `adds/adds` pairs at 1 cycle each. Duty cycle
-  does not change the count. Only a peripheral clocking/shifting the wire would (SWDIO P0_2 is
-  FC3 MISO; P0_0's functions are in the LPC55S6x datasheet).
-- Overhead left at the top: P4 read 26 cycles a transfer over the floor (release 2, decision ~3,
-  settle ~4, gap ~14: unmask, 8-instruction parity check, store, loop). The read parity fold
-  could move into the settle wait.
-- Default on since 2026-10-20: equiv and gate pass, and the L1306 passes with
-  its AP answering WAIT.
-- Timed TAP model for JTAG/two-pin (TDO window after the falling edge) not built.

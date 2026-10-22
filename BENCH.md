@@ -1,69 +1,12 @@
-# Bench guide
+# The bench
 
-The firmware runs on hardware and beats the stock image. This document is the reference to keep
-open at the bench, and the plan for what is still untested.
-
-Three parts: **Reference** is what you will need to look up quickly, starting with where the bench
-stands today. **The plan** is the ordered list of what to test and what each result unlocks, with
-steps 1 to 5 now carrying what they measured. The sections after it record what the bench settled
-and what it is still guessing.
-
-The emulator's cost model has been calibrated against the wire, so it can be trusted for ranking
-again -- within the 3.6% it is still out over a whole transfer. Nothing in `OPTIMISATIONS.md` has
-been re-derived against it yet.
+What the firmware was measured against on real hardware, and how. **Reference** is the hardware
+and the procedures: the harnesses, flashing, telling images apart, the pin maps and the failure
+modes. **Measurements** is what the bench settled, in the order it was found.
 
 ---
 
 # Reference
-
-## Where the bench stands, end of 2026-10-16
-
-**SWD is finished.** Through probe-rs against the same target, ours reads at 593 KiB/s and writes
-at 612, against stock's 473 and 501: 1.26x and 1.22x. The wire is 92% of a block read and the
-block command itself is as efficient as a raw CMSIS-DAP script's, so what is left belongs to the
-host rather than the probe.
-
-**Two-pin works on hardware, 2026-10-17.** On a CC1312R1 LaunchPad our probe reads the ICEPick
-IDCODE and, through the ICEPick's routing, the Cortex-M4's CPUID over TCKC and TMSC alone, with
-TDI and TDO flat. Block reads of the boot ROM are correct from 1 to 25 MHz requested and fail at
-37.5. The host drives TI's own activation (the XDS110 routine, with the 200 us power-up wait
-TI requires) using standard commands, and vendor `0x83 0x02` turns on our framing. The wire rules, the activation and the generator plan are in
-`CJTAGGEN.md`. Four-wire JTAG is still unmeasured on
-hardware.
-
-**nRESET reaches targets since c62226b.** Before it, the reset buffer's direction pin sat in I2C
-open-drain mode, so no reset from this firmware ever reached a target.
-
-The onboard LED is done and checked by eye: see "The LED: a timer's job" below. The probe also
-reads the target's supply and J6 pin 9's detect line now: `tools/dap.py target`, measured in all
-three states under "The probe can measure the target" below.
-
-**Physical state at the end of the session.** Our unit, `CJ6B19D4E7`, runs `cd56325`, and its
-10-pin cable is unplugged from its MSPM0L1306. The analyser is still on the SWD-era map: D0-D2 on
-our probe, D3 our J8 marker, D4-D6 stock's. The JTAG plan below moves it.
-
-## Next session: cJTAG on the CC13xx, then four-wire through it
-
-**Done 2026-10-17 for two-pin; see the top of this file.**
-
-**Decided 2026-10-16: two-pin first, on the CC13xx boards.** The pair is already instrumented, and
-the J-Link is a known-good probe on the same wires, so every capture of ours has a working one to
-diff against. That is plan steps 8 and 9 below.
-
-**Four-wire JTAG comes after, on the same part.** probe-rs's `ctag_to_jtag` switches a CC13xx out
-of its power-up two-pin mode into four-pin, and the board routes TDI and TDO (the J-Link reference
-captures have both on the analyser). Once the two-pin path is trusted, four-wire is the same TAP
-behind the same activation with two more wires live.
-
-**The NUCLEO-U575ZI-Q is set aside for JTAG**: TDI needs two solder bridges changed, and the
-board is not to be permanently modified. It stays useful as the fast SWD target, which needs
-jumpers only (JP1 on, JP2 off, JP6 [7-8] with USB-C power): see "The STM32U575 is that faster
-target".
-
-**Analyser, at the target**: the four-wire map below serves both halves. D1 TMSC, D2 TCKC, D3 our
-marker, D4 TDI and D5 TDO, which stay flat throughout a two-pin run and are the check that it
-really is two-pin. `find_oscan.py` and `la_tap.py` take channel numbers, so the reference
-captures' D0-D3 order does not need copying.
 
 ## Four-wire JTAG: harness, taps, hazards, and the Nucleo
 
@@ -125,7 +68,7 @@ channel was not in any document here and one third-party source contradicted the
 so it was found on the board: `dap.py target --sweep` with the target unpowered and then powered.
 ADC0 3A went 542 to 1634 mV at the pin, half the supply. No other channel moved by more than
 174 mV. Five repeat reads agree to 2 codes in 65536. The reading is only as absolute as the
-probe's own 3V3, which VDDA and VREFP are tied to.
+probe's own 3V3, which VDDA and VREFP are tied to. 
 
 **Adding code that never runs cost 0.06% of block throughput** (126 words: 702.8 to 702.3 KiB/s,
 three runs each). The ADC only wakes when asked, so this is placement in flash, not work. Treat
@@ -202,55 +145,12 @@ channels. Stock never drives J8, so a stock capture has the clock and no marker.
 target` should say about 3.3 V with pin 9 grounded. Well under that means the Nucleo is
 unpowered (check LD5), and 3.3 V with pin 9 open means the harness is not plugged in.
 
-**Tooling to write first; none of it needs the bench.**
-1. `dap.py scan`: count the TAPs on four-wire JTAG and read their IDCODEs. Older STM32s put a
-   boundary-scan TAP in series with the debug TAP, so the chain is an open question. Settle it
-   before anything is configured from it.
-2. `dap.py block --wire jtag`: `DAP_JTAG_Configure` from the scan, then the same DP-read block.
-   `dap.py limit` wants the same option.
-3. `swd-throughput`: a `--protocol` flag. `WireProtocol::Swd` is hardcoded at
-   `src/main.rs:294`.
-4. The fold: a JTAG transfer is not 46 clocks, so the period becomes a parameter. Derive it from
-   the TAP path in a capture rather than from arithmetic.
 
-**Then measure, in the order the SWD work found things.** Run each step on both probes unless it
-says otherwise:
-1. The chain scan, and a probe-rs connect over JTAG.
-2. A data bit's cycles, folded by clock position, against `tools/cycles.py --table`. Ours only:
-   stock has no marker.
-3. Whether the SRAM move (`ecaec8a`) did for four-wire JTAG what it did for SWD.
-4. The per-transfer overhead positions, and the rate ladder with `dap.py limit`.
-5. End to end through probe-rs, ABAB.
-
-The two-pin half (plan steps 8 and 9) comes first; see the section above.
-
-## Where the bench stood before that
-
-Both halves of the plan's first five steps are done and the firmware beats stock. What is flashed
-on `CJ6B19D4E7` is build `bb44d28`: the bit paths in SRAM and the core at 150 MHz. **Every commit
-since is docs and tools only, so the code on the unit is HEAD's code** -- rebuilding would change
-only the build string, and nothing needs reflashing to carry on measuring.
-
-| | at 10 MHz asked |
-| --- | --- |
-| stock | 22.0 cycles a data bit, 494 KiB/s |
-| ours, before | 22/20/34/54 cycles, 269 KiB/s |
-| ours, now | 15.0 cycles uniform, ~562 KiB/s |
-
-
-**Steps 6 to 10 are untouched**: the console, SWO, cJTAG activation on a CC13xx, the two-pin data
-read, and the HID parity question. (SWO since done: §7.) The open optimisation work includes moving
-the two-pin block paths to SRAM the way the SWD ones went.
-
-
-## Hazards, before anything else
+## Hazards
 
 - **`DAP_TransferAbort` answers nothing.** Reading for a reply after sending it stalls the probe's
   bulk endpoint, and every later command times out. `usb.core.Device.reset()` clears it without
   unplugging and does not disturb a halted target.
-- **The analyser can be driven from a script.** Captures start, stop and export
-  without a pair of hands. Export the raw digital CSV and
-  read it with `tools/clockscope.py`.
 - **Run `ninja -C build check` before flashing.** It refuses a build that clocks any wire faster
   than the host asked for, beyond what `tools/baseline/known-overshoot.txt` records: nothing for
   the default build. ARM's paths alone (`+armwire`) have theirs in `tools/baseline-armwire/`.
@@ -267,11 +167,9 @@ without it.
 | ISP mode, MCU-Link mini | `1fc9:0022` |
 | running as a probe | `1fc9:0143` |
 
-A recovery script watches for anything arriving as `1fc9:0021` and flashes it with
-LinkServer's stock image, using `rblhost` from `/opt/linkserver/MCU-LINK/bin/` and the newest
-`probe_firmware/MCU-LINK_CMSIS-DAP_V*.s19`. Read its docstring before using it: it deliberately
-does **not** reset a flashed unit, because with the jumper still fitted a reset would return it to
-the bootloader and flash it again. The unit stays in the bootloader until unplugged. `rblhost`
+A tool that flashes every unit arriving as `1fc9:0021` must **not** reset a flashed unit: with
+the jumper still fitted a reset returns it to the bootloader, and it would be flashed again. The
+unit stays in the bootloader until unplugged. `rblhost`
 addresses a probe by VID:PID alone, so **only one unit may be in ISP mode at a time**.
 
 That script is also the recovery path from a bad image of ours, so the sequence is: fit the jumper,
@@ -311,8 +209,8 @@ text, 36% of the part's flash. Two thirds of that is flash deliberately traded f
 two transfer commands. `-DLTO=OFF` and `-DCMAKE_BUILD_TYPE=Debug` exist for bisecting a miscompilation, and both
 change which side of the two-pin pacing line the build lands on.
 
-Stock firmware for recovery: LinkServer's `MCU-LINK_CMSIS-DAP_V3_172.s19`, flashed by
-the recovery script.
+Stock firmware for recovery: the `MCU-LINK_CMSIS-DAP_V*.s19` in LinkServer's `probe_firmware/`
+directory, flashed with verge.
 
 ## Telling our image from stock, from the host
 
@@ -372,30 +270,8 @@ The vendor `0x82` reply, after the echoed id:
 Check the magic to know it is us, the flags to know what may be used, the string to know which
 image. A flag is how a later feature arrives without every host learning a new version. Fields
 are only appended, and a field is read only at the format that added it (`src/dap_vendor.c`).
-On an on-board MCU-Link, bits 0 and 4 and the scan formats are clear and `0x83` refuses modes 1
-to 3 (PRO.md).
-
-## The two units on the bench
-
-Each has its own MSPM0L1306, and each is wired to its own analyser channel group. The mapping was
-established by driving a clock burst on one unit at a time and seeing which channels moved.
-
-| serial | running | analyser | nRESET | SWDIO | SWCLK | its target |
-| --- | --- | --- | --- | --- | --- | --- |
-| `CJ6B19D4E7` (was `07HW51KCTNRZQ`) | ours | D0-D2 | D0 | D1 | D2 | alive |
-| `QK7RM2VTX8D41` | stock | D4-D6 | D4 | D5 | D6 | recovered, left halted |
-
-**The three 2-pin jumpers beside each other are ISP (J3), VCOM (J4) and SWD (J5).** The board's
-silkscreen labels J4 "VCCM". It is the virtual COM port: shorted, it pulls `HW_VER_6` low, and
-firmware that reads that pin turns the USB-to-UART bridge off. J5 does the same for SWD through
-`HW_VER_7`. **Our firmware reads neither pin**, so on ours both jumpers do nothing.
-
-**A unit's serial changes when it is flashed with ours**, from NXP's 13-character string to `CJ`
-plus 8 hex of a CRC over the unique id. `uv run tools/flash.py --check` says what every attached
-unit is running without touching any of them.
-
-How stock identifies itself, its strings, `DAP_Info` and its vendor commands, is in
-mculink-stock-notes' `identity.md`.
+On an on-board MCU-Link, bits 0 and 4 and the scan formats are clear and `0x83` refuses modes 2
+and 3.
 
 ## J8, the marker header
 
@@ -446,22 +322,6 @@ keeps driving the wire otherwise, and releasing the wire is the whole of OScan1.
 | every command times out after one | a stalled bulk endpoint from `DAP_TransferAbort`. `usb.core.Device.reset()` |
 | attaches but the target behaves oddly at a high clock | the probe may be clocking faster than asked. See `PACING.md` |
 
-## Tools and where they live
-
-| | |
-| --- | --- |
-| `uv run tools/cycles.py` | cycles per bit by emulation. `--table` prints the rate for every clock a host can ask for; `--calibrate` solves the cost model from a measured period |
-| `uv run tools/window.py` | disassembles the gap that repeats once a word |
-| `uv run tools/image.py` | what the image says about itself: descriptors, clocks, commands, reply bounds, serial |
-| `uv run tools/equiv.py <ref> <new>` | 1,212 differential cases against a reference build, or one toolchain against the other |
-| `uv run tools/dap.py j8` | drives the four-pin header beside the MCU. `--walk` names the pads |
-| `uv run tools/dap.py limit` | every achievable wire rate, checking the data at each |
-| `uv run tools/dap.py reboot --bootloader` | into ISP mode with no jumper and no hands |
-| `mculink-bench` | throughput and the wire clock against stock, and the results page |
-
-Host side: probe-rs on branch `wip-cmsisdap-cjtag`, currently at `815fb048c`. The cJTAG host
-control is there; the two-pin data read is not finished.
-
 ## What the emulator predicts, so you can check it
 
 KiB/s of wire time over a 64-word block. Regenerate with `uv run tools/cycles.py --table --words 64`.
@@ -483,41 +343,9 @@ Requests between those rows land on the row below them. `PACING.md` explains why
 
 ---
 
-# The plan
+# Measurements
 
-Ordered so that each step depends only on the ones above it. The fourth is the one that matters
-most, and it is cheap, so do not let the session end without it.
-
-## 1. Flash and enumerate
-
-Flash `build/mculink_cjtag.bin`, having run the gate first. Check the device appears, and check
-the serial string.
-
-Proves the image boots, the clocks come up, and the unique-id read does not fault. **Everything
-below depends on this**, and the serial read is the single most likely thing to stop the device
-appearing at all.
-
-If it does not enumerate, the fastest bisection is to flash a build with `ser_num.c` returning a
-constant.
-
-## 2. Identity
-
-Send vendor command `0x82` and read back `"CJTAG"`. Read `DAP_Info` for the packet size, the
-capabilities and the version strings.
-
-Proves you are talking to our image rather than stock, which matters because every later
-measurement is a comparison against stock and the two are easy to confuse. Confirms the
-descriptors that `tools/image.py` has only ever checked against themselves.
-
-## 3. SWD attach
-
-`probe-rs info` and then an attach against a known-good target. The halted MSPM0L1306 is the
-safest, given it will not survive a reset.
-
-Proves the SWD bit path, the acknowledge handling, and the whole command layer on real silicon.
-Unlocks every measurement below.
-
-## 4. The clock calibration capture
+## The clock calibration capture
 
 **Measured 2026-10-16 against stock. `DELAY_SLOW_CYCLES` is confirmed; the store cost is not.**
 
@@ -552,11 +380,11 @@ the steps in `PACING.md` are real and the specialisation work below is worth doi
 150.00 MHz. That agrees with what stock reports for `DAP_Info` 0xF1, and with the CMSIS-DAP
 example's `BOARD_BootClockRUN`, which attaches PLL0 at 150 MHz to `MAIN_CLK`.
 
-**Ours is 144 MHz and that is correct.** We build TinyUSB's board file instead, whose
+**Ours was 144 MHz at the time, and correct.** We build TinyUSB's board file instead, whose
 `BOARD_BootClockPLL150M` sets PLL0 to 150 MHz but then attaches **PLL1** at 144 MHz to `MAIN_CLK`
 and sets `SystemCoreClock` to 144000000. Two board files, two clocks, and the one in
-`src/DAP_config.h` matches the one we compile. The 150 MHz measured here is not evidence against
-it.
+`src/DAP_config.h` matched the one we compiled. Ours has since moved to PLL0 at 150 MHz ("Taken: the
+core now runs at 150 MHz", below).
 
 ### What it does not settle, and why the plan was wrong about that
 
@@ -601,11 +429,10 @@ across a twelve-fold range of delay. `IO_PORT_WRITE_CYCLES` declares 2.
 
 So ARM's arithmetic understates stock's own per-bit cost by a factor of three, and a stock probe
 lands at 68% of a 10 MHz request, 75% of 5 MHz and 94% of 1 MHz. The one bench number that existed
-before this session -- 0.94 MHz for a 1 MHz request -- is reproduced exactly.
+before the bench work -- 0.94 MHz for a 1 MHz request -- is reproduced exactly.
 
 **That constant may be about right for us.** Our bit paths are unrolled, and the emulator puts a
-SWD data bit at 5 cycles, which is 2.5 per half-bit against the 2 declared. Stock pays 6.
-The comparison to make after flashing is ours at the same three rates.
+SWD data bit at 5 cycles, which is 2.5 per half-bit against the 2 declared. Stock pays 6. The comparison to make after flashing is ours at the same three rates.
 
 ### The target sets the ceiling, not the probe
 
@@ -630,8 +457,7 @@ and below read 3,200 DPIDRs each with no bad word. Delay 1 (16.67 MHz) fails, an
 delay-free path at 30 MHz. There is nothing between 10 and 16.67 on the ladder. The U575 does
 better than the MSPM0, which failed at 9.375 MHz under stock, but nowhere near its datasheet.
 
-**The wire is clean; the probe misreads it.** Captured at our J6 (SWDIO and SWCLK, 100 MS/s,
-`mculink-ours-u575-swd-10-vs-16mhz.sal`) and decoded by sampling at each
+**The wire is clean; the probe misreads it.** Captured at our J6 (SWDIO and SWCLK, 100 MS/s) and decoded by sampling at each
 rising edge, as the target does. Every read at both settings carries OK and `0x0BE12477`,
 including the one the probe reported as acknowledge 3. At the connector the target's bit
 arrives 15 ns after the rising edge that launched it (10 or 20 ns at this resolution, mean 15.3
@@ -669,8 +495,7 @@ run through the same block-size test, 200 runs a size:
 So the failure goes with the block's last read, whatever code carries it.
 
 **On the wire the last read's clock is a cycle off.** Averaged over a capture of 14,977 one-word
-blocks and 4,025 sixty-four-word blocks (`mculink-ours-u575-tail-vs-loop.sal`),
-which washes out the analyser's 10 ns steps because its phase differs from read to read:
+blocks and 4,025 sixty-four-word blocks, which washes out the analyser's 10 ns steps because its phase differs from read to read:
 
 | | high after ack0's rise | low before ack1's rise | target's ack1 edge after the rise |
 | --- | --- | --- | --- |
@@ -700,9 +525,9 @@ issues. In the loop, the sample before the next edge comes about eight cycles af
 the faster setting, so the loop has two or three cycles in hand. The tail runs the same
 instructions and does not.
 
-**Measured with both shapes of vendor 0x87 (`7d0808e`): production samples at the early end of a
+**Measured with both shapes of vendor 0x87: production samples at the early end of a
 window about a period wide, and leaves most of it unused.** 1,000 reads a position, fill 24, a
-260-280 ns period, saved as `sample-u575-lead-and-after-7d0808e.txt`:
+260-280 ns period:
 
 - **Lead shape, production's own pattern** (rising edge, filler, falling-edge store, production's
   delay loop, sample): every high phase from 0 to 24 cycles reads correctly. Even the shortest,
@@ -723,8 +548,8 @@ the middle at that setting, and keep about two cycles either side even at the de
 five-cycle period. How much room there is past the edge depends on the target's round trip, which
 was 15 ns here and which a closer or faster target shortens.
 
-**Sampling after the edge fixes the 16.67 MHz setting (`6072ae9`, option `SWD_SAMPLE_AFTER_EDGE`,
-off by default).** The delayed path samples one instruction after its rising-edge store, with
+**Sampling after the edge fixes the 16.67 MHz setting (option `SWD_SAMPLE_AFTER_EDGE`, off by
+default).** The delayed path samples one instruction after its rising-edge store, with
 each transfer masked. The delay-free path is unchanged, because with no delay its low phase
 would shrink to a cycle. A build with the option names itself `+after-edge`.
 
@@ -748,8 +573,7 @@ alongside slow SWD would drop bytes, where today it does not. (No longer: SWO is
 since 2026-10-19, which a mask cannot hold up.) VCOM is polled from the main loop
 and is not affected. The right shape is after the edge with a mask at the fast settings and
 before the edge, unmasked, at the slow ones. That is a second copy of the delayed path, and as
-unrolled C it does not fit in SRAM. Generating the bit paths makes it free, and
-modelling the pin round trip in `cycles.py` comes first.
+unrolled C it does not fit in SRAM. Generating the bit paths made it free (CODEGEN.md).
 
 Four-wire JTAG reads TDO, which changes on the falling edge, before the rising one: half a period
 rather than a whole one.
@@ -774,22 +598,20 @@ which is affordable.
 Choosing the right copy for a requested clock still needs the store cost, so it waits on step 5
 rather than on this capture. `PACING.md` has the full trace through the source.
 
-## 5. Throughput against stock
+## Throughput against stock
 
-Done 2026-10-20, and moved to mculink-bench: the tools,
-the results of 2026-10-20 (throughput, and the clock each firmware puts on the wire), what they
-show, and how to retake them after the optimisation work. Its README has the findings BACKLOG items
-15 and 16 cite.
+In [mculink-bench](https://github.com/Escapement-Project/mculink-bench): the tools, the results
+(throughput, and the clock each firmware puts on the wire), what they show, and how to retake
+them.
 
-## 6. The console
+## The console
 
 Done 2026-10-19, after a fix: it had never received a byte.
 
 Open the CDC port and talk to a target's UART at a few baud rates, including 921600 and above.
 
 Proves `vcom_init` took Flexcomm 0 back from the board support, and that the fractional divider
-reset actually fixed the 2.4% error at a megabaud. Unlocks the integrated UART
-from probe-rs.
+reset actually fixed the 2.4% error at a megabaud.
 
 Loopback, 300,000 bytes a run, a jumper across TX and RX (`tools/coverage.py console`, then one
 console at a time):
@@ -801,9 +623,9 @@ console at a time):
 | MCU-Link Pro, 2026-10-20 | both at once | 1 Mbaud, twice | 2 to 4% at 2 Mbaud, 3 to 6% at 3 |
 
 The losses are RX FIFO overruns: CPU 0's loop moves console bytes one at a time, and two consoles
-share that loop (BACKLOG item 14). Stock V3.172 was clean with both of the Pro's at 3 Mbaud.
+share that loop. Stock V3.172 was clean with both of the Pro's at 3 Mbaud.
 
-**On DMA, 2026-10-21** (BACKLOG item 14): each unit's consoles looped back at once, one
+**On DMA, 2026-10-21:** each unit's consoles looped back at once, one
 second's worth each (`tools/coverage.py console`, which now runs every console of the probe
 together, sets any rate through Linux's termios2 where pyserial's path stops at 4 Mbaud, and times
 each run to its last byte, so a refused rate cannot pass as a slower one).
@@ -819,7 +641,7 @@ console byte back, every capture unbroken. With a 24 MHz SWO sweep image (§7) a
 run to 19.2 Mbaud during the capture, 20 s of SWO lost nothing; an earlier 15 s run lost three
 gaps, 7,305 bytes, all after the consoles had finished.
 
-## 7. SWO
+## SWO
 
 Ask for SWO at 8 MHz and below, and capture.
 
@@ -842,8 +664,7 @@ which in a debug build manages about 70 KB/s; behind that the probe overruns, sa
 stream resumes after the gap. probe-rs ignores the overrun bit and fails a read on the stream-error
 bit, which a capture that starts mid-frame sets once.
 
-**Above 8 MHz, 2026-10-21, through the Pro** (sweep images from a scratch copy, `954e2c9-dirty`;
-the Pro back on `8b90b88` after). Same target and `dap.py swo`; the Pro at 8 MHz first matched the
+**Above 8 MHz, 2026-10-21, through the Pro** (sweep images with a raised cap). Same target and `dap.py swo`; the Pro at 8 MHz first matched the
 plain board's figures above (2,400,047 and 2,400,062 bytes, no break).
 
 | Flexcomm 3 clock | rate | alone, 3 s twice | under console load, 15 s |
@@ -884,7 +705,7 @@ as `itm_counter.c`, trace clock the 150 MHz main clock undivided, SWO on PIO0_10
 
 - On the shipped 24 MHz image: 1, 12.5, 15, 18.75 and 21.4 MHz unbroken. 25 MHz asked answers 24,
   and the 4% between the ends breaks the stream on every reply.
-- On a sweep image from a scratch copy (`fe84c9f-dirty`, cap 30 MHz): 21.4, 25 and 30 MHz
+- On a sweep image with the cap at 30 MHz: 21.4, 25 and 30 MHz
   unbroken, 30 MHz at 9,000,675 and 9,000,009 bytes (3000 KB/s). 30 MHz for 20 s: 59,997,323
   bytes, 11,999,464 words, no break. 30 MHz for 20 s with the console looping back for 12 of them,
   a second each at 3, 6 and 12 Mbaud and then 19.2: 59,997,409 bytes, no break, and every console
@@ -900,28 +721,6 @@ The emulator still cannot run capture: CPU 0's clock setup never runs there, so 
 reads 0 Hz, SWO_Baudrate makes its rate from the main clock instead, and no capture is started. The
 ring and rate arithmetic is tested on the host instead (`tools/swo_ring_test.py`, in the gate).
 
-## 8. cJTAG on a CC13xx, with the analyser
-
-Drive TI's activation and an IDCODE read (`uv run tools/dap.py cjtag`) with the analyser on TCKC
-and TMSC, and capture.
-
-Proves the claim the whole firmware exists for: that the wire never moves while the clock rests
-high, which on a 1149.7 wire is an escape edge and is exactly what the stock firmware gets wrong.
-The gate already refuses a build that emits one in emulation, so a disagreement here means the
-emulator's pin model is wrong rather than the code.
-
-## 9. The two-pin data read
-
-Finish the two-pin read against a real CC13xx: scan the IDCODE over OScan1 and read a memory word.
-
-The point of the project. Unlocks the probe-rs host side, and after that the question of whether
-this goes upstream.
-
-## 10. Parity questions
-
-Whether stock answers DAP over HID needs a stock unit and a v1 host. It decides whether
-our HID interface is parity or surplus.
-
 ## What the bench measured, 2026-10-16
 
 The firmware runs. It also loses to stock on the wire, by about half, for a reason the emulator
@@ -930,7 +729,7 @@ cannot see.
 ### Bring-up, steps 1 to 3: all clear
 
 The image boots, enumerates as `MCU-Link Verge CMSIS-DAP`, and answers vendor `0x82` with magic
-`CJTAG`, format 2, flags 0x01 and its build string. The serial came back `CJ6B19D4E7` rather than
+`CJTAG`, format 2, flags 0x01 and its build string. The serial came back as a real one rather than
 `CJNOUUID`, so **the unique-id read at `0x0009_FC70` works on silicon** -- the single most likely
 thing to stop the device appearing at all. Every `DAP_Info` field matches what `tools/image.py`
 predicted. `rblhost` read all 229,464 bytes back and they are identical to the built image.
@@ -1126,8 +925,8 @@ Clocks 5, 9, 10, 12 and 13 measure 14.00 cycles against the 15.00 a 10 MHz reque
 15.00 to a hundredth, and clocks 1 to 4 are 16.00, so the transfer straddles the requested rate
 rather than sitting on it.
 
-The fastest position is what a marginal target breaks on, so 10.72 MHz is the number that matters
-for the overshoot, not the 9.975 MHz average of the data phase. This supersedes the earlier 10.28 to
+The fastest position is what a marginal target breaks on, so 10.72 MHz is the number that matters, not the
+9.975 MHz average of the data phase. This supersedes the earlier 10.28 to
 10.30 MHz figure, which was the same effect measured without folding by position.
 
 ### The per-word bookkeeping, and the one register that decided it
@@ -1250,7 +1049,7 @@ refused by NAK rather than dropped.
 ### Through probe-rs, which is the host that matters
 
 Everything above is `tools/dap.py`, which reads a DP register and touches no access port. The
-numbers a user sees come through probe-rs, and `swd-throughput` measures those. At 10 MHz
+numbers a user sees come through probe-rs, and mculink-bench's `swd-throughput` measures those. At 10 MHz
 asked, fitted ceiling over 64 to 4096 byte transfers:
 
 | | stock | ours |
@@ -1299,9 +1098,6 @@ carries. That is where the throughput goes: 1.69 round trips per block of data i
 So the remaining work is in probe-rs and not in the probe: fewer commands per block of data, not
 faster commands. The largest gap seen was 2.1 ms against a 40 us median, so something occasionally
 stalls far longer than the rest and is worth finding first.
-
-Captures: `mculink-dap126-marker-2026-10-16.sal` and
-`mculink-probers-marker-2026-10-16.sal`.
 
 ### What limits the pipeline, and why two in flight is the number
 
@@ -1358,9 +1154,7 @@ returns the count, and nothing was reading it.
 
 ### The LED: a timer's job, and what it costs the wire
 
-**Stock fades the LED when nothing is using it.**
-
-**Ours does the same with CTIMER3 and adds activity.** Breathing when nothing is using the probe,
+**Ours fades the LED with CTIMER3 as a PWM, and adds activity.** Breathing when nothing is using the probe,
 blinking while commands arrive, fully lit when a host has said it is connected and is idle. The
 period interrupt runs the policy and a command pays one byte store. `tools/image.py` runs the
 interrupt against the image and checks all three, including that one command is visible whatever
@@ -1521,8 +1315,8 @@ as the two edges.
 37.5, 25, 12.5, 10, 1 and 0.1 MHz, and all 360 single-register cases at 50, 37.5, 10 and 1 MHz.
 Only where the samples sit differs: a sample can trail the edge that launched its bit by two clocks.
 
-**Every period ran clean on the MSPM0L1306.** `lab/gensweep.py` reads DPIDR in blocks and writes
-CTRL/STAT, checking 18 bits of each write. It found no error at any period from 3 to 40 cycles,
+**Every period ran clean on the MSPM0L1306.** A sweep that reads DPIDR in blocks and writes
+CTRL/STAT, checking 18 bits of each write, found no error at any period from 3 to 40 cycles,
 or at 3, 2, 1 and 0.1 MHz. probe-rs wrote random words to SRAM and read them back correctly at
 every clock from 0.1 to 50 MHz.
 
@@ -1559,8 +1353,7 @@ target's clocks, the core only loads and keeps each bit. A lab prototype read DP
 2,000 times out of 2,000 with those clocks at 50 MHz, and the analyser shows them at exactly that
 rate. Stopping the timer is the hard part. A store to any of its registers holds the core up four
 cycles, which at 50 MHz always swallows one bit's sampling window, so the prototype stops the
-timer with a DMA write instead, triggered by a second timer. None of this is in the generator
-yet; `timer-swclk-2026-10-16.txt` has the measurements.
+timer with a DMA write instead, triggered by a second timer. None of this is in the generator.
 
 ### The USB path at 50 MHz, and what a perfect host gets
 
@@ -1618,9 +1411,6 @@ each reply before continuing: about 170 µs of round trips per 1 KB against 470 
 That, not the probe, is most of the difference between 1,397 and the 2,000 the probe gave a
 script.
 
-Tools: `qsweep.sh`, `marker_gaps.py`, `isr_gaps.py` and the sweeps, with the
-captures `usb-*.sal` beside them.
-
 ### DAP_Transfer ran from flash in the generated build
 
 A host sends anything shorter than a block as one DAP_Transfer: an access under 1 KB, the address
@@ -1631,8 +1421,8 @@ both ways (50 MHz, 16, 64 and 120 words a command, synchronous, per word from th
 
 | | DAP_TransferBlock | DAP_Transfer |
 | --- | --- | --- |
-| before (`84100db`) | 1.64 µs/word | 7.24 µs/word |
-| loop in SRAM, configuration checked once per command (`1a82cd5`) | 1.68 | 2.60 |
+| before | 1.64 µs/word | 7.24 µs/word |
+| loop in SRAM, configuration checked once per command | 1.68 | 2.60 |
 
 The prediction was 2 to 3 µs. Through probe-rs (`swd-throughput`, same probe-rs build),
 a 256-byte read at 50 MHz went from 562 µs to 251, and 64 bytes from 188 to 104; reads of 1 KB and
@@ -1644,33 +1434,3 @@ The gate missed it because it measures blocks. It also hid the next problem: onc
 `swd_gen_ready` had one caller, clang inlined it, and the gate, which recognised a generating
 image by that function's symbol, judged the clang image against the default build's baselines.
 
-## What the bench has sized, and what is left
-
-Ranked, with the items here that are since done marked as such, in BACKLOG.md.
-
-- **MCU-Link Pro support.** Stock runs one image on every LPC55S69 MCU-Link, the Pro
-  included, and picks features at runtime.
-  The goal is one faster image for both boards, with the Pro's extras (second VCOM, SPI/I2C/GPIO
-  bridge, power measurement, target supply) reachable from probe-rs rather than only from
-  MCUXpresso IDE.
-- **Running the bit paths from SRAM.** Done; it was the biggest item there was and it doubled the
-  block read. It needed no linker script of our own: `.ramfunc` is already in the board support's
-  script and already copied by its startup code, which the earlier note here got wrong.
-- **A DAP packet above 512 bytes.** Worth less than this document used to claim. The marker puts
-  USB and the host at 19.6% of a block read, not 34%, so the ceiling on this is a fifth rather
-  than a third, and two commands in flight has already taken 11% of it. It deviates from stock, so
-  check pyOCD and OpenOCD before changing what `DAP_Info` reports.
-- **Framed replies, so more than two packets can be in flight.** Dropped: TinyUSB's vendor class
-  without its FIFO keeps each packet whole (`src/tusb_config.h`), and three commands run in flight.
-- **Clocks 44 and 45 of every transfer**, 51.9 and 66.1 cycles against a 15-cycle data bit. 89
-  extra cycles once per word and 12.9% of a transfer, but one attempt at them already came out
-  worse by disturbing the data phase. See the rejected change above before trying again.
-- **Running the two-pin and four-wire JTAG block paths from SRAM.** Done in `ecaec8a`.
-- **Make the generated SWD paths the default.** Done 2026-10-20, with the JTAG paths, once the
-  MSPM0L1306 had run the SWD ones with its access port answering WAIT.
-- **Measure the read latency per target.** Done on all three wires: the probe measures it
-  at connect where the
-  default leaves under two cycles, SWD at 37.5 and 50 MHz, four-wire from 12.5 MHz and two-pin from
-  15 MHz on the CC1312R1.
-- **Generate the JTAG and two-pin paths the same way.** Done in `e291163`, and the default with
-  the SWD ones.

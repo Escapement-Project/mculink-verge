@@ -1,10 +1,7 @@
 # MCU-Link cJTAG firmware — design and references
 
-What this firmware is for, what is built so far, what is known about the hardware and the stock
-image, and where every reference lives. Written so that nothing established by measurement has to
-be rediscovered.
-
-Last updated 2026-10-16.
+What this firmware is for, how its two-pin support fits into ARM's code, what is known about the
+board, and the projects it draws on.
 
 ## Why this exists
 
@@ -39,66 +36,7 @@ that is why this firmware exists.
 activation carries the same edge density and its command still lands, so they are evidently
 tolerated in the command window. A predicted read-edge count of 43 did not match the measured 59.
 
-## Current state
-
-Builds. `cmake -B build -G Ninja -DBOARD=mcu_link -DTOOLCHAIN=gcc . && ninja -C build` produces
-`build/mculink_cjtag.{elf,hex,bin}`, 229,124 bytes of text at `-O3` with link-time optimisation and
-the bit paths unrolled, 36% of the part's flash. Two thirds of that is flash deliberately traded
-for speed; `OPTIMISATIONS.md` has the two trades and their numbers. `-DLTO=OFF` and `-DCMAKE_BUILD_TYPE=MinSizeRel` are there for bisecting a
-miscompilation.
-
-**Nothing has been flashed or run on hardware yet.** The bench is unavailable; everything below
-about the stock firmware comes from captures taken before it went away.
-
-What does exist is emulation, and `ninja -C build check` is the whole of it. The built image runs on an emulated Cortex-M33, driven through the
-real DAP command layer against a modelled target, and all three wires read and write correctly:
-four-wire JTAG and SWD against a target that acknowledges and shifts, and **the two-pin path
-through a modelled 1149.7 target that decodes OScan1 framing off the wire**. Data words come back
-exactly, WAIT reports WAIT and FAULT reports FAULT. That is not hardware, and it says nothing about
-analog behaviour, timing margin or whether a real target tolerates any of it. It does mean the
-protocol logic has been exercised rather than only read.
-
-Implemented: CMSIS-DAP v2 on a vendor interface and v1 on HID, a CDC console bridged to Flexcomm 0,
-SWO capture on Flexcomm 3 by DMA (`src/swo.c`), the MCU-Link pin layer, the serial number, ARM's DAP, SW_DP and JTAG_DP
-compiled unchanged, and the cJTAG activation sequence and frame primitive behind two vendor
-commands. All five JTAG entry points are routed.
-
-`tools/cycles.py` emulates the built image on a Cortex-M33 and counts what a debug-port bit costs.
-It is the only instrument this project has while the bench is away, and it is what the numbers in
-`OPTIMISATIONS.md` come from. **`uv run tools/cycles.py --check` is the gate**: it holds the wire
-event stream to a recorded baseline, refuses a transition while the clock is high on the two-pin
-path, and refuses a new case of clocking faster than the host asked for. Run it after touching
-anything in the bit paths.
-
-### Parity against the stock image
-
-| | stock | ours |
-| --- | --- | --- |
-| the 25 DAP commands, SWO included | yes | yes |
-| `DAP_UART_*` (0x1F..0x23) | **no** | no |
-| vendor 0x80, 0x81 | yes, LinkServer-specific | no |
-| vendor cJTAG commands | no | 0x82, 0x83 |
-| CMSIS-DAP v2, bulk, 512-byte packets | yes | yes |
-| CMSIS-DAP v1, HID | yes | yes |
-| CDC virtual COM port | yes | yes |
-
-**HID is implemented here, and correctly, whatever stock turns out to do.** The two interfaces
-cannot share a packet size: a HID report is bounded by its interrupt endpoint at 64 bytes while
-bulk carries 512, and `DAP_Info` builds its reply from one constant with no idea which interface
-asked. The HID path corrects the reply on the way out, so a v1 host reads 64 and a v2 host reads
-512 from the same command layer.
-
-Stock's own HID interface may not answer DAP at all -- its packet-size reply is a fixed 512,
-which no v1 host could use, and the bench settles that. Either way ours is
-a superset, so it is not a parity gap.
-
-**The only remaining difference is stock's two vendor commands.**
-
-Interface numbering differs from stock, which has HID between the vendor and CDC interfaces. Ours
-is vendor, CDC, CDC data, and adding HID will append rather than insert. Hosts enumerate by
-descriptor, so this is cosmetic.
-
-### How OScan1 is wired in
+## How OScan1 is wired in
 
 ARM's `JTAG_DP.c` is compiled **three times**, and the wire framing is the only thing that differs:
 
@@ -125,7 +63,7 @@ output latch holds; doing it while TCKC was still high put one escape edge in ev
 the same density as the SWD path this firmware exists to replace. OpenOCD's OScan1 driver sequences
 the same three packets the same way, with TCK resting low between them.
 
-### Vendor commands
+## Vendor commands
 
 | id | | |
 | --- | --- | --- |
@@ -149,15 +87,9 @@ maintained upstream. Using it is why this is a few hundred lines rather than a p
 on their files, because `DAP.c` leaves a variable unused when SWO is configured out and TinyUSB's
 example flags are `-Werror`. No patches to upstream source.
 
-So the code that is ours is small and all of it is board or protocol specific:
-
-| file | what it is |
-| --- | --- |
-| `src/DAP_config.h` | ARM's MCU-Link config, with its MCUXpresso board includes replaced |
-| `src/board_pins.h/.c` | the debug interface pin map and its idle state |
-| `src/usb_descriptors.c` | CMSIS-DAP v2 vendor interface, WinUSB binding, strings |
-| `src/ser_num.c` | serial number from the part's unique id |
-| `src/main.c` | one DAP command per USB packet |
+The code that is ours is board and protocol specific: the pin layer, the bit paths and the
+generators that write them at run time, the two-pin framing, the USB descriptors, and the command
+path between the two cores.
 
 The MS OS 2.0 descriptor is **generated by a script rather than hand-written**: it has three nested
 length fields that must agree with the bytes after them, nothing reports a mismatch at runtime, and
@@ -186,18 +118,19 @@ TinyUSB's board support claims Flexcomm 0 for its own debug logging on different
 `vcom_init` runs after `board_init` and takes the peripheral back. The probe has no console of its
 own, so nothing is lost.
 
-Source: the board header in ARM's CMSIS-DAP MCU-Link example. **Independently confirmed** against
-the schematic's net names.
+Source: the board header in ARM's CMSIS-DAP MCU-Link example, checked against the schematic's net
+names.
 
 ### What the board support does not start
 
 Three clock facts, all from the manual and the board support rather than the bench, each of which
 would present as a silent dead peripheral.
 
-**The core runs at 144 MHz, not 150.** `BOARD_InitBootClocks` calls `BOARD_BootClockPLL150M`, whose
-name is wrong: it runs PLL1 at 16 MHz times 18 and attaches that to MAIN_CLK. `CPU_CLOCK` and
-`TIMESTAMP_CLOCK` in `DAP_config.h` say 144 MHz, and every requested SWD or JTAG clock is computed
-from that number.
+**The board support's 150 MHz clock is 144 MHz.** `BOARD_InitBootClocks` calls
+`BOARD_BootClockPLL150M`, whose name is wrong: it runs PLL1 at 16 MHz times 18 and attaches that to
+MAIN_CLK. `board_core_clock_init` then moves MAIN_CLK to PLL0 at 150 MHz (`src/core_clock.h`;
+`-DCORE_150MHZ=OFF` keeps 144). `CPU_CLOCK` and `TIMESTAMP_CLOCK` follow `CORE_CLOCK_HZ`, and every
+requested SWD or JTAG clock is computed from that number.
 
 **FRO_HF is off and so is its divider.** The 96 MHz output of FRO192M is disabled out of reset
 (UM11126: `ENA_96MHZCLK` resets to 0) and the board support only ever asks for the 12 MHz one,
@@ -218,211 +151,24 @@ Releasing the wire is exactly what OScan1 needs, so this pin is load-bearing for
 `board_debug_pins_init` brings both TXEN pins up low before the pins they gate, so connecting the
 probe to a running board disturbs nothing until the host asks for a port.
 
-## The stock firmware
-
-`MCU-LINK_CMSIS-DAP_V3_172.s19`, shipped by LinkServer at
-`MCU-LINK/probe_firmware/` in its install.
-
-**It is the image the bench probe runs**: `DAP_Info` over USB returns "NXP Semiconductors" and
-"MCU-Link CMSIS-DAP V3.172". ARM's
-reference example returns length 0 for both, so that example is a reference and not the thing
-measured.
-
-### The parity list
-
-These are ARM's standard commands, which its reference answers:
-
-```
-0x00 Info            0x01 HostStatus      0x02 Connect         0x03 Disconnect
-0x04 TransferConfig  0x05 Transfer        0x06 TransferBlock   0x08 WriteABORT
-0x09 Delay           0x0A ResetTarget     0x10 SWJ_Pins        0x11 SWJ_Clock
-0x12 SWJ_Sequence    0x13 SWD_Configure   0x14 JTAG_Sequence   0x15 JTAG_Configure
-0x16 JTAG_IDCODE     0x17 SWO_Transport   0x18 SWO_Mode        0x19 SWO_Baudrate
-0x1A SWO_Control     0x1B SWO_Status      0x1C SWO_Data        0x1D SWD_Sequence
-0x1E SWO_ExtendedStatus
-```
-
-plus `0x7F ExecuteCommands`. **Our build has to answer all of these or it is a downgrade**, and
-`tools/image.py` now checks it: all 28 commands answer with their own id, and an id we do
-not implement answers `ID_DAP_Invalid` rather than echoing itself.
-
-One of them used to hang. `DAP_Delay` takes a count and ARM's pacing loop decrements before it
-tests, so a zero microsecond delay counts down from 2^32: about ninety seconds with the probe
-answering nothing. It is a legal request, and probe-rs not sending one is the only reason it has
-never been seen. `src/dap_dispatch.c` answers it directly.
-
-Another three wrote past the reply buffer. The host picks the reply length, and nothing in ARM's
-command layer compares it against the buffer:
-
-- `DAP_TransferBlock` takes a sixteen-bit word count, and a read request stays five bytes however
-  large it is. 65535 words is a 256 KB reply into a 512-byte buffer, which on this part runs off
-  the end of SRAM through the stack.
-- `DAP_Transfer` takes 255 transfers that can answer with eight bytes each: 2043 bytes measured.
-- `DAP_ExecuteCommands` runs up to 255 sub-commands and never learns how many bytes arrived, so it
-  keeps handing sub-commands whatever follows the request buffer.
-
-ARM's reference, DAPLink and the Raspberry Pi debugprobe carry the same code, so this is not
-specific to the MCU-Link. A conforming host sizes its requests to the packet size, which is why
-nobody hits it. Block reads are clamped to what the buffer holds, reported as the short count the
-protocol already has; the buffer holds the longest reply one command can produce; and the
-sub-command loop stops at a packet, which is all that is ever sent. `tools/image.py` holds it
-there with seven oversized requests and a canary past the buffer the image actually contains.
-
-
-### Stock's own vendor commands
-
-**Not implemented here, and that is a decision rather than a gap.**
-
-Nothing in probe-rs asks for either command, and the CMSIS-DAP specification leaves 0x80..0x9F
-entirely to the probe, so there is no standard being violated by answering `ID_DAP_Invalid`.
-
-### The vendor range
-
-Stock answers 0x80 and 0x81 in the vendor range, so **0x82 through 0x9F are free**, which is where the cJTAG
-vendor command goes with no risk of colliding with something LinkServer relies on.
-
-## What this firmware does on the wire
-
-From the emulator, KiB/s of wire time for a 64-word block. Wire time only: the USB round trip is
-not modelled and the stock capture put it at about 10% of a transfer, so read these as a ceiling.
-
-| | 10 MHz asked | 50 MHz asked |
-| --- | --- | --- |
-| SWD read | 624 | 1693 |
-| SWD write | 681 | 2148 |
-| JTAG read | 687 | 1812 |
-| JTAG write | 759 | 2433 |
-| two-pin read | 213 | 646 |
-| two-pin write | 218 | 617 |
-
-The bar is stock's 476 KiB/s read and 502 write. **The two-pin path costs about 3 times four-wire per JTAG
-clock**, which is what the format requires and little more.
-
-One finding here is a defect rather than a measurement: **four-wire JTAG clocks the target faster
-than the host asked for**, 3% over at 10 MHz and 44% over at 50. SWD and the two-pin path are
-within the request everywhere. `OPTIMISATIONS.md` has the cause, the two ways out and what each
-costs. Nothing has been changed, because both cost throughput and the choice is not obvious.
-
-## Measurements, and what the bar actually is
-
-Stock firmware against an MSPM0L1306, measured with `swd-throughput`. KiB/s at 4096 bytes:
-
-| kHz | read32 | write32 | read8 | write8 | effective MHz |
-| --- | --- | --- | --- | --- | --- |
-| 1000 | 75.7 | 75.9 | 19.3 | 19.2 | 0.89 |
-| 5000 | 280.6 | 290.9 | 72.9 | 75.2 | 3.30 |
-| 10000 | 469.1 | 502.9 | 124.8 | 132.3 | 5.52 |
-| 14000 | 475.4 | 501.2 | 124.5 | 132.4 | 5.60 |
-
-Round trip bottoms at 68 us. On the wire: 0.94 MHz actual for 1 MHz requested at 97% duty, 7.14 MHz
-for 14 MHz requested at 90% duty. The two period histograms have the same shape offset by exactly
-920 ns in every class, which is the programmable delay; what remains is the loop.
-
-**476 KiB/s read and 502 KiB/s write is the bar, with a caveat that matters.** 14 MHz was the
-highest clock the target would attach at.
-This is not the probe's ceiling.
-
-Captures: `mculink-swd-clock-*.sal`.
-
-## Next steps
-
-**`BENCH.md` is the ordered plan and the reference to have open during the session.** What follows
-is the summary.
-
-1. Flash and enumerate. Nothing has run on hardware. Until it does, every line of this is theory
-   or emulation, and the UUID read above is the line most likely to stop the device appearing at
-   all.
-2. Bench: confirm probe-rs attaches over SWD, then the console, then SWO, then the OScan1 read on a
-   CC13xx with the analyser watching.
-
-   Then sweep the requested clock, because the emulator says the achieved rate goes up in three
-   steps above 8 MHz and nothing in between: 10 to 14 MHz is one setting, 16 to 30 is one, 40 and
-   50 are the delay-free path. **Which step a target tolerates is worth more than anything left to
-   optimise** -- 14 to 16 MHz is a 46% jump and 30 to 40 is another 91%. The analyser settles both
-   that and the cost model the overshoot figures depend on, since one measurement of the real
-   period at two delay settings solves for the store and branch costs. `uv run tools/cycles.py
-   --table` is the prediction to check against.
-3. Settle the two bench questions parity depends on: whether stock answers DAP over HID, and
-   whether stock maps CDC line state to anything.
-   SWO was a bench item too. It works since 2026-10-19, on our own DMA capture rather than ARM's
-   SWO.c over NXP's USART driver. The 8 MHz maximum stays, exact at an
-   oversampling ratio of 12; 9 MHz is 3.03% from anything a 96 MHz Flexcomm makes.
-4. Then, and only then, throughput, starting with the clock calibration.
-
-### Open questions
-
-- Stack depth is not a worry, but it was worth checking after the transfers were inlined into
-  their loops. The deepest frames are 104 bytes in ARM's command processing and 80 in a block, so
-  a command plus a USB interrupt is about 300 bytes of the 2 KB region. The 144-byte frame under
-  `snprintf` belongs to the serial number and runs once, before USB is up.
-- The UUID read at 0x0009_FC70 is untested on hardware. If that region faults rather than reading,
-  it faults during `GetSerialNum` and the device will not enumerate. `tools/image.py` runs
-  the function against a programmed id and an unprogrammed one and gets `CJF2551AD5` and
-  `CJNOUUID`, so the arithmetic and the uniform-value guard are right. **A bus fault is the part
-  that cannot be checked from here**, and it is still the single line most likely to stop the
-  device appearing.
-- Whether `IO_PORT_WRITE_CYCLES`, which is 2, is right. **An earlier reading of this was wrong and
-  is worth not repeating**: dividing a whole transfer's cycles by its clock count gives about 5,
-  which looks like the constant is 2.5x too low, and raising it on that basis would have made the
-  probe clock targets *faster* than asked. A transfer is not one rate. Its packet bits, write bits
-  and read bits each run at a different period, and the constant is calibrated against the fastest
-  of them, where it is already about right: SWD asked for 10 MHz measures 9.60. What is actually
-  wrong is that one constant serves three wires that cost different amounts per clock. `PACING.md`
-  traces it through the source, and `BENCH.md` has the capture that settles it.
-- In `cJTAG_Frame`, TDO is sampled while TCKC is low, just before the rising edge, following the
-  shape of ARM's `SW_READ_BIT`. Whether the target drives it early enough is an analyser question.
-- `cJTAG_Frame` takes the wire back immediately after the falling edge of the TDO packet. If the
-  target is slow to release TMSC, that is a brief contention. OpenOCD has the same exposure, so it
-  is a bench check rather than a known fault.
-- Whether a CDC host asserting DTR or RTS should do anything. Some probes map them to target reset
-  or boot mode; this one ignores line state, and what stock does is unknown.
-
 ## References
 
-### Cloned under `references/`, gitignored
+### Related projects
 
-| repo | why |
+| project | why |
 | --- | --- |
-| `openocd` | **the most useful one.** Has a host-side OScan1 implementation, `ftdi oscan1_mode on`. A second opinion on the bit encoding, from a working implementation, against which our capture decoding can be checked. |
-| `cjtag` (kuopinghsu) | IEEE 1149.7 Class T4 in RTL, with a protocol document. 3-bit OScan1 scan packets. |
-| `free-dap` | a tighter CMSIS-DAP implementation than ARM's reference; relevant to throughput. |
-| `debugprobe` | Raspberry Pi's CMSIS-DAP on TinyUSB — the same architecture as this, useful for the USB glue. |
-| `DAPLink` | ARM's own production probe firmware, for comparison on anything ambiguous. |
+| [OpenOCD](https://github.com/openocd-org/openocd) | a host-side OScan1 implementation (`ftdi oscan1_mode on`): a second opinion on the bit encoding |
+| [kuopinghsu/cjtag](https://github.com/kuopinghsu/cjtag) | IEEE 1149.7 Class T4 in RTL, with a protocol document |
+| [free-dap](https://github.com/ataradov/free-dap) | a tighter CMSIS-DAP implementation than ARM's reference |
+| [debugprobe](https://github.com/raspberrypi/debugprobe) | Raspberry Pi's CMSIS-DAP on TinyUSB, the same architecture as this |
+| [DAPLink](https://github.com/ARMmbed/DAPLink) | ARM's production probe firmware, for comparison on anything ambiguous |
 
-`stnolting/cjtag_bridge` was in the search results but the repository is gone, so it is not here.
-
-No complete open-source probe firmware implementing OScan1 end to end was found, so that part
-appears to be ours to write.
-
-### What OpenOCD's implementation already settles
-
-`references/openocd/src/jtag/drivers/ftdi.c` drives cJTAG activation as an explicit table of
-`{TCK, TMS, TDI}` states, each entry commented with what it is doing. Reading it confirms, from a
-working implementation and independently of our captures, the distinction the whole firmware change
-rests on:
-
-- **Escape edges are driven with TCK held high.** TMSC toggles in a run of states that all
-  keep TCK at 1. That is what an escape edge is, and emitting one is deliberate.
-- **The activation code bits are shifted with TMSC moving while TCK is low.** One state sets TMSC,
-  and the next clocks it. Data never changes while the clock is high.
-
-**That is exactly the rule our SWD bit path breaks**, and it is now confirmed by something other
-than our own reading of a capture. ARM's `SW_WRITE_BIT` changes data before pulling the clock low,
-so on a 1149.7 wire every data bit also emits an escape edge.
-
-It also gives us the activation sequence as code rather than as something reconstructed from a
-capture: the online sequence, then **OAC = 1100** for two wires, then EC, then CP, with
-`ESCAPE_SEQ_OAC_BIT2` naming the offset that distinguishes OScan1 from JScan3. OpenOCD supports
-both, and the only difference is two TDI bits in that table.
+No open-source probe firmware implementing OScan1 end to end was found.
 
 ### In this repo
 
-- `external/tinyusb` — pinned at 0.21.0.
+- `external/tinyusb` — TinyUSB's master with one change for caller-owned vendor buffers, from a
+  fork until it is upstreamed.
 - `external/CMSIS-DAP` — pinned at v2.1.2. `Firmware/Source` has DAP.c, SW_DP.c, JTAG_DP.c, SWO.c
   (not built: `src/swo.c` replaces it), UART.c and DAP_vendor.c; `Firmware/Examples/MCU-LINK/` has the board headers this started from.
 
-## Bench notes
-
-- **`DAP_TransferAbort` answers nothing.** Reading for a reply after sending it stalls the probe's
-  bulk endpoint and every later command times out. `usb.core.Device.reset()` clears it without
-  unplugging and does not disturb a halted target.

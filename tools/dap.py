@@ -11,7 +11,7 @@ third is what the clock calibration measures -- `DAP_SWJ_Sequence` is the only c
 whose cycles-per-bit is the quantity ARM's clock arithmetic is about.
 
     uv run tools/dap.py list
-    uv run tools/dap.py info --serial QK7RM2VTX8D41
+    uv run tools/dap.py info --serial <serial>
     uv run tools/dap.py identify
     uv run tools/dap.py clock --hz 10000000 --bursts 200
     uv run tools/dap.py sample --fill 24

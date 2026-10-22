@@ -1,6 +1,6 @@
 # Timing on this part
 
-These are the rules a generator for the bit paths can place instructions by, and what
+These are the rules the generator for the bit paths places instructions by, and what
 the emulator now models. Every rule comes from a measurement on the bench. BENCH.md has the
 measurements, under "The cost model now times the bus".
 
@@ -9,7 +9,7 @@ measurements, under "The cost model now times the bus".
 In SRAMX, the 32 KB at 0x0400_0000 that this image leaves unused.
 
 The core fetches SRAMX over C-AHB and makes its data accesses over S-AHB, so the two never wait
-for each other. The bit paths run from SRAM today, which the core fetches over S-AHB. There every
+for each other. ARM's bit paths run from SRAM, which the core fetches over S-AHB. There every
 bus cycle carries one instruction word or one data access. A GPIO store can then hold back the
 next instruction by a cycle, depending on where the code sits in memory. That is what made the
 block's last read fail at 16.67 MHz while the loop's reads passed.
@@ -81,7 +81,7 @@ the sample. At 150 MHz the shortest read period is therefore 4 cycles, 37.5 MHz.
 period can be any whole number of cycles, and the split between the high and low phases is free.
 A generator picks the shortest period that does not exceed the rate asked for:
 
-| asked | today | generated |
+| asked | ARM's paths | generated |
 | --- | --- | --- |
 | 35 MHz | 16.67 | 30 |
 | 25 MHz | 16.67 | 25 |
@@ -90,7 +90,7 @@ A generator picks the shortest period that does not exceed the rate asked for:
 | 8 MHz | 7.14 | 7.89 |
 
 The furthest a generated rate falls below the one asked is 20% between 20 and 37.5 MHz, 11%
-between 10 and 20, and 6% between 5 and 10. Today's firmware falls up to 56%, 33% and 24% short in
+between 10 and 20, and 6% between 5 and 10. ARM's paced paths fall up to 56%, 33% and 24% short in
 the same bands, and it overshoots some requests: 16.67 MHz for 16, 7.14 for 7.
 
 A prototype scheduler places a whole sequence from the model alone: two writes and five reads,
@@ -98,7 +98,7 @@ with every sample at the middle of its window and every turnaround. It ran clean
 every period from 4 to 40 cycles, 37.5 to 3.75 MHz, with every acknowledge, word and parity bit
 right. Its cycle count matched the model's at every one of the 37 periods. The same scheduler, with
 the A it measured, ran clean against the MSPM0L1306 at every one of those periods too. That part
-fails above 10 MHz with today's firmware: the failures were the probe's sampling, not the part.
+fails above 10 MHz on ARM's paced paths: the failures were the probe's sampling, not the part.
 
 At short periods the sample trails the clock. At P = 4 with A = 7, a bit is readable 7 to 10
 cycles after its edge, which is two clocks later. Generated DPIDR reads at every period from 4 to

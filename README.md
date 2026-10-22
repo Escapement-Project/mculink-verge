@@ -211,13 +211,13 @@ checkout, `uv run tools/dap.py dio` does the same. Both send vendor command 0x8E
 `.github/workflows/release.yml` publishes a release when a tag starting with `v` is pushed. It
 attaches three files in the layout verge, the update tool, reads: the image as an S-record, its
 checksum, and a minisign signature whose trusted comment names the file and the tag. verge's
-README says what it checks. `LICENSE` and `THIRD-PARTY-NOTICES.md` go with them. The workflow has never run, and cannot until this repository is
-public.
+README says what it checks. `LICENSE` and `THIRD-PARTY-NOTICES.md` go with them.
 
 It has three jobs, so that the secret key never sits on a machine that ran code the build fetched:
 
 - `build` makes the image and its checksum, and runs `ninja -C build check` on it. It has no
-  secret. It runs in an Arch Linux container, which has the compiler the bench uses. The
+  secret. It runs in an Arch Linux container, which has the compiler the gate's baselines were
+  made with. The
   container is pinned by digest, and its packages come from Arch's archive for one day. The
   compiler changes only when a commit moves both.
 - `sign` first checks that the `release` environment has a required reviewer, and stops if it has
@@ -262,20 +262,30 @@ Apache-2.0, in `LICENSE`. Files changed from Arm's CMSIS-DAP carry Arm's notice 
 changed. The image also contains TinyUSB (MIT) and NXP's SDK drivers (BSD-3-Clause):
 `THIRD-PARTY-NOTICES.md` has their notices.
 
+## Not done yet
+
+- On the Pro: USB-SIO's SPI and I2C, the target supply, energy measurement, the analog trace
+  input and the LPC804 (PRO.md).
+- SWO over a streaming endpoint, from the ring already in USB SRAM.
+- Clocks 44 and 45 of every SWD transfer cost 89 cycles more than a data bit, 12.9% of a transfer.
+  One attempt at them made the data phase worse.
+- A cheaper read-latency measurement at connect. In OScan2 and OScan5 at 25 and 50 MHz it costs
+  each session 10 to 15 ms.
+- The generated scan engine as a loop rather than 32 near-identical copies, which would shrink
+  the generated code at slow clocks.
+
 ## Where to read next
 
-- `DESIGN.md` -- why this exists, the board, and where every reference
-  lives.
-- `BENCH.md` -- the reference to keep open at the bench, and what the probe measured on real
-  targets.
-- mculink-bench and mculink-stock-notes, beside this repository: throughput and the wire clock
-  against stock, and what stock does as seen from outside.
+- `DESIGN.md` -- why this exists, how the two-pin support fits into ARM's code, and the board.
+- `BENCH.md` -- the bench: harnesses, flashing, telling images apart, and what the probe measured
+  on real targets.
+- [mculink-bench](https://github.com/Escapement-Project/mculink-bench) and
+  [mculink-stock-notes](https://github.com/Escapement-Project/mculink-stock-notes): throughput and
+  the wire clock against stock, and what stock does as seen from outside.
 - `TIMING.md` -- the timing rules the generated paths are placed by, each from a bench measurement.
 - `CODEGEN.md` and `CJTAGGEN.md` -- how the SWD and JTAG paths are generated at runtime.
-- `TIMERGEN.md` -- SWD reads at 50 MHz with the clock made by a timer: built, measured and removed
-  (kept on branch `swd-timer-reads`).
-- `PRO.md` -- MCU-Link Pro support: what runs on the Pro today, what is still to come, and how each
-  step was checked.
+- `PRO.md` -- the MCU-Link Pro: its pins and straps, and what the firmware does with them.
+- `BUSES.md` -- which code touches which bus port, and when.
 - `PACING.md` -- how ARM's paths pace the wire clock, and what is wrong with it. Only the build with
   generation off still uses them.
 - `OPTIMISATIONS.md` -- what was done to ARM's paths for throughput, and what was tried and

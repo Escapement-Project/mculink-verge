@@ -5,14 +5,15 @@ same cycle take turns, and the loser stalls. Code that times the wire by countin
 JTAG and two-pin paths, generated or not) is only exact while nothing else is on the ports it
 uses. Twice already the other core broke that: CPU 0 polling the ordinary GPIO on port 8 misread
 bits at 50 MHz, and its LED tick on CTimer 3 (port 7) moved the stop of the reads clocked from
-CTimer 0 by a cycle about once in 10,000 transfers. Those reads are gone (TIMERGEN.md, branch
-`swd-timer-reads`), largely because port 7 cannot be kept quiet.
+CTimer 0 by a cycle about once in 10,000 transfers. Those timer-clocked reads reached 50 MHz and
+gained 1% on blocks, but lost 6% on DAP_Transfer to port 7 stalls, and were removed, largely because
+port 7 cannot be kept quiet.
 
 Keep this file current. Adding a peripheral access, a DMA channel, or a buffer in a new SRAM bank
 means a row here, and anything that lands on a port a timed window uses needs a handshake or
 another port.
 
-Source: UM11126 rev 2.8 tables 4, 5 and 6 (`references/docs/UM11126.pdf`).
+Source: UM11126 rev 2.8 tables 4, 5 and 6.
 
 ## Slave ports
 
@@ -86,13 +87,12 @@ of them back as exposures.
 
 Code lab, 2026-10-16: a CTimer store
 stalls the core about 4 cycles, two in a row about 10, a CTimer load about 9; none of it is in
-the emulator's timing model. On the bench, 2026-10-21 (`drainab.py`): a CTimer 0 load cost 8
-cycles each time inside the timer reads (TIMERGEN.md "Why").
+the emulator's timing model. On the bench, 2026-10-21: a CTimer 0 load cost 8 cycles each time
+inside the timer reads.
 
 ## Measured: CPU 0 on CPU 1's SRAM port
 
-Code lab, 2026-10-21 (`sramcontend.py`, logs `sramcontend-2026-10-21.txt`
-and `sramcontend-staged-2026-10-21.txt` beside it). CPU 1 timed 256 loads and stores to SRAM3,
+Code lab, 2026-10-21. CPU 1 timed 256 loads and stores to SRAM3,
 from SRAMX, while CPU 0 copied within the same bank. At the reset priorities, and with CPU 0
 favoured, 8 to 55% of bodies lost cycles, 2 to 13 each. With CPU 1's data bus at priority 3, none
 of 1,100 bodies lost a cycle, with CPU 0 copying word by word or with `memcpy`.

@@ -4,7 +4,8 @@
 so a capture can be checked word by word with `itm_check.py`. Debug over two-pin cJTAG only: four-wire
 JTAG takes DIO16 back as TDO.
 
-Build and load, from this directory and the probe-rs branch with cJTAG (`wip-cmsisdap-cjtag`):
+Build and load, from this directory, with probe-rs built from the cJTAG branch of
+https://github.com/CordlessCoder/probe-rs (`wip-cmsisdap-cjtag`):
 
     make
     probe-rs download --chip CC1312R --protocol cjtag build/itm_counter.elf

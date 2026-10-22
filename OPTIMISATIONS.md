@@ -177,7 +177,7 @@ is the floor. 64-word blocks gain 14% to 41%. The shortest period on the wire is
 probe still never clocks faster than it was asked to.
 
 `src/swd_dp.c` owns `SWD_Transfer`; SW_DP.c still compiles unchanged and still supplies the two
-sequence commands. `tools/equiv.py` holds it to ARM's behaviour across 528 cases.
+sequence commands. `tools/equiv.py` holds it to ARM's behaviour across 536 SWD block cases.
 
 ### Give the two-pin path a copy without the pacing loop
 
@@ -521,7 +521,7 @@ contention. Measure before keeping.
 
 ### 7. DAP packet size above 512
 
-Decided against on 2026-10-20: BACKLOG.md item 13 has the reasons and what would reopen it.
+Decided against (2026-10-20): a DAP packet stays one USB packet.
 
 512 is the USB 2.0 ceiling for a high-speed **bulk endpoint**, and it is not tunable. It is not the
 ceiling for a DAP packet: `DAP_Info` reports packet size as a 16-bit value, a bulk transfer spans as
@@ -547,11 +547,10 @@ of our own rather than the board support's.
 
 ## Before anything else, at the bench
 
-**Still true, and still the thing blocking this list.** Every figure here is from the paced path:
-the bench MSPM0L1306 stops answering around 9 to 10 MHz on the wire, and the delay-free path only
-starts at 37.5 MHz. So nothing on this list that concerns the fast path has ever been measured
-against silicon. A clock sweep would at least say exactly where this target stops; a target that
-attaches above the switch point is what the fast path needs.
+Every figure here is from the paced path, taken while the bench MSPM0L1306 seemed to stop
+answering around 9 to 10 MHz. That limit turned out to be the probe's sampling, and the part runs
+to 37.5 MHz on the generated paths (BENCH.md, "The transfers are generated at runtime"). Nothing
+on this list that concerns ARM's delay-free path has been measured against silicon.
 
 What the bench did settle is that the paced path's per-bit cost is now 2.5 cycles a half-bit
 against stock's 6.0, and that USB owns a third of a block read, so the remaining per-bit wins are

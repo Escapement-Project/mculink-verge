@@ -11,7 +11,7 @@ whole sequence is: fit the jumper, plug in, run this, unplug, remove the jumper,
 
     uv run tools/flash.py                    # flash build/mculink_cjtag.elf
     uv run tools/flash.py --check            # just say what every attached unit is running
-    uv run tools/flash.py --cycle --image /opt/linkserver/MCU-LINK/probe_firmware/MCU-LINK_CMSIS-DAP_V3_172.s19
+    uv run tools/flash.py --cycle --image <LinkServer>/MCU-LINK/probe_firmware/MCU-LINK_CMSIS-DAP_V3_172.s19
 
 rblhost takes S-record only, so the ELF is converted on the way through. It also addresses a probe
 by VID:PID alone, which is why this refuses to run with two units in ISP mode at once -- it cannot
@@ -21,16 +21,21 @@ A flashed unit is deliberately not reset. With the jumper still fitted a reset r
 bootloader, so it stays there until it is unplugged.
 
 Recovery from a bad image is the same path with LinkServer's stock image.
+
+rblhost comes with LinkServer, in its MCU-LINK/bin directory: put it on the PATH or name it in
+RBLHOST.
 """
 
 import argparse
 import glob
+import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import time
 
-RBLHOST = pathlib.Path("/opt/linkserver/MCU-LINK/bin/rblhost")
+RBLHOST = pathlib.Path(os.environ.get("RBLHOST") or shutil.which("rblhost") or "rblhost")
 OBJCOPY = "arm-none-eabi-objcopy"
 ISP = ("1fc9", "0021")
 MINI_ISP = ("1fc9", "0022")

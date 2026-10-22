@@ -15,7 +15,8 @@ Everything below was worked out on the emulator's cost model, before the bench. 
 since measured the delay loop at three cycles an iteration, which the six-cycle steps rest on,
 and calibrated the model against the wire (`BENCH.md`). The calibrated model finds SWD and the
 two-pin path running fast too, and the analyser agrees for SWD at 10 MHz. The last two sections
-were written before that calibration.
+were written before that calibration. Every figure is at the 144 MHz core clock of the time; the
+core now runs at 150 MHz.
 
 ## Where the number is set
 
@@ -51,8 +52,8 @@ The four constants it reads:
 
 | constant | value | where |
 | --- | --- | --- |
-| `CPU_CLOCK` | 144000000 | `src/DAP_config.h:57` |
-| `IO_PORT_WRITE_CYCLES` | 2 | `src/DAP_config.h:65` |
+| `CPU_CLOCK` | 144000000 then; 150000000 now (`CORE_CLOCK_HZ`) | `src/DAP_config.h`, `src/core_clock.h` |
+| `IO_PORT_WRITE_CYCLES` | 2 | `src/DAP_config.h` |
 | `DELAY_SLOW_CYCLES` | 3 | `external/CMSIS-DAP/Firmware/Include/DAP.h:327` |
 | `DELAY_FAST_CYCLES` | 0 | `external/CMSIS-DAP/Firmware/Include/DAP.h:348` |
 
@@ -65,15 +66,15 @@ I/O write plus one delay loop, and there are two half-bits.
 itself. `DAP_Data.fast_clock` selects between a paced copy and a delay-free one, once per transfer
 rather than once per bit.
 
-- **SWD** — `src/swd_dp.c:48`, `:211` and `:215`. `SWD_TransferFunction` is expanded twice, with
+- **SWD** — `src/swd_dp.c`. `SWD_TransferFunction` is expanded twice, with
   `PIN_DELAY()` meaning `PIN_DELAY_SLOW(DAP_Data.clock_delay)` for the `Slow` copy and
   `PIN_DELAY_FAST()` for the `Fast` one. `SWD_Transfer` picks between them on `fast_clock`.
-- **Four-wire JTAG** — `src/jtag_dp_block.c:58`, `:159` and `:164`, the same arrangement around
+- **Four-wire JTAG** — `src/jtag_dp_block.c`, the same arrangement around
   ARM's `JTAG_DP.c`.
-- **Two-pin** — `src/cjtag.c:13` defines `CJTAG_DELAY()` the same way, and
-  `CJTAG_FRAME_FUNCTION` at `src/cjtag.c:130` is expanded twice at `:148` and `:149`. The two-pin
+- **Two-pin** — `src/cjtag.c` defines `CJTAG_DELAY()` the same way, and expands
+  `CJTAG_FRAME_FUNCTION` twice. The two-pin
   copies of `JTAG_DP.c` shadow the pin layer so each four-wire clock becomes one OScan1 frame, and
-  they suppress `PIN_DELAY` entirely — see `src/cjtag_jtag_dp.c:79` — because the frame does its
+  they suppress `PIN_DELAY` entirely (`src/cjtag_jtag_dp.c`) because the frame does its
   own pacing.
 
 The two delay primitives are in `external/CMSIS-DAP/Firmware/Include/DAP.h`.
@@ -89,7 +90,7 @@ Count the I/O writes in one clock of each:
 | --- | --- | --- |
 | SWD bit | 3 | `SW_WRITE_BIT` and `SW_READ_BIT`, `src/swd_dp.c` |
 | four-wire JTAG clock | 2 | `JTAG_CYCLE_TCK`, `external/CMSIS-DAP/Firmware/Source/JTAG_DP.c:39` |
-| two-pin frame | 13 | `CJTAG_FRAME_FUNCTION`, `src/cjtag.c:130` |
+| two-pin frame | 13 | `CJTAG_FRAME_FUNCTION`, `src/cjtag.c` |
 
 `IO_PORT_WRITE_CYCLES` is 2, which is calibrated for the three-write SWD bit. A four-wire JTAG
 clock does one write fewer, so it finishes early and the wire runs fast: 10.29 MHz for a 10 MHz
