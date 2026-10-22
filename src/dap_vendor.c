@@ -169,6 +169,7 @@ _Static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HI
  *     [44..47]  measurements since the probe started
  *     [48..55]  u64: the latencies every read agrees with, bit n - 1 for latency n
  *     [56..59]  connections whose first transfer failed and ran right once measured
+ *     [60..63]  configurations copied back from the last build with transfers, not generated
  *
  * Status is DAP_ERROR for a latency or a mode out of range, which change nothing, and for a
  * measurement asked for while the port is not JTAG, which does not run. `ok` is 0 when the current
@@ -473,13 +474,14 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
                                   jtag_sweep_last.runs,
                                   (uint32_t)measured->consistent,
                                   (uint32_t)(measured->consistent >> 32),
-                                  jtag_sweep_last.rescues};
+                                  jtag_sweep_last.rescues,
+                                  jtag_gen_restores};
         out = put_u32s(out, sweep, sizeof sweep / sizeof sweep[0]);
         return (4U << 16) | (uint32_t)(out - response);
     }
 
     case ID_VENDOR_JTAG_LOG: {
-        const uint32_t count = jtag_gen_builds + jtag_gen_failures;
+        const uint32_t count = jtag_gen_builds + jtag_gen_failures + jtag_gen_restores;
         const uint32_t back = request[1];
         if ((back >= count) || (back >= JTAG_GEN_LOG_SIZE)) {
             response[1] = DAP_ERROR;

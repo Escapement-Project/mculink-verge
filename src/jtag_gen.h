@@ -95,13 +95,15 @@ extern jtag_gen_scan_fn jtag_gen_scan;
 extern jtag_gen_xfer_fn jtag_gen_read;
 extern jtag_gen_xfer_fn jtag_gen_write;
 
-/** How many configurations were generated, and how many could not be and ran ARM's path. */
+/** How many configurations were generated, how many could not be and ran ARM's path, and how many
+ * were copied back from the last one with transfers instead. */
 extern uint32_t jtag_gen_builds;
 extern uint32_t jtag_gen_failures;
+extern uint32_t jtag_gen_restores;
 
 /** The last JTAG_GEN_LOG_SIZE generations, so a host can say what each one was for. Entry n is
- * generation n (jtag_gen_builds + jtag_gen_failures before it) modulo the size. The sweep's
- * candidates are not generations; the one after it shows JTAG_GEN_CHANGED_OWNER. */
+ * generation n (jtag_gen_builds, jtag_gen_failures and jtag_gen_restores before it) modulo the
+ * size. The sweep's candidates are not generations; the one after it shows JTAG_GEN_CHANGED_OWNER. */
 #define JTAG_GEN_LOG_SIZE 16U
 #define JTAG_GEN_CHANGED_FIRST 0x01U     // the first since the probe started
 #define JTAG_GEN_CHANGED_OWNER 0x02U     // SRAMX held other code: SWD's, or a sweep's candidate
@@ -114,6 +116,7 @@ extern uint32_t jtag_gen_failures;
 #define JTAG_GEN_LOG_TRANSFERS 0x01U     // this build has the transfers
 #define JTAG_GEN_LOG_LEARNED 0x02U       // after a WAIT taught one more idle clock
 #define JTAG_GEN_LOG_OK 0x04U
+#define JTAG_GEN_LOG_RESTORED 0x08U // copied back from the last build with transfers, not built
 struct jtag_gen_log_entry {
     uint8_t command; // the DAP command it was generated in, jtag_gen_command
     uint8_t wire;
@@ -138,7 +141,8 @@ extern uint8_t jtag_gen_command;
 bool jtag_gen_ready(uint32_t wire);
 /** jtag_gen_ready with the transfers too, where they fit. jtag_gen_ready alone builds the scans, so a
  * framing switch or a new configuration costs no transfer generation until a transfer needs one;
- * a scan-only build leaves jtag_gen_read and jtag_gen_write NULL. */
+ * a scan-only build leaves jtag_gen_read and jtag_gen_write NULL, though code kept or restored with
+ * its transfers for a scan-only request leaves them set. */
 bool jtag_gen_ready_transfers(uint32_t wire);
 
 /** The wire the probe drives now, for jtag_gen_ready. In src/cjtag_dp.c. */

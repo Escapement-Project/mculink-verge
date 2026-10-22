@@ -1379,8 +1379,25 @@ static uint32_t learned[JTAG_GEN_OSCAN2 + 1U];
 static bool learning; // jtag_gen_paced has one more clock for regenerate to record
 uint32_t jtag_gen_builds;
 uint32_t jtag_gen_failures;
+uint32_t jtag_gen_restores;
 uint8_t jtag_gen_command;
 struct jtag_gen_log_entry jtag_gen_log[JTAG_GEN_LOG_SIZE];
+
+// The last build that asked for transfers, whether or not they fitted, kept so that a host coming
+// back to its configuration gets it back with a copy rather than a build: a session switches to its
+// two-pin wire and back to four-wire at either end, and each switch writes over SRAMX. A build
+// depends on its configuration alone, which regenerate already relies on when it keeps the code in
+// place. Its scans serve a scan-only request as well.
+static COLD_BSS struct {
+    bool valid;
+    struct jtag_gen_config config;
+    struct jtag_gen_info info;
+    jtag_gen_scan_fn scan;
+    jtag_gen_scan_fn tms;
+    jtag_gen_xfer_fn read;
+    jtag_gen_xfer_fn write;
+    uint32_t code[JTAG_GEN_SIZE / 4U];
+} saved;
 
 /** The shortest period no faster than the clock asked for. */
 static uint32_t period_for(uint32_t hz) {
@@ -1440,7 +1457,8 @@ static __attribute__((noinline)) bool regenerate(uint32_t wire, bool transfers) 
         (built_transfers || !transfers)) {
         return built_ok;
     }
-    struct jtag_gen_log_entry* entry = &jtag_gen_log[(jtag_gen_builds + jtag_gen_failures) % JTAG_GEN_LOG_SIZE];
+    struct jtag_gen_log_entry* entry =
+        &jtag_gen_log[(jtag_gen_builds + jtag_gen_failures + jtag_gen_restores) % JTAG_GEN_LOG_SIZE];
     *entry = (struct jtag_gen_log_entry){
         .command = jtag_gen_command,
         .wire = (uint8_t)want.wire,
@@ -1469,6 +1487,22 @@ static __attribute__((noinline)) bool regenerate(uint32_t wire, bool transfers) 
     built_transfers = transfers;
     gen_owner = GEN_OWNER_JTAG;
     jtag_gen_info.ok = false;
+    if (saved.valid && (memcmp(&want, &saved.config, sizeof want) == 0)) {
+        memcpy((void*)JTAG_GEN_BASE, saved.code, saved.info.code_bytes);
+        __DSB();
+        __ISB();
+        jtag_gen_info = saved.info;
+        jtag_gen_scan = saved.scan;
+        jtag_gen_tms = saved.tms;
+        jtag_gen_read = saved.read;
+        jtag_gen_write = saved.write;
+        built_transfers = true;
+        built_ok = true;
+        entry->cycles = TIMESTAMP_GET() - entry->at;
+        entry->flags |= JTAG_GEN_LOG_TRANSFERS | JTAG_GEN_LOG_OK | JTAG_GEN_LOG_RESTORED;
+        jtag_gen_restores++;
+        return true;
+    }
     // A scan-only build writes over the transfers the last one left.
     jtag_gen_read = NULL;
     jtag_gen_write = NULL;
@@ -1480,6 +1514,16 @@ static __attribute__((noinline)) bool regenerate(uint32_t wire, bool transfers) 
         jtag_gen_builds++;
     } else {
         jtag_gen_failures++;
+    }
+    if (built_ok && transfers) {
+        saved.config = want;
+        saved.info = jtag_gen_info;
+        saved.scan = jtag_gen_scan;
+        saved.tms = jtag_gen_tms;
+        saved.read = jtag_gen_read;
+        saved.write = jtag_gen_write;
+        memcpy(saved.code, (const void*)JTAG_GEN_BASE, jtag_gen_info.code_bytes);
+        saved.valid = true;
     }
     return built_ok;
 }

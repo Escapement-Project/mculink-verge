@@ -23,7 +23,7 @@ Source: UM11126 rev 2.8 tables 4, 5 and 6 (`references/docs/UM11126.pdf`).
 | 2 | 0x2000_0000 SRAM0, 64 KB | CPU 0's data, stack and `.ramfunc` (`vcom_task` among them); the consoles' receive rings, send buffers and ring descriptors, which DMA0 reaches |
 | 3 | 0x2001_0000 SRAM1, 64 KB | CPU 1's `.data` and `.ramfunc` (cJTAG's block paths) |
 | 4 | 0x2002_0000 SRAM2, 64 KB | CPU 1's `.ramfunc` (JTAG blocks, `SWD_TransferCommandGen`) to 0x2002_A440, then its `.bss`: `response_copy`, `request_copy` |
-| 5 | 0x2003_0000 SRAM3, 64 KB | `dap_stage` in the top 16 KB from 0x2003_C000: the commands and replies CPU 0 stages for CPU 1. Below it, CPU 1's `.data` and `.bss` where they outgrow SRAM2 (the builds without generated SWD) |
+| 5 | 0x2003_0000 SRAM3, 64 KB | `dap_stage` in the top 16 KB from 0x2003_C000: the commands and replies CPU 0 stages for CPU 1. Below it, CPU 1's `.data` and `.bss` where they outgrow SRAM2 (the builds without generated SWD), and the tail of `.cold_bss` (the JTAG generator's saved build, 16 KB, touched only on a wire or configuration switch), which comes after every other `.bss` so that the statics each command reads stay in SRAM2 |
 | 6 | 0x2004_0000 SRAM4, 16 KB | CPU 1's stack (top at 0x2004_4000), the whole bank |
 | 7 | 0x4000_0000 APB bridge 0 **and** 0x4002_0000 APB bridge 1 | Every APB peripheral, both bridges on one port (below) |
 | 8 | 0x4008_0000 | DMA0 regs, SCTimer, Flexcomm 0 to 4, mailbox, ordinary GPIO |

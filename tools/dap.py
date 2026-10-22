@@ -1111,6 +1111,8 @@ def jtag_gen(probe: "Probe", two_pin: int = 0, four_wire: int = 0, mode: int = S
             "tries": reply[34], "periods": reply[35], "word": u32[0], "cycles": u32[1], "runs": u32[2],
             "consistent": u32[3] | (u32[4] << 32), "rescues": u32[5],
         }
+    if len(reply) >= 64:
+        state["restores"] = int.from_bytes(reply[60:64], "little")
     return state
 
 
@@ -1227,6 +1229,7 @@ def cmd_jgen(args) -> int:
         f"{'masked' if state['masked'] else 'unmasked'}; {'generated' if state['ok'] & 1 else 'NOT generated'}"
         f"{', transfers' if state['ok'] & 2 else ''}{', looped' if state['ok'] & 4 else ''}, "
         f"{state['code_bytes']} bytes; {state['builds']} builds, {state['failures']} failures"
+        + (f", {state['restores']} restored" if "restores" in state else "")
     )
     if "sweep" in state:
         print(f"  last measurement: {describe_sweep(state['sweep'], word='IDCODE')}")
@@ -1269,7 +1272,8 @@ def cmd_jlog(args) -> int:
         print(f"#{n:<5} {since / CORE_HZ * 1e3:>+9.2f} ms "
               f"{JLOG_COMMANDS.get(command, f'0x{command:02X}'):<17} "
               f"{JLOG_WIRES[wire] if wire < len(JLOG_WIRES) else wire:<9} {why:<22} "
-              f"{'xfers' if flags & 1 else 'scans'}{' learned' if flags & 2 else ''}{'' if flags & 4 else ' FAILED'}  "
+              f"{'xfers' if flags & 1 else 'scans'}{' learned' if flags & 2 else ''}{' restored' if flags & 8 else ''}"
+              f"{'' if flags & 4 else ' FAILED'}  "
               f"period {period} lat {latency} chain {before}/{after} idle {idle} (paced {paced})  "
               f"{cycles / CORE_HZ * 1e3:.2f} ms")
     return 0
