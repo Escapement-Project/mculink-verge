@@ -76,7 +76,8 @@
  *     [8..]   build string, n bytes, not terminated
  *     [8+n]   board                   BOARD_KIND_* (board_pins.h); format 3 on
  *     [9+n]   scan formats, u32 LE    bit n: SCNFMT n offered (cJTAG_Offered); format 4 on
- *     [13+n]  extended capabilities   u32 LE; bit 0: energy capture, format 6 on
+ *     [13+n]  extended capabilities   u32 LE; bit 0: energy capture; bit 1: calibrated energy fields;
+ *                                     bit 2: accumulated energy
  *
  * A host checks the magic to know it is us, the flags to know what it may use, and the build
  * string to know which image it is talking to. The capability flags are what makes this worth
@@ -120,6 +121,10 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
 #define CJTAG_CAP_TARGET_POWER (1U << 7)
 /// Extended capability format 6: vendor command 0x90 controls energy capture.
 #define CJTAG_EXT_CAP_ENERGY (1U << 0)
+/// ID_VENDOR_ENERGY appends calibrated voltage, current and range fields.
+#define CJTAG_EXT_CAP_ENERGY_CALIBRATED (1U << 1)
+/// ID_VENDOR_ENERGY mode 3 reads accumulated energy and the number of integrated pairs.
+#define CJTAG_EXT_CAP_ENERGY_ACCUMULATED (1U << 2)
 #ifdef SWD_CODEGEN
 #define CJTAG_CAPS_SWD CJTAG_CAP_SWD_CODEGEN
 #else
@@ -303,7 +308,10 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         for (uint32_t i = 0U; i < 4U; i++) {
             *out++ = (uint8_t)(formats >> (8U * i));
         }
-        uint32_t const extended = dap_shared.energy_available ? CJTAG_EXT_CAP_ENERGY : 0U;
+        uint32_t const extended = dap_shared.energy_available
+                                      ? CJTAG_EXT_CAP_ENERGY | CJTAG_EXT_CAP_ENERGY_CALIBRATED |
+                                            CJTAG_EXT_CAP_ENERGY_ACCUMULATED
+                                      : 0U;
         for (uint32_t i = 0U; i < 4U; i++) {
             *out++ = (uint8_t)(extended >> (8U * i));
         }
@@ -466,7 +474,17 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             response[8] = (uint8_t)(sample.sequence >> 8U);
             response[9] = (uint8_t)(sample.sequence >> 16U);
             response[10] = (uint8_t)(sample.sequence >> 24U);
-            return (2U << 16) | 11U;
+            response[11] = (uint8_t)sample.voltage_mv;
+            response[12] = (uint8_t)(sample.voltage_mv >> 8U);
+            response[13] = (uint8_t)(sample.voltage_mv >> 16U);
+            response[14] = (uint8_t)(sample.voltage_mv >> 24U);
+            response[15] = (uint8_t)sample.current_ua;
+            response[16] = (uint8_t)((uint32_t)sample.current_ua >> 8U);
+            response[17] = (uint8_t)((uint32_t)sample.current_ua >> 16U);
+            response[18] = (uint8_t)((uint32_t)sample.current_ua >> 24U);
+            response[19] = sample.range_id;
+            response[20] = sample.calibrated ? 1U : 0U;
+            return (2U << 16) | 21U;
         }
         if (mode == 2U) {
             energy_monitor_status_t const status = dap_shared.energy_available ? ENERGY_MONITOR_OK
@@ -476,6 +494,18 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             }
             response[2] = (uint8_t)status;
             return (2U << 16) | 3U;
+        }
+        if (mode == 3U) {
+            uint64_t energy_nj = 0U;
+            uint64_t pairs = 0U;
+            energy_monitor_status_t const status =
+                energy_monitor_accumulated(&energy_nj, &pairs);
+            response[2] = (uint8_t)status;
+            for (uint32_t i = 0U; i < 8U; i++) {
+                response[3U + i] = (uint8_t)(energy_nj >> (8U * i));
+                response[11U + i] = (uint8_t)(pairs >> (8U * i));
+            }
+            return (2U << 16) | 19U;
         }
         response[1] = DAP_ERROR;
         return (2U << 16) | 2U;

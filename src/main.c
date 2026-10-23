@@ -10,6 +10,7 @@
 #include "bsp/board_api.h"
 #include "fsl_device_registers.h"
 #include "fsl_clock.h"
+#include "fsl_iocon.h"
 #include "fsl_reset.h"
 #include "tusb.h"
 
@@ -63,6 +64,7 @@ static bool disconnect_complete;
 static volatile bool response_in_flight;
 
 static void usb_transport_task(void);
+static void energy_range_retry_task(void);
 static void arm_rx(void);
 static void send_head(void);
 static void start_core1(void);
@@ -170,6 +172,58 @@ __attribute__((section(".ramfunc"))) static void usb_transport_task(void) {
         disconnect_requested = false;
     }
     send_head();
+}
+
+/** Retry the Pro's range latch outside the DMA interrupt. Four segment intervals limit repeated
+ *  reset pulses while leaving time for a range change to settle. */
+__attribute__((section(".ramfunc"))) static void energy_range_retry_task(void) {
+    static uint32_t last_retry_segment;
+    if (dap_shared.energy_range_retry_pending == 0U) {
+        return;
+    }
+    dap_shared.energy_range_retry_active = 1U;
+    __DMB();
+    if ((dap_shared.energy_range_retry_enabled == 0U) ||
+        (dap_shared.energy_range_retry_pending == 0U)) {
+        dap_shared.energy_range_retry_active = 0U;
+        return;
+    }
+    dap_shared.energy_range_retry_pending = 0U;
+    uint32_t const segments = dap_shared.energy_segments;
+    if ((segments - last_retry_segment) < 4U) {
+        dap_shared.energy_range_retry_active = 0U;
+        return;
+    }
+    uint32_t const range_pins = GPIO->PIN[0];
+    if (((range_pins & (1UL << 29U)) == 0U) || ((range_pins & (1UL << 30U)) != 0U)) {
+        dap_shared.energy_range_retry_active = 0U;
+        return;
+    }
+    last_retry_segment = segments;
+    uint32_t const mux = IOCON->PIO[0][29];
+    uint32_t const p29 = 1UL << 29U;
+    uint32_t const p17 = 1UL << 17U;
+    GPIO->SET[0] = p29;
+    GPIO->DIRSET[0] = p29;
+    IOCON->PIO[0][29] = IOCON_FUNC0 | IOCON_MODE_INACT | IOCON_DIGITAL_EN;
+    __DSB();
+    for (volatile uint32_t reset_release = 0U; reset_release < 30000U; reset_release++) {
+        __NOP();
+    }
+    GPIO->CLR[0] = p17;
+    __DSB();
+    for (volatile uint32_t pulse_hold = 0U; pulse_hold < 3000U; pulse_hold++) {
+        __NOP();
+    }
+    GPIO->SET[0] = p17;
+    __DSB();
+    for (volatile uint32_t pulse_hold = 0U; pulse_hold < 3000U; pulse_hold++) {
+        __NOP();
+    }
+    IOCON->PIO[0][29] = mux;
+    GPIO->DIRCLR[0] = p29;
+    __DSB();
+    dap_shared.energy_range_retry_active = 0U;
 }
 
 /** Arms the OUT endpoint into the tail request slot if that is free. Arming claims the endpoint,
@@ -298,6 +352,13 @@ __attribute__((section(".ramfunc"))) void DMA0_IRQHandler(void) {
         dap_shared.swo_segments++;
     }
     if ((done & ENERGY_DMA_MASK) != 0U) {
+        if (dap_shared.energy_segment_handler != nullptr) {
+            dap_shared.energy_segment_handler();
+        }
+        uint32_t const range_pins = GPIO->PIN[0];
+        if (((range_pins & (1UL << 29U)) != 0U) && ((range_pins & (1UL << 30U)) == 0U)) {
+            dap_shared.energy_range_retry_pending = 1U;
+        }
         dap_shared.energy_segments++;
     }
     vcom_dma_done(done);
@@ -424,6 +485,7 @@ __attribute__((noinline, used)) void dap_core_security_init(void) {
  *  into flash. */
 [[noreturn]] __attribute__((section(".ramfunc"), noinline)) static void serve(void) {
     for (;;) {
+        energy_range_retry_task();
         tud_task();
         usb_transport_task();
         if (vcom_ready()) {

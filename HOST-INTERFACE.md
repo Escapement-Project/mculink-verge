@@ -29,7 +29,8 @@ Bits 0 and 4 are clear on the unsupported on-board variant. Bit 6 is clear if th
 disabled USB-SIO when the probe started.
 
 Format 6 extended-capability bit 0 advertises energy capture on Pro units with HW_VER_5 fitted.
-Other extended bits are reserved.
+Bit 1 advertises calibrated fields appended to the `0x90` latest reply. Bit 2 advertises accumulated
+energy reads through `0x90` mode 3. Other extended bits are reserved.
 
 Fields are appended in later formats. Use the format version before reading fields added by a
 later format. Ignore fields you do not understand. The format 4 and later cJTAG mask reports what
@@ -90,30 +91,56 @@ the target.
 Energy capture is available when `0x82` format 6 sets extended-capability bit 0. It is off at
 startup. The host polls snapshots; the firmware does not stream samples.
 
+When bit 2 is set, the firmware integrates every calibrated sample pair independently of host
+polling. A successful start clears the accumulator. A failed start leaves the previous total intact.
+Stop preserves the total for later reads. Pauses add no energy for time without samples.
+The total resets when the probe restarts.
+
+Voltage and current conversions use the highest ADC hardware averaging that sustains the effective
+timer rate. The selector uses 128x through 1,900 pairs/s, 64x through 3,800, 32x through 7,600,
+16x through 15,200, 8x through 29,197, 4x through 54,794, 2x through 97,560, then 1x through
+100,000. The range-state conversion stays at 1x so gain changes appear in the next pair. The start
+reply reports the timer's effective pair rate.
+
 | Request | Action |
 | --- | --- |
 | `[0x90, 0, rate:u32LE]` | Start capture at the requested complete voltage/current pairs per second. |
 | `[0x90, 1]` | Read the newest complete voltage/current pair. |
 | `[0x90, 2]` | Stop capture. Repeated stop requests are safe. |
+| `[0x90, 3]` | Read accumulated energy in nJ and the number of integrated pairs. |
 
 Every recognized request returns `DAP_OK` followed by a result byte. Start replies with the
 effective rate as a u32 after the result. Latest replies with voltage code (u16), current code
-(u16), and sample sequence (u32) after the result. If the result is not `OK`, the codes and
-sequence are zero. Stop replies with only the result.
+(u16), and sample sequence (u32) after the result. When extended-capability bit 1 is set, the reply
+appends voltage in mV (u32), current in µA (i32), range ID (u8), and calibrated-valid (u8). The
+full reply is 21 bytes including the command byte. If the result is not `OK`, every sample field is
+zero. The sequence counts complete pairs since capture started, beginning at 1. Stop replies with
+only the result.
+
+Mode 3 returns `[0x90, DAP_OK, result, energy_nJ:u64LE, pairs:u64LE]` in 19 bytes. It reports
+`STOPPED` before the first successful start and `NO_SAMPLE` until it integrates a calibrated pair.
+The pair count includes zero-current samples. Negative calibrated current is clipped to zero.
+Each pair contributes one sample period using the fixed effective capture rate. Time while capture
+is paused does not contribute. Reads do not reset the total, which remains readable after stop.
+
+Range IDs are 1 for 350 mA high gain, 2 for 350 mA low gain, 3 for 50 mA high gain, 4 for 50 mA
+low gain, and 0 when the range is unknown. `calibrated-valid` is 1 when the firmware can convert
+both readings to physical units. Voltage uses the probe's nominal 3.3 V ADC reference. Current
+calibration supports the 350 mA and 50 mA jumper settings.
 
 | Result | Meaning |
 | --- | --- |
 | 0 | OK |
-| 1 | Capture is stopped |
-| 2 | No complete sample yet |
+| 1 | Capture is stopped; mode 3 also returns this before the first successful start |
+| 2 | No complete sample yet; mode 3 has not integrated a pair yet |
 | 3 | Energy capture is unavailable on this board |
 | 4 | Requested rate is zero or above 100,000 pairs/s |
 | 5 | Invalid argument |
 | 6 | ADC calibration failed |
 | 7 | DMA failed |
 
-Voltage and current are raw ADC codes. Calibration, current-range switching and conversion to
-physical units are not implemented yet. A host must not present these codes as volts or amperes.
+Raw ADC codes remain available in the reply prefix. Hosts can use the appended physical-unit fields
+when `calibrated-valid` is 1.
 
 ## Other commands
 

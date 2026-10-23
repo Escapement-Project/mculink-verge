@@ -49,6 +49,9 @@
 /** The HID report size, which CPU 0 checks against CFG_TUD_HID_EP_BUFSIZE. */
 #define DAP_SHARED_HID_REPORT_SIZE 64U
 
+/** Called by CPU 0's DMA interrupt for each completed energy segment. */
+typedef void (*dap_energy_segment_handler_fn)(void);
+
 /** USB control request (vendor, device to host) for dap_core1_status_t, or with wValue
  *  DAP_SHARED_QUEUE_STATUS for the queues' state. CPU 0 answers it, so it works whatever state
  *  CPU 1 is in. */
@@ -147,6 +150,17 @@ typedef struct {
     /** Energy ring segments completed and its DMA error, maintained by CPU 0 for CPU 1. */
     volatile uint32_t energy_segments;
     volatile uint8_t energy_dma_error;
+    /** CPU 1 publishes a handler that CPU 0 calls before the DMA ring reuses a segment. */
+    dap_energy_segment_handler_fn volatile energy_segment_handler;
+    /** The Pro range latch needs a pulse; CPU 0 defers it out of the DMA interrupt. */
+    volatile uint8_t energy_range_retry_pending;
+    volatile uint8_t energy_range_retry_active;
+    volatile uint8_t energy_range_retry_enabled;
+    /** CPU 0's energy accumulator, read by CPU 1 with the sequence counter. */
+    volatile uint32_t energy_accumulator_sequence;
+    volatile uint64_t energy_accumulator_nj;
+    volatile uint64_t energy_accumulator_pairs;
+    volatile uint32_t energy_accumulator_fraction_q32;
 
     volatile dap_core1_status_t core1;
 

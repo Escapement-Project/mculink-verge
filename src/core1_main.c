@@ -17,6 +17,7 @@
 #include "dap_dispatch.h"
 #include "dap_shared.h"
 #include "dio.h"
+#include "energy_monitor.h"
 #include "hot.h"
 #include "led.h"
 #include "marker.h"
@@ -211,6 +212,7 @@ __attribute__((noinline, section(".data_core1_wait"))) static void wait_for_mail
     DAP_Setup();
     target_power_init();
     target_sense_init();
+    energy_monitor_init();
     dio_init();
     dap_shared.transfer_abort = &DAP_TransferAbort;
     serve();

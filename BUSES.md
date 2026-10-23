@@ -48,18 +48,23 @@ contends with any other.
 | CPU 1 | 0, 3, 4, 6 | C code, `.ramfunc`, data and stack between transfers | Between timed windows |
 | CPU 1 | 11 | `dap_shared`: unstaged requests and replies, the queues, the LED inputs | Between timed windows |
 | CPU 1 | 10 | ADC0 (target sense, `dap_vendor`) | Own core, never during a window |
+| CPU 1 | 4 | Energy ring reads for latest-pair replies | Host polls while capture runs |
 | CPU 1 | 8 | Ordinary GPIO ports 0 and 1: the Pro's DIO pins and their translators' directions (`dio.c`), and port 0 pin 8 for the target regulator (`target_power.c`) | Vendor 0x8E and 0x8F, own core, never during a window |
+| CPU 1 | 7 | CTimer 2 for the Pro's energy-capture trigger; SYSCON, IOCON and INPUTMUX for setup | Energy capture start/stop |
 | CPU 1 | 7 | SYSCON clocks and IOCON for the DIO pins (`dio_init`) | Boot only, on the Pro |
 | CPU 1 | 7, 8 | SWO setup: SYSCON resets and clocks, Flexcomm 3, DMA0 channel 8's regs and its bit in the shared ones, each written one bit per channel | SWO commands only |
 | DMA0 | 8 then 11 | Flexcomm 3 FIFO to the SWO ring | Whenever SWO bytes arrive |
 | DMA0 | 8 then 2 | Flexcomm 0 and 1 FIFOs to the consoles' receive rings | Whenever console bytes arrive |
 | DMA0 | 2 then 8 | The consoles' send buffers to Flexcomm 0 and 1 FIFOs | Each send from the host |
 | DMA0 | 11, 2 | Descriptors: channel entries and SWO's ring in `dap_shared`, the consoles' rings in SRAM0 | Each send, and each segment of a ring |
+| DMA0 | 10, 4, 11 | ADC0 RESFIFO to the two-segment 8 KiB energy ring in SRAM2; channel 21's descriptors in `dap_shared` | While energy capture runs, nine DMA reads per voltage/current/range sample; about 879 interrupts/s at 100 kpair/s |
 | USB HS controller | 11 | Endpoint buffers in USB SRAM | Every USB transfer |
 | CPU 0 | 0, 2 | Code and data | Always |
 | CPU 0 | 9, 11 | USB device regs and buffers (TinyUSB) | Every USB transfer |
 | CPU 0 | 11 then 5 | Each staged command, from its USB slot into `dap_stage`, and each staged reply back | As each arrives and as each starts to send, so during CPU 1's windows when commands are queued |
 | CPU 0 | 8 | USART0/1 (VCOM), mailbox, DMA0 regs: its setup, the console channels, the interrupt for both rings | Continuously; the consoles' ring positions while it waits |
+| CPU 0 | 4, 7, 8, 11 | Calls CPU 1's energy-segment handler from the DMA interrupt; it reads completed samples from SRAM2 and updates the accumulator in `dap_shared` | Each completed energy segment |
+| CPU 0 | 7, 8 | IOCON P0_29 mux plus GPIO0 P0_17/P0_29 during the deferred energy range-latch retry | At most once per four completed energy-ring segments |
 | CPU 0 | 11 | The consoles' channel entries in DMA0's table | Each send |
 | CPU 0 | 7 | CTimer 3 (the status LED), and on the Pro CTimer 1 (FUNC) | 488 times a second |
 | CPU 0 | 8 | Ordinary GPIO port 1 (the Pro's switched LEDs) | 488 times a second, on the Pro |
@@ -71,9 +76,11 @@ contends with any other.
 ## Timed windows and their exposure
 
 - **Bit paths, all wires** (port 10 secure GPIO; code from port 1, or ports 3 and 4 for the
-  `.ramfunc` paths). Nothing else on port 10 runs during a window: ADC0 is CPU 1's own. The
-  ordinary GPIO on port 8 shares with Flexcomm 0 to 4 and the mailbox, which CPU 0 polls; that is
-  why the bit paths moved to the secure alias. No other master uses SRAMX, SRAM1 or SRAM2.
+  `.ramfunc` paths). The ordinary GPIO on port 8 shares with Flexcomm 0 to 4 and the mailbox, which
+  CPU 0 polls; that is why the bit paths moved to the secure alias. During energy capture, DMA0
+  reads ADC0 on port 10 and writes the ring on port 4. ADC access can stall secure GPIO accesses.
+  Ring writes can stall a `.ramfunc` path that fetches from SRAM2. Capture is disabled by default.
+  No other master accesses SRAMX or SRAM1. During capture, CPU 1 reads and DMA0 writes SRAM2.
 - **A staged command's buffers** (port 5). CPU 0 copies the next command in and the last reply out
   while CPU 1's transfer runs. CPU 0 boots with CPU 1's data bus at the top AHB matrix priority
   (SYSCON AHBMATPRIO, set in `start_core1`), so CPU 1 wins every tie there and on every other

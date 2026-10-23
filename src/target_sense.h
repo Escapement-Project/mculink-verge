@@ -30,13 +30,24 @@ typedef enum {
     TARGET_SENSE_NO_RESULT = 3,
 } target_sense_status_t;
 
+typedef enum {
+    TARGET_SENSE_CURRENT_RANGE_UNKNOWN = 0,
+    TARGET_SENSE_CURRENT_RANGE_350_MA,
+    TARGET_SENSE_CURRENT_RANGE_50_MA,
+} target_sense_current_range_t;
+
 /** Convert one ADC0 channel, side A or B, to a 16-bit code against the probe's own supply. A
  *  converter that failed to come up is brought up again on the next call. */
 target_sense_status_t target_sense_convert(uint8_t channel, bool side_b, uint16_t* code);
 
+/** Read voltage and current through the monitor's chained conversion path. */
+target_sense_status_t target_sense_convert_pair_for_calibration(uint32_t rate_hz, uint16_t* voltage_code,
+                                                                uint16_t* current_code);
+
 /** Initialize ADC0, then configure chained voltage/current conversions for the monitor. */
 target_sense_status_t target_sense_adc_init(void);
-void target_sense_configure_monitor(void);
+target_sense_current_range_t target_sense_current_range(void);
+void target_sense_configure_monitor(uint32_t rate_hz);
 
 /** True while something grounds J6 pin 9, which a standard target header does. */
 bool target_sense_detected(void);

@@ -91,19 +91,73 @@ target_sense_status_t target_sense_adc_init(void) {
     return status;
 }
 
-void target_sense_configure_monitor(void) {
+target_sense_current_range_t target_sense_current_range(void) {
+    uint16_t code = 0U;
+    if (target_sense_convert(4U, false, &code) != TARGET_SENSE_OK) {
+        return TARGET_SENSE_CURRENT_RANGE_UNKNOWN;
+    }
+    uint32_t high_count = 0U;
+    for (uint32_t i = 0U; i < 3U; i++) {
+        if (target_sense_convert(4U, false, &code) != TARGET_SENSE_OK) {
+            return TARGET_SENSE_CURRENT_RANGE_UNKNOWN;
+        }
+        high_count += code >= 32768U ? 1U : 0U;
+    }
+    return high_count >= 2U ? TARGET_SENSE_CURRENT_RANGE_350_MA : TARGET_SENSE_CURRENT_RANGE_50_MA;
+}
+
+static lpadc_hardware_average_mode_t monitor_average_mode(uint32_t rate_hz) {
+    // Limits include the third, unaveraged range-state conversion chained to each sample.
+    if (rate_hz <= 1900U) {
+        return kLPADC_HardwareAverageCount128;
+    }
+    if (rate_hz <= 3800U) {
+        return kLPADC_HardwareAverageCount64;
+    }
+    if (rate_hz <= 7600U) {
+        return kLPADC_HardwareAverageCount32;
+    }
+    if (rate_hz <= 15200U) {
+        return kLPADC_HardwareAverageCount16;
+    }
+    if (rate_hz <= 29197U) {
+        return kLPADC_HardwareAverageCount8;
+    }
+    if (rate_hz <= 54794U) {
+        return kLPADC_HardwareAverageCount4;
+    }
+    if (rate_hz <= 97560U) {
+        return kLPADC_HardwareAverageCount2;
+    }
+    return kLPADC_HardwareAverageCount1;
+}
+
+void target_sense_configure_monitor(uint32_t rate_hz) {
+    lpadc_hardware_average_mode_t const average_mode = monitor_average_mode(rate_hz);
     lpadc_conv_command_config_t command;
     LPADC_GetDefaultConvCommandConfig(&command);
     command.channelNumber = 0U;
     command.conversionResolutionMode = kLPADC_ConversionResolutionHigh;
-    command.hardwareAverageMode = kLPADC_HardwareAverageCount1;
+    command.hardwareAverageMode = average_mode;
     command.sampleTimeMode = kLPADC_SampleTimeADCK3;
     command.chainedNextCommandNumber = 2U;
     LPADC_SetConvCommandConfig(ADC0, 1U, &command);
 
-    command.channelNumber = 8U;
-    command.chainedNextCommandNumber = 0U;
+    // PIO0_16/ADC0_8 is CH0B, paired with voltage on PIO0_23/ADC0_0 (CH0A).
+    command.channelNumber = 0U;
+    command.sampleChannelMode = kLPADC_SampleChannelSingleEndSideB;
+    command.hardwareAverageMode = average_mode;
+    command.sampleTimeMode = kLPADC_SampleTimeADCK3;
+    command.chainedNextCommandNumber = 3U;
     LPADC_SetConvCommandConfig(ADC0, 2U, &command);
+
+    command.channelNumber = 2U;
+    command.sampleChannelMode = kLPADC_SampleChannelSingleEndSideA;
+    // Keep the range-state conversion fresh so gain changes appear in the next captured pair.
+    command.hardwareAverageMode = kLPADC_HardwareAverageCount1;
+    command.sampleTimeMode = kLPADC_SampleTimeADCK3;
+    command.chainedNextCommandNumber = 0U;
+    LPADC_SetConvCommandConfig(ADC0, 3U, &command);
 
     lpadc_conv_trigger_config_t trigger;
     LPADC_GetDefaultConvTriggerConfig(&trigger);
@@ -112,7 +166,8 @@ void target_sense_configure_monitor(void) {
     LPADC_SetConvTriggerConfig(ADC0, ENERGY_TRIGGER, &trigger);
 }
 
-target_sense_status_t target_sense_convert(uint8_t channel, bool side_b, uint16_t* code) {
+static target_sense_status_t target_sense_convert_sample(uint8_t channel, bool side_b, uint16_t* code,
+                                                          lpadc_hardware_average_mode_t average_mode) {
     energy_monitor_pause();
     target_sense_status_t status = target_sense_adc_init();
     if (status != TARGET_SENSE_OK) {
@@ -126,7 +181,7 @@ target_sense_status_t target_sense_convert(uint8_t channel, bool side_b, uint16_
     command.channelNumber = channel;
     command.sampleChannelMode = side_b ? kLPADC_SampleChannelSingleEndSideB : kLPADC_SampleChannelSingleEndSideA;
     command.conversionResolutionMode = kLPADC_ConversionResolutionHigh;
-    command.hardwareAverageMode = kLPADC_HardwareAverageCount16;
+    command.hardwareAverageMode = average_mode;
     command.sampleTimeMode = kLPADC_SampleTimeADCK35;
     LPADC_SetConvCommandConfig(ADC0, SENSE_COMMAND_ID, &command);
 
@@ -148,6 +203,65 @@ target_sense_status_t target_sense_convert(uint8_t channel, bool side_b, uint16_
     }
     energy_monitor_resume();
     return TARGET_SENSE_NO_RESULT;
+}
+
+target_sense_status_t target_sense_convert(uint8_t channel, bool side_b, uint16_t* code) {
+    return target_sense_convert_sample(channel, side_b, code, kLPADC_HardwareAverageCount16);
+}
+
+target_sense_status_t target_sense_convert_pair_for_calibration(uint32_t rate_hz, uint16_t* voltage_code,
+                                                                uint16_t* current_code) {
+    if ((voltage_code == NULL) || (current_code == NULL)) {
+        return TARGET_SENSE_NO_RESULT;
+    }
+    energy_monitor_pause();
+    target_sense_status_t status = target_sense_adc_init();
+    if (status != TARGET_SENSE_OK) {
+        energy_monitor_resume();
+        return status;
+    }
+
+    LPADC_DoResetFIFO0(ADC0);
+    lpadc_hardware_average_mode_t const average_mode = monitor_average_mode(rate_hz);
+    lpadc_conv_command_config_t command;
+    LPADC_GetDefaultConvCommandConfig(&command);
+    command.channelNumber = 0U;
+    command.sampleChannelMode = kLPADC_SampleChannelSingleEndSideA;
+    command.conversionResolutionMode = kLPADC_ConversionResolutionHigh;
+    command.hardwareAverageMode = average_mode;
+    command.sampleTimeMode = kLPADC_SampleTimeADCK3;
+    command.chainedNextCommandNumber = 2U;
+    LPADC_SetConvCommandConfig(ADC0, 1U, &command);
+
+    command.sampleChannelMode = kLPADC_SampleChannelSingleEndSideB;
+    command.chainedNextCommandNumber = 0U;
+    LPADC_SetConvCommandConfig(ADC0, 2U, &command);
+
+    lpadc_conv_trigger_config_t trigger;
+    LPADC_GetDefaultConvTriggerConfig(&trigger);
+    trigger.targetCommandId = 1U;
+    trigger.enableHardwareTrigger = false;
+    LPADC_SetConvTriggerConfig(ADC0, SENSE_TRIGGER, &trigger);
+    LPADC_DoSoftwareTrigger(ADC0, 1UL << SENSE_TRIGGER);
+
+    bool voltage_found = false;
+    bool current_found = false;
+    lpadc_conv_result_t result;
+    for (uint32_t i = 0U; i < SENSE_RESULT_POLLS && !(voltage_found && current_found); i++) {
+        if (!LPADC_GetConvResult(ADC0, &result, 0U)) {
+            continue;
+        }
+        if (result.commandIdSource == 1U) {
+            *voltage_code = result.convValue;
+            voltage_found = true;
+        } else if (result.commandIdSource == 2U) {
+            *current_code = result.convValue;
+            current_found = true;
+        }
+    }
+    status = (voltage_found && current_found) ? TARGET_SENSE_OK : TARGET_SENSE_NO_RESULT;
+    energy_monitor_resume();
+    return status;
 }
 
 bool target_sense_detected(void) {
