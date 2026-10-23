@@ -16,18 +16,21 @@ delay settings solves for the store and branch costs.
 """
 
 import argparse
+import concurrent.futures
 import itertools
 import os
 import re
 import subprocess
 import sys
 import tempfile
+from functools import lru_cache
 from dataclasses import dataclass, field, replace
 
-from capstone import CS_ARCH_ARM, CS_MODE_THUMB, Cs
+from capstone import CS_ARCH_ARM, CS_MODE_THUMB, Cs, arm as ARM
 from unicorn import (
     UC_ARCH_ARM,
     UC_HOOK_CODE,
+    UC_HOOK_MEM_WRITE,
     UC_MODE_MCLASS,
     UC_MODE_THUMB,
     Uc,
@@ -37,6 +40,7 @@ from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_AR
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from m33 import Engine, Insn  # noqa: E402
+from host_resources import available_cpus  # noqa: E402
 
 # LPC55S69, non-secure aliases, which is what the image was built against. GPIO_BASE is the block the
 # debug interface is driven through: the secure GPIO, with port 0's register layout (DBGIF_GPIO in
@@ -100,6 +104,7 @@ def base_name(symbol: str) -> str:
     return symbol
 
 
+@lru_cache(maxsize=16)
 def symbols(elf: str) -> dict[str, int]:
     out = {}
     for line in sh("arm-none-eabi-nm", elf).splitlines():
@@ -110,6 +115,7 @@ def symbols(elf: str) -> dict[str, int]:
     return out
 
 
+@lru_cache(maxsize=16)
 def sections(elf: str) -> dict[str, tuple[int, int, int]]:
     """name -> (size, vma, lma)"""
     out = {}
@@ -120,6 +126,7 @@ def sections(elf: str) -> dict[str, tuple[int, int, int]]:
     return out
 
 
+@lru_cache(maxsize=16)
 def load_address(elf: str) -> int:
     """Where `objcopy -O binary` output starts: the lowest load address of anything with bytes.
     CPU 0's image starts at 0 and CPU 1's at its own flash origin."""
@@ -129,6 +136,15 @@ def load_address(elf: str) -> int:
         if parts and parts[0] == "LOAD" and int(parts[4], 16) != 0:
             starts.append(int(parts[3], 16))
     return min(starts)
+
+
+@lru_cache(maxsize=8)
+def image_bytes(elf: str) -> bytes:
+    """The load image is identical across every emulated machine for the same ELF."""
+    with tempfile.NamedTemporaryFile(suffix=".bin") as raw:
+        sh("arm-none-eabi-objcopy", "-O", "binary", elf, raw.name)
+        with open(raw.name, "rb") as image_file:
+            return image_file.read()
 
 
 @dataclass
@@ -190,6 +206,33 @@ class Counts:
     span: int = 0
     # With a timed SWD target, every read and where it sat in its window.
     reads: list = field(default_factory=list)
+
+
+def minimum_clock_phases(rises: list[int], falls: list[int]) -> tuple[int | None, int | None]:
+    """Return the shortest low and high phase from ordered clock edges in one pass."""
+    min_low = None
+    last_fall = None
+    fall_at = 0
+    for rise in rises:
+        while fall_at < len(falls) and falls[fall_at] < rise:
+            last_fall = falls[fall_at]
+            fall_at += 1
+        if last_fall is not None:
+            gap = rise - last_fall
+            min_low = gap if min_low is None or gap < min_low else min_low
+
+    min_high = None
+    last_rise = None
+    rise_at = 0
+    for fall in falls:
+        while rise_at < len(rises) and rises[rise_at] < fall:
+            last_rise = rises[rise_at]
+            rise_at += 1
+        if last_rise is not None:
+            gap = fall - last_rise
+            min_high = gap if min_high is None or gap < min_high else min_high
+
+    return min_low, min_high
 
 
 # The 16 TAP states, and where TMS takes each one. Named as IEEE 1149.1 names them.
@@ -630,25 +673,37 @@ CONDITIONS = ("eq", "ne", "cs", "hs", "cc", "lo", "mi", "pl", "vs", "vc", "hi", 
 
 def condition_holds(cc: int, flags: int) -> bool:
     """Whether an ARM condition code passes, given NZCV in bits 31..28 of `flags`."""
-    from capstone import arm as A
-
-    n, z, c, v = (flags >> 31) & 1, (flags >> 30) & 1, (flags >> 29) & 1, (flags >> 28) & 1
-    return {
-        A.ARM_CC_EQ: z == 1,
-        A.ARM_CC_NE: z == 0,
-        A.ARM_CC_HS: c == 1,
-        A.ARM_CC_LO: c == 0,
-        A.ARM_CC_MI: n == 1,
-        A.ARM_CC_PL: n == 0,
-        A.ARM_CC_VS: v == 1,
-        A.ARM_CC_VC: v == 0,
-        A.ARM_CC_HI: c == 1 and z == 0,
-        A.ARM_CC_LS: c == 0 or z == 1,
-        A.ARM_CC_GE: n == v,
-        A.ARM_CC_LT: n != v,
-        A.ARM_CC_GT: z == 0 and n == v,
-        A.ARM_CC_LE: z == 1 or n != v,
-    }.get(cc, True)
+    nzcv = flags >> 28
+    n, z, c, v = nzcv & 8, nzcv & 4, nzcv & 2, nzcv & 1
+    if cc == ARM.ARM_CC_EQ:
+        return z != 0
+    if cc == ARM.ARM_CC_NE:
+        return z == 0
+    if cc == ARM.ARM_CC_HS:
+        return c != 0
+    if cc == ARM.ARM_CC_LO:
+        return c == 0
+    if cc == ARM.ARM_CC_MI:
+        return n != 0
+    if cc == ARM.ARM_CC_PL:
+        return n == 0
+    if cc == ARM.ARM_CC_VS:
+        return v != 0
+    if cc == ARM.ARM_CC_VC:
+        return v == 0
+    if cc == ARM.ARM_CC_HI:
+        return c != 0 and z == 0
+    if cc == ARM.ARM_CC_LS:
+        return c == 0 or z != 0
+    if cc == ARM.ARM_CC_GE:
+        return n == (v << 3)
+    if cc == ARM.ARM_CC_LT:
+        return n != (v << 3)
+    if cc == ARM.ARM_CC_GT:
+        return z == 0 and n == (v << 3)
+    if cc == ARM.ARM_CC_LE:
+        return z != 0 or n != (v << 3)
+    return True
 
 
 def data_accesses(insn) -> tuple[int, str, bool] | None:
@@ -688,6 +743,41 @@ def branch_kind(mnemonic: str, writes_pc: bool) -> str:
     return ""
 
 
+_INSTRUCTION_DECODER = Cs(CS_ARCH_ARM, CS_MODE_THUMB)
+_INSTRUCTION_DECODER.detail = True
+
+
+@lru_cache(maxsize=131_072)
+def decode_instruction(address: int, code: bytes) -> tuple[Insn, tuple[int, str | None] | None,
+                                                          tuple[int, str, bool] | None]:
+    """Decode immutable instruction bytes once per worker, across emulator instances."""
+    insn = next(_INSTRUCTION_DECODER.disasm(code, address), None)
+    if insn is None:
+        return Insn(address, len(code), "?"), None, None
+
+    read, written = insn.regs_access()
+    reads = frozenset(insn.reg_name(r) for r in read)
+    writes = frozenset(insn.reg_name(r) for r in written)
+    data = frozenset()
+    if insn.mnemonic.startswith(("str", "push", "stm")) and insn.operands:
+        from capstone.arm import ARM_OP_REG
+
+        data = frozenset(insn.reg_name(op.reg) for op in insn.operands if op.type == ARM_OP_REG)
+    branch = branch_kind(insn.mnemonic, "pc" in writes)
+    branch_target = None
+    if branch == "cond":
+        target = insn.operands[1] if insn.mnemonic.startswith(("cbz", "cbnz")) else insn.operands[0]
+        if target.type == ARM.ARM_OP_IMM:
+            branch_target = target.imm
+    hit = Insn(address, insn.size, insn.mnemonic, reads, writes,
+               branch=branch, branch_target=branch_target, store_data=data)
+    branch_test = None
+    if hit.branch == "cond":
+        reg = insn.reg_name(insn.operands[0].reg) if insn.mnemonic.startswith("cb") else None
+        branch_test = (insn.cc, reg)
+    return hit, branch_test, data_accesses(insn)
+
+
 # Cycles between two counted commands, which the count does not see. The probe spends about 15 us
 # between commands (BENCH.md), over 2,000 cycles; any gap past the longest latency and hold leaves
 # the same windows.
@@ -703,11 +793,15 @@ class Machine:
         model: "Model | None" = None,
         engine: "Engine | None" = None,
         timed: bool = True,
+        record_trace: bool = True,
+        record_stats: bool = True,
     ):
         self.sym = symbols(elf)
         # False runs every instruction untimed: the wire's events and levels without their cycles,
         # which is all tools/equiv.py compares, at native speed.
         self.timed = timed
+        self.record_trace = record_trace
+        self.record_stats = record_stats
         self.model = model or Model()
         # When set, issue and bus cycles come from tools/m33.py instead of the per-class model.
         if engine is None and self.model.engine:
@@ -719,11 +813,9 @@ class Machine:
         # Each load's or store's data accesses, by address: how many, the register whose value
         # says which bus they take, and whether they write. See _code for why these are not
         # counted from a memory hook.
-        self._accesses: dict[int, tuple[int, str, bool]] = {}
-        # The bytes each SRAMX instruction was decoded from: the firmware writes code there at run
-        # time, and rewrites it when the clock changes.
-        self._code_bytes: dict[int, bytes] = {}
+        self._accesses: dict[int, tuple[int, int | None, bool]] = {}
         self._branch_taken = False
+        self._branch_target: int | None = None
         self.cycle = 0
         self.target = target
         self.counting = False
@@ -769,20 +861,22 @@ class Machine:
             self.uc.mem_map(base, size)
         self.uc.mmio_map(GPIO_BASE, GPIO_SIZE, self._gpio_read, None, self._gpio_write, None)
 
-        with tempfile.NamedTemporaryFile(suffix=".bin") as raw:
-            sh("arm-none-eabi-objcopy", "-O", "binary", elf, raw.name)
-            image = open(raw.name, "rb").read()
-        self.uc.mem_write(load_address(elf), image)
+        self.uc.mem_write(load_address(elf), image_bytes(elf))
         # The startup code is not run, so do what it does for .data.
         secs = sections(elf)
         size, vma, lma = secs[".data"]
         if size:
             self.uc.mem_write(vma, bytes(self.uc.mem_read(lma, size)))
-        # The only hook. unicorn 2.1.4 runs an IT block wrongly when a memory hook fires on a load
-        # or store inside it, and has the next branch's target skip its first instruction, so
-        # nothing here hooks memory: see _code and _fresh. It is a Python call per instruction, so
-        # it is in place only while counting: a generated image's setup builds its code under it
-        # twenty times slower. emu_start's `until` stops a call at RETURN_MAGIC without it.
+        # A write hook invalidates only instructions the generator overwrites in SRAMX. There is no
+        # read hook: Unicorn 2.1.4 mis-executes loads in IT blocks when memory reads are hooked.
+        self.uc.hook_add(
+            UC_HOOK_MEM_WRITE,
+            self._sramx_write,
+            begin=SRAMX[0],
+            end=SRAMX[0] + SRAMX[1] - 1,
+        )
+        # The code hook runs once per instruction, so leave it off while generated setup code runs.
+        # emu_start's `until` stops a call at RETURN_MAGIC without it.
         self._hook: int | None = None
         if restart_at:
             self._hook_code(True)
@@ -791,7 +885,10 @@ class Machine:
         if on == (self._hook is not None) or (not on and self.restart_at):
             return
         if on:
-            self._hook = self.uc.hook_add(UC_HOOK_CODE, self._code)
+            callback = self._code
+            if self.engine is not None and not self.record_stats and not self.explain and not self.restart_at:
+                callback = self._timing_code
+            self._hook = self.uc.hook_add(UC_HOOK_CODE, callback)
         else:
             self.uc.hook_del(self._hook)
             self._hook = None
@@ -799,19 +896,18 @@ class Machine:
         # change keep the old one.
         self.uc.ctl_flush_tb()
 
-    def _fresh(self, address: int, size: int) -> None:
-        """Forgets an SRAMX instruction decoded from bytes that have since been rewritten."""
-        if not SRAMX[0] <= address < SRAMX[0] + SRAMX[1]:
-            return
-        code = bytes(self.uc.mem_read(address, size))
-        if self._code_bytes.get(address) != code:
-            self._code_bytes[address] = code
-            self._insns.pop(address, None)
-            self._decoded.pop(address, None)
-            self._branch_test.pop(address, None)
-            self._accesses.pop(address, None)
+    def _sramx_write(self, uc, access, address: int, size: int, value: int, user) -> None:
+        """Discard cached instructions whose bytes overlap a generated-code write."""
+        first = max(SRAMX[0], (address - 3) & ~1)
+        last = min(SRAMX[0] + SRAMX[1] - 2, (address + size - 1) & ~1)
+        for instruction in range(first, last + 1, 2):
+            self._insns.pop(instruction, None)
+            self._decoded.pop(instruction, None)
+            self._branch_test.pop(instruction, None)
+            self._accesses.pop(instruction, None)
 
     @staticmethod
+    @lru_cache(maxsize=32)
     def _reg_id(name: str) -> int:
         from unicorn import arm_const
 
@@ -834,43 +930,22 @@ class Machine:
         return condition_holds(cc, self.uc.reg_read(UC_ARM_REG_APSR))
 
     def _insn_at(self, address: int) -> Insn:
-        code = bytes(self.uc.mem_read(address, 4))
-        insn = next(self.md.disasm(code, address), None)
-        return self._insn(address, insn.size if insn else 2)
+        halfword = int.from_bytes(self.uc.mem_read(address, 2), "little")
+        # Thumb-2 32-bit instructions start with one of the 11101, 11110 or 11111 prefixes.
+        size = 4 if (halfword & 0xF800) >= 0xE800 else 2
+        return self._insn(address, size)
 
     def _insn(self, address: int, size: int) -> Insn:
-        self._fresh(address, size)
         hit = self._insns.get(address)
         if hit is None:
             code = bytes(self.uc.mem_read(address, size))
-            insn = next(self.md.disasm(code, address), None)
-            if insn is None:
-                hit = Insn(address, size, "?")
-            else:
-                read, written = insn.regs_access()
-                reads = frozenset(insn.reg_name(r) for r in read)
-                writes = frozenset(insn.reg_name(r) for r in written)
-                data = frozenset()
-                if insn.mnemonic.startswith(("str", "push", "stm")) and insn.operands:
-                    # The registers stored, not the ones that form the address.
-                    from capstone.arm import ARM_OP_REG
-
-                    data = frozenset(insn.reg_name(op.reg) for op in insn.operands if op.type == ARM_OP_REG)
-                hit = Insn(
-                    address,
-                    size,
-                    insn.mnemonic,
-                    reads,
-                    writes,
-                    branch=branch_kind(insn.mnemonic, "pc" in writes),
-                    store_data=data,
-                )
-                if hit.branch == "cond":
-                    reg = insn.reg_name(insn.operands[0].reg) if insn.mnemonic.startswith("cb") else None
-                    self._branch_test[address] = (insn.cc, reg)
-                accesses = data_accesses(insn)
-                if accesses is not None:
-                    self._accesses[address] = accesses
+            hit, branch_test, accesses = decode_instruction(address, code)
+            if branch_test is not None:
+                self._branch_test[address] = branch_test
+            if accesses is not None:
+                count, base, write = accesses
+                base_id = None if base == "pc" else self._reg_id(base)
+                self._accesses[address] = (count, base_id, write)
             self._insns[address] = hit
         return hit
 
@@ -880,7 +955,7 @@ class Machine:
             self.cycle = self.engine.access(GPIO_BASE + offset, False)
         # B[0][n] is one byte per pin at the start of the block: SWDIO is pin 2, TDO pin 3.
         if offset in (REG_B0 + PIN_SWDIO, REG_B0 + PIN_TDO):
-            if self.counting:
+            if self.counting and self.record_trace:
                 self.counts.trace.append("S" if offset == REG_B0 + PIN_SWDIO else "T")
             if isinstance(self.target, TimedJtagTarget) and offset == REG_B0 + PIN_TDO:
                 return self.target.read(self.cycle)
@@ -980,14 +1055,17 @@ class Machine:
 
         if not self.counting:
             return
-        self.counts.gpio_store += 1
+        if self.record_stats:
+            self.counts.gpio_store += 1
 
         # Level changes are recorded before the clock edge in the same store, so that fusing a
         # data write into the falling edge produces the same stream as doing them separately.
         if after_tdi != before_tdi:
-            self.counts.trace.append(f"I{after_tdi}")
+            if self.record_trace:
+                self.counts.trace.append(f"I{after_tdi}")
         if after_wire != before_wire:
-            self.counts.trace.append(f"W{after_wire}")
+            if self.record_trace:
+                self.counts.trace.append(f"W{after_wire}")
             if after_wire == "z":
                 self.counts.swdio_release += 1
                 # A frame releases the wire exactly once, immediately before its third packet.
@@ -1000,7 +1078,8 @@ class Machine:
                     self._escape += 1
                     self.counts.escape_edges += 1
         if after_clock and not before_clock:
-            self.counts.tck_rise += 1
+            if self.record_stats:
+                self.counts.tck_rise += 1
             self.counts.edge_cycles.append(self.cycle)
             if self.explain:
                 span = self.cycle - self._window_start
@@ -1009,7 +1088,8 @@ class Machine:
                 self.windows.append((span, self._window))
                 self._window = []
                 self._window_start = self.cycle
-            self.counts.trace.append(f"^{after_wire}{after_tdi}")
+            if self.record_trace:
+                self.counts.trace.append(f"^{after_wire}{after_tdi}")
             if self.tap is not None:
                 self.tap.clock((self.level >> PIN_SWDIO) & 1)
             if self.cjtag_tap is not None:
@@ -1045,13 +1125,14 @@ class Machine:
                 self._shift5 = False
                 self._frame_tdo = self.cjtag_tap.tdo()
                 self.cjtag_tap.clock(1 if self._escape >= 2 else 0)
-            self.counts.tck_fall += 1
+            if self.record_stats:
+                self.counts.tck_fall += 1
             self.counts.fall_cycles.append(self.cycle)
-            self.counts.trace.append("v")
+            if self.record_trace:
+                self.counts.trace.append("v")
 
     # -- instruction accounting ---------------------------------------------
     def _classify(self, address: int, size: int) -> tuple[str, int]:
-        self._fresh(address, size)
         hit = self._decoded.get(address)
         if hit is None:
             code = bytes(self.uc.mem_read(address, size))
@@ -1068,6 +1149,41 @@ class Machine:
             self._decoded[address] = hit
         return hit
 
+    def _timing_code(self, uc, address, size, user):
+        """Code hook for counted engine runs without optional bookkeeping or reset addresses."""
+        taken = self._prev_end is not None and (
+            address == self._branch_target
+            if self._branch_target is not None and self._branch_target != self._prev_end
+            else self._branch_taken
+        )
+        if self._prev_end is not None and not taken and address != self._prev_end:
+            # Unicorn skips IT-block instructions; the timing engine still issues them.
+            skipped = self._prev_end
+            while skipped < address and skipped - self._prev_end < 8:
+                insn = self._insn_at(skipped)
+                self.engine.issue(insn, None)
+                skipped += insn.size
+        insn = self._insn(address, size)
+        self.cycle = self.engine.issue(insn, address if taken else None)
+        spec = self._accesses.get(address)
+        if spec is not None:
+            count, base, write = spec
+            where = address if base is None else self.uc.reg_read(base)
+            if not (GPIO_BASE <= where < GPIO_BASE + GPIO_SIZE or where >= 0xE0000000):
+                for _ in range(count):
+                    self.engine.access(where, write)
+        if insn.branch == "cond":
+            self._branch_target = insn.branch_target
+            self._branch_taken = (
+                self._decide(insn)
+                if insn.branch_target is None or insn.branch_target == address + size
+                else False
+            )
+        else:
+            self._branch_target = None
+            self._branch_taken = bool(insn.branch)
+        self._prev_end = address + size
+
     def _code(self, uc, address, size, user):
         if address == RETURN_MAGIC:
             uc.emu_stop()
@@ -1082,7 +1198,11 @@ class Machine:
             # A branch to the next instruction is taken all the same, and costs as much. Any
             # other jump past the next instruction is an IT block skipping one, which unicorn
             # does not run but the core still issues.
-            taken = self._prev_end is not None and self._branch_taken
+            taken = self._prev_end is not None and (
+                address == self._branch_target
+                if self._branch_target is not None and self._branch_target != self._prev_end
+                else self._branch_taken
+            )
             if self._prev_end is not None and not taken and address != self._prev_end:
                 skipped = self._prev_end
                 while skipped < address and skipped - self._prev_end < 8:
@@ -1096,32 +1216,45 @@ class Machine:
             spec = self._accesses.get(address)
             if spec is not None:
                 count, base, write = spec
-                where = address if base == "pc" else self.uc.reg_read(self._reg_id(base))
+                where = address if base is None else self.uc.reg_read(base)
                 if not (GPIO_BASE <= where < GPIO_BASE + GPIO_SIZE or where >= 0xE0000000):
                     for _ in range(count):
                         self.engine.access(where, write)
-            self._branch_taken = self._decide(insn)
-            if taken:
+            if insn.branch == "cond":
+                self._branch_target = insn.branch_target
+                self._branch_taken = (
+                    self._decide(insn)
+                    if insn.branch_target is None or insn.branch_target == address + size
+                    else False
+                )
+            else:
+                self._branch_target = None
+                self._branch_taken = bool(insn.branch)
+            if self.record_stats and taken:
                 self.counts.taken_branch += 1
             self._prev_end = address + size
             if self.explain:
                 self._window.append(address)
-            self.counts.instructions += 1
+            if self.record_stats:
+                self.counts.instructions += 1
             return
 
         if self._prev_was_branch and self._prev_end is not None and address == self._prev_end:
             # The branch before this one fell through. It was charged as an ordinary instruction
             # when it issued, because whether it was taken is only visible from where we land.
-            self.counts.not_taken_branch += 1
+            if self.record_stats:
+                self.counts.not_taken_branch += 1
             self.cycle += self.model.not_taken_branch - self.model.other
 
         if self._prev_end is not None and address != self._prev_end:
-            self.counts.taken_branch += 1
+            if self.record_stats:
+                self.counts.taken_branch += 1
             # The pacing loop is two instructions, so a backward branch this short is one of its
             # iterations. Counting them is what lets the delay be separated from everything else
             # without parsing the clock arithmetic out of the source.
             if 0 < self._prev_end - address <= 8:
-                self.counts.delay_iterations += 1
+                if self.record_stats:
+                    self.counts.delay_iterations += 1
             self.cycle += self.model.taken_branch - self.model.other
         self._prev_end = address + size
 
@@ -1130,16 +1263,20 @@ class Machine:
         kind, _ = self._classify(address, size)
         self._prev_was_branch = kind == "branch"
         c = self.counts
-        c.instructions += 1
+        if self.record_stats:
+            c.instructions += 1
         m = self.model
         if kind == "load":
-            c.load += 1
+            if self.record_stats:
+                c.load += 1
             self.cycle += m.load
         elif kind == "store":
-            c.store += 1
+            if self.record_stats:
+                c.store += 1
             self.cycle += m.store
         else:
-            c.other += 1
+            if self.record_stats:
+                c.other += 1
             self.cycle += m.other
 
     # -- running -------------------------------------------------------------
@@ -1231,7 +1368,7 @@ ID_CJTAG_CONTROL = 0x83
 AP_DRW_READ, AP_DRW_WRITE = 0x0F, 0x0D
 
 
-def build(elf: str, wire: str, read: bool, model: Model) -> Machine:
+def build(elf: str, wire: str, read: bool, model: Model, record_stats: bool = True) -> Machine:
     """A machine with a target model attached, found from the wire rather than from symbols.
 
     SWD re-synchronises on the turnaround, the only place the probe lets go. JTAG and the two-pin
@@ -1244,7 +1381,7 @@ def build(elf: str, wire: str, read: bool, model: Model) -> Machine:
         # The bit the target answers with matters for nothing but the reply, so keep the order
         # target's pattern and serve what each read meant to get; the margins carry the timing.
         target = TimedSwdTarget(SWD_READ if read else SWD_WRITE, model.latency, serve="intended", idle=0)
-    probe = Machine(elf, target, restart_at=set(), model=model)
+    probe = Machine(elf, target, restart_at=set(), model=model, record_stats=record_stats)
     if wire == "swd":
         probe.resync_on_release = True
     elif wire == "jtag" and model.engine:
@@ -1262,9 +1399,16 @@ def build(elf: str, wire: str, read: bool, model: Model) -> Machine:
 
 
 def measure(
-    elf: str, wire: str, clock_hz: int, words: int, read: bool, model: Model, explain: bool = False
+    elf: str,
+    wire: str,
+    clock_hz: int,
+    words: int,
+    read: bool,
+    model: Model,
+    explain: bool = False,
+    record_stats: bool = True,
 ) -> tuple[Counts, bytes, "Machine"]:
-    probe = build(elf, wire, read, model)
+    probe = build(elf, wire, read, model, record_stats)
     # DAP_Setup only sets defaults that the commands below overwrite, and link-time optimisation
     # usually folds it into main, so run it when it still exists and skip it when it does not.
     if "DAP_Setup" in probe.sym:
@@ -1450,7 +1594,8 @@ def timed_dpidr_target(elf: str, model: Model, latency: int, hz: int) -> "Machin
     word = DPIDR_MSPM0L1306
     pattern = SWD_OK + [(word >> i) & 1 for i in range(32)] + [word.bit_count() & 1]
     model = replace(model, engine=True, latency=latency)
-    probe = Machine(elf, TimedSwdTarget(pattern, latency, serve="wire", idle=1), restart_at=set(), model=model)
+    probe = Machine(elf, TimedSwdTarget(pattern, latency, serve="wire", idle=1), restart_at=set(), model=model,
+                    record_trace=False, record_stats=False)
     probe.resync_on_release = True
     if "DAP_Setup" in probe.sym:
         probe.call("DAP_Setup")
@@ -1530,7 +1675,8 @@ def timed_idcode_target(elf: str, model: Model, wire: str, latency: int, hz: int
     """A probe connected over `wire`, jtag or cjtag, at `hz` to one TAP whose TDO comes `latency`
     cycles after each falling edge: a DAP that answers IDCODE, and every DR scan with an OK
     acknowledge and JTAG_WORD."""
-    probe = Machine(elf, Target([]), restart_at=set(), model=replace(model, engine=True))
+    probe = Machine(elf, Target([]), restart_at=set(), model=replace(model, engine=True), record_trace=False,
+                    record_stats=False)
     if "DAP_Setup" in probe.sym:
         probe.call("DAP_Setup")
     probe.command(bytes([ID_CONNECT, 2]))
@@ -1671,7 +1817,19 @@ def table(elf: str, model: Model, cpu_hz: int, words: int) -> int:
     return 0
 
 
-def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
+def check_single_wire(args: tuple[str, Model, int, str]) -> int:
+    elf, model, cpu_hz, wire = args
+    return check(elf, model, cpu_hz, False, 1, (wire,))
+
+
+def check(
+    elf: str,
+    model: Model,
+    cpu_hz: int,
+    bless: bool,
+    jobs: int = 1,
+    wires: tuple[str, ...] | None = None,
+) -> int:
     """The gate: an optimisation may change the timing and must not change anything else.
 
     Three things are checked. The wire event stream has to match what is recorded, which is what
@@ -1680,6 +1838,14 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
     reason this firmware exists. And no wire may clock faster than the host asked for, except where
     that is already recorded as known -- a new one is a regression.
     """
+    if jobs < 1:
+        raise ValueError("jobs must be at least 1")
+    wires = CHECK_WIRES if wires is None else wires
+    if jobs > 1 and not bless and len(wires) > 1:
+        args = [(elf, model, cpu_hz, wire) for wire in wires]
+        with concurrent.futures.ProcessPoolExecutor(max_workers=min(jobs, len(wires))) as pool:
+            return 1 if any(pool.map(check_single_wire, args)) else 0
+
     failures = []
 
     # An image that generates its SWD paths runs them from SRAMX, which only the timing engine
@@ -1708,7 +1874,9 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
         ("cjtag5", "jtag-sequence", bytes([ID_JTAG_SEQUENCE, 2, 0x08, 0xA5, 0x80 | 0x40 | 0x08, 0x3C])),
         ("cjtag6", "jtag-sequence", bytes([ID_JTAG_SEQUENCE, 2, 0x08, 0xA5, 0x80 | 0x40 | 0x08, 0x3C])),
     ):
-        probe = Machine(elf, Target([0, 1] * 64), restart_at=set(), model=model)
+        if wire not in wires:
+            continue
+        probe = Machine(elf, Target([0, 1] * 64), restart_at=set(), model=model, record_stats=False)
         probe.command(bytes([ID_CONNECT, 1 if wire == "swd" else 2]))
         probe.command(bytes([ID_SWJ_CLOCK]) + u32(10_000_000))
         if wire in TWO_PIN:
@@ -1731,6 +1899,8 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
     # made of. src/dap_dispatch.c routes every command, and until this nothing but the block was
     # checked, so a mistake in the forwarding would have been invisible.
     for wire, port in (("swd", 1), ("jtag", 2), ("cjtag", 2), ("cjtag2", 2), ("cjtag5", 2), ("cjtag6", 2)):
+        if wire not in wires:
+            continue
         for label, payload in (
             ("transfer-read", bytes([ID_TRANSFER, 0, 4]) + bytes([0x0F]) * 4),
             ("transfer-write", bytes([ID_TRANSFER, 0, 2]) + (bytes([0x0D]) + u32(0xA5A5_5A5A)) * 2),
@@ -1743,7 +1913,7 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
                 + u32(0x00000000),
             ),
         ):
-            probe = build(elf, wire, True, model)
+            probe = build(elf, wire, True, model, record_stats=False)
             probe.command(bytes([ID_CONNECT, port]))
             probe.command(bytes([ID_SWJ_CLOCK]) + u32(10_000_000))
             probe.command(bytes([ID_TRANSFER_CONFIG, 0]) + u16(2) + u16(0))
@@ -1771,30 +1941,34 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
     # The read latency, measured by the probe against targets that answer later and earlier than
     # the default: it has to find each one exactly, and leave every sample of the read that follows
     # inside its window.
-    if "swd_sweep_last" in symbols(elf):
+    if "swd_sweep_last" in symbols(elf) and "swd" in wires:
         for latency, hz in ((6, 37_500_000), (9, 30_000_000)):
             failures += measure_latency(elf, model, latency, hz)
         failures += connect_measures(elf, model, 11, 37_500_000)
         failures += connect_rescued(elf, model, 12, 25_000_000)
     # The same on both JTAG wires, with IDCODE reads.
     if "jtag_sweep_last" in symbols(elf):
-        for wire, latency, hz in (("jtag", 7, 30_000_000), ("jtag", 13, 25_000_000), ("cjtag", 10, 50_000_000)):
-            failures += jtag_measure_latency(elf, model, wire, latency, hz)
-        failures += jtag_connect(elf, model, "jtag", 13, 30_000_000, rescued=False)
-        failures += jtag_connect(elf, model, "cjtag", 10, 50_000_000, rescued=False)
-        failures += jtag_connect(elf, model, "jtag", 16, 10_000_000, rescued=True)
+        if "jtag" in wires:
+            for latency, hz in ((7, 30_000_000), (13, 25_000_000)):
+                failures += jtag_measure_latency(elf, model, "jtag", latency, hz)
+            failures += jtag_connect(elf, model, "jtag", 13, 30_000_000, rescued=False)
+            failures += jtag_connect(elf, model, "jtag", 16, 10_000_000, rescued=True)
+        if "cjtag" in wires:
+            failures += jtag_measure_latency(elf, model, "cjtag", 10, 50_000_000)
+            failures += jtag_connect(elf, model, "cjtag", 10, 50_000_000, rescued=False)
 
     known_path = os.path.join(baseline_dir, "known-overshoot.txt")
     known = set()
     if os.path.exists(known_path):
         known = {line.strip() for line in open(known_path) if line.strip() and not line.startswith("#")}
+    known_for_wires = {tag for tag in known if any(tag.startswith(f"{wire}@") for wire in wires)}
     seen_overshoot = set()
 
     # Two clocks, because the paced and delay-free paths are different code and a baseline taken
     # at one of them says nothing about the other.
-    for wire, (tag, hz) in itertools.product(CHECK_WIRES, (("10MHz", 10_000_000), ("50MHz", 50_000_000))):
+    for wire, (tag, hz) in itertools.product(wires, (("10MHz", 10_000_000), ("50MHz", 50_000_000))):
         for label, read in (("read", True), ("write", False)):
-            counts, reply, _ = measure(elf, wire, hz, 16, read, model)
+            counts, reply, _ = measure(elf, wire, hz, 16, read, model, record_stats=False)
 
             # The command layer has to come back with a well formed answer, not just the right
             # waveform: the echoed id, the word count asked for, an OK status, and for a read the
@@ -1827,9 +2001,9 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
     # from the response pointer rather than counted, so one word and a full packet are the two
     # that would show an off-by-one, and both are outside every other case here. A full packet is
     # 127 words of reply, but 126 of request: a write's five header bytes take the 127th.
-    for wire, (label, read) in itertools.product(CHECK_WIRES, (("read", True), ("write", False))):
+    for wire, (label, read) in itertools.product(wires, (("read", True), ("write", False))):
         for words in (1, 2, 3, 127 if read else 126):
-            _, reply, _ = measure(elf, wire, 10_000_000, words, read, model)
+            counts, reply, _ = measure(elf, wire, 10_000_000, words, read, model, record_stats=False)
             want = 4 + (4 * words) if read else 4
             got_words = reply[1] | (reply[2] << 8)
             if got_words != words:
@@ -1845,9 +2019,9 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
                     " clock was high outside an EOT escape, which are escape edges to a 1149.7 target"
                 )
 
-    for wire in CHECK_WIRES:
+    for wire in wires:
         for mhz in CHECK_CLOCKS:
-            counts, _, _ = measure(elf, wire, int(mhz * 1e6), 16, True, model)
+            counts, _, _ = measure(elf, wire, int(mhz * 1e6), 16, True, model, record_stats=False)
             periods = [b - a for a, b in zip(counts.edge_cycles, counts.edge_cycles[1:])]
             if not periods:
                 continue
@@ -1870,7 +2044,7 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
         print(f"baseline rewritten in {baseline_dir}")
         return 0
 
-    for tag in sorted(known - seen_overshoot):
+    for tag in sorted(known_for_wires - seen_overshoot):
         print(f"  note: {tag} no longer overshoots; drop it from known-overshoot.txt")
     if failures:
         for f in failures:
@@ -1879,7 +2053,7 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
     print(
         "  all clear: every transfer answered OK with the right data, wire events match,"
         " no escape edges,"
-        f" {len(known)} known overshoots unchanged"
+        f" {len(known_for_wires)} known overshoots unchanged"
     )
     return 0
 
@@ -1887,7 +2061,11 @@ def check(elf: str, model: Model, cpu_hz: int, bless: bool) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("elf", nargs="?", default="build/mculink_cjtag_core1.elf", help="CPU 1's image")
-    ap.add_argument("--wire", choices=["swd", "jtag", "cjtag", "cjtag2", "cjtag5", "cjtag6"], default="swd")
+    ap.add_argument(
+        "--wire",
+        choices=["swd", "jtag", "cjtag", "cjtag2", "cjtag5", "cjtag6"],
+        help="wire to measure; with --check, restrict the check to this wire (default: all wires)",
+    )
     ap.add_argument("--words", type=int, default=16, help="words in the measured DAP_TransferBlock")
     ap.add_argument(
         "--clock", type=float, nargs="*", default=[1, 5, 10, 14, 25, 50], help="requested wire clocks, MHz"
@@ -1929,6 +2107,8 @@ def main() -> int:
         action="store_true",
         help="gate: wire events match the baseline, no escape edges, no new overclocking",
     )
+    ap.add_argument("--jobs", type=int, default=min(4, available_cpus()),
+                    help="independent wire checks to run at once")
     ap.add_argument(
         "--bless",
         action="store_true",
@@ -1960,6 +2140,8 @@ def main() -> int:
         help="fit cycles per bit against delay iterations to recover ARM's two clock constants",
     )
     args = ap.parse_args()
+    if args.jobs < 1:
+        ap.error("--jobs must be at least 1")
 
     model = Model(
         load=args.load_cycles,
@@ -1972,14 +2154,16 @@ def main() -> int:
     )
     cpu_hz = int(args.cpu * 1e6)
     if args.check:
-        print(f"{args.elf}")
-        return check(args.elf, model, cpu_hz, args.bless)
+        selected = None if args.wire is None else (args.wire,)
+        print(f"{args.elf}, {args.wire or 'all wires'}")
+        return check(args.elf, model, cpu_hz, args.bless, args.jobs, selected)
     if args.table:
         return table(args.elf, model, cpu_hz, args.words)
+    wire = args.wire or "swd"
     if args.calibrate:
-        return calibrate(args.elf, args.wire, args.words, cpu_hz, model, args.config)
+        return calibrate(args.elf, wire, args.words, cpu_hz, model, args.config)
     shape = f"{args.words}-transfer DAP_Transfer" if args.transfer else f"{args.words}-word block"
-    print(f"{args.elf}, {args.wire}, {shape}, core {args.cpu:g} MHz")
+    print(f"{args.elf}, {wire}, {shape}, core {args.cpu:g} MHz")
     if model.engine:
         print("cost model: tools/m33.py" + (f", target latency {model.latency} cycles" if model.latency else ""))
     else:
@@ -1993,14 +2177,14 @@ def main() -> int:
         for label, read in (("read", True), ("write", False)):
             drive = measure_transfer if args.transfer else measure
             counts, _, probe = drive(
-                args.elf, args.wire, clock_hz, args.words, read, model, explain=args.explain
+                args.elf, wire, clock_hz, args.words, read, model, explain=args.explain
             )
             report(label, counts, model, clock_hz, cpu_hz, args.words)
             if args.explain:
                 explain_gap(probe)
             if args.trace:
                 os.makedirs(args.trace, exist_ok=True)
-                path = os.path.join(args.trace, f"{args.wire}-{label}-{mhz:g}MHz.trace")
+                path = os.path.join(args.trace, f"{wire}-{label}-{mhz:g}MHz.trace")
                 with open(path, "w") as fh:
                     fh.write("\n".join(counts.trace) + "\n")
                 print(f"    wire events written to {path}")

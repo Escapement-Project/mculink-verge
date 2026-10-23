@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
 # ///
-"""The whole gate: host checks, then both compilers' images through the emulator.
+"""The whole gate: host checks and both compilers' images through the emulator.
 
 `ninja -C <build> check` holds one image to its baselines. This runs that for gcc and clang, each
 in the default configuration and with SWD_CODEGEN and JTAG_CODEGEN off, because an optimisation
@@ -10,21 +10,33 @@ two-pin and four-wire clocks against targets that answer by time, at every perio
 and three longer ones. It runs the host checks and image builds together, then runs image checks
 and timing sweeps together. Each timing sweep simulates its independent clock points in parallel.
 
-Builds go to build-gate/.
+The parallel stages share a CPU budget across host checks, builds, emulator wire checks and timed
+sweeps. Builds go to build-gate/.
+
+CI can run the host checks separately. For firmware, it can select one compiler or one image
+configuration.
 
     uv run tools/gate.py
+    uv run tools/gate.py --part host
+    uv run tools/gate.py --part firmware --toolchain clang
+    uv run tools/gate.py --part all --toolchain gcc
+    uv run tools/gate.py --part firmware --toolchain gcc --codegen on
 """
 
+import argparse
 import concurrent.futures
 import os
 import subprocess
 import sys
 import time
+from host_resources import available_cpus
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 BUILD = os.path.join(ROOT, "build-gate")
+GENERATOR_CHECK = "generators: sanitizers, both compilers, QEMU"
 
 HOST_CHECKS = (
+    ("CPU quota detection for container worker budgets", ["uv", "run", "tools/host_resources_test.py"]),
     ("Thumb-2 encoders against gas", ["uv", "run", "tools/thumb_test.py"]),
     ("memcpy at every length and offset", ["uv", "run", "tools/mem_test.py"]),
     ("CPU0-to-CPU1 DAP handoff simulator: sanitizers, both compilers", ["uv", "run", "tools/dap_usb_slots_test.py"]),
@@ -33,9 +45,10 @@ HOST_CHECKS = (
      ["uv", "run", "tools/swd_latency_test.py"]),
     ("JTAG latency measurement against the generator, both wires: sanitizers, both compilers",
      ["uv", "run", "tools/jtag_latency_test.py"]),
-    ("generators: sanitizers, both compilers, QEMU", ["uv", "run", "tools/gen_host.py"]),
+    (GENERATOR_CHECK, ["uv", "run", "tools/gen_host.py"]),
 )
 IMAGES = [(toolchain, codegen) for toolchain in ("gcc", "clang") for codegen in (False, True)]
+TIMED_WIRES = ("cjtag", "cjtag2", "cjtag5", "cjtag6", "jtag")
 
 
 def name(toolchain: str, codegen: bool) -> str:
@@ -55,18 +68,21 @@ def report(label: str, ok: bool, output: str, seconds: float, failures: list[str
         print("\n".join("     " + line for line in output.rstrip().splitlines()[-25:]), flush=True)
 
 
-def build_image(toolchain: str, codegen: bool) -> tuple[str, bool, str, float, str | None, str, bool]:
+def build_image(
+    toolchain: str, codegen: bool, jobs: int, cycles_jobs: int
+) -> tuple[str, bool, str, float, str | None, str, bool]:
     directory = os.path.join(BUILD, name(toolchain, codegen))
     flag = "ON" if codegen else "OFF"
+    check_jobs = cycles_jobs if codegen else min(2, cycles_jobs)
     started = time.monotonic()
     configure = ["cmake", "-B", directory, "-G", "Ninja", "-DBOARD=mcu_link",
-                 f"-DTOOLCHAIN={toolchain}", f"-DSWD_CODEGEN={flag}", f"-DJTAG_CODEGEN={flag}"]
-    if (toolchain == "clang") and codegen:
+                 f"-DTOOLCHAIN={toolchain}", f"-DSWD_CODEGEN={flag}", f"-DJTAG_CODEGEN={flag}",
+                 f"-DCYCLES_CHECK_JOBS={check_jobs}"]
+    if toolchain == "clang" and not codegen:
         configure.append("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON")
     configure.append(".")
     ok, output, _ = run(configure)
     if ok:
-        jobs = max(1, (os.cpu_count() or 1) // len(IMAGES))
         ok, more, _ = run(["ninja", "-C", directory, "-j", str(jobs)])
         output += more
     return (f"build {name(toolchain, codegen)}", ok, output, time.monotonic() - started,
@@ -74,13 +90,61 @@ def build_image(toolchain: str, codegen: bool) -> tuple[str, bool, str, float, s
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--part", choices=("all", "host", "firmware"), default="all")
+    parser.add_argument("--toolchain", choices=("gcc", "clang"),
+                        help="limit the firmware part to one compiler")
+    parser.add_argument("--codegen", choices=("on", "off"),
+                        help="limit the firmware part to one code-generation configuration")
+    args = parser.parse_args()
+    if args.toolchain and args.part == "host":
+        parser.error("--toolchain cannot be used with --part host")
+    if args.codegen and args.part == "host":
+        parser.error("--codegen cannot be used with --part host")
+
     started = time.monotonic()
     failures: list[str] = []
     built = []
     initial = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(HOST_CHECKS) + len(IMAGES)) as pool:
-        initial.update({pool.submit(run, args): label for label, args in HOST_CHECKS})
-        initial.update({pool.submit(build_image, toolchain, codegen): None for toolchain, codegen in IMAGES})
+    cpu_count = available_cpus()
+    run_host = args.part in ("all", "host")
+    images = [image for image in IMAGES
+              if (not args.toolchain or image[0] == args.toolchain)
+              and (not args.codegen or image[1] == (args.codegen == "on"))]
+    if args.part == "host":
+        images = []
+    elif args.part == "all" and not args.toolchain:
+        images = IMAGES
+    generated_images = sum(codegen for _, codegen in images)
+    generator_jobs = 1
+    if run_host and cpu_count >= 4:
+        generator_jobs = 2
+    if run_host and cpu_count >= 8:
+        generator_jobs = 4
+    host_check_count = len(HOST_CHECKS) if run_host else 0
+    build_jobs = max(1, (cpu_count - min(host_check_count, cpu_count) - (generator_jobs - 1))
+                     // max(1, len(images)))
+    # Wide runners share one clock pool; small runners reuse outer task slots per wire.
+    pool_all_wires = cpu_count >= 16
+    if pool_all_wires and generated_images:
+        cycles_jobs = min(6, max(1, cpu_count // 5))
+    elif generated_images:
+        cycles_jobs = min(6, max(1, cpu_count // max(1, generated_images * len(TIMED_WIRES))))
+    else:
+        cycles_jobs = 1
+    reserved_generator_workers = generator_jobs - 1
+    host_checks = []
+    if run_host:
+        host_checks = [
+            (label, [*check_args, "--jobs", str(generator_jobs)]
+             if label == GENERATOR_CHECK else check_args)
+            for label, check_args in HOST_CHECKS
+        ]
+    initial_workers = min(len(host_checks) + len(images), max(1, cpu_count - reserved_generator_workers))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=initial_workers) as pool:
+        initial.update({pool.submit(run, args): label for label, args in host_checks})
+        initial.update({pool.submit(build_image, toolchain, codegen, build_jobs, cycles_jobs): None
+                        for toolchain, codegen in images})
         for future in concurrent.futures.as_completed(initial):
             label = initial[future]
             result = future.result()
@@ -92,18 +156,44 @@ def main() -> int:
                 ok, output, seconds = result
             report(label, ok, output, seconds, failures)
 
-    tasks = [(f"emulator gate {name(toolchain, codegen)}", ["ninja", "-C", directory, "check"])
-             for toolchain, codegen, directory in built]
-    tasks += [(f"timed {wire} clocks {name(toolchain, codegen)}",
-               ["uv", "run", "tools/jtagcheck.py", os.path.join(directory, "mculink_cjtag_core1.elf"), "--wire", wire])
-              for toolchain, codegen, directory in built if codegen for wire in ("cjtag", "cjtag2", "cjtag5", "cjtag6", "jtag")]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(tasks))) as pool:
-        checks = {pool.submit(run, args): label for label, args in tasks}
-        for future in concurrent.futures.as_completed(checks):
-            report(checks[future], *future.result(), failures)
+    image_checks = [(f"emulator gate {name(toolchain, codegen)}", ["ninja", "-C", directory, "check"])
+                    for toolchain, codegen, directory in built]
+    timed_images = [(toolchain, directory) for toolchain, codegen, directory in built if codegen]
+    timed_checks = []
+    if pool_all_wires and timed_images:
+        timed_checks.append((
+            "timed clocks generated images",
+            ["uv", "run", "tools/jtagcheck.py",
+             *(os.path.join(directory, "mculink_cjtag_core1.elf") for _, directory in timed_images),
+             "--wire", *TIMED_WIRES],
+        ))
+    elif timed_images:
+        timed_checks.extend(
+            (f"timed {wire} clocks {name(toolchain, True)}",
+             ["uv", "run", "tools/jtagcheck.py", os.path.join(directory, "mculink_cjtag_core1.elf"),
+              "--wire", wire])
+            for toolchain, directory in timed_images
+            for wire in TIMED_WIRES
+        )
+    image_jobs = sum(cycles_jobs if codegen else min(2, cycles_jobs) for _, codegen, _ in built)
+    jobs_per_timed_check = max(
+        1,
+        (cpu_count - image_jobs) // max(1, len(timed_checks)),
+    )
+    if pool_all_wires:
+        # At 16 CPUs, balancing the two pools around ten workers shortened the full gate.
+        jobs_per_timed_check = max(10, jobs_per_timed_check)
+    timed_checks = [(label, [*args, "--jobs", str(jobs_per_timed_check)])
+                    for label, args in timed_checks]
+    tasks = image_checks + timed_checks
+    if tasks:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(tasks), cpu_count)) as pool:
+            checks = {pool.submit(run, command): label for label, command in tasks}
+            for future in concurrent.futures.as_completed(checks):
+                report(checks[future], *future.result(), failures)
 
-    for _, _, directory in built:
-        if directory.endswith("clang-default"):
+    for toolchain, codegen, directory in built:
+        if toolchain == "clang" and codegen:
             report("clang-tidy first-party C", *run([sys.executable, "tools/clang_tidy.py", directory]), failures)
 
     if failures:

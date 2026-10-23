@@ -28,6 +28,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import cycles as cy  # noqa: E402
+from host_resources import available_cpus  # noqa: E402
 
 WORD = 0xA5A5_5A5A
 WRITE_WORD = 0x3C3C_C3C3
@@ -92,7 +93,7 @@ def unpack(reply: bytes, lengths: list[int]) -> int:
 def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire: str = "cjtag") -> dict:
     dr = cy.JTAG_DR_OK | (WORD << 3)
     model = cy.Model(engine=True)
-    probe = cy.Machine(elf, cy.Target([]), restart_at=set(), model=model)
+    probe = cy.Machine(elf, cy.Target([]), restart_at=set(), model=model, record_trace=False, record_stats=False)
     if "DAP_Setup" in probe.sym:
         probe.call("DAP_Setup")
     probe.command(bytes([cy.ID_CONNECT, 2]))
@@ -170,12 +171,11 @@ def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire
         gaps = [b - a for a, b in zip(seq, seq[1:])]
         if gaps and min(gaps) < period:
             problems.append(f"{name} {min(gaps)} cycles, period {period}")
-    lows = [r - max(f for f in falls if f < r) for r in rises if any(f < r for f in falls)]
-    highs = [f - max(r for r in rises if r < f) for f in falls if any(r < f for r in rises)]
-    if lows and min(lows) < low:
-        problems.append(f"low phase {min(lows)} cycles, wanted {low}")
-    if highs and min(highs) < high:
-        problems.append(f"high phase {min(highs)} cycles, wanted {high}")
+    min_low, min_high = cy.minimum_clock_phases(rises, falls)
+    if min_low is not None and min_low < low:
+        problems.append(f"low phase {min_low} cycles, wanted {low}")
+    if min_high is not None and min_high < high:
+        problems.append(f"high phase {min_high} cycles, wanted {high}")
 
     per = 3 if two_pin else 1
     frames = sorted(b - a for a, b in zip(scan_rises, scan_rises[per:]))
@@ -194,13 +194,14 @@ def run_point(args: tuple[str, int, int, int, int, str]) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("elf", nargs="?", default="build-gen/mculink_cjtag_core1.elf", help="CPU 1's image")
-    ap.add_argument("--wire", choices=["cjtag", "cjtag2", "cjtag5", "cjtag6", "jtag"], default="cjtag")
+    ap.add_argument("elf", nargs="*", default=["build-gen/mculink_cjtag_core1.elf"], help="CPU 1 image(s)")
+    ap.add_argument("--wire", nargs="+", choices=["cjtag", "cjtag2", "cjtag5", "cjtag6", "jtag"],
+                    default=["cjtag"])
     ap.add_argument("--mhz", type=float, nargs="*")
     ap.add_argument("--latency", type=int, default=8, help="cycles from the TDO packet's fall to valid TDO")
     ap.add_argument("--gen-latency", type=int, default=0, help="the latency to generate for, with vendor 0x8A; 0 leaves the image's")
     ap.add_argument("--cpu", type=int, default=150)
-    ap.add_argument("--jobs", type=int, default=min(4, os.cpu_count() or 1),
+    ap.add_argument("--jobs", type=int, default=min(4, available_cpus()),
                     help="independent clock simulations to run at once")
     args = ap.parse_args()
     if args.jobs < 1:
@@ -208,7 +209,12 @@ def main() -> int:
     cpu_hz = args.cpu * 1_000_000
     mhz = args.mhz or [-(-cpu_hz // p) / 1e6 for p in list(range(3, 41)) + [75, 150, 1500]]
 
-    points = [(args.elf, int(m * 1e6 + 0.5), args.latency, cpu_hz, args.gen_latency, args.wire) for m in mhz]
+    points = [
+        (elf, int(m * 1e6 + 0.5), args.latency, cpu_hz, args.gen_latency, wire)
+        for elf in args.elf
+        for wire in args.wire
+        for m in mhz
+    ]
     if args.jobs == 1 or len(points) == 1:
         results = list(map(run_point, points))
     else:
@@ -216,13 +222,14 @@ def main() -> int:
             results = list(pool.map(run_point, points))
 
     failures = 0
-    print(f"{'MHz':>8} {'P':>5} {'frame':>6} {'margin':>7}  problems")
-    for m, r in zip(mhz, results):
-        hz = int(m * 1e6 + 0.5)
+    print(f"{'image':>16} {'wire':>7} {'MHz':>8} {'P':>5} {'frame':>6} {'margin':>7}  problems")
+    for point, r in zip(points, results):
+        elf, hz, _, _, _, wire = point
         failures += bool(r["problems"])
         margin = "-" if r["margin"] is None else str(r["margin"])
-        print(f"{hz / 1e6:8.3f} {r['period']:5d} {r['frame']:6d} {margin:>7}  " + ("; ".join(r["problems"]) or "ok"))
-    print(f"\n{len(mhz) - failures}/{len(mhz)} clocks clean")
+        print(f"{os.path.basename(os.path.dirname(elf)):>16} {wire:>7} {hz / 1e6:8.3f} {r['period']:5d} "
+              f"{r['frame']:6d} {margin:>7}  " + ("; ".join(r["problems"]) or "ok"))
+    print(f"\n{len(points) - failures}/{len(points)} clock points clean")
     return 1 if failures else 0
 
 

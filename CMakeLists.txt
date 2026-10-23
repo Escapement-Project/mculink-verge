@@ -482,6 +482,43 @@ endforeach()
 # own Python and the emulator, so it is a target rather than part of the build.
 find_program(UV_EXECUTABLE uv)
 if(UV_EXECUTABLE)
+  set(CYCLES_CHECK_DEFAULT_JOBS 1)
+  set(CYCLES_AVAILABLE_CPUS "")
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    execute_process(
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/host_resources.py"
+      OUTPUT_VARIABLE CYCLES_AVAILABLE_CPUS
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      RESULT_VARIABLE CPU_COUNT_RESULT
+    )
+    if(NOT CPU_COUNT_RESULT EQUAL 0 OR NOT CYCLES_AVAILABLE_CPUS MATCHES "^[0-9]+$")
+      set(CYCLES_AVAILABLE_CPUS "")
+    endif()
+  endif()
+  if(NOT CYCLES_AVAILABLE_CPUS)
+    find_program(NPROC_EXECUTABLE nproc)
+    if(NPROC_EXECUTABLE)
+      execute_process(
+        COMMAND ${NPROC_EXECUTABLE}
+        OUTPUT_VARIABLE CYCLES_AVAILABLE_CPUS
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE NPROC_RESULT
+      )
+      if(NOT NPROC_RESULT EQUAL 0 OR NOT CYCLES_AVAILABLE_CPUS MATCHES "^[0-9]+$")
+        set(CYCLES_AVAILABLE_CPUS "")
+      endif()
+    endif()
+  endif()
+  if(CYCLES_AVAILABLE_CPUS GREATER 1)
+    if(CYCLES_AVAILABLE_CPUS GREATER 4)
+      set(CYCLES_CHECK_DEFAULT_JOBS 4)
+    else()
+      set(CYCLES_CHECK_DEFAULT_JOBS ${CYCLES_AVAILABLE_CPUS})
+    endif()
+  endif()
+  set(CYCLES_CHECK_JOBS ${CYCLES_CHECK_DEFAULT_JOBS} CACHE STRING
+      "Independent wire checks to run in parallel")
   set(IMAGE_CHECK_ARGS --packet-count ${DAP_PACKET_COUNT} --core-clock-mhz ${CORE_CLOCK_MHZ})
   if(CODE_LAB)
     list(APPEND IMAGE_CHECK_ARGS --code-lab)
@@ -489,6 +526,7 @@ if(UV_EXECUTABLE)
   add_custom_target(check_wire
     COMMAND ${UV_EXECUTABLE} run ${CMAKE_CURRENT_SOURCE_DIR}/tools/cycles.py
             --check $<TARGET_FILE:${CORE1}>
+            --jobs ${CYCLES_CHECK_JOBS}
             --cpu ${CORE_CLOCK_MHZ}
             --config ${CMAKE_CURRENT_SOURCE_DIR}/src/DAP_config.h
     DEPENDS ${CORE1}

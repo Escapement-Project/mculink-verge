@@ -9,6 +9,8 @@ import re
 import shlex
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from host_resources import available_cpus
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 SOURCE_DIR = os.path.join(ROOT, "src")
@@ -56,8 +58,24 @@ def main() -> int:
         print(f"clang and clang-tidy versions differ: {clang_version}, {tidy_version}", file=sys.stderr)
         return 2
 
-    result = subprocess.run(["clang-tidy", "-p", build_dir, *sources], cwd=ROOT, check=False)
-    return result.returncode
+    jobs = min(8, available_cpus(), len(sources))
+
+    def check_source(source: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["clang-tidy", "--quiet", "-p", build_dir, source],
+            cwd=ROOT,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        results = list(pool.map(check_source, sources))
+    for result in results:
+        if result.stdout:
+            print(result.stdout, end="")
+    return int(any(result.returncode for result in results))
 
 
 if __name__ == "__main__":

@@ -18,6 +18,8 @@ headers, which the generator's quoted includes would otherwise resolve to src/.
     uv run tools/gen_host.py
 """
 
+import argparse
+import concurrent.futures
 import os
 import shutil
 import subprocess
@@ -77,6 +79,10 @@ def qemu(cc: str, work: str) -> str:
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--jobs", type=int, choices=(1, 2, 4), default=1,
+                    help="independent compiler variants to run at once")
+    args = ap.parse_args()
     for tool in ("gcc", "clang", "arm-none-eabi-gcc", "qemu-system-arm"):
         if shutil.which(tool) is None:
             raise SystemExit(f"{tool} is not installed")
@@ -86,10 +92,23 @@ def main() -> int:
         for name in os.listdir(HARNESS):
             shutil.copy(os.path.join(HARNESS, name), work)
         results = {}
-        for label, fn, cc in (("host gcc, ASan+UBSan", host, "gcc"), ("host clang, ASan+UBSan", host, "clang"),
-                              ("Cortex-M33 gcc, QEMU", qemu, "gcc"), ("Cortex-M33 clang, QEMU", qemu, "clang")):
-            results[label] = fn(cc, work)
-            print(f"  {label}: {len(results[label].splitlines())} configurations")
+        checks = (
+            ("host gcc, ASan+UBSan", host, "gcc"),
+            ("host clang, ASan+UBSan", host, "clang"),
+            ("Cortex-M33 gcc, QEMU", qemu, "gcc"),
+            ("Cortex-M33 clang, QEMU", qemu, "clang"),
+        )
+        if args.jobs == 1:
+            for label, fn, cc in checks:
+                results[label] = fn(cc, work)
+                print(f"  {label}: {len(results[label].splitlines())} configurations")
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
+                futures = {pool.submit(fn, cc, work): label for label, fn, cc in checks}
+                for future in concurrent.futures.as_completed(futures):
+                    label = futures[future]
+                    results[label] = future.result()
+                    print(f"  {label}: {len(results[label].splitlines())} configurations")
     reference = results["host gcc, ASan+UBSan"]
     lines = len(reference.splitlines())
     if lines == 0:

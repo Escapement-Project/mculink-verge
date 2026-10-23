@@ -44,6 +44,7 @@ from cycles import (  # noqa: E402
     u16,
     u32,
 )
+from host_resources import available_cpus  # noqa: E402
 
 AP_DRW_READ, AP_DRW_WRITE = 0x0F, 0x0D
 # Off, so that a generated image's JTAG wire is ARM's exactly even when the target answers WAIT.
@@ -397,7 +398,7 @@ def main() -> int:
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--ignore-samples", action="store_true", help="compare without the SWDIO loads")
     ap.add_argument("--clock", type=float, default=10.0, help="SWD clock in MHz for the SWD cases")
-    ap.add_argument("--jobs", type=int, default=os.cpu_count(), help="processes to run the cases in")
+    ap.add_argument("--jobs", type=int, default=available_cpus(), help="processes to run the cases in")
     args = ap.parse_args()
     set_globals(args.ignore_samples, int(args.clock * 1e6))
 
