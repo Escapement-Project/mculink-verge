@@ -21,6 +21,7 @@ typedef struct {
 static const strap_t hw_ver_2 = {1U, 30U};
 static const strap_t hw_ver_3 = {1U, 4U};
 static const strap_t hw_ver_4 = {1U, 5U};
+static const strap_t hw_ver_5 = {1U, 6U};
 static const strap_t hw_ver_6 = {0U, 18U};
 static const strap_t hw_ver_7 = {0U, 27U};
 
@@ -40,7 +41,7 @@ __attribute__((noinline)) void board_read_straps(void) {
     CLOCK_EnableClock(kCLOCK_Iocon);
     CLOCK_EnableClock(kCLOCK_Gpio0);
     CLOCK_EnableClock(kCLOCK_Gpio1);
-    static const strap_t straps[] = {hw_ver_2, hw_ver_3, hw_ver_4, hw_ver_6, hw_ver_7};
+    static const strap_t straps[] = {hw_ver_2, hw_ver_3, hw_ver_4, hw_ver_5, hw_ver_6, hw_ver_7};
     for (size_t i = 0U; i < sizeof(straps) / sizeof(straps[0]); i++) {
         strap_input(straps[i]);
     }
@@ -63,6 +64,7 @@ __attribute__((noinline)) void board_read_straps(void) {
     }
     dap_shared.board = board;
     dap_shared.jumpers = jumpers;
+    dap_shared.energy_available = (board == BOARD_KIND_PRO) && strap_low(hw_ver_5);
 }
 
 /** The boards this image runs on, numbered as BOARD_KIND_*, for verge: it reads this from the file

@@ -32,6 +32,7 @@
 #endif
 #include "target_sense.h"
 #include "target_power.h"
+#include "energy_monitor.h"
 
 /// Identifies this firmware and says what it can do. Read-only, so a host may send it blindly.
 #define ID_VENDOR_CJTAG_INFO ID_DAP_Vendor2
@@ -61,18 +62,21 @@
 #define ID_VENDOR_DIO ID_DAP_Vendor14
 /// Switches and reads the Pro's target supply (target_power.h).
 #define ID_VENDOR_TARGET_POWER ID_DAP_Vendor15
+/// Starts and stops voltage/current capture on the Pro.
+#define ID_VENDOR_ENERGY ID_DAP_Vendor16
 
 /** Answered by ID_VENDOR_CJTAG_INFO, so a host can recognise this firmware rather than assume it.
  *
  * The reply, after the echoed command id:
  *
  *     [0..4]  "CJTAG"                 magic
- *     [5]     format version          this layout is 5
+ *     [5]     format version          this layout is 6
  *     [6]     capability flags        CJTAG_CAP_*
  *     [7]     build string length n
  *     [8..]   build string, n bytes, not terminated
  *     [8+n]   board                   BOARD_KIND_* (board_pins.h); format 3 on
  *     [9+n]   scan formats, u32 LE    bit n: SCNFMT n offered (cJTAG_Offered); format 4 on
+ *     [13+n]  extended capabilities   u32 LE; bit 0: energy capture, format 6 on
  *
  * A host checks the magic to know it is us, the flags to know what it may use, and the build
  * string to know which image it is talking to. The capability flags are what makes this worth
@@ -88,10 +92,10 @@
  * Version 1 had no flags and no build string, and existed only in images that were never flashed.
  */
 #define CJTAG_INFO_MAGIC "CJTAG"
-#define CJTAG_INFO_VERSION 5U
-/// The id, the magic, the version, the flags, the length, the board and the scan formats, around
-/// the build string. A v1 HID report holds 64 bytes, and a longer reply loses its last fields.
-#define CJTAG_INFO_FIXED 14U
+#define CJTAG_INFO_VERSION 6U
+/// The id, the magic, the version, the flags, the length, the board, scan formats and extended
+/// capabilities, around the build string. A v1 HID report holds 64 bytes.
+#define CJTAG_INFO_FIXED 18U
 static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID_REPORT_SIZE,
                "the build string pushes vendor 0x82's last fields out of a HID report");
 
@@ -114,6 +118,8 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
 #define CJTAG_CAP_DIO (1U << 6)
 /// ID_VENDOR_TARGET_POWER is available on an MCU-Link Pro.
 #define CJTAG_CAP_TARGET_POWER (1U << 7)
+/// Extended capability format 6: vendor command 0x90 controls energy capture.
+#define CJTAG_EXT_CAP_ENERGY (1U << 0)
 #ifdef SWD_CODEGEN
 #define CJTAG_CAPS_SWD CJTAG_CAP_SWD_CODEGEN
 #else
@@ -297,6 +303,10 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         for (uint32_t i = 0U; i < 4U; i++) {
             *out++ = (uint8_t)(formats >> (8U * i));
         }
+        uint32_t const extended = dap_shared.energy_available ? CJTAG_EXT_CAP_ENERGY : 0U;
+        for (uint32_t i = 0U; i < 4U; i++) {
+            *out++ = (uint8_t)(extended >> (8U * i));
+        }
         return (1U << 16) | (uint32_t)(out - response);
     }
 
@@ -429,8 +439,51 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         return (2U << 16) | 3U;
     }
 
+    case ID_VENDOR_ENERGY: {
+        uint8_t const mode = request[1];
+        response[1] = DAP_OK;
+        if (mode == 0U) {
+            uint32_t const rate = (uint32_t)request[2] | ((uint32_t)request[3] << 8U) |
+                                  ((uint32_t)request[4] << 16U) | ((uint32_t)request[5] << 24U);
+            energy_monitor_status_t const status = energy_monitor_start(rate);
+            uint32_t const actual_rate = energy_monitor_rate();
+            response[2] = (uint8_t)status;
+            response[3] = (uint8_t)actual_rate;
+            response[4] = (uint8_t)(actual_rate >> 8U);
+            response[5] = (uint8_t)(actual_rate >> 16U);
+            response[6] = (uint8_t)(actual_rate >> 24U);
+            return (6U << 16) | 7U;
+        }
+        if (mode == 1U) {
+            energy_monitor_sample_t sample = {0};
+            energy_monitor_status_t const status = energy_monitor_latest(&sample);
+            response[2] = (uint8_t)status;
+            response[3] = (uint8_t)sample.voltage_code;
+            response[4] = (uint8_t)(sample.voltage_code >> 8U);
+            response[5] = (uint8_t)sample.current_code;
+            response[6] = (uint8_t)(sample.current_code >> 8U);
+            response[7] = (uint8_t)sample.sequence;
+            response[8] = (uint8_t)(sample.sequence >> 8U);
+            response[9] = (uint8_t)(sample.sequence >> 16U);
+            response[10] = (uint8_t)(sample.sequence >> 24U);
+            return (2U << 16) | 11U;
+        }
+        if (mode == 2U) {
+            energy_monitor_status_t const status = dap_shared.energy_available ? ENERGY_MONITOR_OK
+                                                                               : ENERGY_MONITOR_UNAVAILABLE;
+            if (status == ENERGY_MONITOR_OK) {
+                energy_monitor_stop();
+            }
+            response[2] = (uint8_t)status;
+            return (2U << 16) | 3U;
+        }
+        response[1] = DAP_ERROR;
+        return (2U << 16) | 2U;
+    }
+
     case ID_VENDOR_SAMPLE:
         return sample_probe_command(request, response);
+
 
 #ifdef CODE_LAB
     case ID_VENDOR_LAB:

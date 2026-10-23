@@ -19,6 +19,7 @@
 #include "dap_core.h"
 #include "dap_core_security.h"
 #include "dap_shared.h"
+#include "energy_monitor.h"
 #include "dap_usb_slots.h"
 #include "led.h"
 #include "reboot.h"
@@ -271,20 +272,23 @@ __attribute__((section(".ramfunc"))) static void idle(void) {
 /** The startup file's vector table names it, weakly; this is the strong definition. */
 void DMA0_IRQHandler(void);
 
-/** DMA0 has finished one of SWO capture's ring segments, or a console's. Counting SWO's is all of
- *  SWO that runs on CPU 0; src/swo.c on CPU 1 turns the count into a position. Completions are
- *  cleared before the counts move, so a reader can find a ring one segment short but never long. */
+/** DMA0 has finished a VCOM transfer or one segment of SWO or energy capture. CPU 0 counts both
+ *  rings; each CPU 1 reader turns the segment count into a position. Completions are cleared before
+ *  the counts move, so a reader can find a ring one segment short but never long. */
 __attribute__((section(".ramfunc"))) void DMA0_IRQHandler(void) {
     // An error raises this interrupt too, and until it is cleared the interrupt comes straight
     // back, ahead of everything else on this core. SWO's is CPU 1's to report, so hand it over.
-    uint32_t const failed = DMA0->COMMON[0].ERRINT & (SWO_DMA_MASK | VCOM_DMA_MASK);
+    uint32_t const failed = DMA0->COMMON[0].ERRINT & (SWO_DMA_MASK | VCOM_DMA_MASK | ENERGY_DMA_MASK);
     if (failed != 0U) {
         DMA0->COMMON[0].ERRINT = failed;
         if ((failed & SWO_DMA_MASK) != 0U) {
             dap_shared.swo_dma_error = 1U;
         }
+        if ((failed & ENERGY_DMA_MASK) != 0U) {
+            dap_shared.energy_dma_error = 1U;
+        }
     }
-    uint32_t const done = DMA0->COMMON[0].INTA & (SWO_DMA_MASK | VCOM_DMA_MASK);
+    uint32_t const done = DMA0->COMMON[0].INTA & (SWO_DMA_MASK | VCOM_DMA_MASK | ENERGY_DMA_MASK);
     if (done == 0U) {
         return;
     }
@@ -293,12 +297,15 @@ __attribute__((section(".ramfunc"))) void DMA0_IRQHandler(void) {
     if ((done & SWO_DMA_MASK) != 0U) {
         dap_shared.swo_segments++;
     }
+    if ((done & ENERGY_DMA_MASK) != 0U) {
+        dap_shared.energy_segments++;
+    }
     vcom_dma_done(done);
 }
 
-/** DMA0 is CPU 0's: the consoles use channels 4 to 7, and CPU 1's SWO capture channel 8 alone, so
- *  only CPU 0 resets the controller or points it at its table. Its table is in USB SRAM, so after
- *  dap_core_security_init: a fetch while that changes the rules there can be refused. */
+/** DMA0 is CPU 0's: the consoles use channels 4 to 7, and CPU 1 uses channels 8 and 21 for SWO and
+ *  energy capture. Only CPU 0 resets the controller or points it at its table. Its table is in USB
+ *  SRAM, so set its security rules before DMA fetches a descriptor. */
 __attribute__((noinline)) void dma0_init(void);
 __attribute__((noinline)) void dma0_init(void) {
     CLOCK_EnableClock(kCLOCK_Dma0);

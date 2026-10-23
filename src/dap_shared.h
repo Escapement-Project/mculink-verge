@@ -31,10 +31,10 @@
 
 #define DAP_SHARED_ALIGN __attribute__((aligned(DAP_USB_BUFFER_ALIGN)))
 
-/** DMA0's descriptor table, which SRAMBASE points at: an entry per channel to the highest one in
- *  use, SWO's channel 8. CPU 0 sets the controller up and writes the consoles' entries (channels 4
- *  to 7, src/vcom.c); CPU 1 writes SWO's. A table starts on 512 bytes. */
-#define DAP_SHARED_DMA_CHANNELS (SWO_DMA_CHANNEL + 1U)
+/** DMA0's descriptor table, which SRAMBASE points at: an entry per channel through ADC0 FIFO0's
+ *  channel 21. CPU 0 writes channels 4 to 7 for VCOM, and CPU 1 writes channels 8 and 21 for SWO
+ *  and energy capture. A table starts on 512 bytes. */
+#define DAP_SHARED_DMA_CHANNELS 22U
 #define DAP_SHARED_DMA_TABLE_ALIGN __attribute__((aligned(512)))
 /** Descriptors start on 16 bytes. */
 #define DAP_SHARED_DMA_DESCRIPTOR_ALIGN __attribute__((aligned(16)))
@@ -137,11 +137,16 @@ typedef struct {
     /** BOARD_KIND_* and BOARD_JUMPER_* (board_straps.h), written by CPU 0 before CPU 1 starts. */
     volatile uint8_t board;
     volatile uint8_t jumpers;
+    /** HW_VER_5 enables Pro power measurement, written with the board straps. */
+    volatile uint8_t energy_available;
 
     /** SWO ring segments DMA0 has completed, counted by CPU 0's DMA interrupt for src/swo.c. */
     volatile uint32_t swo_segments;
     /** Set by CPU 0's DMA interrupt when SWO's channel failed, which it clears; taken by CPU 1. */
     volatile uint8_t swo_dma_error;
+    /** Energy ring segments completed and its DMA error, maintained by CPU 0 for CPU 1. */
+    volatile uint32_t energy_segments;
+    volatile uint8_t energy_dma_error;
 
     volatile dap_core1_status_t core1;
 

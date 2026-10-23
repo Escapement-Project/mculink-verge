@@ -619,12 +619,14 @@ def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
     build = reply[9 : 9 + length].decode("ascii", "replace")
     if magic != b"CJTAG":
         c.problems.append(f"vendor 0x82 magic is {magic!r}, wanted b'CJTAG'")
-    if version != 5:
-        c.problems.append(f"vendor 0x82 format version is {version}, wanted 5")
+    if version != 6:
+        c.problems.append(f"vendor 0x82 format version is {version}, wanted 6")
     # The plain board, then the scan formats it frames: OScan1, 2, 5 and 6 (SCNFMT 9, 10, 13, 14).
     formats = ((1 << 9) | (1 << 10) | (1 << 13) | (1 << 14)).to_bytes(4, "little")
-    if reply[9 + length : 14 + length] != bytes([0]) + formats:
-        c.problems.append(f"vendor 0x82 ends {reply[9 + length :].hex()!r}, wanted the plain board's 00 {formats.hex()}")
+    if reply[9 + length : 18 + length] != bytes([0]) + formats + bytes(4):
+        c.problems.append(
+            f"vendor 0x82 ends {reply[9 + length :].hex()!r}, wanted the plain board's 00 {formats.hex()} 00000000"
+        )
     if not flags & 0x01:
         c.problems.append(f"vendor 0x82 flags {flags:#04x} do not claim OScan1, which is the point")
     if flags & 0x02:

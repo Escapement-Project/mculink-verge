@@ -7,6 +7,7 @@
 #include "fsl_power.h"
 
 #include "core_clock.h"
+#include "energy_monitor.h"
 
 /** DBGIF_VREF: half of the buffered J6 pin 1, through R22/R23. */
 #define SENSE_VREF_PORT 0U
@@ -29,6 +30,7 @@
 
 #define SENSE_COMMAND_ID 1U
 #define SENSE_TRIGGER 0U
+#define ENERGY_TRIGGER 7U
 
 static bool adc_ready;
 
@@ -80,15 +82,45 @@ static target_sense_status_t adc_init(void) {
     return TARGET_SENSE_OK;
 }
 
+target_sense_status_t target_sense_adc_init(void) {
+    if (adc_ready) {
+        return TARGET_SENSE_OK;
+    }
+    target_sense_status_t const status = adc_init();
+    adc_ready = status == TARGET_SENSE_OK;
+    return status;
+}
+
+void target_sense_configure_monitor(void) {
+    lpadc_conv_command_config_t command;
+    LPADC_GetDefaultConvCommandConfig(&command);
+    command.channelNumber = 0U;
+    command.conversionResolutionMode = kLPADC_ConversionResolutionHigh;
+    command.hardwareAverageMode = kLPADC_HardwareAverageCount1;
+    command.sampleTimeMode = kLPADC_SampleTimeADCK3;
+    command.chainedNextCommandNumber = 2U;
+    LPADC_SetConvCommandConfig(ADC0, 1U, &command);
+
+    command.channelNumber = 8U;
+    command.chainedNextCommandNumber = 0U;
+    LPADC_SetConvCommandConfig(ADC0, 2U, &command);
+
+    lpadc_conv_trigger_config_t trigger;
+    LPADC_GetDefaultConvTriggerConfig(&trigger);
+    trigger.targetCommandId = 1U;
+    trigger.enableHardwareTrigger = true;
+    LPADC_SetConvTriggerConfig(ADC0, ENERGY_TRIGGER, &trigger);
+}
+
 target_sense_status_t target_sense_convert(uint8_t channel, bool side_b, uint16_t* code) {
-    if (!adc_ready) {
-        target_sense_status_t const status = adc_init();
-        if (status != TARGET_SENSE_OK) {
-            return status;
-        }
-        adc_ready = true;
+    energy_monitor_pause();
+    target_sense_status_t status = target_sense_adc_init();
+    if (status != TARGET_SENSE_OK) {
+        energy_monitor_resume();
+        return status;
     }
 
+    LPADC_DoResetFIFO0(ADC0);
     lpadc_conv_command_config_t command;
     LPADC_GetDefaultConvCommandConfig(&command);
     command.channelNumber = channel;
@@ -98,14 +130,23 @@ target_sense_status_t target_sense_convert(uint8_t channel, bool side_b, uint16_
     command.sampleTimeMode = kLPADC_SampleTimeADCK35;
     LPADC_SetConvCommandConfig(ADC0, SENSE_COMMAND_ID, &command);
 
+    lpadc_conv_trigger_config_t trigger;
+    LPADC_GetDefaultConvTriggerConfig(&trigger);
+    trigger.targetCommandId = SENSE_COMMAND_ID;
+    trigger.enableHardwareTrigger = false;
+    LPADC_SetConvTriggerConfig(ADC0, SENSE_TRIGGER, &trigger);
+
     LPADC_DoSoftwareTrigger(ADC0, 1UL << SENSE_TRIGGER);
     lpadc_conv_result_t result;
     for (uint32_t i = 0U; i < SENSE_RESULT_POLLS; i++) {
         if (LPADC_GetConvResult(ADC0, &result, 0U)) {
             *code = result.convValue;
-            return TARGET_SENSE_OK;
+            status = TARGET_SENSE_OK;
+            energy_monitor_resume();
+            return status;
         }
     }
+    energy_monitor_resume();
     return TARGET_SENSE_NO_RESULT;
 }
 

@@ -34,6 +34,10 @@ typedef enum {
  *  converter that failed to come up is brought up again on the next call. */
 target_sense_status_t target_sense_convert(uint8_t channel, bool side_b, uint16_t* code);
 
+/** Initialize ADC0, then configure chained voltage/current conversions for the monitor. */
+target_sense_status_t target_sense_adc_init(void);
+void target_sense_configure_monitor(void);
+
 /** True while something grounds J6 pin 9, which a standard target header does. */
 bool target_sense_detected(void);
 

@@ -20,12 +20,16 @@ Send `[0x82]`. The reply contains:
 | 8 through `7+n` | `n` bytes of build string, without a terminator | 1 |
 | `8+n` | Board kind: 0 full MCU-Link, 1 MCU-Link Pro, 2 on-board MCU-Link | 3 |
 | `9+n` through `12+n` | Offered cJTAG formats as a u32 bit mask, bit `k` for SCNFMT `k` | 4 |
+| `13+n` through `16+n` | Extended capabilities as a u32 bit mask | 6 |
 
 The current capability flag bits are: bit 0 OScan1 support; bit 1 cJTAG framing active; bit 2
 target-sense command support; bit 3 generated SWD paths; bit 4 host-driven OScan1 entry; bit 5
 generated JTAG paths; bit 6 Pro DIO available; bit 7 Pro target-supply control (added in format 5).
 Bits 0 and 4 are clear on the unsupported on-board variant. Bit 6 is clear if the Pro's J15 jumper
 disabled USB-SIO when the probe started.
+
+Format 6 extended-capability bit 0 advertises energy capture on Pro units with HW_VER_5 fitted.
+Other extended bits are reserved.
 
 Fields are appended in later formats. Use the format version before reading fields added by a
 later format. Ignore fields you do not understand. The format 4 and later cJTAG mask reports what
@@ -80,6 +84,36 @@ target. The regulator is rated for up to 400 mA. Read the voltage at J6 pin 1 an
 state separately with `0x86`; the `0x8F` reply confirms the control state, not the voltage at the
 target. After enabling the supply, allow the regulator and target rail to settle before accessing
 the target.
+
+## Pro energy capture: `0x90`
+
+Energy capture is available when `0x82` format 6 sets extended-capability bit 0. It is off at
+startup. The host polls snapshots; the firmware does not stream samples.
+
+| Request | Action |
+| --- | --- |
+| `[0x90, 0, rate:u32LE]` | Start capture at the requested complete voltage/current pairs per second. |
+| `[0x90, 1]` | Read the newest complete voltage/current pair. |
+| `[0x90, 2]` | Stop capture. Repeated stop requests are safe. |
+
+Every recognized request returns `DAP_OK` followed by a result byte. Start replies with the
+effective rate as a u32 after the result. Latest replies with voltage code (u16), current code
+(u16), and sample sequence (u32) after the result. If the result is not `OK`, the codes and
+sequence are zero. Stop replies with only the result.
+
+| Result | Meaning |
+| --- | --- |
+| 0 | OK |
+| 1 | Capture is stopped |
+| 2 | No complete sample yet |
+| 3 | Energy capture is unavailable on this board |
+| 4 | Requested rate is zero or above 100,000 pairs/s |
+| 5 | Invalid argument |
+| 6 | ADC calibration failed |
+| 7 | DMA failed |
+
+Voltage and current are raw ADC codes. Calibration, current-range switching and conversion to
+physical units are not implemented yet. A host must not present these codes as volts or amperes.
 
 ## Other commands
 
