@@ -21,6 +21,7 @@
 #include "led.h"
 #include "marker.h"
 #include "reboot.h"
+#include "target_power.h"
 #include "target_sense.h"
 
 static_assert(DAP_PACKET_SIZE == DAP_SHARED_PACKET_SIZE, "dap_shared.h repeats DAP_PACKET_SIZE");
@@ -208,6 +209,7 @@ __attribute__((noinline, section(".data_core1_wait"))) static void wait_for_mail
 [[noreturn]] void core1_main(void) {
     board_timestamp_init();
     DAP_Setup();
+    target_power_init();
     target_sense_init();
     dio_init();
     dap_shared.transfer_abort = &DAP_TransferAbort;

@@ -31,6 +31,7 @@
 #include "jtag_sweep.h"
 #endif
 #include "target_sense.h"
+#include "target_power.h"
 
 /// Identifies this firmware and says what it can do. Read-only, so a host may send it blindly.
 #define ID_VENDOR_CJTAG_INFO ID_DAP_Vendor2
@@ -58,13 +59,15 @@
 #define ID_VENDOR_JTAG_LOG ID_DAP_Vendor13
 /// Drives and reads the Pro's DIO pins on J19 (dio.h). See below.
 #define ID_VENDOR_DIO ID_DAP_Vendor14
+/// Switches and reads the Pro's target supply (target_power.h).
+#define ID_VENDOR_TARGET_POWER ID_DAP_Vendor15
 
 /** Answered by ID_VENDOR_CJTAG_INFO, so a host can recognise this firmware rather than assume it.
  *
  * The reply, after the echoed command id:
  *
  *     [0..4]  "CJTAG"                 magic
- *     [5]     format version          this layout is 4
+ *     [5]     format version          this layout is 5
  *     [6]     capability flags        CJTAG_CAP_*
  *     [7]     build string length n
  *     [8..]   build string, n bytes, not terminated
@@ -76,15 +79,16 @@
  * having over a version number alone: a feature can arrive without every host learning a new
  * version, and a host can refuse to use something an older image does not have.
  *
- * Fields are only ever appended. probe-rs reads every format as format 2 and ignores what follows
- * the build string, so a field that moved would be misread without a word. A host reads a field
- * only at the format that added it: a v1 HID reply is padded, so a format 2 image has a byte after
- * the build string too.
+ * Reply fields are only ever appended. Capability bits use the existing flags byte and are added
+ * in the format that first reports them. probe-rs reads every format as format 2 and ignores what
+ * follows the build string, so a field that moved would be misread without a word. A host reads a
+ * field only at the format that added it: a v1 HID reply is padded, so a format 2 image has a byte
+ * after the build string too.
  *
  * Version 1 had no flags and no build string, and existed only in images that were never flashed.
  */
 #define CJTAG_INFO_MAGIC "CJTAG"
-#define CJTAG_INFO_VERSION 4U
+#define CJTAG_INFO_VERSION 5U
 /// The id, the magic, the version, the flags, the length, the board and the scan formats, around
 /// the build string. A v1 HID report holds 64 bytes, and a longer reply loses its last fields.
 #define CJTAG_INFO_FIXED 14U
@@ -108,6 +112,8 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
 /// ID_VENDOR_DIO acts: a Pro whose J15 (USB-SIO off) was not fitted when the probe started. The
 /// jumpers are read once at boot, so this describes the running image.
 #define CJTAG_CAP_DIO (1U << 6)
+/// ID_VENDOR_TARGET_POWER is available on an MCU-Link Pro.
+#define CJTAG_CAP_TARGET_POWER (1U << 7)
 #ifdef SWD_CODEGEN
 #define CJTAG_CAPS_SWD CJTAG_CAP_SWD_CODEGEN
 #else
@@ -242,6 +248,11 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
 #define TARGET_SUPPLY_CHANNEL 3U
 #define TARGET_SUPPLY_SIDE_B false
 
+/** ID_VENDOR_TARGET_POWER takes one mode byte: 0 off, 1 on, 2 read. It answers `status, enabled`.
+ *  Status is DAP_ERROR unless target supply control is available and the mode is known. The state
+ *  is the output latch's last value since startup; it does not confirm voltage at the target.
+ */
+
 /** Full scale, the probe's own 3V3, and R22/R23 halving pin 1 on its way to the ADC. */
 #define TARGET_FULL_SCALE_MV 3300U
 #define TARGET_DIVIDER 2U
@@ -274,7 +285,8 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         *out++ = (uint8_t)CJTAG_INFO_VERSION;
         const uint32_t two_pin = (board_kind != BOARD_KIND_ON_BOARD) ? (CJTAG_CAP_OSCAN1 | CJTAG_CAP_OSCAN1_ENTER) : 0U;
         *out++ = (uint8_t)(two_pin | CJTAG_CAP_TARGET_SENSE | CJTAG_CAPS_BUILT |
-                           (cJTAG_Active() ? CJTAG_CAP_OSCAN1_ACTIVE : 0U) | (dio_available() ? CJTAG_CAP_DIO : 0U));
+                           (cJTAG_Active() ? CJTAG_CAP_OSCAN1_ACTIVE : 0U) | (dio_available() ? CJTAG_CAP_DIO : 0U) |
+                           (target_power_available() ? CJTAG_CAP_TARGET_POWER : 0U));
         // The same string DAP_Info's product firmware version reports, so a host that knows
         // nothing about this command can still tell two builds apart.
         *out++ = (uint8_t)(sizeof(FIRMWARE_VERSION) - 1U);
@@ -400,6 +412,21 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         response[5] = (uint8_t)(mv >> 8);
         response[6] = target_sense_detected() ? 1U : 0U;
         return (3U << 16) | 7U;
+    }
+
+    case ID_VENDOR_TARGET_POWER: {
+        const uint8_t mode = request[1];
+        bool ok = target_power_available();
+        if (ok && mode == TARGET_POWER_MODE_OFF) {
+            ok = target_power_set(false);
+        } else if (ok && mode == TARGET_POWER_MODE_ON) {
+            ok = target_power_set(true);
+        } else if (mode != TARGET_POWER_MODE_READ) {
+            ok = false;
+        }
+        response[1] = ok ? DAP_OK : DAP_ERROR;
+        response[2] = target_power_enabled() ? 1U : 0U;
+        return (2U << 16) | 3U;
     }
 
     case ID_VENDOR_SAMPLE:

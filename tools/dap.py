@@ -60,6 +60,7 @@ USB_REBOOT_REQUEST = 0x03
 USB_CORE1_STATUS_REQUEST = 0x04  # DAP_SHARED_CORE1_STATUS_REQUEST
 USB_CORE1_SAMPLE_REQUEST = 0x05  # DAP_SHARED_CORE1_SAMPLE_REQUEST
 DAP_VENDOR_TARGET = 0x86
+DAP_VENDOR_TARGET_POWER = 0x8F
 DAP_VENDOR_SAMPLE = 0x87
 DAP_VENDOR_SWD_GEN = 0x89
 DAP_VENDOR_JTAG_GEN = 0x8A
@@ -548,6 +549,20 @@ def cmd_target(args) -> int:
         code, mv, detect = read_target(probe, 0)
         pin9 = "grounded" if detect else "open"
         print(f"target supply {mv / 1000:.3f} V (code {code}), pin 9 {pin9}")
+    probe.release()
+    return 0
+
+
+def cmd_target_power(args) -> int:
+    """Switch the Pro's target regulator or report the state last set since boot."""
+    probe = one(args)
+    modes = {"off": 0, "on": 1, "read": 2}
+    reply = probe.command(bytes([DAP_VENDOR_TARGET_POWER, modes[args.state]]))
+    if len(reply) < 3 or reply[0] != DAP_VENDOR_TARGET_POWER:
+        raise RuntimeError(f"vendor 0x8F answered {reply.hex()}; is this firmware new enough?")
+    if reply[1] != 0:
+        raise RuntimeError("the target supply is unavailable on this board or the request was rejected")
+    print(f"target supply {'on' if reply[2] else 'off'}")
     probe.release()
     return 0
 
@@ -1911,6 +1926,10 @@ def main() -> int:
     target = sub.add_parser("target", help="the target's supply and pin 9 detect, from our firmware")
     target.add_argument("--sweep", action="store_true", help="read every ADC0 channel, in millivolts")
     target.set_defaults(run=cmd_target)
+
+    target_power = sub.add_parser("target-power", help="switch the Pro's target supply")
+    target_power.add_argument("state", choices=("off", "on", "read"))
+    target_power.set_defaults(run=cmd_target_power)
 
     pins = sub.add_parser("pins", help="read, and optionally drive, the probe's own pins")
     pins.add_argument("--connect", action="store_true", help="DAP_Connect first, so pins are outputs")

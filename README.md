@@ -5,9 +5,9 @@ OScan2, OScan5 and OScan6 formats, that the stock firmware does not have.
 
 It supports the standalone full MCU-Link and MCU-Link Pro. It does not support the MCU-Link built
 into an evaluation board. Both boards provide SWD, four-wire JTAG, cJTAG, SWO capture, and one USB
-serial port. The Pro adds a second serial port and four GPIO pins. The [capability guide](CAPABILITIES.md)
-lists board conditions and the [host interface](HOST-INTERFACE.md) documents the supported vendor
-commands.
+serial port. The Pro adds a second serial port, four GPIO pins and switched target power. The
+[capability guide](CAPABILITIES.md) lists board conditions and the
+[host interface](HOST-INTERFACE.md) documents the supported vendor commands.
 
 ## Limits
 
@@ -218,6 +218,16 @@ inputs when the probe restarts.
 checkout, `uv run tools/dap.py dio` does the same. Both send vendor command 0x8E, which
 `src/dap_vendor.c` describes.
 
+## Pro target supply
+
+The Pro can switch its target regulator through vendor command 0x8F. J5 selects 1.8 V when shorted
+or 3.3 V when open. Fit the J6 jumper to connect that output to the target. Command 0x86 reads the
+voltage at J6 pin 1; 0x8F reports whether the regulator is enabled. Firmware disables the supply
+during startup.
+
+From a checkout, `uv run tools/dap.py target-power on`, `off` or `read` controls the supply. The
+command is available only on MCU-Link Pro.
+
 ## Releases
 
 `.github/workflows/release.yml` publishes a release when a tag starting with `v` is pushed. It
@@ -277,7 +287,7 @@ changed. The image also contains TinyUSB (MIT), NXP's SDK drivers (BSD-3-Clause)
 
 ## Not done yet
 
-- On the Pro: USB-SIO's SPI and I2C, the target supply, energy measurement, the analog trace
+- On the Pro: USB-SIO's SPI and I2C, energy measurement, the analog trace
   input and the LPC804 (PRO.md).
 - SWO over a streaming endpoint, from the ring already in USB SRAM.
 - Clocks 44 and 45 of every SWD transfer cost 89 cycles more than a data bit, 12.9% of a transfer.

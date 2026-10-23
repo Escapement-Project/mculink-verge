@@ -22,6 +22,9 @@ does with them.
   and the target console. The feature jumpers work as README.md "Jumpers" describes.
 - **The second serial port** on J26, a second CDC interface. 3.3 V only: J26 has no level shifter.
 - **The DIO pins** on J19, driven from the host (README.md "The Pro's DIO pins").
+- **The target supply** is switched by the host. J5 selects 1.8 V when shorted or 3.3 V when open;
+  J6 must connect the supply to the target. The regulator is rated to 400 mA. See HOST-INTERFACE.md
+  for the command.
 - **The LEDs**, with the meanings UM11673 gives them where the function exists. LED1 is lit while
   USB is configured. The status, SWO and VCOM LEDs flicker with traffic. LED5 (FUNC) shows the
   wire by the shape of its ramp: dark to light for SWD, light to dark for two-pin cJTAG, light to
@@ -29,8 +32,7 @@ does with them.
   LED6 (SIO) is lit while the host drives a DIO pin. LED7 (energy) stays dark. The fades follow
   CIE lightness, so they look linear to the eye.
 
-Not yet: USB-SIO's SPI and I2C, the target supply, energy measurement, the analog trace input and
-the LPC804.
+Not yet: USB-SIO's SPI and I2C, energy measurement, the analog trace input and the LPC804.
 
 ## What the two boards share
 

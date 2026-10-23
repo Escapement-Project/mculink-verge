@@ -619,8 +619,8 @@ def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
     build = reply[9 : 9 + length].decode("ascii", "replace")
     if magic != b"CJTAG":
         c.problems.append(f"vendor 0x82 magic is {magic!r}, wanted b'CJTAG'")
-    if version != 4:
-        c.problems.append(f"vendor 0x82 format version is {version}, wanted 4")
+    if version != 5:
+        c.problems.append(f"vendor 0x82 format version is {version}, wanted 5")
     # The plain board, then the scan formats it frames: OScan1, 2, 5 and 6 (SCNFMT 9, 10, 13, 14).
     formats = ((1 << 9) | (1 << 10) | (1 << 13) | (1 << 14)).to_bytes(4, "little")
     if reply[9 + length : 14 + length] != bytes([0]) + formats:
@@ -940,6 +940,7 @@ def check_board(c: Checker, elf: str, request_slots: int) -> None:
 DIO_PINS = ((0, 20), (0, 26), (1, 2), (1, 3), (1, 1), (1, 25))
 DIO_DIR_OF = (4, 4, 4, 5)
 CAP_DIO = 1 << 6
+CAP_TARGET_POWER = 1 << 7
 # The ordinary GPIO's port-wide registers, which the hook below sees: SET, CLR, NOT, DIRSET, DIRCLR,
 # DIRNOT, one word per port each.
 GPIO_PORT_REGS = {0x2200: "SET", 0x2280: "CLR", 0x2300: "NOT", 0x2380: "DIRSET", 0x2400: "DIRCLR", 0x2480: "DIRNOT"}
@@ -1061,6 +1062,59 @@ def check_dio(c: Checker, elf: str, request_slots: int) -> None:
                     f"moved them {pins.moves} times, {pins.fights or 'no fights'}, stores {pins.stores}")
     c.note("DIO: vendor 0x8E on the Pro only, J15 honoured, groups turned whole without a fight or a double move, "
            "state and groups in every reply")
+
+
+def check_target_power(c: Checker, elf: str, request_slots: int) -> None:
+    """The Pro's switched supply defaults off; other boards leave P0_8 alone."""
+    if "target_power_init" not in symbols(elf):
+        c.problems.append("no target_power_init symbol, so the Pro's supply setup cannot be run")
+        return
+
+    offsets = shared_offsets(request_slots, "board", small_enums=short_enums(elf))["board"]
+    mask = 1 << 8
+    for name, board in (("plain", 0), ("on-board", 2), ("Pro", BOARD_PRO)):
+        probe = Machine(elf, Target([0] * 64), restart_at=set(), model=Model())
+        probe.uc.mem_write(probe.sym["dap_shared"] + offsets, bytes([board]))
+        probe.call("board_debug_pins_init")
+        stores = []
+
+        def record(uc, access, address, size, value, user) -> None:
+            offset = address - ORDINARY_GPIO
+            reg = GPIO_PORT_REGS.get(offset & ~0x7F, "?")
+            stores.append((reg, (offset & 0x7F) // 4, value))
+
+        base = ORDINARY_GPIO + min(GPIO_PORT_REGS)
+        probe.uc.hook_add(UC_HOOK_MEM_WRITE, record, begin=base, end=base + 0x300 - 1)
+        probe.call("target_power_init")
+        if board == BOARD_PRO:
+            pin = int.from_bytes(probe.uc.mem_read(IOCON + 4 * 8, 4), "little")
+            want_pin = 0x100  # GPIO function, no pull, digital input buffer.
+            c.check(stores == [("CLR", 0, mask), ("DIRSET", 0, mask)]
+                    and pin == want_pin,
+                    f"{name}: supply init stores {stores}, P0_8 mode {pin:#x}")
+            info = probe.command(bytes([0x82]))
+            c.check(bool(info[7] & CAP_TARGET_POWER), f"{name}: vendor 0x82 lacks target supply capability")
+            steps = ((2, 0, 0, None), (1, 0, 1, ("SET", 0, mask)),
+                     (1, 0, 1, ("SET", 0, mask)), (2, 0, 1, None),
+                     (0, 0, 0, ("CLR", 0, mask)), (3, 0xFF, 0, None))
+            for mode, status, state, store in steps:
+                before = len(stores)
+                reply = probe.command(bytes([0x8F, mode]))
+                c.check(reply == bytes([0x8F, status, state]),
+                        f"{name}: vendor 0x8F mode {mode} answered {reply.hex()}")
+                added = stores[before:]
+                want = [] if store is None else [store]
+                c.check(added == want,
+                        f"{name}: vendor 0x8F mode {mode} wrote {added}, wanted {want}")
+        else:
+            c.check(not stores, f"{name}: setup touched the absent supply: {stores}")
+            info = probe.command(bytes([0x82]))
+            c.check(not info[7] & CAP_TARGET_POWER, f"{name}: vendor 0x82 claims target supply")
+            reply = probe.command(bytes([0x8F, 1]))
+            c.check(reply == bytes([0x8F, 0xFF, 0]) and not stores,
+                    f"{name}: vendor 0x8F answered {reply.hex()}, stores {stores}")
+
+    c.note("target supply: Pro-only P0_8 control starts disabled; unsupported boards leave it untouched")
 
 
 def check_sample_probe(c: Checker, elf: str) -> None:
@@ -1842,6 +1896,7 @@ def main() -> int:
     check_identity(c, args.core1, args.code_lab)
     check_board(c, args.core1, slots)
     check_dio(c, args.core1, slots)
+    check_target_power(c, args.core1, slots)
     check_straps(c, args.elf, args.core1, slots)
     check_unconnected_block(c, args.core1)
     check_image_boards(c, args.elf)

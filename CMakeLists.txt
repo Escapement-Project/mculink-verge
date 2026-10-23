@@ -138,6 +138,7 @@ target_sources(${CORE1} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/board_pins.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/ser_num.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/target_sense.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/target_power.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dio.c
   ${MCUX_DRIVERS}/lpadc/fsl_lpadc.c
   ${LPC55_DEVICE}/LPC55S69/drivers/fsl_clock.c

@@ -23,12 +23,13 @@ Send `[0x82]`. The reply contains:
 
 The current capability flag bits are: bit 0 OScan1 support; bit 1 cJTAG framing active; bit 2
 target-sense command support; bit 3 generated SWD paths; bit 4 host-driven OScan1 entry; bit 5
-generated JTAG paths; bit 6 Pro DIO available. Bits 0 and 4 are clear on the unsupported on-board
-variant. Bit 6 is clear if the Pro's J15 jumper disabled USB-SIO when the probe started.
+generated JTAG paths; bit 6 Pro DIO available; bit 7 Pro target-supply control (added in format 5).
+Bits 0 and 4 are clear on the unsupported on-board variant. Bit 6 is clear if the Pro's J15 jumper
+disabled USB-SIO when the probe started.
 
 Fields are appended in later formats. Use the format version before reading fields added by a
-later format. Ignore fields you do not understand. The format 4 cJTAG mask reports what the
-firmware offers; it does not prove that the target supports those formats.
+later format. Ignore fields you do not understand. The format 4 and later cJTAG mask reports what
+the firmware offers; it does not prove that the target supports those formats.
 
 ## cJTAG control: `0x83`
 
@@ -64,6 +65,21 @@ fitted at startup.
 
 The `verge dio` command is the supported user interface for these pins. It checks group changes
 before sending them and shows the reply state.
+
+## Pro target supply: `0x8F`
+
+Send `[0x8F, mode]`. Mode 0 turns the regulator off, mode 1 turns it on, and mode 2 reads the
+state. The reply is `[0x8F, status, enabled]`, where `enabled` is the state last set since the probe
+started. Firmware drives the regulator off during startup.
+
+This command is available only on the Pro. Other boards and unknown modes return `DAP_ERROR`
+(`0xff`) without changing the output. `DAP_OK` is `0x00`.
+
+J5 selects 1.8 V when shorted and 3.3 V when open. J6 must connect the regulator output to the
+target. The regulator is rated for up to 400 mA. Read the voltage at J6 pin 1 and target-detect
+state separately with `0x86`; the `0x8F` reply confirms the control state, not the voltage at the
+target. After enabling the supply, allow the regulator and target rail to settle before accessing
+the target.
 
 ## Other commands
 
