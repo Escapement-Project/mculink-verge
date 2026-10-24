@@ -21,6 +21,7 @@
 #include "DAP_config.h"
 
 #include "DAP.h"
+#include "byte_io.h"
 
 /* The generator resolved five `#if (TIMESTAMP_CLOCK != 0U)` blocks by keeping their bodies, so
  * the generated code is only correct while that holds. */
@@ -100,10 +101,7 @@ static uint32_t name(const uint8_t *request, uint8_t *response) {               
       }                                                                                                     \
       if ((request_value & DAP_TRANSFER_MATCH_VALUE) != 0U) {                                               \
         /* Read with value match */                                                                         \
-        match_value = (uint32_t)(*(request+0) <<  0) |                                                      \
-                      (uint32_t)(*(request+1) <<  8) |                                                      \
-                      (uint32_t)(*(request+2) << 16) |                                                      \
-                      (uint32_t)(*(request+3) << 24);                                                       \
+        match_value = read_u32_le(request);                                                                 \
         request += 4;                                                                                       \
         match_retry = DAP_Data.transfer.match_retry;                                                        \
         if ((request_value & DAP_TRANSFER_APnDP) != 0U) {                                                   \
@@ -198,10 +196,7 @@ static uint32_t name(const uint8_t *request, uint8_t *response) {               
         post_read = 0U;                                                                                     \
       }                                                                                                     \
       /* Load data */                                                                                       \
-      data = (uint32_t)(*(request+0) <<  0) |                                                               \
-             (uint32_t)(*(request+1) <<  8) |                                                               \
-             (uint32_t)(*(request+2) << 16) |                                                               \
-             (uint32_t)(*(request+3) << 24);                                                                \
+      data = read_u32_le(request);                                                                          \
       request += 4;                                                                                         \
       if ((request_value & DAP_TRANSFER_MATCH_MASK) != 0U) {                                                \
         /* Write match mask */                                                                              \

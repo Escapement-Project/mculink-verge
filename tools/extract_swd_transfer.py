@@ -13,7 +13,7 @@ that will be bumped. Re-run it after a bump and diff the result:
 
     uv run tools/extract_swd_transfer.py
 
-Four things have to change on the way through, and all four are why this is not a copy:
+The extraction also changes:
 
 - The five `#if (TIMESTAMP_CLOCK != 0U)` blocks cannot survive inside a macro. They are resolved
   by keeping the bodies, and the generated header asserts the condition instead.
@@ -22,6 +22,7 @@ Four things have to change on the way through, and all four are why this is not 
 - `data` gains an initialiser. Once the transfer inlines into this function, GCC can no longer
   prove the variable is written on every path, and a build without link-time optimisation fails
   on `-Wmaybe-uninitialized`. ARM's own build never sees it because the transfer stays a call.
+- Word operands use an unsigned little-endian decoder before shifting.
 - Every line gains a trailing backslash.
 """
 
@@ -56,6 +57,7 @@ BANNER = '''/*
 #include "DAP_config.h"
 
 #include "DAP.h"
+#include "byte_io.h"
 
 /* The generator resolved five `#if (TIMESTAMP_CLOCK != 0U)` blocks by keeping their bodies, so
  * the generated code is only correct while that holds. */
@@ -104,6 +106,14 @@ def transform(lines: list[str]) -> list[str]:
         "static uint32_t DAP_SWD_Transfer(const uint8_t *request, uint8_t *response) {",
         "static uint32_t name(const uint8_t *request, uint8_t *response) {",
     )
+    operands = (r"\(uint32_t\)\(\*\(request\+0\) <<  0\) \|\s*"
+                r"\(uint32_t\)\(\*\(request\+1\) <<  8\) \|\s*"
+                r"\(uint32_t\)\(\*\(request\+2\) << 16\) \|\s*"
+                r"\(uint32_t\)\(\*\(request\+3\) << 24\)")
+    body, decoded = re.subn(operands, "read_u32_le(request)", "\n".join(out))
+    if decoded != 2:
+        sys.exit(f"expected two word operand decodes, found {decoded}")
+    out = body.splitlines()
     print(
         f"  {dropped} preprocessor lines resolved, {comments} comments converted,"
         f" {calls} calls rerouted, {initialised} declaration initialised"

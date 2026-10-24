@@ -19,6 +19,7 @@
 #define JTAG_BLOCK_H
 
 #include "hot.h"
+#include "byte_io.h"
 
 /** Attributes on the generated block function.
  *
@@ -106,8 +107,7 @@
             goto end;                                                                             \
         } else {                                                                                  \
             while (request_count--) {                                                             \
-                data = (uint32_t)(*(request + 0) << 0) | (uint32_t)(*(request + 1) << 8) |        \
-                       (uint32_t)(*(request + 2) << 16) | (uint32_t)(*(request + 3) << 24);       \
+                data = read_u32_le(request);                                                      \
                 request += 4;                                                                     \
                 retry = DAP_Data.transfer.retry_count;                                            \
                 do {                                                                              \

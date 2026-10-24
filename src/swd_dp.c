@@ -27,6 +27,7 @@
 
 #include "DAP.h"
 #include "hot.h"
+#include "byte_io.h"
 #include "swd_dp.h"
 #include "swd_transfer.h"
 
@@ -413,8 +414,7 @@ COMMAND_PATH uint32_t SWD_TransferCommand(const uint8_t* request, uint8_t* respo
             goto end;                                                                                     \
         } else {                                                                                          \
             while (request_count--) {                                                                     \
-                data = (uint32_t)(*(request + 0) << 0) | (uint32_t)(*(request + 1) << 8) |                \
-                       (uint32_t)(*(request + 2) << 16) | (uint32_t)(*(request + 3) << 24);               \
+                data = read_u32_le(request);                                                              \
                 request += 4;                                                                             \
                 retry = DAP_Data.transfer.retry_count;                                                    \
                 do {                                                                                      \
