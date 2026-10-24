@@ -155,7 +155,12 @@ __attribute__((section(".ramfunc"))) static bool start_rx(void* context, uint8_t
 __attribute__((section(".ramfunc"))) static bool start_tx(void* context, uint8_t slot, uint16_t length) {
     uint8_t (*buffers)[DAP_PACKET_SIZE] = context;
     if (dap_shared.response_staged[slot] != 0U) {
-        memcpy(buffers[slot], dap_stage.response[slot], length);
+        if (length == 7U) {
+            memcpy(buffers[slot], dap_stage.response[slot], 4U);
+            memcpy(buffers[slot] + 4U, dap_stage.response[slot] + 4U, 3U);
+        } else {
+            memcpy(buffers[slot], dap_stage.response[slot], length);
+        }
     }
     if (dap_shared.response_transport[slot] == DAP_TRANSPORT_BULK) {
         return tud_vendor_write_xfer(buffers[slot], length) == length;
