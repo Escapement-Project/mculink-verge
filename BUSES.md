@@ -63,7 +63,7 @@ contends with any other.
 | CPU 0 | 9, 11 | USB device regs and buffers (TinyUSB) | Every USB transfer |
 | CPU 0 | 11 then 5 | Each staged command, from its USB slot into `dap_stage`, and each staged reply back | As each arrives and as each starts to send, so during CPU 1's windows when commands are queued |
 | CPU 0 | 8 | USART0/1 (VCOM), mailbox, DMA0 regs: its setup, the console channels, the interrupt for both rings | Continuously; the consoles' ring positions while it waits |
-| CPU 0 | 4, 7, 8, 11 | Calls CPU 1's energy-segment handler from the DMA interrupt; it reads completed samples from SRAM2 and updates the accumulator in `dap_shared` | Each completed energy segment |
+| CPU 0 | 4, 7, 8, 11 | Calls CPU 1's energy-segment handler from the DMA interrupt; it reads completed samples from SRAM2 and updates the accumulator in `dap_shared` | Each completed energy segment, except while CPU 1 owns capture state |
 | CPU 0 | 7, 8 | IOCON P0_29 mux plus GPIO0 P0_17/P0_29 during the deferred energy range-latch retry | At most once per four completed energy-ring segments |
 | CPU 0 | 11 | The consoles' channel entries in DMA0's table | Each send |
 | CPU 0 | 7 | CTimer 3 (the status LED), and on the Pro CTimer 1 (FUNC) | 488 times a second |
@@ -72,6 +72,10 @@ contends with any other.
 | CPU 0 | 7 | SYSCON and IOCON reads for the SWO status request; SYSCON NMISRC for the CPU 1 wake | Those vendor control requests |
 | CPU 0 | 7 | SYSCON (CPU 1 start), PMC (reboot) | Boot and reboot only |
 | CPU 0 | 8 | Ordinary GPIO (the board straps) | Boot only |
+
+CPU 1 stops energy DMA and waits for a generation acknowledgement from CPU 0's main loop before
+resetting capture state. The acknowledgement follows the last handler and range-latch task.
+While quiet, CPU 0 leaves energy completion/error bits to CPU 1. SWO and VCOM continue normally.
 
 ## Timed windows and their exposure
 

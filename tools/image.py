@@ -711,6 +711,16 @@ def check_energy_descriptors(c: Checker, elf: str, slots: int) -> None:
     c.note("actual energy descriptor links alternate segments from the first transfer, including restart")
 
 
+def check_energy_control(c: Checker, elf0: str, elf1: str, slots: int) -> None:
+    from energy_checks import check_control
+
+    fields = ("energy_control_request", "energy_control_ack", "energy_segments", "swo_segments",
+              "energy_dma_error", "energy_segment_handler", "energy_available", "energy_accumulator_nj",
+              "energy_accumulator_pairs")
+    offsets = [shared_offsets(slots, *fields, small_enums=short_enums(elf)) for elf in (elf0, elf1)]
+    check_control(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), *offsets)
+
+
 def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
     """A host has to be able to recognise this firmware and tell two builds of it apart.
 
@@ -1978,7 +1988,7 @@ def main() -> int:
     slots = args.packet_count
     swo = bool(config_value(args.config, "SWO_UART"))
     check_core1_image(c, args.elf, args.core1, slots)
-    check_sram_code(c, args.elf, "CPU 0 waits for work", ("wait_for_work", "vcom_ready", "tud_cdc_n_available",
+    check_sram_code(c, args.elf, "CPU 0 waits for work", ("wait_for_work", "energy_control_task", "vcom_ready", "tud_cdc_n_available",
                                                          "tud_cdc_n_write_available", "tu_edpt_stream_write_available"))
     check_sram_code(c, args.elf, "CPU 0 runs a command's USB work",
                     ("serve", "tud_vendor_rx_cb", "tud_vendor_tx_cb", "tud_hid_set_report_cb",
@@ -2009,6 +2019,7 @@ def main() -> int:
     check_bounded_commands(c, args.core1)
     check_jtag_chain(c, args.core1)
     check_energy_descriptors(c, args.core1, slots)
+    check_energy_control(c, args.elf, args.core1, slots)
     check_identity(c, args.core1, args.code_lab)
     check_board(c, args.core1, slots)
     check_dio(c, args.core1, slots)

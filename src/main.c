@@ -77,6 +77,7 @@ static volatile bool response_in_flight;
 
 static void usb_transport_task(void);
 static void energy_range_retry_task(void);
+static void energy_control_task(void);
 static void arm_rx(void);
 static void send_head(void);
 static void start_core1(void);
@@ -256,7 +257,8 @@ __attribute__((section(".ramfunc"))) static void usb_transport_task(void) {
  *  reset pulses while leaving time for a range change to settle. */
 __attribute__((section(".ramfunc"))) static void energy_range_retry_task(void) {
     static uint32_t last_retry_segment;
-    if (dap_shared.energy_range_retry_pending == 0U) {
+    if ((dap_shared.energy_control_ack & DAP_ENERGY_QUIET_FLAG) != 0U ||
+        dap_shared.energy_range_retry_pending == 0U) {
         return;
     }
     dap_shared.energy_range_retry_active = 1U;
@@ -302,6 +304,19 @@ __attribute__((section(".ramfunc"))) static void energy_range_retry_task(void) {
     GPIO->DIRCLR[0] = p29;
     __DSB();
     dap_shared.energy_range_retry_active = 0U;
+}
+
+/** Main-loop acknowledgement follows the previous handler's segment-count publication. */
+__attribute__((section(".ramfunc"), noinline)) static void energy_control_task(void) {
+    uint32_t const requested = dap_shared.energy_control_request;
+    if (requested != dap_shared.energy_control_ack) {
+        uint32_t const primask = __get_PRIMASK();
+        __disable_irq();
+        __DMB();
+        dap_shared.energy_control_ack = requested;
+        __DMB();
+        __set_PRIMASK(primask);
+    }
 }
 
 /** Arms the OUT endpoint into the tail request slot if that is free. Arming claims the endpoint,
@@ -388,7 +403,8 @@ __attribute__((section(".ramfunc"))) static void idle(void) {
     __DSB();
     bool const reply_waiting =
         !response_in_flight && !dap_usb_slot_free(dap_shared.response_len, dap_shared.response_head);
-    if (reply_waiting || disconnect_requested || tud_task_event_ready()) {
+    if (reply_waiting || disconnect_requested || tud_task_event_ready() ||
+        dap_shared.energy_control_request != dap_shared.energy_control_ack) {
         return;
     }
 #ifdef CODE_LAB
@@ -410,7 +426,8 @@ void DMA0_IRQHandler(void);
 __attribute__((section(".ramfunc"))) void DMA0_IRQHandler(void) {
     // An error raises this interrupt too, and until it is cleared the interrupt comes straight
     // back, ahead of everything else on this core. SWO's is CPU 1's to report, so hand it over.
-    uint32_t const failed = DMA0->COMMON[0].ERRINT & (SWO_DMA_MASK | VCOM_DMA_MASK | ENERGY_DMA_MASK);
+    uint32_t const energy_mask = (dap_shared.energy_control_ack & DAP_ENERGY_QUIET_FLAG) != 0U ? 0U : ENERGY_DMA_MASK;
+    uint32_t const failed = DMA0->COMMON[0].ERRINT & (SWO_DMA_MASK | VCOM_DMA_MASK | energy_mask);
     if (failed != 0U) {
         DMA0->COMMON[0].ERRINT = failed;
         if ((failed & SWO_DMA_MASK) != 0U) {
@@ -420,7 +437,7 @@ __attribute__((section(".ramfunc"))) void DMA0_IRQHandler(void) {
             dap_shared.energy_dma_error = 1U;
         }
     }
-    uint32_t const done = DMA0->COMMON[0].INTA & (SWO_DMA_MASK | VCOM_DMA_MASK | ENERGY_DMA_MASK);
+    uint32_t const done = DMA0->COMMON[0].INTA & (SWO_DMA_MASK | VCOM_DMA_MASK | energy_mask);
     if (done == 0U) {
         return;
     }
@@ -563,6 +580,7 @@ __attribute__((noinline, used)) void dap_core_security_init(void) {
  *  into flash. */
 [[noreturn]] __attribute__((section(".ramfunc"), noinline)) static void serve(void) {
     for (;;) {
+        energy_control_task();
         energy_range_retry_task();
         tud_task();
         usb_transport_task();

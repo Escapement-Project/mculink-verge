@@ -168,10 +168,12 @@ void target_sense_configure_monitor(uint32_t rate_hz) {
 
 static target_sense_status_t target_sense_convert_sample(uint8_t channel, bool side_b, uint16_t* code,
                                                           lpadc_hardware_average_mode_t average_mode) {
-    energy_monitor_pause();
+    if (!energy_monitor_pause()) {
+        return TARGET_SENSE_NO_RESULT;
+    }
     target_sense_status_t status = target_sense_adc_init();
     if (status != TARGET_SENSE_OK) {
-        energy_monitor_resume();
+        (void)energy_monitor_resume();
         return status;
     }
 
@@ -197,11 +199,10 @@ static target_sense_status_t target_sense_convert_sample(uint8_t channel, bool s
         if (LPADC_GetConvResult(ADC0, &result, 0U)) {
             *code = result.convValue;
             status = TARGET_SENSE_OK;
-            energy_monitor_resume();
-            return status;
+            return energy_monitor_resume() ? status : TARGET_SENSE_NO_RESULT;
         }
     }
-    energy_monitor_resume();
+    (void)energy_monitor_resume();
     return TARGET_SENSE_NO_RESULT;
 }
 
@@ -214,10 +215,12 @@ target_sense_status_t target_sense_convert_pair_for_calibration(uint32_t rate_hz
     if ((voltage_code == NULL) || (current_code == NULL)) {
         return TARGET_SENSE_NO_RESULT;
     }
-    energy_monitor_pause();
+    if (!energy_monitor_pause()) {
+        return TARGET_SENSE_NO_RESULT;
+    }
     target_sense_status_t status = target_sense_adc_init();
     if (status != TARGET_SENSE_OK) {
-        energy_monitor_resume();
+        (void)energy_monitor_resume();
         return status;
     }
 
@@ -260,8 +263,7 @@ target_sense_status_t target_sense_convert_pair_for_calibration(uint32_t rate_hz
         }
     }
     status = (voltage_found && current_found) ? TARGET_SENSE_OK : TARGET_SENSE_NO_RESULT;
-    energy_monitor_resume();
-    return status;
+    return energy_monitor_resume() ? status : TARGET_SENSE_NO_RESULT;
 }
 
 bool target_sense_detected(void) {

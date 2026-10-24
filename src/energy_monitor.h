@@ -38,7 +38,7 @@ energy_monitor_status_t energy_monitor_start(uint32_t rate_hz);
 uint32_t energy_monitor_rate(void);
 
 /** Stop acquisition and leave the ADC ready for on-demand target-sense reads. */
-void energy_monitor_stop(void);
+[[nodiscard]] energy_monitor_status_t energy_monitor_stop(void);
 
 /** Return the newest complete pair of raw ADC codes, if one exists. */
 energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample);
@@ -50,7 +50,7 @@ energy_monitor_status_t energy_monitor_accumulated(uint64_t* energy_nj, uint64_t
 void energy_monitor_process_segment(void);
 
 /** Pause and resume capture around an on-demand ADC conversion. */
-void energy_monitor_pause(void);
-void energy_monitor_resume(void);
+[[nodiscard]] bool energy_monitor_pause(void);
+[[nodiscard]] bool energy_monitor_resume(void);
 
 #endif

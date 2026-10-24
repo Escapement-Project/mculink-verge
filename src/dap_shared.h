@@ -52,6 +52,8 @@
 /** Called by CPU 0's DMA interrupt for each completed energy segment. */
 typedef void (*dap_energy_segment_handler_fn)(void);
 
+#define DAP_ENERGY_QUIET_FLAG 1U
+
 /** USB control request (vendor, device to host) for dap_core1_status_t, or with wValue
  *  DAP_SHARED_QUEUE_STATUS for the queues' state. CPU 0 answers it, so it works whatever state
  *  CPU 1 is in. */
@@ -177,6 +179,9 @@ typedef struct {
     volatile uint8_t energy_range_retry_pending;
     volatile uint8_t energy_range_retry_active;
     volatile uint8_t energy_range_retry_enabled;
+    /** Generation plus QUIET_FLAG; CPU 0 echoes the request from its main loop. */
+    volatile uint32_t energy_control_request;
+    volatile uint32_t energy_control_ack;
     /** CPU 0's energy accumulator, read by CPU 1 with the sequence counter. */
     volatile uint32_t energy_accumulator_sequence;
     volatile uint64_t energy_accumulator_nj;

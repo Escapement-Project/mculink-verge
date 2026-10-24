@@ -10,6 +10,7 @@
 #include "fsl_reset.h"
 
 #include "dap_shared.h"
+#include "dap_core.h"
 #include "DAP_config.h"
 #include "board_pins.h"
 #include "dma_ring.h"
@@ -37,6 +38,8 @@ static uint32_t actual_rate_hz;
 static uint64_t energy_scale_q32;
 static uint32_t segments_at_start;
 static bool capture_running;
+
+#define ENERGY_CONTROL_POLLS 1000000U
 static bool pins_ready;
 static bool controls_ready;
 static bool inputmux_ready;
@@ -131,6 +134,8 @@ void energy_monitor_init(void) {
     dap_shared.energy_range_retry_pending = 0U;
     dap_shared.energy_range_retry_active = 0U;
     dap_shared.energy_range_retry_enabled = 0U;
+    dap_shared.energy_control_request = 0U;
+    dap_shared.energy_control_ack = 0U;
     dap_shared.energy_segment_handler = energy_monitor_process_segment;
 }
 
@@ -433,20 +438,30 @@ __attribute__((noinline)) static void capture_ring_init(void) {
     entry->link = energy_descriptors[0].link;
 }
 
-static void capture_start(void) {
+static bool capture_quiet(bool quiet) {
+    uint32_t const requested = ((dap_shared.energy_control_request & ~DAP_ENERGY_QUIET_FLAG) + 2U) |
+                               (quiet ? DAP_ENERGY_QUIET_FLAG : 0U);
+    dap_shared.energy_control_request = requested;
+    __DMB();
+    MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQSET = DAP_CORE_MAILBOX_WAKE_MASK;
+    for (uint32_t i = 0U; i < ENERGY_CONTROL_POLLS; i++) {
+        if (dap_shared.energy_control_ack == requested) {
+            __DMB();
+            return true;
+        }
+    }
+    dap_shared.energy_dma_error = 1U;
+    return false;
+}
+
+static bool capture_start(bool new_session) {
     capture_ring_init();
     DMA0->COMMON[0].ENABLECLR = ENERGY_DMA_MASK;
     DMA0->COMMON[0].ABORT = ENERGY_DMA_MASK;
     DMA0->COMMON[0].INTENCLR = ENERGY_DMA_MASK;
     DMA0->COMMON[0].ERRINT = ENERGY_DMA_MASK;
     DMA0->COMMON[0].INTA = ENERGY_DMA_MASK;
-    uint32_t const cleared = TIMESTAMP_GET();
-    for (uint32_t i = 0U; (i < 10000U) &&
-                          ((TIMESTAMP_GET() - cleared) < (2U * (TIMESTAMP_CLOCK / 1000000U)));
-         i++) {
-    }
     segments_at_start = dap_shared.energy_segments;
-    dap_shared.energy_dma_error = 0U;
     dap_shared.energy_range_retry_pending = 0U;
     dap_shared.energy_range_retry_enabled = 1U;
     sample_phase = 0U;
@@ -462,6 +477,15 @@ static void capture_start(void) {
     INPUTMUX->DMA0_REQ_ENA_SET = ENERGY_DMA_MASK;
     LPADC_EnableFIFO0WatermarkDMA(ADC0, true);
 
+    if (!capture_quiet(false)) {
+        return false;
+    }
+    if (new_session) {
+        accumulator_reset();
+        accumulator_started = true;
+        dap_shared.energy_dma_error = 0U;
+    }
+    capture_running = true;
     __DMB();
     DMA0->CHANNEL[ENERGY_DMA_CHANNEL].CFG = DMA_CHANNEL_CFG_PERIPHREQEN_MASK;
     DMA0->COMMON[0].INTENSET = ENERGY_DMA_MASK;
@@ -470,36 +494,52 @@ static void capture_start(void) {
         ENERGY_SEGMENT_XFERCFG | DMA_CHANNEL_XFERCFG_SWTRIG_MASK;
     GPIO->SET[0] = 1UL << 17U;
     timer_start(requested_rate_hz);
-    capture_running = true;
+    return true;
 }
 
-void energy_monitor_pause(void) {
+__attribute__((noinline)) bool energy_monitor_pause(void) {
+    if (!dap_shared.energy_available) {
+        return true;
+    }
     dap_shared.energy_range_retry_enabled = 0U;
     dap_shared.energy_range_retry_pending = 0U;
     __DMB();
-    while (dap_shared.energy_range_retry_active != 0U) {
+    if (capture_running) {
+        CTIMER2->TCR = 0U;
+        GPIO->CLR[0] = 1UL << 17U;
+        LPADC_EnableFIFO0WatermarkDMA(ADC0, false);
+        DMA0->COMMON[0].ENABLECLR = ENERGY_DMA_MASK;
+        uint32_t polls = 0U;
+        while ((DMA0->COMMON[0].BUSY & ENERGY_DMA_MASK) != 0U) {
+            if (++polls == ENERGY_CONTROL_POLLS) {
+                dap_shared.energy_dma_error = 1U;
+                return false;
+            }
+        }
+        DMA0->COMMON[0].INTENCLR = ENERGY_DMA_MASK;
+    }
+    if (!capture_quiet(true)) {
+        return false;
     }
     if (!capture_running) {
-        return;
-    }
-    CTIMER2->TCR = 0U;
-    GPIO->CLR[0] = 1UL << 17U;
-    LPADC_EnableFIFO0WatermarkDMA(ADC0, false);
-    DMA0->COMMON[0].ENABLECLR = ENERGY_DMA_MASK;
-    for (uint32_t i = 0U; (i < 1000U) && ((DMA0->COMMON[0].BUSY & ENERGY_DMA_MASK) != 0U); i++) {
+        return true;
     }
     DMA0->COMMON[0].ABORT = ENERGY_DMA_MASK;
-    DMA0->COMMON[0].INTENCLR = ENERGY_DMA_MASK;
     DMA0->COMMON[0].INTA = ENERGY_DMA_MASK;
     INPUTMUX->DMA0_REQ_ENA_CLR = ENERGY_DMA_MASK;
     LPADC_DoResetFIFO0(ADC0);
     capture_running = false;
+    return true;
 }
 
-void energy_monitor_resume(void) {
-    if ((requested_rate_hz != 0U) && !capture_running) {
-        capture_start();
+bool energy_monitor_resume(void) {
+    if ((requested_rate_hz == 0U) || capture_running) {
+        return true;
     }
+    if (dap_shared.energy_dma_error != 0U) {
+        return false;
+    }
+    return capture_start(false);
 }
 
 energy_monitor_status_t energy_monitor_start(uint32_t rate_hz) {
@@ -509,7 +549,9 @@ energy_monitor_status_t energy_monitor_start(uint32_t rate_hz) {
     if ((rate_hz == 0U) || (rate_hz > ENERGY_MAX_RATE_HZ)) {
         return ENERGY_MONITOR_BAD_RATE;
     }
-    energy_monitor_pause();
+    if (!energy_monitor_pause()) {
+        return ENERGY_MONITOR_DMA_ERROR;
+    }
     requested_rate_hz = 0U;
     actual_rate_hz = 0U;
     pins_init();
@@ -521,21 +563,26 @@ energy_monitor_status_t energy_monitor_start(uint32_t rate_hz) {
         requested_rate_hz = 0U;
         return ENERGY_MONITOR_ADC_ERROR;
     }
-    accumulator_reset();
     requested_rate_hz = rate_hz;
-    capture_start();
-    accumulator_started = true;
+    if (!capture_start(true)) {
+        requested_rate_hz = 0U;
+        actual_rate_hz = 0U;
+        return ENERGY_MONITOR_DMA_ERROR;
+    }
     return ENERGY_MONITOR_OK;
 }
 
 uint32_t energy_monitor_rate(void) { return actual_rate_hz; }
 
-void energy_monitor_stop(void) {
-    energy_monitor_pause();
+energy_monitor_status_t energy_monitor_stop(void) {
+    if (!energy_monitor_pause()) {
+        return ENERGY_MONITOR_DMA_ERROR;
+    }
     requested_rate_hz = 0U;
     actual_rate_hz = 0U;
     CLOCK_DisableClock(kCLOCK_Timer2);
     CLOCK_AttachClk(kNONE_to_CTIMER2);
+    return ENERGY_MONITOR_OK;
 }
 
 energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {

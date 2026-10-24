@@ -540,11 +540,8 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             return (2U << 16) | 21U;
         }
         if (mode == 2U) {
-            energy_monitor_status_t const status = dap_shared.energy_available ? ENERGY_MONITOR_OK
-                                                                               : ENERGY_MONITOR_UNAVAILABLE;
-            if (status == ENERGY_MONITOR_OK) {
-                energy_monitor_stop();
-            }
+            energy_monitor_status_t const status = dap_shared.energy_available
+                                                       ? energy_monitor_stop() : ENERGY_MONITOR_UNAVAILABLE;
             response[2] = (uint8_t)status;
             return (2U << 16) | 3U;
         }
