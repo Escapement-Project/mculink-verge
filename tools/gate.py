@@ -36,6 +36,7 @@ BUILD = os.path.join(ROOT, "build-gate")
 GENERATOR_CHECK = "generators: sanitizers, both compilers, QEMU"
 
 HOST_CHECKS = (
+    ("Energy samples and accumulation: sanitizers, both compilers", ["uv", "run", "tools/energy_samples_test.py"]),
     ("Unsigned byte decoding: sanitizers, both compilers", ["uv", "run", "tools/byte_io_test.py"]),
     ("DAP packet framing: sanitizers, both compilers", ["uv", "run", "tools/dap_packet_test.py"]),
     ("CPU quota detection for container worker budgets", ["uv", "run", "tools/host_resources_test.py"]),

@@ -441,6 +441,10 @@ __attribute__((section(".ramfunc"))) void DMA0_IRQHandler(void) {
     if (done == 0U) {
         return;
     }
+    if ((done & ENERGY_DMA_MASK) != 0U) {
+        dap_shared.energy_dma_sequence++;
+        __DMB();
+    }
     DMA0->COMMON[0].INTA = done;
     __DMB();
     if ((done & SWO_DMA_MASK) != 0U) {
@@ -455,6 +459,8 @@ __attribute__((section(".ramfunc"))) void DMA0_IRQHandler(void) {
             dap_shared.energy_range_retry_pending = 1U;
         }
         dap_shared.energy_segments++;
+        __DMB();
+        dap_shared.energy_dma_sequence++;
     }
     vcom_dma_done(done);
 }

@@ -172,6 +172,8 @@ typedef struct {
     volatile uint8_t swo_dma_error;
     /** Energy ring segments completed and its DMA error, maintained by CPU 0 for CPU 1. */
     volatile uint32_t energy_segments;
+    /** Odd while CPU 0 clears an energy completion, integrates it and publishes its count. */
+    volatile uint32_t energy_dma_sequence;
     volatile uint8_t energy_dma_error;
     /** CPU 1 publishes a handler that CPU 0 calls before the DMA ring reuses a segment. */
     dap_energy_segment_handler_fn volatile energy_segment_handler;

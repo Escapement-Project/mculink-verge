@@ -47,8 +47,8 @@ contends with any other.
 | CPU 1 | 5 | A staged command's request and reply in `dap_stage`: the generated transfers load write data and store read data there | Inside timed windows |
 | CPU 1 | 0, 3, 4, 6 | C code, `.ramfunc`, data and stack between transfers | Between timed windows |
 | CPU 1 | 11 | `dap_shared`: unstaged requests and replies, the queues, the LED inputs | Between timed windows |
-| CPU 1 | 10 | ADC0 (target sense, `dap_vendor`) | Own core, never during a window |
-| CPU 1 | 4 | Energy ring reads for latest-pair replies | Host polls while capture runs |
+| CPU 1 | 10 | ADC0 (target sense, `dap_vendor`) and settled energy FIFO results | Own core, never during a window; FIFO drain at capture pause/stop |
+| CPU 1 | 4 | Energy ring reads for latest-pair replies and the unconsumed capture tail | Host polls while capture runs; tail drain after acknowledged quiet |
 | CPU 1 | 8 | Ordinary GPIO ports 0 and 1: the Pro's DIO pins and their translators' directions (`dio.c`), and port 0 pin 8 for the target regulator (`target_power.c`) | Vendor 0x8E and 0x8F, own core, never during a window |
 | CPU 1 | 7 | CTimer 2 for the Pro's energy-capture trigger; SYSCON, IOCON and INPUTMUX for setup | Energy capture start/stop |
 | CPU 1 | 7 | SYSCON clocks and IOCON for the DIO pins (`dio_init`) | Boot only, on the Pro |
@@ -76,6 +76,8 @@ contends with any other.
 CPU 1 stops energy DMA and waits for a generation acknowledgement from CPU 0's main loop before
 resetting capture state. The acknowledgement follows the last handler and range-latch task.
 While quiet, CPU 0 leaves energy completion/error bits to CPU 1. SWO and VCOM continue normally.
+An energy position sequence spans completion clearing through count publication, so readers wait
+for the whole update before using the DMA position. Pause drains the settled ring and FIFO before reuse.
 
 ## Timed windows and their exposure
 

@@ -105,6 +105,8 @@ startup. The host polls snapshots; the firmware does not stream samples.
 When bit 2 is set, the firmware integrates every calibrated sample pair independently of host
 polling. A successful start clears the accumulator. A failed start leaves the previous total intact.
 Stop preserves the total for later reads. Pauses add no energy for time without samples.
+Stop and pause include complete samples in the unfinished DMA segment and ADC FIFO. A partial
+voltage/current/range tuple is discarded. Internal pauses preserve the latest-sample sequence.
 The total resets when the probe restarts.
 
 Voltage and current conversions use the highest ADC hardware averaging that sustains the effective
