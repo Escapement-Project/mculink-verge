@@ -53,6 +53,8 @@ option(USB_RAM "Run TinyUSB from SRAM" ON)
 # Vendor 0x88, which runs code the host sends. A bench instrument for the emulator's cost model;
 # src/code_lab.c says what it measures.
 option(CODE_LAB "Build the vendor 0x88 code lab" OFF)
+# Add shared-timer counters for the USB and two-core command path. Bench-only; off in shipped images.
+option(DAP_TIMING_DIAGNOSTICS "Measure command handoff stages" OFF)
 if(RAMFUNC AND CMAKE_BUILD_TYPE STREQUAL "Debug")
   message(FATAL_ERROR
     "RAMFUNC does not fit a Debug build: the unrolled bit paths are about 300 KB at -O0 and SRAM "
@@ -82,6 +84,10 @@ endif()
 if(CODE_LAB)
   string(APPEND FW_VARIANT "+lab")
 endif()
+if(DAP_TIMING_DIAGNOSTICS)
+  string(APPEND FW_VARIANT "+timing")
+endif()
+
 add_custom_target(fw_version ALL
   BYPRODUCTS ${FW_VERSION_HEADER}
   COMMAND ${CMAKE_COMMAND}
@@ -309,6 +315,12 @@ if(CODE_LAB)
   target_sources(${CORE1} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/code_lab.c)
   target_compile_definitions(${CORE1} PRIVATE CODE_LAB=1)
   target_compile_definitions(${PROJECT_NAME} PRIVATE CODE_LAB=1)
+endif()
+
+if(DAP_TIMING_DIAGNOSTICS)
+  target_sources(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_timing.c)
+  target_compile_definitions(${CORE1} PRIVATE DAP_TIMING_DIAGNOSTICS=1)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE DAP_TIMING_DIAGNOSTICS=1)
 endif()
 
 if(CORE_150MHZ)

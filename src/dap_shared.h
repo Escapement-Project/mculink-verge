@@ -79,6 +79,27 @@ typedef struct {
     uint32_t stale;  // commands from a host that had gone, dropped without running
 } dap_core1_status_t;
 
+#ifdef DAP_TIMING_DIAGNOSTICS
+typedef struct {
+    volatile uint32_t clock_hz;
+    volatile uint32_t rx_count;
+    volatile uint32_t rx_callback_cycles;
+    volatile uint32_t rx_stage_copy_cycles;
+    volatile uint32_t tx_stage_copy_cycles;
+    volatile uint32_t rx_publish_cycles;
+    volatile uint32_t mailbox1_signal_cycles;
+    volatile uint32_t wake_to_dispatch_cycles;
+    volatile uint32_t dispatch_cycles;
+    volatile uint32_t request_copy_cycles;
+    volatile uint32_t dap_execute_cycles;
+    volatile uint32_t response_copy_cycles;
+    volatile uint32_t reply_publish_cycles;
+    volatile uint32_t tx_count;
+    volatile uint32_t tx_start_cycles;
+    volatile uint32_t tx_in_flight_cycles;
+} dap_timing_counters_t;
+#endif
+
 /** Which transport response_transport names. */
 enum {
     DAP_TRANSPORT_BULK,
@@ -199,6 +220,12 @@ typedef struct {
     // The command layer may write past the packet before the reply is cut to it, as CPU 1's own
     // reply buffer allows for.
     DAP_SHARED_ALIGN uint8_t response[REQUEST_SLOTS][DAP_STAGE_RESPONSE_SIZE];
+#ifdef DAP_TIMING_DIAGNOSTICS
+    volatile uint32_t request_tick[REQUEST_SLOTS];
+    volatile uint32_t response_tx_tick[REQUEST_SLOTS];
+    volatile uint8_t response_timing_excluded[REQUEST_SLOTS];
+    DAP_SHARED_ALIGN dap_timing_counters_t timing;
+#endif
 } dap_stage_t;
 
 extern dap_stage_t dap_stage;

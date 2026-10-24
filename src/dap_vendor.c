@@ -415,6 +415,48 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         response[2] = dap_shared.stage_commands;
         return (2U << 16) | 3U;
 
+#ifdef DAP_TIMING_DIAGNOSTICS
+    case ID_VENDOR_TIMING: {
+        uint32_t const values[] = {
+            dap_stage.timing.clock_hz,
+            dap_stage.timing.rx_count,
+            dap_stage.timing.rx_callback_cycles,
+            dap_stage.timing.rx_stage_copy_cycles,
+            dap_stage.timing.tx_stage_copy_cycles,
+            dap_stage.timing.rx_publish_cycles,
+            dap_stage.timing.mailbox1_signal_cycles,
+            dap_stage.timing.wake_to_dispatch_cycles,
+            dap_stage.timing.dispatch_cycles,
+            dap_stage.timing.request_copy_cycles,
+            dap_stage.timing.dap_execute_cycles,
+            dap_stage.timing.response_copy_cycles,
+            dap_stage.timing.reply_publish_cycles,
+            dap_stage.timing.tx_count,
+            dap_stage.timing.tx_start_cycles,
+            dap_stage.timing.tx_in_flight_cycles,
+        };
+        response[1] = DAP_OK;
+        response[2] = 1U;
+        memcpy(response + 3U, values, sizeof(values));
+        dap_stage.timing.rx_count = 0U;
+        dap_stage.timing.rx_callback_cycles = 0U;
+        dap_stage.timing.rx_stage_copy_cycles = 0U;
+        dap_stage.timing.tx_stage_copy_cycles = 0U;
+        dap_stage.timing.rx_publish_cycles = 0U;
+        dap_stage.timing.mailbox1_signal_cycles = 0U;
+        dap_stage.timing.wake_to_dispatch_cycles = 0U;
+        dap_stage.timing.dispatch_cycles = 0U;
+        dap_stage.timing.request_copy_cycles = 0U;
+        dap_stage.timing.dap_execute_cycles = 0U;
+        dap_stage.timing.response_copy_cycles = 0U;
+        dap_stage.timing.reply_publish_cycles = 0U;
+        dap_stage.timing.tx_count = 0U;
+        dap_stage.timing.tx_start_cycles = 0U;
+        dap_stage.timing.tx_in_flight_cycles = 0U;
+        return (2U << 16) | (3U + sizeof(values));
+    }
+#endif
+
     case ID_VENDOR_TARGET: {
         const bool supply = (request[1] == TARGET_MODE_SUPPLY);
         const uint8_t channel = supply ? TARGET_SUPPLY_CHANNEL : (uint8_t)(request[2] & TARGET_CHANNEL_MASK);

@@ -16,6 +16,9 @@
 #include "dap_core.h"
 #include "dap_dispatch.h"
 #include "dap_shared.h"
+#ifdef DAP_TIMING_DIAGNOSTICS
+#include "dap_timing.h"
+#endif
 #include "dio.h"
 #include "energy_monitor.h"
 #include "hot.h"
@@ -78,6 +81,9 @@ static void wake_core0(void) {
 }
 
 COMMAND_PATH static bool dap_task(void) {
+#ifdef DAP_TIMING_DIAGNOSTICS
+    uint32_t const dispatch_start = dap_timing_now();
+#endif
     __DMB();
     uint8_t const bulk = dap_shared.request_head;
     uint8_t const hid = dap_shared.hid_request_head;
@@ -102,10 +108,32 @@ COMMAND_PATH static bool dap_task(void) {
         request = use_hid ? dap_stage.hid_request[stage - 1U] : dap_stage.request[stage - 1U];
         response = dap_stage.response[out];
     } else if (use_hid) {
+#ifdef DAP_TIMING_DIAGNOSTICS
+        uint32_t const copy_start = dap_timing_now();
+#endif
         memcpy(request_copy, dap_shared.hid_request[hid], dap_shared.hid_request_len[hid]);
+#ifdef DAP_TIMING_DIAGNOSTICS
+        if (request_copy[0] != DAP_TIMING_COMMAND) {
+            dap_stage.timing.request_copy_cycles += dap_timing_now() - copy_start;
+        }
+#endif
     } else {
+#ifdef DAP_TIMING_DIAGNOSTICS
+        uint32_t const copy_start = dap_timing_now();
+#endif
         memcpy(request_copy, dap_shared.request[bulk], dap_shared.request_len[bulk]);
+#ifdef DAP_TIMING_DIAGNOSTICS
+        if (request_copy[0] != DAP_TIMING_COMMAND) {
+            dap_stage.timing.request_copy_cycles += dap_timing_now() - copy_start;
+        }
+#endif
     }
+#ifdef DAP_TIMING_DIAGNOSTICS
+    bool const timing_command = !use_hid && (request[0] == DAP_TIMING_COMMAND);
+    if (!use_hid && !timing_command) {
+        dap_stage.timing.wake_to_dispatch_cycles += dap_timing_now() - dap_stage.request_tick[bulk];
+    }
+#endif
 
     // The slot goes back to CPU 0, which can receive the next command into it while this one runs.
     __DMB();
@@ -128,9 +156,20 @@ COMMAND_PATH static bool dap_task(void) {
     dap_shared.core1.command = command;
 
     led_activity();
+#ifdef DAP_TIMING_DIAGNOSTICS
+    if (!timing_command) {
+        dap_stage.timing.dispatch_cycles += dap_timing_now() - dispatch_start;
+    }
+    uint32_t const execute_start = dap_timing_now();
+#endif
     MARKER_BUSY();
     uint32_t produced = DAP_ExecuteCommandSized(request, request_length, packet_size, response) & 0xFFFFU;
     MARKER_IDLE();
+#ifdef DAP_TIMING_DIAGNOSTICS
+    if (!timing_command) {
+        dap_stage.timing.dap_execute_cycles += dap_timing_now() - execute_start;
+    }
+#endif
     if (produced > DAP_PACKET_SIZE) {
         produced = DAP_PACKET_SIZE;
     }
@@ -141,8 +180,19 @@ COMMAND_PATH static bool dap_task(void) {
     }
     if (produced != 0U) {
         if (!staged) {
+#ifdef DAP_TIMING_DIAGNOSTICS
+            uint32_t const copy_start = timing_command ? 0U : dap_timing_now();
+#endif
             memcpy(dap_shared.response[out], response_copy, produced);
+#ifdef DAP_TIMING_DIAGNOSTICS
+            if (!timing_command) {
+                dap_stage.timing.response_copy_cycles += dap_timing_now() - copy_start;
+            }
+#endif
         }
+#ifdef DAP_TIMING_DIAGNOSTICS
+        uint32_t const publish_start = timing_command ? 0U : dap_timing_now();
+#endif
         dap_shared.response_staged[out] = staged;
         dap_shared.response_seq[out] = seq;
         dap_shared.response_transport[out] = use_hid ? DAP_TRANSPORT_HID : DAP_TRANSPORT_BULK;
@@ -150,6 +200,11 @@ COMMAND_PATH static bool dap_task(void) {
         dap_shared.response_len[out] = (uint16_t)produced;
         dap_shared.response_tail = dap_usb_next_slot(out, REQUEST_SLOTS);
         wake_core0();
+#ifdef DAP_TIMING_DIAGNOSTICS
+        if (!timing_command) {
+            dap_stage.timing.reply_publish_cycles += dap_timing_now() - publish_start;
+        }
+#endif
     }
     dap_shared.core1.commands++;
     if (reboot_after_reply != REBOOT_NONE) {
