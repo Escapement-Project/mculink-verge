@@ -678,6 +678,39 @@ def check_jtag_chain(c: Checker, elf: str) -> None:
     c.note("zero-length JTAG IRs rejected without changing the prior chain, including long-IR chains")
 
 
+def check_energy_descriptors(c: Checker, elf: str, slots: int) -> None:
+    sym = symbols_with_size(elf)
+    if not c.check("capture_ring_init" in sym, "energy ring initialization missing"):
+        return
+    probe = Machine(elf, Target([]), restart_at=set(), model=Model())
+    probe.sym["capture_ring_init"] = sym["capture_ring_init"][0]
+    offsets = shared_offsets(slots, "dma_table", small_enums=short_enums(elf))
+    entry = sym["dap_shared"][0] + offsets["dma_table"] + 21 * 16
+    ring, size = sym["energy_ring"]
+    descriptors, descriptor_bytes = sym["energy_descriptors"]
+    c.check(size == 8192 and descriptor_bytes == 32, "energy ring/descriptor dimensions changed")
+    for restart in range(2):
+        probe.uc.mem_write(descriptors, bytes([0xee]) * descriptor_bytes)
+        probe.uc.mem_write(entry, bytes([0xee]) * 16)
+        probe.call("capture_ring_init")
+        c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC, "energy ring init did not return")
+        at = entry
+        destinations = []
+        for i in range(5):
+            config, source, destination, link = struct.unpack("<4I", probe.uc.mem_read(at, 16))
+            destinations.append((destination + 4 - ring) // 4096 - 1)
+            c.check(source == struct.unpack("<I", probe.uc.mem_read(descriptors + 4, 4))[0],
+                    "energy descriptor changed ADC source")
+            c.check(destination == ring + (i % 2 + 1) * 4096 - 4, "energy destination/stride mismatch")
+            if i != 0:
+                c.check((config >> 16) & 0x3ff == 1023 and (config >> 8) & 3 == 2,
+                        "energy descriptor count/word width mismatch")
+            c.check(link in (descriptors, descriptors + 16), "energy descriptor link outside ring")
+            at = link
+        c.check(destinations == [0, 1, 0, 1, 0], f"energy startup/restart {restart}: {destinations}")
+    c.note("actual energy descriptor links alternate segments from the first transfer, including restart")
+
+
 def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
     """A host has to be able to recognise this firmware and tell two builds of it apart.
 
@@ -1975,6 +2008,7 @@ def main() -> int:
     check_request_bounds(c, args.core1, args.packet_size)
     check_bounded_commands(c, args.core1)
     check_jtag_chain(c, args.core1)
+    check_energy_descriptors(c, args.core1, slots)
     check_identity(c, args.core1, args.code_lab)
     check_board(c, args.core1, slots)
     check_dio(c, args.core1, slots)

@@ -416,7 +416,7 @@ static void timer_start(uint32_t rate_hz) {
     CTIMER2->TCR = CTIMER_TCR_CEN_MASK;
 }
 
-static void capture_start(void) {
+__attribute__((noinline)) static void capture_ring_init(void) {
     uint32_t const source = (uint32_t)ENERGY_DMA_SOURCE;
     for (uint32_t i = 0U; i < ENERGY_SEGMENTS; i++) {
         energy_descriptors[i].xfercfg = ENERGY_SEGMENT_XFERCFG;
@@ -430,8 +430,11 @@ static void capture_start(void) {
     entry->xfercfg = 0U;
     entry->source_end = source;
     entry->destination_end = (uint32_t)&energy_ring[ENERGY_SEGMENT_WORDS - 1U];
-    entry->link = (uint32_t)&energy_descriptors[0];
+    entry->link = energy_descriptors[0].link;
+}
 
+static void capture_start(void) {
+    capture_ring_init();
     DMA0->COMMON[0].ENABLECLR = ENERGY_DMA_MASK;
     DMA0->COMMON[0].ABORT = ENERGY_DMA_MASK;
     DMA0->COMMON[0].INTENCLR = ENERGY_DMA_MASK;
