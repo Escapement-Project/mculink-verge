@@ -4,6 +4,7 @@
 
 #define FIRMWARE_VERSION "test"
 #include "dap_packet.h"
+#include "jtag_chain.h"
 
 static dap_packet_plan_t check(const uint8_t* bytes, uint32_t length, uint32_t capacity, bool expected) {
     uint8_t* exact = malloc(length);
@@ -28,6 +29,12 @@ static void prefixes(const uint8_t* bytes, uint32_t length, uint32_t capacity) {
 }
 
 int main(void) {
+    assert(jtag_chain_valid(NULL, 0U, 8U));
+    assert(jtag_chain_valid((uint8_t[]){1, 255, 4}, 3U, 8U));
+    assert(!jtag_chain_valid((uint8_t[]){4, 4, 0}, 3U, 8U));
+    assert(!jtag_chain_valid((uint8_t[]){0}, 1U, 8U));
+    assert(!jtag_chain_valid(NULL, 9U, 8U));
+
     static const struct {
         uint8_t id, in, out;
     } fixed[] = {

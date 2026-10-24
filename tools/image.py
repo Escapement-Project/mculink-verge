@@ -657,6 +657,27 @@ def check_bounded_commands(c: Checker, elf: str) -> None:
     c.note("HID/bulk command preflight, reply guards, side effects and partial batch counts")
 
 
+def check_jtag_chain(c: Checker, elf: str) -> None:
+    probe = build(elf, "jtag", True, Model())
+    if "DAP_Setup" in probe.sym:
+        probe.call("DAP_Setup")
+    probe.command(bytes([2, 2]))
+    probe.command(bytes([0x11]) + u32(10_000_000))
+    state = symbols_with_size(elf)["DAP_Data"]
+    for valid in (bytes([0x15, 1, 4]), bytes([0x15, 8]) + bytes([255]) * 8):
+        c.check(probe.command(valid) == bytes([0x15, 0]), "valid JTAG chain rejected")
+        before = bytes(probe.uc.mem_read(*state))
+        for malformed in (bytes([0x15, 1, 0]), bytes([0x15, 3, 4, 4, 0])):
+            c.check(probe.command(malformed) == bytes([0x15, 0xff]), "zero-length IR accepted")
+            c.check(bytes(probe.uc.mem_read(*state)) == before, "rejected chain changed prior TAP configuration")
+        # This command selects IR; the former zero-length countdown prevented it from returning.
+        reply = probe.command(bytes([5, 0, 1, 2]))
+        c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC and reply[0] == 5,
+                "transfer after rejected chain did not return")
+    c.check(probe.command(bytes([0x15, 0])) == bytes([0x15, 0]), "empty chain reset rejected")
+    c.note("zero-length JTAG IRs rejected without changing the prior chain, including long-IR chains")
+
+
 def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
     """A host has to be able to recognise this firmware and tell two builds of it apart.
 
@@ -1953,6 +1974,7 @@ def main() -> int:
     check_response_bounds(c, args.core1, args.packet_size)
     check_request_bounds(c, args.core1, args.packet_size)
     check_bounded_commands(c, args.core1)
+    check_jtag_chain(c, args.core1)
     check_identity(c, args.core1, args.code_lab)
     check_board(c, args.core1, slots)
     check_dio(c, args.core1, slots)
