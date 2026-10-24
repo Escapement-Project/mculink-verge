@@ -32,6 +32,9 @@
 #include "jtag_dp.h"
 #include "led.h"
 #include "swd_dp.h"
+
+#define SPI_RESPONSE_FIXED 4U
+#define I2C_RESPONSE_FIXED 4U
 #ifdef SWD_CODEGEN
 #include "swd_gen.h"
 #include "swd_sweep.h"
@@ -285,4 +288,80 @@ __attribute__((noinline)) COMMAND_PATH uint32_t DAP_ExecuteCommand(const uint8_t
     }
 
     return DAP_ProcessCommand(request, response);
+}
+
+static bool variable_vendor_size(const uint8_t* request, uint32_t available, uint32_t packet_size,
+                                 uint32_t* required) {
+    uint32_t rx_length;
+    if (request[0] == ID_DAP_Vendor17) {
+        if (available < 8U) {
+            return false;
+        }
+        *required = 8U + (uint32_t)request[6] + ((uint32_t)request[7] << 8U);
+        rx_length = (uint32_t)request[6] + ((uint32_t)request[7] << 8U);
+        return (*required <= available) && (SPI_RESPONSE_FIXED + rx_length <= packet_size);
+    }
+    if (request[0] == ID_DAP_Vendor18) {
+        if (available < 10U) {
+            return false;
+        }
+        *required = 10U + (uint32_t)request[6] + ((uint32_t)request[7] << 8U);
+        rx_length = (uint32_t)request[8] + ((uint32_t)request[9] << 8U);
+        return (*required <= available) && (I2C_RESPONSE_FIXED + rx_length <= packet_size);
+    }
+    return true;
+}
+
+/** Run variable-size bridge requests only after their whole payload fits the received packet. */
+COMMAND_PATH uint32_t DAP_ExecuteCommandSized(const uint8_t* request, uint32_t request_length,
+                                              uint32_t packet_size, uint8_t* response) {
+    if ((request_length == 0U) || (packet_size == 0U)) {
+        return 0U;
+    }
+
+    if (request[0] != ID_DAP_ExecuteCommands) {
+        uint32_t required = 0U;
+        if ((request[0] >= ID_DAP_Vendor0) && (request[0] <= ID_DAP_Vendor31) &&
+            !variable_vendor_size(request, request_length, packet_size, &required)) {
+            response[0] = request[0];
+            response[1] = 2U; // PRO_BUS_INVALID
+            response[2] = 0U;
+            response[3] = 0U;
+            return (request_length << 16U) | 4U;
+        }
+        return DAP_ProcessCommand(request, response);
+    }
+
+    if (request_length < 2U) {
+        response[0] = ID_DAP_Invalid;
+        return (request_length << 16U) | 1U;
+    }
+
+    uint32_t const command_count = request[1];
+    uint32_t input_used = 2U;
+    uint32_t output_used = 2U;
+    response[0] = ID_DAP_ExecuteCommands;
+    response[1] = (uint8_t)command_count;
+
+    for (uint32_t i = 0U; i < command_count; i++) {
+        uint32_t required = 0U;
+        uint32_t const available = request_length - input_used;
+        if ((available == 0U) ||
+            (((request[input_used] >= ID_DAP_Vendor0) && (request[input_used] <= ID_DAP_Vendor31)) &&
+             !variable_vendor_size(request + input_used, available, packet_size - output_used, &required))) {
+            response[0] = ID_DAP_Invalid;
+            return (request_length << 16U) | 1U;
+        }
+
+        uint32_t const result = DAP_ProcessCommand(request + input_used, response + output_used);
+        uint32_t const consumed = result >> 16U;
+        uint32_t const produced = result & 0xFFFFU;
+        if ((consumed == 0U) || (consumed > available) || (produced > packet_size - output_used)) {
+            response[0] = ID_DAP_Invalid;
+            return (request_length << 16U) | 1U;
+        }
+        input_used += consumed;
+        output_used += produced;
+    }
+    return (input_used << 16U) | output_used;
 }

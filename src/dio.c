@@ -26,6 +26,7 @@ static const uint8_t dio_group[DIO_GROUPS_MAX] = {0x07U, 0x08U};
 static uint8_t dio_on;
 static uint8_t dio_outputs;
 static uint8_t dio_levels;
+static bool dio_spi_owned;
 
 /** One store per port of `regs` (SET, CLR, DIRSET or DIRCLR), for the DIO pins in `pins`. */
 static void dio_store(volatile uint32_t* regs, uint32_t pins) {
@@ -72,7 +73,7 @@ bool dio_available(void) {
 }
 
 bool dio_set(uint8_t mask, uint8_t outputs, uint8_t levels) {
-    if ((dio_on == 0U) || ((mask & ~dio_on) != 0U)) {
+    if ((dio_on == 0U) || dio_spi_owned || ((mask & ~dio_on) != 0U)) {
         return false;
     }
     const uint32_t next = (dio_outputs & ~(uint32_t)mask) | (outputs & (uint32_t)mask);
@@ -132,4 +133,37 @@ void dio_get(dio_state_t* state) {
     for (uint32_t group = 0U; group < DIO_GROUPS_MAX; group++) {
         state->group[group] = dio_group[group];
     }
+}
+
+bool dio_spi_begin(void) {
+    if ((dio_on == 0U) || (dio_outputs != 0U) || dio_spi_owned) {
+        return false;
+    }
+
+    // Keep the probe isolated while the peripheral takes control of its output pins.
+    IOCON_PinMuxSet(IOCON, 0U, 20U, DIO_PIN_MODE);
+    IOCON_PinMuxSet(IOCON, 0U, 26U, DIO_PIN_MODE);
+    IOCON_PinMuxSet(IOCON, 1U, 2U, DIO_PIN_MODE);
+    IOCON_PinMuxSet(IOCON, 1U, 3U, DIO_PIN_MODE);
+    dio_turn(0U, true);
+    dio_turn(1U, false);
+    dio_spi_owned = true;
+    led_sio(true);
+    return true;
+}
+
+void dio_spi_end(void) {
+    if (!dio_spi_owned) {
+        return;
+    }
+
+    // Turn the output translators away before restoring GPIO input mode.
+    dio_turn(0U, false);
+    IOCON_PinMuxSet(IOCON, 0U, 20U, DIO_PIN_MODE);
+    IOCON_PinMuxSet(IOCON, 0U, 26U, DIO_PIN_MODE);
+    IOCON_PinMuxSet(IOCON, 1U, 2U, DIO_PIN_MODE);
+    IOCON_PinMuxSet(IOCON, 1U, 3U, DIO_PIN_MODE);
+    dio_store(GPIO->DIRCLR, DIO_PINS);
+    dio_spi_owned = false;
+    led_sio(dio_outputs != 0U);
 }

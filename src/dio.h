@@ -8,8 +8,7 @@
  * DIO0 and DIO1 are on port 0 and DIO2 and DIO3 on port 1, so one command moves the two ports a
  * store apart: DIO2 follows DIO0 and DIO1 by about 40 ns.
  *
- * Nothing here knows the transport: ID_VENDOR_DIO (dap_vendor.c) is one front end, and USB-SIO
- * would be another.
+ * The host reaches these pins through CMSIS-DAP vendor commands 0x8E and 0x91.
  *
  * The state outlives sessions, so a host can hold a target's boot pin through a reconnect. Only a
  * reset of the probe puts the pins back to inputs. CPU 1 only.
@@ -45,5 +44,11 @@ bool dio_available(void);
 bool dio_set(uint8_t mask, uint8_t outputs, uint8_t levels);
 
 void dio_get(dio_state_t* state);
+
+/** Temporarily assigns the DIO pins to the Pro's hardware SPI. Requires all DIO pins to be inputs. */
+bool dio_spi_begin(void);
+
+/** Returns the DIO pins to inputs after hardware SPI releases them. */
+void dio_spi_end(void);
 
 #endif

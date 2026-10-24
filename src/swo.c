@@ -35,6 +35,7 @@
 #include "dma0.h"
 #include "led.h"
 #include "swo_ring.h"
+#include "swo.h"
 
 static_assert(SWO_BUFFER_SIZE == SWO_USABLE_BYTES, "DAP_Info reports SWO_BUFFER_SIZE as the buffer");
 static_assert(SWO_STREAM == 0, "no streaming endpoint yet");
@@ -81,6 +82,10 @@ static uint32_t read_position;
 /** DAP_SWO_ExtendedStatus: the position last seen to move, and the test domain timer then. */
 static uint32_t stamp_index;
 static uint32_t stamp_tick;
+
+bool SWO_IsConfigured(void) {
+    return mode != DAP_SWO_OFF;
+}
 
 /** RESET_PeripheralReset waits on a readback that the image checker's register model never
  *  gives, and the reset takes effect when the write lands. */

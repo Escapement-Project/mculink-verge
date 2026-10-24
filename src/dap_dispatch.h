@@ -16,4 +16,8 @@
  * is all the room needed beyond that. */
 #define DAP_RESPONSE_SIZE (DAP_PACKET_SIZE + DAP_COMMAND_RESPONSE_MAX)
 
+/** Execute a packet while bounding variable-length SPI and I2C vendor commands to bytes received. */
+uint32_t DAP_ExecuteCommandSized(const uint8_t* request, uint32_t request_length, uint32_t packet_size,
+                                uint8_t* response);
+
 #endif

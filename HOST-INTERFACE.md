@@ -30,7 +30,8 @@ disabled USB-SIO when the probe started.
 
 Format 6 extended-capability bit 0 advertises energy capture on Pro units with HW_VER_5 fitted.
 Bit 1 advertises calibrated fields appended to the `0x90` latest reply. Bit 2 advertises accumulated
-energy reads through `0x90` mode 3. Other extended bits are reserved.
+energy reads through `0x90` mode 3. Bits 3 and 4 advertise SPI and I2C bridges on Pro units when J15
+leaves USB-SIO enabled. Other extended bits are reserved.
 
 Fields are appended in later formats. Use the format version before reading fields added by a
 later format. Ignore fields you do not understand. The format 4 and later cJTAG mask reports what
@@ -142,8 +143,47 @@ calibration supports the 350 mA and 50 mA jumper settings.
 Raw ADC codes remain available in the reply prefix. Hosts can use the appended physical-unit fields
 when `calibrated-valid` is 1.
 
+## Pro SPI: `0x91`
+
+SPI is available when `0x82` format 6 sets extended-capability bit 3. It uses the CMSIS-DAP vendor
+command path, not a separate USB-SIO endpoint. The command runs on CMSIS-DAP bulk and HID transports;
+the request and reply must each fit that transport's packet size. A standalone command allows up to
+504 TX bytes on bulk or 56 on HID. A `DAP_ExecuteCommands` batch has less room for each command
+because its header and neighboring requests or replies share the packet.
+
+Send `[0x91, mode, clock_hz:u32LE, count:u16LE, tx[count]]`. Mode bit 0 sets CPOL, bit 1 sets CPHA,
+and bit 2 selects LSB-first. Other mode bits are reserved. Each request is one full-duplex transfer
+with SSEL0 asserted for the whole transfer. The SPI pins are also DIO0–DIO3, so the request returns
+`BUSY` while any DIO pin is configured as an output. During SPI, the firmware owns the DIO pins and
+leaves them as inputs afterward.
+
+The reply is `[0x91, result, count:u16LE, rx[count]]`. The count is zero on errors. The firmware
+accepts `clock_hz` from 1/4096 through 1/2 of the SPI source clock. Its current 96 MHz source gives
+an accepted request range of about 23.4 kHz to 48 MHz. The divider quantizes the actual SCK rate.
+A zero transfer length is rejected.
+
+## Pro I2C: `0x92`
+
+I2C is available when `0x82` format 6 sets extended-capability bit 4. It uses the same CMSIS-DAP
+vendor command path and packet-size limits as SPI. A standalone command allows up to 502 TX bytes or
+508 RX bytes on bulk, and 54 TX bytes or 60 RX bytes on HID. Batches have less room because their
+header and neighboring requests or replies share the packet.
+
+Send `[0x92, address, clock_hz:u32LE, tx_count:u16LE, rx_count:u16LE, tx[tx_count]]`. `address` is
+7-bit. At least one count must be nonzero. A write followed by a read uses a repeated start and one
+final stop. A read-only request starts with a read. The bus rate must be from 10 kHz through 1 MHz.
+
+The reply is `[0x92, result, rx_count:u16LE, rx[rx_count]]`. The count is zero on errors. Flexcomm 3
+also drives SWO, so I2C returns `BUSY` while SWO is configured. Turn SWO off before using I2C. The
+firmware leaves P0_4 and P0_21 without internal pulls; provide external pull-ups to the bus voltage.
+
+For both commands, result values are `OK` (0), `UNAVAILABLE` (1), `INVALID` (2), `BUSY` (3),
+`TRANSFER_ERROR` (4), and `NACK` (5; I2C only). `UNAVAILABLE` means this is not a Pro or J15 disabled
+USB-SIO at startup. These commands may be included in `DAP_ExecuteCommands` batches.
+
 ## Other commands
 
 Commands `0x84` through `0x8D` are implemented for board control, target measurements and
 development instruments. They are not documented here as a stable host API. `0x80` and `0x81` are
-not implemented by this firmware.
+not implemented by this firmware. Command `0x90` handles energy capture; `0x91` and `0x92` provide
+the Pro SPI and I2C bridges.

@@ -74,19 +74,19 @@ uint8_t const* tud_descriptor_device_cb(void) {
 
 /** One endpoint layout for both boards: the plain MCU-Link is a Pro with
  *  functions removed. A function a board lacks, or a jumper turns off, is left out of the
- *  configuration, never declared as an interface that does nothing, as stock leaves it out. Its
- *  endpoint numbers stay reserved for it, and the interfaces after it renumber. CMSIS-DAP v2 is
- *  interface 0 on EP1 whenever it is there: the MS OS 2.0 descriptor names interface 0. */
+ *  configuration, never declared as an interface that does nothing, as stock leaves it out. Each
+ *  function keeps its endpoint numbers when another is omitted, and the interfaces after it
+ *  renumber. CMSIS-DAP v2 is interface 0 on EP1 whenever it is there: the MS OS 2.0 descriptor
+ *  names interface 0. */
 #define ITF_NUM_VENDOR 0
 #define EPNUM_VENDOR_OUT 0x01
 #define EPNUM_VENDOR_IN 0x81
-// EP2 is the Pro's LPCSIO HID, once USB-SIO exists.
-#define EPNUM_VCOM_OUT 0x03
-#define EPNUM_VCOM_IN 0x83
-#define EPNUM_HID_OUT 0x04
-#define EPNUM_HID_IN 0x84
-#define EPNUM_VCOM2_OUT 0x05
-#define EPNUM_VCOM2_IN 0x85
+#define EPNUM_VCOM_OUT 0x02
+#define EPNUM_VCOM_IN 0x82
+#define EPNUM_HID_OUT 0x03
+#define EPNUM_HID_IN 0x83
+#define EPNUM_VCOM2_OUT 0x04
+#define EPNUM_VCOM2_IN 0x84
 /** The notification endpoints are numbers USB1 does not have (it has EP0 to EP5), declared as
  *  NXP's stock firmware declares them on the Pro and never opened: this firmware sends no
  *  notification, and the boards wire no modem lines. */

@@ -12,13 +12,14 @@ probe before fitting or removing one.
 | SWO capture | UART encoding | UART encoding | No Manchester encoding or streaming endpoint. The firmware reports a 30 Mbaud ceiling. |
 | Target serial port | One USB serial port | Two USB serial ports | J4 on the full MCU-Link or J14 on the Pro disables the first port. The Pro's second port is on J26 and is 3.3 V only. |
 | DIO pins | Not available | Four pins on J19 | J15 disables USB-SIO and leaves the pins as inputs. DIO0–2 change direction as a group; DIO3 changes on its own. |
+| SPI and I2C bridges | Not available | SPI on DIO0–DIO3; I2C on Flexcomm 3 | CMSIS-DAP vendor commands `0x91` and `0x92`. J15 disables both. SPI shares the DIO pins; I2C shares Flexcomm 3 with SWO. |
 | Target supply | Not available | Switchable 1.8 V or 3.3 V | `tools/dap.py target-power` controls it. J5 selects voltage and J6 connects it to the target. Firmware disables it during startup. |
 | Energy capture | Not available | Calibrated voltage/current readings and accumulated energy | Capture is available when HW_VER_5 is fitted. Calibration is verified in both 350 mA and 50 mA jumper settings. |
 | Firmware update | Supported by `verge` | Supported by `verge` | A USB restart can enter the bootloader without the ISP jumper. The ISP jumper remains the recovery path for an image that does not start. |
 
-The Pro also has LEDs for board, SWO, serial, debug-wire and DIO activity. Its SPI and I2C bridges
-and analog trace are not implemented. Energy capture retains raw ADC codes and adds calibrated
-voltage/current fields in both current range settings.
+The Pro also has LEDs for board, SWO, serial, debug-wire and DIO activity. Energy capture retains
+raw ADC codes and adds calibrated voltage/current fields in both current range settings. Analog
+trace is not implemented.
 
 ## Performance figures
 

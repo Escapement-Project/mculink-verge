@@ -22,6 +22,9 @@ does with them.
   and the target console. The feature jumpers work as README.md "Jumpers" describes.
 - **The second serial port** on J26, a second CDC interface. 3.3 V only: J26 has no level shifter.
 - **The DIO pins** on J19, driven from the host (README.md "The Pro's DIO pins").
+- **SPI and I2C** through CMSIS-DAP vendor commands `0x91` and `0x92`, not a separate USB-SIO
+  endpoint. SPI uses DIO0–DIO3 and is unavailable while a DIO pin is an output. I2C uses Flexcomm 3,
+  which also drives SWO, so turn SWO off before using I2C. J15 disables both bridges.
 - **The target supply** is switched by the host. J5 selects 1.8 V when shorted or 3.3 V when open;
   J6 must connect the supply to the target. The regulator is rated to 400 mA. See HOST-INTERFACE.md
   for the command.
@@ -29,15 +32,15 @@ does with them.
   USB is configured. The status, SWO and VCOM LEDs flicker with traffic. LED5 (FUNC) shows the
   wire by the shape of its ramp: dark to light for SWD, light to dark for two-pin cJTAG, light to
   dark to light for four-wire JTAG, solid with the SWD jumper fitted, dark with no port connected.
-  LED6 (SIO) is lit while the host drives a DIO pin. LED7 (energy) stays dark. The fades follow
-  CIE lightness, so they look linear to the eye.
+  LED6 (SIO) is lit while the host drives a DIO pin or runs SPI. LED7 (energy) stays dark. The fades
+  follow CIE lightness, so they look linear to the eye.
 
 - **Energy capture** is available on Pro units with HW_VER_5 fitted. The host can start a background
   ADC capture and read raw voltage/current codes, calibrated voltage/current, and accumulated
   energy. Calibration is verified with the internal loads in both the 350 mA and 50 mA jumper
   settings. The accumulator updates without host polling and remains readable after capture stops.
 
-Not yet: USB-SIO's SPI and I2C, the analog trace input and the LPC804.
+Not yet: the analog trace input and the LPC804.
 
 ## What the two boards share
 
@@ -75,8 +78,8 @@ The rest of the Pro's pins, from schematic page 1:
 | LEDs, active low | LED1 USB PIO1_12, LED2 SWO PIO1_13, LED3 status P0_5 (red), LED4 VCOM PIO1_15, LED5 FUNC PIO1_16, LED6 SIO PIO1_17, LED7 NRG PIO1_18 |
 | target supply | P0_8 TARGET_PWR_EN enables a TPS73601; its output reaches the target only through J6, at the voltage J5 picks |
 | second VCOM (J26) | Flexcomm 1: RXD PIO1_10, TXD PIO1_11. J26 is a 1x6 header labelled "firmware debug console" in the FTDI TTL-232R-3V3 cable's order (page 3): 1 GND, 4 the cable's TXD into PIO1_10 through 499R, 5 PIO1_11 out to the cable's RXD through 499R, 2, 3 and 6 not connected. ESD diodes, no level shifter: 3.3 V only. So a target's TXD goes to pin 4 and its RXD to pin 5; UM11673 section 4.3 says the reverse, which the schematic contradicts. Check on the bench before wiring a target |
-| USB-SIO SPI | the high-speed SPI: SSEL0 P0_20, MOSI P0_26, SCK PIO1_2, MISO PIO1_3, each also a GPIO (DIO0 to DIO3) on J19 pins 2 to 5; level-translator directions IO_DIR1 PIO1_1 (DIO0 to DIO2, U17 and U13) and IO_DIR2 PIO1_25 (DIO3, U12), high to drive the header, each with a 1K pull-down (netlist, 2026-10-22). The header side runs at J19 pin 14 (VDD_IO_REF, 1.2 to 5.5 V), or 3.3 V with nothing there |
-| USB-SIO I2C | Flexcomm 3: SDA P0_4, SCL P0_21. SWO's UART is Flexcomm 3 too, so the two exclude each other |
+| SPI | the high-speed SPI: SSEL0 P0_20, MOSI P0_26, SCK PIO1_2, MISO PIO1_3, each also a GPIO (DIO0 to DIO3) on J19 pins 2 to 5; level-translator directions IO_DIR1 PIO1_1 (DIO0 to DIO2, U17 and U13) and IO_DIR2 PIO1_25 (DIO3, U12), high to drive the header, each with a 1K pull-down (netlist, 2026-10-22). The header side runs at J19 pin 14 (VDD_IO_REF, 1.2 to 5.5 V), or 3.3 V with nothing there. The host uses vendor command 0x91; it temporarily owns the DIO pins |
+| I2C | Flexcomm 3: SDA P0_4, SCL P0_21. SWO's UART is Flexcomm 3 too, so the two exclude each other. The host uses vendor command 0x92 |
 | energy measurement | voltage ADC0_0/CH0A on P0_23; current ADC0_8/CH0B on P0_16 and ACMP0_IN_D on PIO1_14; CURR_RANGE_SET ADC0_4 on PIO1_8; CTRL_HIGH_CURR on P0_15 (ADC0_2) and P0_30 (input); CTRL_HIGH_CURR_EN P0_17; CTRL_HIGH_CURR_DIS P0_29 (CMP0_OUT); calibration CTRL_CAL_R1 to R4 on PIO1_22, PIO1_23, PIO1_26, PIO1_29 and CTRL_CAL_DISC on PIO1_24 |
 | triggers | SYNC_TRIG P0_6, SYNC_LEAD P0_7 (J2), MEAS_TRIG PIO1_7 |
 | analog trace input | ANALOG_IN1, ADC0_11 on PIO1_0, behind a voltage follower |

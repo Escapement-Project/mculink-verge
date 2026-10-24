@@ -36,7 +36,15 @@ from unicorn import (
     Uc,
     UcError,
 )
-from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_SP
+from unicorn.arm_const import (
+    UC_ARM_REG_LR,
+    UC_ARM_REG_PC,
+    UC_ARM_REG_R0,
+    UC_ARM_REG_R1,
+    UC_ARM_REG_R2,
+    UC_ARM_REG_R3,
+    UC_ARM_REG_SP,
+)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from m33 import Engine, Insn  # noqa: E402
@@ -1285,7 +1293,7 @@ class Machine:
         self.uc.reg_write(UC_ARM_REG_SP, STACK_TOP)
         self.uc.reg_write(UC_ARM_REG_LR, RETURN_MAGIC | 1)
         for i, value in enumerate(args):
-            self.uc.reg_write([UC_ARM_REG_R0, UC_ARM_REG_R1][i], value)
+            self.uc.reg_write([UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3][i], value)
         self._prev_end = None
         try:
             self.uc.emu_start(addr | 1, RETURN_MAGIC, count=timeout_insns)
@@ -1300,11 +1308,13 @@ class Machine:
             raise SystemExit(f"a {len(request)}-byte request is longer than a {PACKET_SIZE}-byte packet")
         self.uc.mem_write(request_at, request + bytes(PACKET_SIZE - len(request)))
         self.uc.mem_write(response_at, bytes(600))
-        # The entry point main() uses. DAP_ProcessCommand sits behind it and is not always a
-        # symbol: a build that routes some commands of its own leaves a wrapper small enough to
-        # inline away.
-        entry = "DAP_ExecuteCommand" if "DAP_ExecuteCommand" in self.sym else "DAP_ProcessCommand"
-        produced = self.call(entry, request_at, response_at) & 0xFFFF
+        # Run the same sized entry point as USB, including its received length and transport size.
+        if "DAP_ExecuteCommandSized" in self.sym:
+            entry = "DAP_ExecuteCommandSized"
+            produced = self.call(entry, request_at, len(request), PACKET_SIZE, response_at) & 0xFFFF
+        else:
+            entry = "DAP_ExecuteCommand" if "DAP_ExecuteCommand" in self.sym else "DAP_ProcessCommand"
+            produced = self.call(entry, request_at, response_at) & 0xFFFF
         if produced > 0x400:
             # A reply that long means the call did not finish: the usual cause is a pacing loop
             # counting down from zero, which takes about a minute of emulated time and leaves a

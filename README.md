@@ -5,8 +5,8 @@ OScan2, OScan5 and OScan6 formats, that the stock firmware does not have.
 
 It supports the standalone full MCU-Link and MCU-Link Pro. It does not support the MCU-Link built
 into an evaluation board. Both boards provide SWD, four-wire JTAG, cJTAG, SWO capture, and one USB
-serial port. The Pro adds a second serial port, four GPIO pins and switched target power. The
-[capability guide](CAPABILITIES.md) lists board conditions and the
+serial port. The Pro adds a second serial port, four GPIO pins, SPI and I2C bridges, and switched
+target power. The [capability guide](CAPABILITIES.md) lists board conditions and the
 [host interface](HOST-INTERFACE.md) documents the supported vendor commands.
 
 ## Limits
@@ -191,7 +191,7 @@ reads them once when it starts, so fit or remove one with the probe unplugged.
 | --- | --- | --- | --- |
 | VCOM | J4 | J14 | no target serial port. The Pro's second one, on J26, stays |
 | SWD | J5 | J13 | no CMSIS-DAP interface, so no debugger can use the probe |
-| USB-SIO | | J15 | the DIO pins on J19 stay inputs, and the host cannot drive them |
+| USB-SIO | | J15 | disables the DIO, SPI and I2C bridges; the DIO pins on J19 stay inputs |
 
 A function that is off is left out of the USB configuration, not shown as an interface that does
 nothing. The interfaces after it are numbered down. CMSIS-DAP v2 is always interface 0 when it is
@@ -217,6 +217,13 @@ inputs when the probe restarts.
 `verge dio` reads them, and `verge dio --high 0 --low 1,2` sets them (see verge's README). From a
 checkout, `uv run tools/dap.py dio` does the same. Both send vendor command 0x8E, which
 `src/dap_vendor.c` describes.
+
+## The Pro's SPI and I2C bridges
+
+SPI and I2C use CMSIS-DAP vendor commands `0x91` and `0x92` over the existing CMSIS-DAP USB
+interfaces. J15 disables them. SPI uses the same J19 pins as DIO0–DIO3, so SPI is busy while a DIO
+pin is an output. I2C shares Flexcomm 3 with SWO, so turn SWO off before using I2C. See
+[the host interface](HOST-INTERFACE.md) for request formats and limits.
 
 ## Pro target supply
 
@@ -287,8 +294,7 @@ changed. The image also contains TinyUSB (MIT), NXP's SDK drivers (BSD-3-Clause)
 
 ## Not done yet
 
-- On the Pro: USB-SIO's SPI and I2C, energy measurement, the analog trace
-  input and the LPC804 (PRO.md).
+- On the Pro: the analog trace input and the LPC804 (PRO.md).
 - SWO over a streaming endpoint, from the ring already in USB SRAM.
 - Clocks 44 and 45 of every SWD transfer cost 89 cycles more than a data bit, 12.9% of a transfer.
   One attempt at them made the data phase worse.

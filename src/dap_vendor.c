@@ -33,6 +33,7 @@
 #include "target_sense.h"
 #include "target_power.h"
 #include "energy_monitor.h"
+#include "pro_bus.h"
 
 /// Identifies this firmware and says what it can do. Read-only, so a host may send it blindly.
 #define ID_VENDOR_CJTAG_INFO ID_DAP_Vendor2
@@ -64,6 +65,11 @@
 #define ID_VENDOR_TARGET_POWER ID_DAP_Vendor15
 /// Starts and stops voltage/current capture on the Pro.
 #define ID_VENDOR_ENERGY ID_DAP_Vendor16
+/// Executes one full-duplex transaction on the Pro's hardware SPI pins.
+#define ID_VENDOR_SPI ID_DAP_Vendor17
+/// Executes one Pro I2C write, read, or combined transaction.
+#define ID_VENDOR_I2C ID_DAP_Vendor18
+#define ID_VENDOR_TIMING ID_DAP_Vendor19
 
 /** Answered by ID_VENDOR_CJTAG_INFO, so a host can recognise this firmware rather than assume it.
  *
@@ -77,7 +83,7 @@
  *     [8+n]   board                   BOARD_KIND_* (board_pins.h); format 3 on
  *     [9+n]   scan formats, u32 LE    bit n: SCNFMT n offered (cJTAG_Offered); format 4 on
  *     [13+n]  extended capabilities   u32 LE; bit 0: energy capture; bit 1: calibrated energy fields;
- *                                     bit 2: accumulated energy
+ *                                     bit 2: accumulated energy; bits 3–4: SPI and I2C
  *
  * A host checks the magic to know it is us, the flags to know what it may use, and the build
  * string to know which image it is talking to. The capability flags are what makes this worth
@@ -125,6 +131,10 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
 #define CJTAG_EXT_CAP_ENERGY_CALIBRATED (1U << 1)
 /// ID_VENDOR_ENERGY mode 3 reads accumulated energy and the number of integrated pairs.
 #define CJTAG_EXT_CAP_ENERGY_ACCUMULATED (1U << 2)
+/// ID_VENDOR_SPI is available on the Pro when J15 leaves USB-SIO enabled.
+#define CJTAG_EXT_CAP_SPI (1U << 3)
+/// ID_VENDOR_I2C is available on the Pro when J15 leaves USB-SIO enabled.
+#define CJTAG_EXT_CAP_I2C (1U << 4)
 #ifdef SWD_CODEGEN
 #define CJTAG_CAPS_SWD CJTAG_CAP_SWD_CODEGEN
 #else
@@ -308,10 +318,11 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         for (uint32_t i = 0U; i < 4U; i++) {
             *out++ = (uint8_t)(formats >> (8U * i));
         }
-        uint32_t const extended = dap_shared.energy_available
-                                      ? CJTAG_EXT_CAP_ENERGY | CJTAG_EXT_CAP_ENERGY_CALIBRATED |
-                                            CJTAG_EXT_CAP_ENERGY_ACCUMULATED
-                                      : 0U;
+        uint32_t const extended = (dap_shared.energy_available
+                                       ? CJTAG_EXT_CAP_ENERGY | CJTAG_EXT_CAP_ENERGY_CALIBRATED |
+                                             CJTAG_EXT_CAP_ENERGY_ACCUMULATED
+                                       : 0U) |
+                                  (pro_bus_available() ? CJTAG_EXT_CAP_SPI | CJTAG_EXT_CAP_I2C : 0U);
         for (uint32_t i = 0U; i < 4U; i++) {
             *out++ = (uint8_t)(extended >> (8U * i));
         }
@@ -510,6 +521,12 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         response[1] = DAP_ERROR;
         return (2U << 16) | 2U;
     }
+
+    case ID_VENDOR_SPI:
+        return pro_spi_command(request, response);
+
+    case ID_VENDOR_I2C:
+        return pro_i2c_command(request, response);
 
     case ID_VENDOR_SAMPLE:
         return sample_probe_command(request, response);

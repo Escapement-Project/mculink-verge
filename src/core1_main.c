@@ -49,8 +49,8 @@ static uint8_t request_copy[DAP_PACKET_SIZE] __attribute__((aligned(DAP_USB_BUFF
 static uint8_t response_copy[DAP_RESPONSE_SIZE] __attribute__((aligned(DAP_USB_BUFFER_ALIGN)));
 
 /** The same two buffers, read through volatile so link-time optimisation cannot specialise
- *  DAP_ExecuteCommand to them. tools/cycles.py and tools/image.py call it with buffers of their
- *  own, and what they check has to be the code that ships. */
+ *  DAP_ExecuteCommandSized to them. tools/cycles.py and tools/image.py call it with buffers of
+ *  their own, and what they check has to be the code that ships. */
 static uint8_t* const volatile request_buffer = request_copy;
 static uint8_t* const volatile response_buffer = response_copy;
 
@@ -94,6 +94,8 @@ COMMAND_PATH static bool dap_task(void) {
     uint32_t const seq = use_hid ? dap_shared.hid_request_seq[hid] : dap_shared.request_seq[bulk];
     uint8_t const stage = use_hid ? dap_shared.hid_request_stage[hid] : dap_shared.request_stage[bulk];
     bool const staged = stage != 0U;
+    uint16_t const request_length = use_hid ? dap_shared.hid_request_len[hid] : dap_shared.request_len[bulk];
+    uint32_t const packet_size = use_hid ? DAP_SHARED_HID_REPORT_SIZE : DAP_PACKET_SIZE;
     uint8_t* request = request_buffer;
     uint8_t* response = response_buffer;
     if (staged) {
@@ -127,7 +129,7 @@ COMMAND_PATH static bool dap_task(void) {
 
     led_activity();
     MARKER_BUSY();
-    uint32_t produced = DAP_ExecuteCommand(request, response) & 0xFFFFU;
+    uint32_t produced = DAP_ExecuteCommandSized(request, request_length, packet_size, response) & 0xFFFFU;
     MARKER_IDLE();
     if (produced > DAP_PACKET_SIZE) {
         produced = DAP_PACKET_SIZE;

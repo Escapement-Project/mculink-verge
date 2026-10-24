@@ -525,7 +525,8 @@ def check_response_bounds(c: Checker, elf: str, packet_size: int) -> None:
         probe.uc.mem_write(SCRATCH, payload + bytes(0x400 - len(payload)))
         probe.uc.mem_write(resp, b"\xee" * (ceiling - resp))
         try:
-            produced = probe.call("DAP_ExecuteCommand", SCRATCH, resp) & 0xFFFF
+            produced = probe.call("DAP_ExecuteCommandSized", SCRATCH, min(len(payload), packet_size), packet_size,
+                                  resp) & 0xFFFF
         except SystemExit as exc:
             c.problems.append(f"{label} faulted: {exc}")
             continue
@@ -556,7 +557,7 @@ REQUEST_CASES = [
 ]
 
 
-def check_request_bounds(c: Checker, elf: str) -> None:
+def check_request_bounds(c: Checker, elf: str, packet_size: int) -> None:
     """Nothing a host can send may write past DAP_Data or read past the request buffer.
 
     A different class from the reply check above: these counts drive a write into a fixed array,
@@ -585,7 +586,7 @@ def check_request_bounds(c: Checker, elf: str) -> None:
         before = bytes(probe.uc.mem_read(base + size, watch))
         resp = SCRATCH + 0x400
         try:
-            probe.call("DAP_ExecuteCommand", SCRATCH, resp)
+            probe.call("DAP_ExecuteCommandSized", SCRATCH, min(len(payload), packet_size), packet_size, resp)
         except SystemExit as exc:
             c.problems.append(f"{label} faulted: {exc}")
             continue
@@ -751,22 +752,22 @@ def usb_string(probe: Machine, index: int) -> str:
 
 
 def expected_layout(board: int, jumpers: int) -> tuple[int, set[int], int]:
-    """Interfaces, endpoints and functions of PRO.md's one layout: CMSIS-DAP v2 on EP1 and v1 on EP4,
-    VCOM on EP3 with its notification at 0x86, VCOM2 on EP5 with its notification at 0x87. A
+    """Interfaces, endpoints and functions of PRO.md's one layout: CMSIS-DAP v2 on EP1 and v1 on EP3,
+    VCOM on EP2 with its notification at 0x86, VCOM2 on EP4 with its notification at 0x87. A
     function the board lacks or a jumper turns off is left out: the SWD jumper takes both CMSIS-DAP
     interfaces, as stock's does. The functions are bcdDevice's low byte: 1 debug, 2 VCOM, 4 VCOM2."""
     interfaces, endpoints, functions = 0, set(), 0
     if not jumpers & 2:
         interfaces += 2
-        endpoints |= {0x01, 0x81, 0x04, 0x84}
+        endpoints |= {0x01, 0x81, 0x03, 0x83}
         functions |= 1
     if not jumpers & 1:
         interfaces += 2
-        endpoints |= {0x03, 0x83, 0x86}
+        endpoints |= {0x02, 0x82, 0x86}
         functions |= 2
     if board == BOARD_PRO:
         interfaces += 2
-        endpoints |= {0x05, 0x85, 0x87}
+        endpoints |= {0x04, 0x84, 0x87}
         functions |= 4
     return interfaces, endpoints, functions
 
@@ -1885,7 +1886,7 @@ def main() -> int:
     if not any(name.split(".")[0] == "jtag_gen_ready" for name in symbols_with_size(args.core1)):
         jtag_gen = ()
     check_sram_code(c, args.core1, "CPU 1 runs a command's dispatch",
-                    ("serve", "DAP_ExecuteCommand", "DAP_ProcessCommand", "transfer_block", "SWD_TransferBlock",
+                    ("serve", "DAP_ExecuteCommandSized", "DAP_ProcessCommand", "transfer_block", "SWD_TransferBlock",
                      "SWD_TransferCommand", "memcpy") + jtag_gen,
                     allow=("arm_command", "regenerate", "swd_sweep_connect", "jtag_sweep_connect"))
     check_clocks(c, args.elf, slots)
@@ -1894,7 +1895,7 @@ def main() -> int:
     check_led_inputs(c, args.core1, slots)
     check_commands(c, args.core1, args.code_lab, swo)
     check_response_bounds(c, args.core1, args.packet_size)
-    check_request_bounds(c, args.core1)
+    check_request_bounds(c, args.core1, args.packet_size)
     check_identity(c, args.core1, args.code_lab)
     check_board(c, args.core1, slots)
     check_dio(c, args.core1, slots)

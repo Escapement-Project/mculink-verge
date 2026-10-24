@@ -126,7 +126,8 @@ else()
 endif()
 # After the toolchain's CPU 0 flags on every command line, so these are the ones that count.
 target_compile_options(${CORE1} PRIVATE ${CORE1_CPU_FLAGS} ${WARN_FLAGS_${CMAKE_C_COMPILER_ID}})
-target_compile_definitions(${CORE1} PRIVATE CPU_LPC55S69JBD64_cm33_core1)
+target_compile_definitions(${CORE1} PRIVATE CPU_LPC55S69JBD64_cm33_core1 SPI_RETRY_TIMES=100000U
+                                             I2C_RETRY_TIMES=100000U I2C_MASTER_TRANSMIT_IGNORE_LAST_NACK=0U)
 
 set(MCUX_DRIVERS ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcuxsdk-core/drivers)
 set(LPC55_DEVICE ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcux-devices-lpc/LPC5500)
@@ -141,7 +142,11 @@ target_sources(${CORE1} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/energy_monitor.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/target_power.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dio.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/pro_bus.c
   ${MCUX_DRIVERS}/lpadc/fsl_lpadc.c
+  ${MCUX_DRIVERS}/flexcomm/spi/fsl_spi.c
+  ${MCUX_DRIVERS}/flexcomm/fsl_flexcomm.c
+  ${MCUX_DRIVERS}/flexcomm/i2c/fsl_i2c.c
   ${LPC55_DEVICE}/LPC55S69/drivers/fsl_clock.c
   ${LPC55_DEVICE}/LPC55S69/drivers/fsl_reset.c
   ${DAP_SRC}/DAP.c
@@ -165,6 +170,9 @@ target_include_directories(${CORE1} PRIVATE
   ${MCUX_DRIVERS}/lpc_iocon
   ${MCUX_DRIVERS}/lpc_gpio
   ${MCUX_DRIVERS}/lpadc
+  ${MCUX_DRIVERS}/flexcomm
+  ${MCUX_DRIVERS}/flexcomm/spi
+  ${MCUX_DRIVERS}/flexcomm/i2c
   ${LPC55_DEVICE}/LPC55S69
   ${LPC55_DEVICE}/LPC55S69/drivers
   ${LPC55_DEVICE}/periph
@@ -179,6 +187,7 @@ set(UPSTREAM_RELAX
   -Wno-unused-but-set-variable
   -Wno-unused-parameter
   -Wno-missing-field-initializers
+  -Wno-missing-braces
   -Wno-redundant-decls
   -Wno-sign-compare
   -Wno-cast-qual
@@ -187,6 +196,9 @@ set(UPSTREAM_RELAX
 
 set_source_files_properties(
   ${DAP_SRC}/DAP.c ${DAP_SRC}/SW_DP.c ${DAP_SRC}/JTAG_DP.c
+  ${MCUX_DRIVERS}/flexcomm/spi/fsl_spi.c
+  ${MCUX_DRIVERS}/flexcomm/fsl_flexcomm.c
+  ${MCUX_DRIVERS}/flexcomm/i2c/fsl_i2c.c
   ${LPC55_DEVICE}/LPC55S69/drivers/fsl_clock.c
   ${LPC55_DEVICE}/LPC55S69/drivers/fsl_reset.c
   PROPERTIES COMPILE_OPTIONS "${UPSTREAM_RELAX}"
