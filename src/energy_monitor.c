@@ -54,6 +54,14 @@ static uint32_t consumed_bytes;
 static_assert(ADC_RESFIFO_VALID_MASK == 0x80000000U && ADC_RESFIFO_TSRC_SHIFT == 16U,
               "energy_samples.h must match the ADC result layout");
 
+static bool capture_failed(void) {
+    if ((DMA0->COMMON[0].ERRINT & ENERGY_DMA_MASK) != 0U ||
+        (capture_running && (ADC0->STAT & ADC_STAT_FOF0_MASK) != 0U)) {
+        dap_shared.energy_dma_error = 1U;
+    }
+    return dap_shared.energy_dma_error != 0U;
+}
+
 static void accumulator_write_begin(void) {
     dap_shared.energy_accumulator_sequence++;
     __DMB();
@@ -343,7 +351,7 @@ static bool consume_until(uint32_t written) {
 }
 
 void energy_monitor_process_segment(void) {
-    if (!capture_running || actual_rate_hz == 0U) {
+    if (!capture_running || actual_rate_hz == 0U || capture_failed()) {
         return;
     }
     uint32_t const completed = dap_shared.energy_segments - energy_segments_at_start + 1U;
@@ -485,6 +493,7 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     if (new_session) {
         accumulator_reset();
         accumulator_started = true;
+        ADC0->STAT = ADC_STAT_FOF0_MASK;
         dap_shared.energy_dma_error = 0U;
     }
     capture_running = true;
@@ -534,11 +543,13 @@ __attribute__((noinline)) bool energy_monitor_pause(void) {
     if (!capture_running) {
         return true;
     }
-    if (!capture_drain()) {
+    if (!capture_failed() && !capture_drain()) {
         return false;
     }
+    sample_decoder.phase = ENERGY_EXPECT_VOLTAGE;
     DMA0->COMMON[0].ABORT = ENERGY_DMA_MASK;
     DMA0->COMMON[0].INTA = ENERGY_DMA_MASK;
+    DMA0->COMMON[0].ERRINT = ENERGY_DMA_MASK;
     INPUTMUX->DMA0_REQ_ENA_CLR = ENERGY_DMA_MASK;
     LPADC_DoResetFIFO0(ADC0);
     capture_running = false;
@@ -595,7 +606,7 @@ energy_monitor_status_t energy_monitor_stop(void) {
     actual_rate_hz = 0U;
     CLOCK_DisableClock(kCLOCK_Timer2);
     CLOCK_AttachClk(kNONE_to_CTIMER2);
-    return ENERGY_MONITOR_OK;
+    return dap_shared.energy_dma_error != 0U ? ENERGY_MONITOR_DMA_ERROR : ENERGY_MONITOR_OK;
 }
 
 energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {
@@ -605,11 +616,11 @@ energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {
     if (!dap_shared.energy_available) {
         return ENERGY_MONITOR_UNAVAILABLE;
     }
+    if (capture_failed()) {
+        return ENERGY_MONITOR_DMA_ERROR;
+    }
     if (!capture_running) {
         return ENERGY_MONITOR_STOPPED;
-    }
-    if (dap_shared.energy_dma_error != 0U) {
-        return ENERGY_MONITOR_DMA_ERROR;
     }
     energy_sample_decoder_t decoder;
     for (;;) {
@@ -645,6 +656,9 @@ energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {
         }
         break;
     }
+    if (capture_failed()) {
+        return ENERGY_MONITOR_DMA_ERROR;
+    }
     if (!decoder.have_sample) {
         return ENERGY_MONITOR_NO_SAMPLE;
     }
@@ -679,7 +693,7 @@ energy_monitor_status_t energy_monitor_accumulated(uint64_t* energy_nj, uint64_t
         return ENERGY_MONITOR_UNAVAILABLE;
     }
     if (!accumulator_started) {
-        return ENERGY_MONITOR_STOPPED;
+        return capture_failed() ? ENERGY_MONITOR_DMA_ERROR : ENERGY_MONITOR_STOPPED;
     }
     uint32_t before;
     uint32_t after;
@@ -691,6 +705,9 @@ energy_monitor_status_t energy_monitor_accumulated(uint64_t* energy_nj, uint64_t
         __DMB();
         after = dap_shared.energy_accumulator_sequence;
     } while ((before != after) || ((before & 1U) != 0U));
+    if (capture_failed()) {
+        return ENERGY_MONITOR_DMA_ERROR;
+    }
     return (*pairs == 0U) ? ENERGY_MONITOR_NO_SAMPLE : ENERGY_MONITOR_OK;
 }
 

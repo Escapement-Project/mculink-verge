@@ -58,6 +58,10 @@ class Adc:
         return int.from_bytes(self.page[offset:offset + size], "little")
 
     def write(self, uc, offset, size, value, data):
+        if offset == 0x14:
+            previous = int.from_bytes(self.page[offset:offset + size], "little")
+            self.page[offset:offset + size] = (previous & ~value).to_bytes(size, "little")
+            return
         if offset == 0x10 and value & 0x100:
             self.fifo.clear()
             self.resets += 1
@@ -395,4 +399,39 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
     c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC and value == 0 and adc.resets == 0,
             "stuck ADC did not fail without discarding pending data")
     probe.uc.hook_del(hook)
+    for fault in ("IRQ error", "pending error", "FIFO overflow"):
+        probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+        words = [result(1, 32768), result(2, 1), result(3, 0)] + [0] * 1021
+        feed(words)
+        probe.call("energy_monitor_process_segment")
+        put("energy_segments", 1)
+        written(1024)
+        total([32768])
+        if fault == "IRQ error":
+            put("energy_dma_error", 1, 1)
+        elif fault == "pending error":
+            dma.set(0x40, ENERGY_MASK)
+        else:
+            adc.page[0x14:0x18] = u32(2)
+        reply = probe.command(bytes([0x90, 1]))
+        c.check(len(reply) == 21 and reply[2] == 7, f"{fault}: latest hid capture failure")
+        reply = probe.command(bytes([0x90, 3]))
+        c.check(len(reply) == 19 and reply[2] == 7 and int.from_bytes(reply[3:11], "little") == 3222 and
+                int.from_bytes(reply[11:19], "little") == 1, f"{fault}: total status/layout lost retained data")
+        feed(words, 1024)
+        probe.call("energy_monitor_process_segment")
+        total([32768])
+        reply = probe.command(bytes([0x90, 2]))
+        c.check(reply == bytes([0x90, 0, 7]), f"{fault}: stop hid capture failure")
+        c.check(probe.command(bytes([0x90, 1]))[2] == 7 and probe.command(bytes([0x90, 3]))[2] == 7,
+                f"{fault}: stop cleared sticky status")
+        reply = probe.command(bytes([0x90, 0]) + u32(0))
+        c.check(reply[2] == 4 and probe.command(bytes([0x90, 3]))[2] == 7,
+                f"{fault}: failed start cleared sticky status")
+        local("requested_rate_hz", 1024)
+        c.check(probe.call("energy_capture_start", 1) == 1, f"{fault}: new-session recovery failed")
+        total([])
+        c.check(probe.command(bytes([0x90, 1]))[2] == 2 and probe.command(bytes([0x90, 3]))[2] == 2,
+                f"{fault}: successful start did not clear failure")
+        probe.uc.hook_del(hook)
     c.note("energy partial/full/pending segments, FIFO tail, split tuples, Q32 carry and session resume/reset")

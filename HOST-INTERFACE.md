@@ -150,7 +150,11 @@ calibration supports the 350 mA and 50 mA jumper settings.
 | 4 | Requested rate is zero or above 100,000 pairs/s |
 | 5 | Invalid argument |
 | 6 | ADC calibration failed |
-| 7 | DMA failed |
+| 7 | DMA failed or the ADC FIFO overflowed |
+
+Result 7 persists after stop and failed starts. The firmware retains the recorded total and stops
+integrating when it detects the fault. A successful new start clears the fault and the total.
+The retained total does not account for lost samples.
 
 Raw ADC codes remain available in the reply prefix. Hosts can use the appended physical-unit fields
 when `calibrated-valid` is 1.
