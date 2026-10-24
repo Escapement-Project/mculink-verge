@@ -7,6 +7,16 @@ supported host tools use. Command and reply buffers include the command byte at 
 All multi-byte integer fields below are little-endian. A host should check reply lengths before
 reading fields. An unknown command receives the CMSIS-DAP invalid-command reply.
 
+The firmware validates each command's input and reply size before execution. A truncated command
+or a reply that cannot fit receives `0xff`. SPI and I2C retain their four-byte invalid-argument
+reply when it fits. Read blocks are shortened to the available reply space; SWO reads return at
+most that space. Hosts should size requests to the transport's packet size.
+
+If a batch contains a malformed command or runs out of reply space, execution stops before that
+command. The reply retains the preceding subreplies and reports the number of commands executed.
+A command that executes and returns an error still counts. This is the firmware's defensive
+handling of malformed batches; it does not add nested batches or queued commands.
+
 ## Identify firmware: `0x82`
 
 Send `[0x82]`. The reply contains:

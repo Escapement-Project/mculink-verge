@@ -279,13 +279,13 @@ def check_serial(c: Checker, elf: str, uuid: bytes, expect_prefix: str, uniform:
 # answering nothing. src/dap_dispatch.c answers it directly, and this is what checks that.
 DAP_COMMANDS = {
     0x00: b"\xf0",  # Info, vendor name
-    0x01: b"\x00",  # HostStatus
+    0x01: b"\x00\x00",  # HostStatus
     0x02: b"\x01",  # Connect, SWD
     0x03: b"",  # Disconnect
     0x04: b"\x00\x02\x00\x00\x00",  # TransferConfig
     0x05: b"\x00\x00",  # Transfer, no transfers
     0x06: b"\x00\x00\x00\x00",  # TransferBlock, no words
-    0x08: b"\x00\x00\x00\x00",  # WriteABORT
+    0x08: b"\x00\x00\x00\x00\x00",  # WriteABORT
     0x09: b"\x00\x00",  # Delay, none
     0x0A: b"",  # ResetTarget
     0x10: b"\x00\x00\x00\x00\x00\x00",  # SWJ_Pins, no wait
@@ -595,10 +595,66 @@ def check_request_bounds(c: Checker, elf: str, packet_size: int) -> None:
             spoiled = sum(1 for x, y in zip(before, after) if x != y)
             c.problems.append(f"{label} changed {spoiled} bytes past the {size}-byte DAP_Data")
         reply = bytes(probe.uc.mem_read(resp, 2))
-        if reply[0] != payload[0] or reply[1] != 0xFF:
+        if reply[0] != ID_DAP_INVALID and (reply[0] != payload[0] or reply[1] != 0xFF):
             c.problems.append(f"{label} answered {reply.hex()}, wanted the command id then DAP_ERROR")
     if not c.problems:
         c.note(f"{len(REQUEST_CASES)} oversized requests are refused and leave DAP_Data's neighbours alone")
+
+
+def check_bounded_commands(c: Checker, elf: str) -> None:
+    for capacity in (64, 512):
+        probe = build(elf, "swd", True, Model())
+        if "DAP_Setup" in probe.sym:
+            probe.call("DAP_Setup")
+        probe.command(bytes([2, 1]))
+        probe.command(bytes([0x11]) + u32(10_000_000))
+        state = probe.sym["DAP_Data"]
+        response = SCRATCH + 1024
+
+        def execute(payload: bytes, received: int | None = None) -> bytes:
+            probe.uc.mem_write(SCRATCH, payload + bytes(1024 - len(payload)))
+            probe.uc.mem_write(response, bytes([0xee]) * (capacity + 32))
+            result = probe.call("DAP_ExecuteCommandSized", SCRATCH,
+                                len(payload) if received is None else received, capacity, response)
+            c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC, "bounded command did not return")
+            produced = result & 0xffff
+            c.check(produced <= capacity, "bounded command exceeded transport capacity")
+            c.check(bytes(probe.uc.mem_read(response + capacity, 32)) == bytes([0xee]) * 32,
+                    "bounded command changed reply guard")
+            return bytes(probe.uc.mem_read(response, min(produced, capacity)))
+
+        for stale_hz in (1_000_000, 5_000_000):
+            before = bytes(probe.uc.mem_read(state, 128))
+            c.check(execute(bytes([0x11]) + u32(stale_hz), 1) == b"\xff", "short clock was accepted")
+            c.check(bytes(probe.uc.mem_read(state, 128)) == before, "short clock changed DAP state")
+            for symbol in ("swd_gen_clock_hz", "jtag_gen_clock_hz"):
+                if symbol in probe.sym:
+                    c.check(bytes(probe.uc.mem_read(probe.sym[symbol], 4)) == u32(10_000_000),
+                            "short clock changed generator clock")
+        for payload in (bytes([6, 0, 1, 0, 0]), bytes([0x1d, 1, 8])):
+            before = bytes(probe.uc.mem_read(state, 128))
+            c.check(execute(payload) == b"\xff", "truncated transfer/sequence accepted")
+            c.check(bytes(probe.uc.mem_read(state, 128)) == before, "truncated command changed state")
+        reply = execute(bytes([6, 0, 0xff, 0xff, 2]))
+        c.check(len(reply) <= capacity and int.from_bytes(reply[1:3], "little") == (capacity - 4) // 4,
+                "block read did not match transport ceiling")
+        if capacity == 64:
+            c.check(execute(bytes([0x1d, 8]) + bytes([0x80]) * 8) == b"\xff",
+                    "oversized input sequence accepted")
+        for prefix in (b"", bytes([2, 1]), bytes([2, 1, 2, 1])):
+            payload = bytes([0x7f, len(prefix) // 2 + 2]) + prefix + bytes([0x11, 2, 2])
+            reply = execute(payload)
+            c.check(reply == bytes([0x7f, len(prefix) // 2]) + bytes([2, 1]) * (len(prefix) // 2),
+                    "malformed batch lost prior replies or counted rejected command")
+            c.check(bytes(probe.uc.mem_read(state, 1)) == b"\x01", "rejected batch tail changed port")
+            c.check(execute(bytes([2, 1])) == bytes([2, 1]), "command after malformed batch failed")
+        if capacity == 64:
+            payload = bytes([0x7f, 17]) + bytes([0, 0xff]) * 14 + bytes([0, 0xfe, 2, 1, 2, 2])
+            reply = execute(payload)
+            c.check(len(reply) == 63 and reply[:2] == bytes([0x7f, 16]), "full batch reply framing")
+            c.check(bytes(probe.uc.mem_read(state, 1)) == b"\x01", "overflowing Connect executed")
+        c.check(execute(bytes([0x7f, 1])) == bytes([0x7f, 0]), "empty batch payload accepted")
+    c.note("HID/bulk command preflight, reply guards, side effects and partial batch counts")
 
 
 def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
@@ -1886,9 +1942,9 @@ def main() -> int:
     if not any(name.split(".")[0] == "jtag_gen_ready" for name in symbols_with_size(args.core1)):
         jtag_gen = ()
     check_sram_code(c, args.core1, "CPU 1 runs a command's dispatch",
-                    ("serve", "DAP_ExecuteCommandSized", "DAP_ProcessCommand", "transfer_block", "SWD_TransferBlock",
+                    ("serve", "DAP_ExecuteCommandSized", "execute_one", "DAP_ProcessCommand", "transfer_block", "SWD_TransferBlock",
                      "SWD_TransferCommand", "memcpy") + jtag_gen,
-                    allow=("arm_command", "regenerate", "swd_sweep_connect", "jtag_sweep_connect"))
+                    allow=("arm_command", "arm_DAP_ProcessCommand", "regenerate", "swd_sweep_connect", "jtag_sweep_connect"))
     check_clocks(c, args.elf, slots)
     check_led(c, args.elf, slots)
     check_pro_leds(c, args.elf, slots)
@@ -1896,6 +1952,7 @@ def main() -> int:
     check_commands(c, args.core1, args.code_lab, swo)
     check_response_bounds(c, args.core1, args.packet_size)
     check_request_bounds(c, args.core1, args.packet_size)
+    check_bounded_commands(c, args.core1)
     check_identity(c, args.core1, args.code_lab)
     check_board(c, args.core1, slots)
     check_dio(c, args.core1, slots)

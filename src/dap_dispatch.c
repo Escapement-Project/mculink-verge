@@ -28,13 +28,12 @@
 #include "DAP.h"
 #include "cjtag.h"
 #include "dap_dispatch.h"
+#include "dap_packet.h"
 #include "hot.h"
 #include "jtag_dp.h"
 #include "led.h"
 #include "swd_dp.h"
 
-#define SPI_RESPONSE_FIXED 4U
-#define I2C_RESPONSE_FIXED 4U
 #ifdef SWD_CODEGEN
 #include "swd_gen.h"
 #include "swd_sweep.h"
@@ -69,46 +68,6 @@ __attribute__((noinline)) static uint32_t arm_command(const uint8_t* request, ui
         }
     }
     return result;
-}
-
-/** Words a block reply fits: the command id, the two count bytes and the status, then the data. */
-#define DAP_BLOCK_WORD_LIMIT ((DAP_PACKET_SIZE - 4U) / 4U)
-
-/** Does a sequence list stay inside the packet the host actually sent?
- *
- * `DAP_SWD_Sequence` and `DAP_JTAG_Sequence` take a sequence count of up to 255 and walk the
- * request forward by one info byte plus up to eight data bytes each, so 255 sequences read about
- * 2 KB from a 512-byte buffer. Nothing in ARM's command layer knows how long the request was:
- * `DAP_ExecuteCommand` is handed a pointer and nothing else, so every handler trusts its own
- * count. The bytes past the end are whatever follows the buffer, and a sequence clocks them onto
- * the wire.
- *
- * Walking the list the same way the handler will is the only way to answer this, because a
- * sequence's length is in its own info byte. `swd` picks the one difference between the two: an
- * SWD input sequence carries no data in the request, where JTAG always supplies TDI.
- */
-static bool sequence_fits(const uint8_t* request, bool swd) {
-    uint32_t remaining = request[1];
-    uint32_t used = 2U; // the command id and the sequence count
-
-    while (remaining--) {
-        if (used >= DAP_PACKET_SIZE) {
-            return false;
-        }
-        const uint32_t info = request[used];
-        uint32_t clocks = info & 0x3FU; // SWD_SEQUENCE_CLK and JTAG_SEQUENCE_TCK are both this
-        if (clocks == 0U) {
-            clocks = 64U;
-        }
-        used += 1U;
-        if (!(swd && ((info & SWD_SEQUENCE_DIN) != 0U))) {
-            used += (clocks + 7U) / 8U;
-        }
-        if (used > DAP_PACKET_SIZE) {
-            return false;
-        }
-    }
-    return true;
 }
 
 COMMAND_PATH static uint32_t transfer_block(const uint8_t* request, uint8_t* response) {
@@ -159,15 +118,6 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
         *response = *request;
         return (1U << 16) + 1U + SWD_TransferCommand(request + 1, response + 1);
     }
-    if ((*request == ID_DAP_SWD_Sequence) || (*request == ID_DAP_JTAG_Sequence)) {
-        if (!sequence_fits(request, *request == ID_DAP_SWD_Sequence)) {
-            // There is no way to say how much the host meant to send, so the rest of the packet
-            // goes with it: a batch behind a malformed command cannot be trusted to be aligned.
-            response[0] = *request;
-            response[1] = DAP_ERROR;
-            return (DAP_PACKET_SIZE << 16) | 2U;
-        }
-    }
     if (*request == ID_DAP_JTAG_Configure) {
         // ARM's DAP_JTAG_Configure takes the device count straight from the request and never
         // compares it with DAP_JTAG_DEV_CNT, then writes ir_length[n], ir_before[n] and
@@ -191,21 +141,6 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
     }
     if ((*request == ID_DAP_TransferBlock) &&
         ((DAP_Data.debug_port == DAP_PORT_SWD) || (DAP_Data.debug_port == DAP_PORT_JTAG))) {
-        // The word count is sixteen bits and a read block's request is five bytes whatever it
-        // says, so a host can ask for 65535 words into a response buffer that holds 127 and the
-        // reply runs off the end of SRAM through the stack. A write block carries its data in the
-        // request, which the USB read bounds, so only a read can get past the buffer. Clamping
-        // reports the shorter count in the reply, which is how the protocol already signals a
-        // block that stopped early.
-        if ((request[4] & DAP_TRANSFER_RnW) != 0U) {
-            uint32_t words = (uint32_t)request[2] | ((uint32_t)request[3] << 8);
-            if (words > DAP_BLOCK_WORD_LIMIT) {
-                uint8_t clamped[4] = {request[1], (uint8_t)DAP_BLOCK_WORD_LIMIT, (uint8_t)(DAP_BLOCK_WORD_LIMIT >> 8),
-                                      request[4]};
-                *response = *request;
-                return (1U << 16) + 1U + transfer_block(clamped, response + 1);
-            }
-        }
         *response = *request;
         return (1U << 16) + 1U + transfer_block(request + 1, response + 1);
     }
@@ -259,109 +194,88 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
 #endif
 }
 
-/** Kept out of line. It runs once per USB packet, so the call costs nothing, and being a symbol
- * is what lets tools/cycles.py and tools/equiv.py drive the firmware the way main() does. */
-__attribute__((noinline)) COMMAND_PATH uint32_t DAP_ExecuteCommand(const uint8_t* request, uint8_t* response) {
-    uint32_t cnt;
-    uint32_t num;
-    uint32_t n;
-
-    if (*request == ID_DAP_ExecuteCommands) {
-        *response++ = *request++;
-        cnt = *request++;
-        *response++ = (uint8_t)cnt;
-        num = (2U << 16) | 2U;
-        while (cnt--) {
-            // Nothing here knows how many bytes actually arrived, so a count of 255 keeps
-            // handing sub-commands whatever follows the request buffer, and each one appends to a
-            // reply that is bounded by nothing. Only a packet's worth of reply is ever sent, so
-            // stopping at a packet costs a conforming host nothing.
-            if (((uint16_t)num >= DAP_PACKET_SIZE) || ((uint16_t)(num >> 16) >= DAP_PACKET_SIZE)) {
-                break;
-            }
-            n = DAP_ProcessCommand(request, response);
-            num += n;
-            request += (uint16_t)(n >> 16);
-            response += (uint16_t)n;
-        }
-        return (num);
-    }
-
-    return DAP_ProcessCommand(request, response);
-}
-
-static bool variable_vendor_size(const uint8_t* request, uint32_t available, uint32_t packet_size,
-                                 uint32_t* required) {
-    uint32_t rx_length;
-    if (request[0] == ID_DAP_Vendor17) {
-        if (available < 8U) {
-            return false;
-        }
-        *required = 8U + (uint32_t)request[6] + ((uint32_t)request[7] << 8U);
-        rx_length = (uint32_t)request[6] + ((uint32_t)request[7] << 8U);
-        return (*required <= available) && (SPI_RESPONSE_FIXED + rx_length <= packet_size);
-    }
-    if (request[0] == ID_DAP_Vendor18) {
-        if (available < 10U) {
-            return false;
-        }
-        *required = 10U + (uint32_t)request[6] + ((uint32_t)request[7] << 8U);
-        rx_length = (uint32_t)request[8] + ((uint32_t)request[9] << 8U);
-        return (*required <= available) && (I2C_RESPONSE_FIXED + rx_length <= packet_size);
-    }
-    return true;
-}
-
-/** Run variable-size bridge requests only after their whole payload fits the received packet. */
-COMMAND_PATH uint32_t DAP_ExecuteCommandSized(const uint8_t* request, uint32_t request_length,
-                                              uint32_t packet_size, uint8_t* response) {
-    if ((request_length == 0U) || (packet_size == 0U)) {
+/** The parser owns framing even when a handler exits early on an invalid TAP or transfer fault. */
+COMMAND_PATH static uint32_t execute_one(const uint8_t* request, uint32_t length, uint32_t capacity,
+                                         uint8_t* response) {
+    dap_packet_plan_t plan;
+    if (length == 0U) {
         return 0U;
     }
+    if (request[0] == ID_DAP_Info) {
+        if (length < 2U) {
+            return 0U;
+        }
+        uint8_t info[257];
+        uint32_t const size = arm_DAP_ProcessCommand(request, info) & 0xffffU;
+        if (size > capacity) {
+            return 0U;
+        }
+        memcpy(response, info, size);
+        return (2U << 16U) | size;
+    }
+    if (!dap_packet_plan(request, length, capacity, 0U, &plan)) {
+        return 0U;
+    }
+    uint32_t result;
+    if (request[0] == ID_DAP_TransferBlock && (request[4] & DAP_TRANSFER_RnW) != 0U) {
+        uint8_t const clamped[] = {ID_DAP_TransferBlock, request[1], (uint8_t)plan.limit, (uint8_t)(plan.limit >> 8U),
+                                   request[4]};
+        result = DAP_ProcessCommand(clamped, response);
+    } else if (request[0] == ID_DAP_SWO_Data) {
+        uint8_t const clamped[] = {ID_DAP_SWO_Data, (uint8_t)plan.limit, (uint8_t)(plan.limit >> 8U)};
+        result = DAP_ProcessCommand(clamped, response);
+    } else {
+        result = DAP_ProcessCommand(request, response);
+    }
+    return (plan.consumed << 16U) | (result & 0xffffU);
+}
 
+COMMAND_PATH uint32_t DAP_ExecuteCommandSized(const uint8_t* request, uint32_t request_length, uint32_t packet_size,
+                                              uint8_t* response) {
+    if (request_length == 0U || packet_size == 0U) {
+        return 0U;
+    }
+    if (request_length > DAP_PACKET_SIZE || packet_size > DAP_PACKET_SIZE) {
+        response[0] = ID_DAP_Invalid;
+        return (request_length << 16U) | 1U;
+    }
     if (request[0] != ID_DAP_ExecuteCommands) {
-        uint32_t required = 0U;
-        if ((request[0] >= ID_DAP_Vendor0) && (request[0] <= ID_DAP_Vendor31) &&
-            !variable_vendor_size(request, request_length, packet_size, &required)) {
+        uint32_t const result = execute_one(request, request_length, packet_size, response);
+        if (result != 0U) {
+            return result;
+        }
+        if ((request[0] == ID_DAP_Vendor17 || request[0] == ID_DAP_Vendor18) && packet_size >= 4U) {
             response[0] = request[0];
             response[1] = 2U; // PRO_BUS_INVALID
             response[2] = 0U;
             response[3] = 0U;
             return (request_length << 16U) | 4U;
         }
-        return DAP_ProcessCommand(request, response);
-    }
-
-    if (request_length < 2U) {
         response[0] = ID_DAP_Invalid;
         return (request_length << 16U) | 1U;
     }
-
-    uint32_t const command_count = request[1];
-    uint32_t input_used = 2U;
-    uint32_t output_used = 2U;
-    response[0] = ID_DAP_ExecuteCommands;
-    response[1] = (uint8_t)command_count;
-
-    for (uint32_t i = 0U; i < command_count; i++) {
-        uint32_t required = 0U;
-        uint32_t const available = request_length - input_used;
-        if ((available == 0U) ||
-            (((request[input_used] >= ID_DAP_Vendor0) && (request[input_used] <= ID_DAP_Vendor31)) &&
-             !variable_vendor_size(request + input_used, available, packet_size - output_used, &required))) {
-            response[0] = ID_DAP_Invalid;
-            return (request_length << 16U) | 1U;
-        }
-
-        uint32_t const result = DAP_ProcessCommand(request + input_used, response + output_used);
-        uint32_t const consumed = result >> 16U;
-        uint32_t const produced = result & 0xFFFFU;
-        if ((consumed == 0U) || (consumed > available) || (produced > packet_size - output_used)) {
-            response[0] = ID_DAP_Invalid;
-            return (request_length << 16U) | 1U;
-        }
-        input_used += consumed;
-        output_used += produced;
+    if (request_length < 2U || packet_size < 2U) {
+        response[0] = ID_DAP_Invalid;
+        return (request_length << 16U) | 1U;
     }
-    return (input_used << 16U) | output_used;
+    uint32_t input = 2U;
+    uint32_t output = 2U;
+    response[0] = ID_DAP_ExecuteCommands;
+    response[1] = 0U;
+    for (uint32_t i = 0U; i < request[1]; i++) {
+        uint32_t const result =
+            execute_one(request + input, request_length - input, packet_size - output, response + output);
+        if (result == 0U) {
+            break;
+        }
+        input += result >> 16U;
+        output += result & 0xffffU;
+        response[1]++;
+    }
+    return (input << 16U) | output;
+}
+
+/** Legacy callers supply a complete packet; production always supplies the received length. */
+__attribute__((noinline)) COMMAND_PATH uint32_t DAP_ExecuteCommand(const uint8_t* request, uint8_t* response) {
+    return DAP_ExecuteCommandSized(request, DAP_PACKET_SIZE, DAP_PACKET_SIZE, response);
 }
