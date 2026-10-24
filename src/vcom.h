@@ -23,4 +23,7 @@ bool vcom_ready(void);
 /** CPU 0's DMA interrupt: the completions of `done` (DMA0 INTA bits), already cleared. */
 void vcom_dma_done(uint32_t done);
 
+/** Stop failed channels; the main loop waits for idle before rebuilding their state. */
+void vcom_dma_error(uint32_t failed);
+
 #endif

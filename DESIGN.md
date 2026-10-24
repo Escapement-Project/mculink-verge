@@ -133,6 +133,12 @@ own, so nothing is lost.
 Source: the board header in ARM's CMSIS-DAP MCU-Link example, checked against the schematic's net
 names.
 
+### Console DMA recovery
+
+A DMA failure disables the affected channel. The main loop waits for it to become idle before
+restarting it. RX recovery discards the unread receive ring. TX recovery drops the interrupted
+buffer without replaying a prefix already handed to the UART. Other channels continue running.
+
 ### What the board support does not start
 
 Three clock facts, all from the manual and the board support rather than the bench, each of which

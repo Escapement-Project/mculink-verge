@@ -436,6 +436,7 @@ __attribute__((section(".ramfunc"))) void DMA0_IRQHandler(void) {
         if ((failed & ENERGY_DMA_MASK) != 0U) {
             dap_shared.energy_dma_error = 1U;
         }
+        vcom_dma_error(failed);
     }
     uint32_t const done = DMA0->COMMON[0].INTA & (SWO_DMA_MASK | VCOM_DMA_MASK | energy_mask);
     if (done == 0U) {

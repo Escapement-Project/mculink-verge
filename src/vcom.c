@@ -105,6 +105,7 @@ static struct {
     uint32_t channel;
     uint32_t read;                // the next position to hand to TinyUSB
     volatile uint32_t segments;   // completed, counted by vcom_dma_done
+    volatile bool failed;
 } vcom_rx[CFG_TUD_CDC];
 
 static struct {
@@ -112,6 +113,7 @@ static struct {
     volatile bool busy;           // a send is running; vcom_dma_done clears it
     bool recode;                  // `coding` is waiting for the send to finish
     cdc_line_coding_t coding;
+    volatile bool failed;
 } vcom_tx[CFG_TUD_CDC];
 
 /** DMA0 writes the rings and reads the send buffers behind the compiler's back. Each access is
@@ -160,6 +162,7 @@ static void rx_start(uint32_t instance) {
     DMA0->COMMON[0].INTA = mask;
     vcom_rx[instance].segments = 0U;
     vcom_rx[instance].read = 0U;
+    vcom_rx[instance].failed = false;
     __DMB();
     DMA0->CHANNEL[channel].CFG = DMA_CHANNEL_CFG_PERIPHREQEN_MASK;
     DMA0->COMMON[0].INTENSET = mask;
@@ -177,6 +180,32 @@ static void tx_start(uint32_t instance) {
     DMA0->CHANNEL[channel].CFG = DMA_CHANNEL_CFG_PERIPHREQEN_MASK;
     DMA0->COMMON[0].INTENSET = mask;
     DMA0->COMMON[0].ENABLESET = mask;
+}
+
+__attribute__((section(".ramfunc"))) static bool recover(uint32_t instance) {
+    uint32_t const rx_mask = 1UL << vcom_rx[instance].channel;
+    uint32_t const tx_mask = 1UL << vcom_tx[instance].channel;
+    uint32_t const failed = (vcom_rx[instance].failed ? rx_mask : 0U) |
+                            (vcom_tx[instance].failed ? tx_mask : 0U);
+    if (failed == 0U) {
+        return true;
+    }
+    if ((DMA0->COMMON[0].BUSY & failed) != 0U) {
+        return false;
+    }
+    DMA0->COMMON[0].ABORT = failed;
+    DMA0->COMMON[0].INTA = failed;
+    DMA0->COMMON[0].ERRINT = failed;
+    if ((failed & rx_mask) != 0U) {
+        rx_start(instance);
+    }
+    if ((failed & tx_mask) != 0U) {
+        // A prefix may have reached the UART; release the buffer without replaying it.
+        vcom_tx[instance].busy = false;
+        vcom_tx[instance].failed = false;
+        tx_start(instance);
+    }
+    return !vcom_rx[instance].failed && !vcom_tx[instance].failed;
 }
 
 static void vcom_start(const vcom_uart_t* uart) {
@@ -234,7 +263,7 @@ __attribute__((always_inline)) static inline uint32_t rx_written(uint32_t instan
 /** USB to target: one send at a time, of everything TinyUSB holds, and a new line coding between
  *  two sends. The host's next write waits for the line, the loop does not. */
 __attribute__((section(".ramfunc"))) static void send(uint32_t instance) {
-    if (vcom_tx[instance].busy) {
+    if (vcom_tx[instance].busy || vcom_tx[instance].failed) {
         return;
     }
     if (vcom_tx[instance].recode) {
@@ -293,8 +322,11 @@ __attribute__((section(".ramfunc"))) static void receive(uint32_t instance) {
     vcom_rx[instance].read = read;
 }
 
-__attribute__((section(".ramfunc"))) void vcom_task(void) {
+__attribute__((section(".ramfunc"), noinline)) void vcom_task(void) {
     for (uint32_t i = 0U; i < vcom_count; i++) {
+        if (!recover(i)) {
+            continue;
+        }
         send(i);
         receive(i);
         // With a transfer in flight this sends nothing, and TinyUSB sends the rest when it
@@ -307,6 +339,9 @@ __attribute__((section(".ramfunc"))) void vcom_task(void) {
  *  counts are TinyUSB's, in SRAM, which tools/image.py checks. */
 __attribute__((section(".ramfunc"), noinline)) bool vcom_ready(void) {
     for (uint32_t i = 0U; i < vcom_count; i++) {
+        if (vcom_rx[i].failed || vcom_tx[i].failed) {
+            return true;
+        }
         // The position is exact here, so a writer anywhere else is bytes or an overrun to resync.
         if ((!vcom_tx[i].busy && (vcom_tx[i].recode || (tud_cdc_n_available(i) > 0U))) ||
             ((rx_written(i) != vcom_rx[i].read) && (tud_cdc_n_write_available(i) > 0U))) {
@@ -318,11 +353,31 @@ __attribute__((section(".ramfunc"), noinline)) bool vcom_ready(void) {
 
 __attribute__((section(".ramfunc"))) void vcom_dma_done(uint32_t done) {
     for (uint32_t i = 0U; i < vcom_count; i++) {
-        if ((done & (1UL << vcom_rx[i].channel)) != 0U) {
+        if ((done & (1UL << vcom_rx[i].channel)) != 0U && !vcom_rx[i].failed) {
             vcom_rx[i].segments++;
         }
-        if ((done & (1UL << vcom_tx[i].channel)) != 0U) {
+        if ((done & (1UL << vcom_tx[i].channel)) != 0U && !vcom_tx[i].failed) {
             vcom_tx[i].busy = false;
         }
+    }
+}
+
+__attribute__((section(".ramfunc"))) void vcom_dma_error(uint32_t failed) {
+    uint32_t stop = 0U;
+    for (uint32_t i = 0U; i < vcom_count; i++) {
+        uint32_t const rx_mask = 1UL << vcom_rx[i].channel;
+        uint32_t const tx_mask = 1UL << vcom_tx[i].channel;
+        if ((failed & rx_mask) != 0U) {
+            vcom_rx[i].failed = true;
+            stop |= rx_mask;
+        }
+        if ((failed & tx_mask) != 0U) {
+            vcom_tx[i].failed = true;
+            stop |= tx_mask;
+        }
+    }
+    if (stop != 0U) {
+        DMA0->COMMON[0].ENABLECLR = stop;
+        DMA0->COMMON[0].INTENCLR = stop;
     }
 }

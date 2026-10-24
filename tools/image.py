@@ -722,6 +722,13 @@ def check_energy_control(c: Checker, elf0: str, elf1: str, slots: int) -> None:
     check_samples(c, elf1, symbols_with_size(elf1), offsets[1], model_syscon)
 
 
+def check_console_recovery(c: Checker, elf: str, slots: int) -> None:
+    from vcom_checks import check_dma
+
+    offsets = shared_offsets(slots, "dma_table", "swo_segments", small_enums=short_enums(elf))
+    check_dma(c, elf, symbols_with_size(elf), offsets)
+
+
 def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
     """A host has to be able to recognise this firmware and tell two builds of it apart.
 
@@ -2021,6 +2028,7 @@ def main() -> int:
     check_jtag_chain(c, args.core1)
     check_energy_descriptors(c, args.core1, slots)
     check_energy_control(c, args.elf, args.core1, slots)
+    check_console_recovery(c, args.elf, slots)
     check_identity(c, args.core1, args.code_lab)
     check_board(c, args.core1, slots)
     check_dio(c, args.core1, slots)
