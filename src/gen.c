@@ -38,11 +38,15 @@ uint32_t gen_at(const struct gen_schedule* s, uint32_t cycle) {
 }
 
 void gen_put(struct gen_schedule* s, uint32_t cycle, uint32_t insn) {
-    if ((s->n == s->cap) || gen_taken(s, cycle)) {
+    if (s->n == s->cap) {
         s->failed = true;
         return;
     }
     const uint32_t i = lower_bound(s, cycle);
+    if ((i < s->n) && (s->ev[i].cycle == cycle)) {
+        s->failed = true;
+        return;
+    }
     memmove(&s->ev[i + 1U], &s->ev[i], (s->n - i) * sizeof s->ev[0]);
     s->ev[i] = (struct gen_event){cycle, insn};
     s->n++;

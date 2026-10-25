@@ -36,6 +36,7 @@ BUILD = os.path.join(ROOT, "build-gate")
 GENERATOR_CHECK = "generators: sanitizers, both compilers, QEMU"
 
 HOST_CHECKS = (
+    ("Schedule insertion: sanitizers, both compilers", ["uv", "run", "tools/gen_schedule_test.py"]),
     ("Block request/result lengths: sanitizers, both compilers", ["uv", "run", "tools/dap_block_test.py"]),
     ("JTAG command loop: sanitizers, both compilers", ["uv", "run", "tools/jtag_transfer_test.py"]),
     ("Console line coding: sanitizers, both compilers", ["uv", "run", "tools/vcom_line_test.py"]),
