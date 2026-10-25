@@ -177,16 +177,6 @@ static void test_new_configuration_drops_the_last_hosts_work(void) {
     assert(!dap_usb_stale(first_live + 1000U, first_live));
 }
 
-static void test_abort_overtakes_queued_commands(void) {
-    volatile uint16_t request_len[SLOT_COUNT] = {64U, 64U, 0U};
-    volatile uint8_t transfer_abort = 0U;
-
-    assert(request_len[0] != 0U);
-    transfer_abort = 1U;
-    assert(transfer_abort == 1U);
-    assert(request_len[0] != 0U);
-}
-
 /** CPU 0 publishes a command, then raises CPU 1's mailbox register. CPU 1 clears the register,
  *  then checks for work, and waits on the level only if the check found none. At every
  *  interleaving of those four steps, and whether or not the register was left raised before,
@@ -342,7 +332,6 @@ int main(void) {
     test_cross_core_response_handoff();
     test_request_queue_and_transport_order();
     test_new_configuration_drops_the_last_hosts_work();
-    test_abort_overtakes_queued_commands();
     test_mailbox_level_handoff();
     test_dap_core_security_attribution();
     test_shared_state_initialization();

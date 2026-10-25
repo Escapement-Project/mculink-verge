@@ -797,6 +797,15 @@ def check_hid_padding(c: Checker, elf: str, slots: int) -> None:
     c.note("HID long/short/malformed Info replies, zero padding and packet size across both staging modes and all slots")
 
 
+def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int) -> None:
+    from usb_checks import check_transport
+
+    fields = ("transfer_abort", "request", "request_tail", "rx_armed_slot", "next_request_seq", "first_live_seq",
+              "response_len", "response_tail", "response_seq", "response_transport", "response_head")
+    offsets = shared_offsets(slots, *fields, small_enums=short_enums(elf0))
+    check_transport(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
+
+
 def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
     """A host has to be able to recognise this firmware and tell two builds of it apart.
 
@@ -2111,6 +2120,7 @@ def main() -> int:
     check_energy_control(c, args.elf, args.core1, slots)
     check_console_recovery(c, args.elf, slots)
     check_hid_padding(c, args.core1, slots)
+    check_usb_transport(c, args.elf, args.core1, slots)
     check_identity(c, args.core1, args.code_lab)
     check_board(c, args.core1, slots)
     check_dio(c, args.core1, slots)
