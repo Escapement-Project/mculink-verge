@@ -1,8 +1,8 @@
 # SWO trace source for a CC13x2/CC26x2 LaunchPad
 
-`itm_counter.c` streams an incrementing 32-bit counter through ITM port 0, out of DIO16 (JTAG TDO),
-so a capture can be checked word by word with `itm_check.py`. Debug over two-pin cJTAG only: four-wire
-JTAG takes DIO16 back as TDO.
+`itm_counter.c` streams an incrementing 32-bit counter through ITM port 0 on DIO16 (JTAG TDO).
+`itm_check.py` verifies each captured word. Use two-pin cJTAG for debugging; four-wire JTAG needs
+DIO16 for TDO.
 
 Build and load, from this directory, with probe-rs built from the cJTAG branch of
 https://github.com/CordlessCoder/probe-rs (`wip-cmsisdap-cjtag`):
@@ -17,7 +17,7 @@ core; a gdb attach and detach does it:
     probe-rs gdb --chip CC1312R --protocol cjtag &
     arm-none-eabi-gdb -batch -ex 'target remote :1337' -ex detach
 
-The image leaves the last flash sector alone, so the CCFG already on the part stays.
+The image preserves the last flash sector and its existing CCFG.
 
 ## Control block, `swo_ctl` at 0x20000000
 
@@ -29,8 +29,8 @@ The image leaves the last flash sector alone, so the CCFG already on the part st
 | 0x0C | `next` | the counter value of the next packet |
 | 0x10 | `configs` | times the trace path has been set up |
 
-A probe-rs detach writes DEMCR to 0, and the image sets the trace path up again when it sees that,
-so each `probe-rs write` to `acpr` takes effect as the command exits:
+A probe-rs detach clears DEMCR. The image detects this and reconfigures the trace path.
+A write to `acpr` therefore takes effect when `probe-rs write` detaches:
 
     probe-rs write --chip CC1312R --protocol cjtag b32 0x20000004 5    # 8 MHz
 
@@ -40,8 +40,8 @@ so each `probe-rs write` to `acpr` takes effect as the command exits:
     uv run itm_check.py bytes capture.bin     # bytes the probe returned
     uv run itm_check.py line digital_5.bin    # a Saleae binary export of the line
 
-`dap.py swo` needs no debug connection: the image streams on its own, and the target's baud is
-whatever `acpr` says, so set both ends to the same rate.
+`dap.py swo` needs no debug connection; the image streams independently. Set its baud rate to
+match the target's `acpr` value.
 
-It prints the bit time measured from back-to-back frames, framing errors (the first and last frame
-of an export are usually cut), and every break in the counter with the words lost.
+The checker reports bit time from back-to-back frames, framing errors and counter gaps with the
+number of missing words. The first and last frames of an export are usually incomplete.
