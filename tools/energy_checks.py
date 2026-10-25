@@ -46,6 +46,7 @@ class Adc:
         self.fifo = []
         self.active_reads = 0
         self.resets = 0
+        self.software_commands = []
         probe.uc.mem_unmap(ADC_BASE, 4096)
         probe.uc.mmio_map(ADC_BASE, 4096, self.read, None, self.write, None)
 
@@ -67,7 +68,11 @@ class Adc:
             self.resets += 1
             value &= ~0x100
         if offset == 0x34 and value & 1:
+            commands = tuple(int.from_bytes(self.page[at:at + 4], "little") for at in range(0x100, 0x118, 4))
+            self.software_commands.append(commands)
             self.fifo.append(0x81002345)  # An on-demand conversion, not energy trigger 7.
+            if commands[1] >> 24 == 2:
+                self.fifo.append(0x82001234)
         self.page[offset:offset + size] = value.to_bytes(size, "little")
 
 
@@ -279,6 +284,45 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
 
         return probe, dma, adc, put, get, local, written, feed, pause, total, hook
 
+    limits = ((1900, 7), (3800, 6), (7600, 5), (15200, 4), (29197, 3), (54794, 2), (97560, 1), (100000, 0))
+    rates = (1000, 1900, 1901, 3800, 3801, 7600, 7601, 15200, 15201, 29197, 29198,
+             54794, 54795, 97560, 97561, 100000)
+
+    def check_commands(words, average, calibration):
+        tail = 0 if calibration else 3
+        expected = (0x80, (2 << 24) | (average << 12), 0xA0, (tail << 24) | (average << 12))
+        c.check(words[:4] == expected, "ADC voltage/current channel, resolution, averaging, timing or chain changed")
+        if not calibration:
+            c.check(words[4:] == (0x82, 0), "ADC range command is not a fresh unaveraged side-A conversion")
+
+    for rate in rates:
+        probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+        local("requested_rate_hz", rate)
+        value = probe.call("energy_capture_start", 1)
+        c.check(value == 1 and probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC, "ADC configuration setup failed")
+        actual = int.from_bytes(probe.uc.mem_read(probe.sym["actual_rate_hz"], 4), "little")
+        average = next(average for limit, average in limits if actual <= limit)
+        words = tuple(int.from_bytes(adc.page[at:at + 4], "little") for at in range(0x100, 0x118, 4))
+        check_commands(words, average, False)
+        c.check(int.from_bytes(adc.page[0xBC:0xC0], "little") == 0x01000001,
+                "ADC monitor is not hardware trigger 7 starting at command 1")
+        probe.uc.hook_del(hook)
+        if "target_sense_convert_pair_for_calibration" in symbols:
+            probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+            local("capture_running", 0)
+            local("requested_rate_hz", 0)
+            value = probe.call("target_sense_convert_pair_for_calibration", rate, SCRATCH, SCRATCH + 4)
+            c.check(value == 0 and probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC, "ADC calibration pair failed")
+            check_commands(adc.software_commands[-1], next(avg for limit, avg in limits if rate <= limit), True)
+            c.check(int.from_bytes(adc.page[0xA0:0xA4], "little") == 0x01000000,
+                    "ADC calibration is not software trigger 0 starting at command 1")
+            c.check(bytes(probe.uc.mem_read(SCRATCH, 2)) == b"\x45\x23" and
+                    bytes(probe.uc.mem_read(SCRATCH + 4, 2)) == b"\x34\x12", "ADC calibration pair lost its results")
+            probe.uc.hook_del(hook)
+    c.note("ADC monitor command registers at averaging boundaries use the actual timer rate")
+    c.note("ADC calibration command/trigger checks " +
+           ("passed" if "target_sense_convert_pair_for_calibration" in symbols else "not run: entry inlined"))
+
     probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
     written(0)
     pause()
@@ -320,6 +364,7 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
     # A real on-demand sense request pauses/resumes the monitor without resetting session numbering.
     reply = probe.command(bytes([0x86, 1, 0]))
     c.check(len(reply) == 7 and reply[1] == 0, "on-demand sense/resume failed")
+    c.check((adc.software_commands[-1][1] >> 8) & 7 == 5, "on-demand sensing lost its ADCK35 sample time")
     c.check(bytes(probe.uc.mem_read(probe.sym["capture_running"], 1)) == b"\x01", "sense did not resume capture")
     total(codes)
     feed([result(2, 1), result(3, 0), result(1, 32768), result(2, 1), result(3, 0)])

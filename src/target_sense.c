@@ -132,30 +132,31 @@ static lpadc_hardware_average_mode_t monitor_average_mode(uint32_t rate_hz) {
     return kLPADC_HardwareAverageCount1;
 }
 
-void target_sense_configure_monitor(uint32_t rate_hz) {
-    lpadc_hardware_average_mode_t const average_mode = monitor_average_mode(rate_hz);
-    lpadc_conv_command_config_t command;
-    LPADC_GetDefaultConvCommandConfig(&command);
-    command.channelNumber = 0U;
-    command.conversionResolutionMode = kLPADC_ConversionResolutionHigh;
-    command.hardwareAverageMode = average_mode;
-    command.sampleTimeMode = kLPADC_SampleTimeADCK3;
-    command.chainedNextCommandNumber = 2U;
-    LPADC_SetConvCommandConfig(ADC0, 1U, &command);
+static void configure_pair_commands(uint32_t rate_hz, uint32_t current_next,
+                                     lpadc_conv_command_config_t* command) {
+    LPADC_GetDefaultConvCommandConfig(command);
+    command->channelNumber = 0U;
+    command->sampleChannelMode = kLPADC_SampleChannelSingleEndSideA;
+    command->conversionResolutionMode = kLPADC_ConversionResolutionHigh;
+    command->hardwareAverageMode = monitor_average_mode(rate_hz);
+    command->sampleTimeMode = kLPADC_SampleTimeADCK3;
+    command->chainedNextCommandNumber = 2U;
+    LPADC_SetConvCommandConfig(ADC0, 1U, command);
 
     // PIO0_16/ADC0_8 is CH0B, paired with voltage on PIO0_23/ADC0_0 (CH0A).
-    command.channelNumber = 0U;
-    command.sampleChannelMode = kLPADC_SampleChannelSingleEndSideB;
-    command.hardwareAverageMode = average_mode;
-    command.sampleTimeMode = kLPADC_SampleTimeADCK3;
-    command.chainedNextCommandNumber = 3U;
-    LPADC_SetConvCommandConfig(ADC0, 2U, &command);
+    command->sampleChannelMode = kLPADC_SampleChannelSingleEndSideB;
+    command->chainedNextCommandNumber = current_next;
+    LPADC_SetConvCommandConfig(ADC0, 2U, command);
+}
+
+void target_sense_configure_monitor(uint32_t rate_hz) {
+    lpadc_conv_command_config_t command;
+    configure_pair_commands(rate_hz, 3U, &command);
 
     command.channelNumber = 2U;
     command.sampleChannelMode = kLPADC_SampleChannelSingleEndSideA;
     // Keep the range-state conversion fresh so gain changes appear in the next captured pair.
     command.hardwareAverageMode = kLPADC_HardwareAverageCount1;
-    command.sampleTimeMode = kLPADC_SampleTimeADCK3;
     command.chainedNextCommandNumber = 0U;
     LPADC_SetConvCommandConfig(ADC0, 3U, &command);
 
@@ -225,20 +226,8 @@ target_sense_status_t target_sense_convert_pair_for_calibration(uint32_t rate_hz
     }
 
     LPADC_DoResetFIFO0(ADC0);
-    lpadc_hardware_average_mode_t const average_mode = monitor_average_mode(rate_hz);
     lpadc_conv_command_config_t command;
-    LPADC_GetDefaultConvCommandConfig(&command);
-    command.channelNumber = 0U;
-    command.sampleChannelMode = kLPADC_SampleChannelSingleEndSideA;
-    command.conversionResolutionMode = kLPADC_ConversionResolutionHigh;
-    command.hardwareAverageMode = average_mode;
-    command.sampleTimeMode = kLPADC_SampleTimeADCK3;
-    command.chainedNextCommandNumber = 2U;
-    LPADC_SetConvCommandConfig(ADC0, 1U, &command);
-
-    command.sampleChannelMode = kLPADC_SampleChannelSingleEndSideB;
-    command.chainedNextCommandNumber = 0U;
-    LPADC_SetConvCommandConfig(ADC0, 2U, &command);
+    configure_pair_commands(rate_hz, 0U, &command);
 
     lpadc_conv_trigger_config_t trigger;
     LPADC_GetDefaultConvTriggerConfig(&trigger);
