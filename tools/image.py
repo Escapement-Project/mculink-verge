@@ -120,7 +120,7 @@ def shared_fields() -> list[str]:
 
 
 def shared_offsets(request_slots: int, *fields: str, small_enums: bool = True,
-                   struct_type: str = "dap_shared_t") -> dict[str, int]:
+                   struct_type: str = "dap_shared_t", timing_diagnostics: bool = False) -> dict[str, int]:
     """Member offsets of dap_shared_t, and its size as "size", as the firmware's compiler lays it
     out. A host compiler would not: its pointers are a different size. An image's enum size is
     its compiler's choice, so pass the image's own."""
@@ -131,6 +131,7 @@ def shared_offsets(request_slots: int, *fields: str, small_enums: bool = True,
         c_file, obj, raw = (os.path.join(tmp, n) for n in ("layout.c", "layout.o", "layout.bin"))
         open(c_file, "w").write(source)
         subprocess.run(["arm-none-eabi-gcc", "-std=gnu23", "-mthumb", "-mcpu=cortex-m33", f"-DREQUEST_SLOTS={request_slots}U",
+                        *(["-DDAP_TIMING_DIAGNOSTICS"] if timing_diagnostics else []),
                         "-fshort-enums" if small_enums else "-fno-short-enums",
                         f"-I{os.path.join(ROOT, 'src')}", "-c", c_file, "-o", obj], check=True)
         subprocess.run(["arm-none-eabi-objcopy", "-O", "binary", "-j", ".rodata", obj, raw], check=True)
@@ -474,11 +475,8 @@ def check_commands(c: Checker, elf: str, code_lab: bool, swo: bool) -> None:
     )
 
 
-# What a host can make the firmware write, and where it lands. The reply length is chosen by the
-# request, not by the firmware: DAP_TransferBlock takes a sixteen-bit word count, DAP_Transfer an
-# eight-bit transfer count that can answer with eight bytes each, and DAP_ExecuteCommands runs up
-# to 255 sub-commands without checking how much of the packet arrived. None of ARM's command layer
-# compares the reply against the buffer.
+# Counts that would exceed a packet in ARM's unbounded command layer. Sized dispatch must reject
+# or shorten them before a handler writes its reply.
 OVERFLOW_CASES = [
     ("TransferBlock, 128 words", bytes([0x06, 0]) + u16(128) + bytes([0x0F])),
     ("TransferBlock, 4000 words", bytes([0x06, 0]) + u16(4000) + bytes([0x0F])),
@@ -494,20 +492,12 @@ OVERFLOW_CASES = [
 
 
 def check_response_bounds(c: Checker, elf: str, packet_size: int) -> None:
-    """Nothing a host can send may write past the response buffer.
-
-    Found by asking the question rather than by reading the code: a five-byte request that says
-    65535 words produces a 256 KB reply, which on this part runs off the end of SRAM through the
-    stack. It is ARM's reference behaviour, so every probe built from it has it.
-
-    The canary goes past the end of the buffer the image actually contains, taken from the ELF, so
-    this measures the shipped size rather than a number repeated here.
-    """
+    """Fence the reply at the transport limit and check the linked private buffer's size."""
     sym = symbols_with_size(elf)
-    if "response_copy" not in sym:
-        c.note("the response buffer was folded away; its bounds not checked")
+    if not c.check("response_copy" in sym, "private response buffer missing from bounds checks"):
         return
     size = sym["response_copy"][1]
+    c.check(size == packet_size, f"private response buffer is {size} bytes, wanted {packet_size}")
     resp = SCRATCH + 0x400
     ceiling = SRAM[0] + SRAM[1] - 0x1000  # clear of the stack, which is at the top
     if resp + size >= ceiling:
@@ -531,17 +521,17 @@ def check_response_bounds(c: Checker, elf: str, packet_size: int) -> None:
         except SystemExit as exc:
             c.problems.append(f"{label} faulted: {exc}")
             continue
-        tail = bytes(probe.uc.mem_read(resp + size, ceiling - resp - size))
+        tail = bytes(probe.uc.mem_read(resp + packet_size, ceiling - resp - packet_size))
         past = len(tail.rstrip(b"\xee"))
         if past:
-            c.problems.append(f"{label} wrote {past} bytes past the {size}-byte response buffer")
-        if produced > size:
-            c.problems.append(f"{label} returned {produced} bytes for a {size}-byte buffer")
+            c.problems.append(f"{label} wrote {past} bytes past the {packet_size}-byte reply capacity")
+        if produced > packet_size:
+            c.problems.append(f"{label} returned {produced} bytes for a {packet_size}-byte reply capacity")
         worst = max(worst, produced)
     if not c.problems:
         c.note(
             f"the longest reply {len(OVERFLOW_CASES)} oversized requests could produce is {worst}"
-            f" bytes, inside the {size}-byte buffer, and only {packet_size} of it is ever sent"
+            f" bytes, inside the {size}-byte buffer"
         )
 
 
@@ -592,53 +582,71 @@ def check_request_bounds(c: Checker, elf: str, packet_size: int) -> None:
             c.problems.append(f"{label} faulted: {exc}")
             continue
         after = bytes(probe.uc.mem_read(base + size, watch))
-        if before != after:
-            spoiled = sum(1 for x, y in zip(before, after) if x != y)
+        expected = bytearray(before)
+        if payload[0] == 0x15 and "jtag_gen_command" in sym:
+            # Rejected JTAG configurations still update the dispatch command marker.
+            marker = sym["jtag_gen_command"][0] - base - size
+            if 0 <= marker < watch:
+                expected[marker] = payload[0]
+        if expected != after:
+            spoiled = sum(1 for x, y in zip(expected, after) if x != y)
             c.problems.append(f"{label} changed {spoiled} bytes past the {size}-byte DAP_Data")
         reply = bytes(probe.uc.mem_read(resp, 2))
         if reply[0] != ID_DAP_INVALID and (reply[0] != payload[0] or reply[1] != 0xFF):
             c.problems.append(f"{label} answered {reply.hex()}, wanted the command id then DAP_ERROR")
     if not c.problems:
-        c.note(f"{len(REQUEST_CASES)} oversized requests are refused and leave DAP_Data's neighbours alone")
+        c.note(f"{len(REQUEST_CASES)} oversized requests refused; neighbouring writes limited to the command marker")
 
 
-def check_bounded_commands(c: Checker, elf: str) -> None:
-    for capacity in (64, 512):
+def check_bounded_commands(c: Checker, elf: str, slots: int) -> None:
+    sym = symbols_with_size(elf)
+    stage = shared_offsets(slots, "response", "response[1]", small_enums=short_enums(elf),
+                           struct_type="dap_stage_t")
+    stride = stage["response[1]"] - stage["response"]
+    buffers = [sym["response_copy"][0]] + [sym["dap_stage"][0] + stage["response"] + stride * i
+                                         for i in range(slots)]
+    for capacity, response in ((capacity, buffer) for capacity in (64, 512) for buffer in buffers):
         probe = build(elf, "swd", True, Model())
         if "DAP_Setup" in probe.sym:
             probe.call("DAP_Setup")
         probe.command(bytes([2, 1]))
         probe.command(bytes([0x11]) + u32(10_000_000))
-        state = probe.sym["DAP_Data"]
-        response = SCRATCH + 1024
+        state, state_size = sym["DAP_Data"]
 
-        def execute(payload: bytes, received: int | None = None) -> bytes:
+        def execute(payload: bytes, received: int | None = None, *, legacy: bool = False) -> bytes:
             probe.uc.mem_write(SCRATCH, payload + bytes(1024 - len(payload)))
-            probe.uc.mem_write(response, bytes([0xee]) * (capacity + 32))
-            result = probe.call("DAP_ExecuteCommandSized", SCRATCH,
-                                len(payload) if received is None else received, capacity, response)
+            probe.uc.mem_write(response, bytes([0xee]) * capacity)
+            guard = bytes(probe.uc.mem_read(response + capacity, 32))
+            if legacy:
+                result = probe.call("DAP_ExecuteCommand", SCRATCH, response)
+            else:
+                result = probe.call("DAP_ExecuteCommandSized", SCRATCH,
+                                    len(payload) if received is None else received, capacity, response)
             c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC, "bounded command did not return")
             produced = result & 0xffff
             c.check(produced <= capacity, "bounded command exceeded transport capacity")
-            c.check(bytes(probe.uc.mem_read(response + capacity, 32)) == bytes([0xee]) * 32,
+            c.check(bytes(probe.uc.mem_read(response + capacity, 32)) == guard,
                     "bounded command changed reply guard")
             return bytes(probe.uc.mem_read(response, min(produced, capacity)))
 
         for stale_hz in (1_000_000, 5_000_000):
-            before = bytes(probe.uc.mem_read(state, 128))
+            before = bytes(probe.uc.mem_read(state, state_size))
             c.check(execute(bytes([0x11]) + u32(stale_hz), 1) == b"\xff", "short clock was accepted")
-            c.check(bytes(probe.uc.mem_read(state, 128)) == before, "short clock changed DAP state")
+            c.check(bytes(probe.uc.mem_read(state, state_size)) == before, "short clock changed DAP state")
             for symbol in ("swd_gen_clock_hz", "jtag_gen_clock_hz"):
                 if symbol in probe.sym:
                     c.check(bytes(probe.uc.mem_read(probe.sym[symbol], 4)) == u32(10_000_000),
                             "short clock changed generator clock")
         for payload in (bytes([6, 0, 1, 0, 0]), bytes([0x1d, 1, 8])):
-            before = bytes(probe.uc.mem_read(state, 128))
+            before = bytes(probe.uc.mem_read(state, state_size))
             c.check(execute(payload) == b"\xff", "truncated transfer/sequence accepted")
-            c.check(bytes(probe.uc.mem_read(state, 128)) == before, "truncated command changed state")
+            c.check(bytes(probe.uc.mem_read(state, state_size)) == before, "truncated command changed state")
         reply = execute(bytes([6, 0, 0xff, 0xff, 2]))
-        c.check(len(reply) <= capacity and int.from_bytes(reply[1:3], "little") == (capacity - 4) // 4,
+        c.check(len(reply) == capacity and int.from_bytes(reply[1:3], "little") == (capacity - 4) // 4,
                 "block read did not match transport ceiling")
+        if capacity == 512 and "DAP_ExecuteCommand" in probe.sym:
+            c.check(execute(bytes([6, 0, 0xff, 0xff, 2]), legacy=True) == reply,
+                    "legacy entry point bypassed the packet ceiling")
         if capacity == 64:
             c.check(execute(bytes([0x1d, 8]) + bytes([0x80]) * 8) == b"\xff",
                     "oversized input sequence accepted")
@@ -655,7 +663,16 @@ def check_bounded_commands(c: Checker, elf: str) -> None:
             c.check(len(reply) == 63 and reply[:2] == bytes([0x7f, 16]), "full batch reply framing")
             c.check(bytes(probe.uc.mem_read(state, 1)) == b"\x01", "overflowing Connect executed")
         c.check(execute(bytes([0x7f, 1])) == bytes([0x7f, 0]), "empty batch payload accepted")
-    c.note("HID/bulk command preflight, reply guards, side effects and partial batch counts")
+        disconnects = (capacity - 6) // 2
+        payload = bytes([0x7f, disconnects + 2]) + bytes([3]) * disconnects + bytes([0, 0xff, 2, 1])
+        reply = execute(payload)
+        c.check(reply == bytes([0x7f, disconnects + 1]) + bytes([3, 0]) * disconnects + bytes([0, 2, 0, 2]),
+                "exact-capacity batch reply or executed count changed")
+        c.check(bytes(probe.uc.mem_read(state, 1)) == b"\x00", "command after full batch reply executed")
+        c.check(execute(bytes([2, 1])) == bytes([2, 1]), "short reply after full batch failed")
+    c.note("HID/bulk boundaries, malformed commands and full batches in private and every staged reply buffer")
+    if "DAP_ExecuteCommand" not in sym:
+        c.note("legacy DAP_ExecuteCommand is unlinked; its wrapper is not exercised")
 
 
 def check_jtag_chain(c: Checker, elf: str) -> None:
@@ -1465,7 +1482,8 @@ def check_sram_code(c: Checker, elf: str, what: str, names: tuple[str, ...], all
         c.note(f"{what} from SRAM: {' and '.join(names)}, and every branch they take")
 
 
-def check_core1_image(c: Checker, elf: str, core1: str, request_slots: int) -> None:
+def check_core1_image(c: Checker, elf: str, core1: str, request_slots: int,
+                      timing_diagnostics: bool = False) -> None:
     """CPU 0 starts CPU 1 from the image it embeds, and both reach the same shared struct.
 
     Built separately, the two images agree on nothing a linker can check. So this checks what each
@@ -1511,6 +1529,15 @@ def check_core1_image(c: Checker, elf: str, core1: str, request_slots: int) -> N
     (stage0, stage_size0), (stage1, stage_size1) = sym0["dap_stage"], sym1["dap_stage"]
     c.check((stage0, stage_size0) == (stage1, stage_size1),
             f"dap_stage is {stage_size0} bytes at {stage0:#x} on CPU 0 and {stage_size1} bytes at {stage1:#x} on CPU 1")
+    stage_fields = ("request", "hid_request", "response", "response[1]")
+    stages = [shared_offsets(request_slots, *stage_fields, small_enums=short_enums(image),
+                             struct_type="dap_stage_t", timing_diagnostics=timing_diagnostics)
+              for image in (elf, core1)]
+    c.check(stages[0] == stages[1] and stages[0]["size"] == stage_size0,
+            "staged buffer layouts differ between cores or from dap_shared.h")
+    c.check(stages[0]["response[1]"] - stages[0]["response"] == 512,
+            "staged reply slots are not packet-sized")
+    c.check(stage0 == SRAM3[0] + SRAM3[1] - 8192, "dap_stage does not start in SRAM3's top 8 KiB")
     # The top of SRAM3, where dap_shared.h and BUSES.md put it, past CPU 1's data.
     bss_end = symbols(core1).get("__bss_end__", top)
     c.check(SRAM3[0] <= stage0 and stage0 + stage_size0 <= SRAM3[0] + SRAM3[1],
@@ -2030,6 +2057,7 @@ def main() -> int:
     # packet hands two commands to one read. src/tusb_config.h has the measurement.
     ap.add_argument("--packet-count", type=int, default=2)
     ap.add_argument("--code-lab", action="store_true", help="check the optional vendor 0x88 code lab")
+    ap.add_argument("--timing-diagnostics", action="store_true", help="include timing counters in the staged layout")
     ap.add_argument("--core-clock-mhz", type=int, default=150, help="the main clock, src/core_clock.h")
     args = ap.parse_args()
 
@@ -2048,7 +2076,7 @@ def main() -> int:
     # REQUEST_SLOTS is what the host is told as the packet count, and it sizes dap_shared.
     slots = args.packet_count
     swo = bool(config_value(args.config, "SWO_UART"))
-    check_core1_image(c, args.elf, args.core1, slots)
+    check_core1_image(c, args.elf, args.core1, slots, args.timing_diagnostics)
     check_sram_code(c, args.elf, "CPU 0 waits for work", ("wait_for_work", "energy_control_task", "vcom_ready", "tud_cdc_n_available",
                                                          "tud_cdc_n_write_available", "tu_edpt_stream_write_available"))
     check_sram_code(c, args.elf, "CPU 0 runs a command's USB work",
@@ -2077,7 +2105,7 @@ def main() -> int:
     check_commands(c, args.core1, args.code_lab, swo)
     check_response_bounds(c, args.core1, args.packet_size)
     check_request_bounds(c, args.core1, args.packet_size)
-    check_bounded_commands(c, args.core1)
+    check_bounded_commands(c, args.core1, slots)
     check_jtag_chain(c, args.core1)
     check_energy_descriptors(c, args.core1, slots)
     check_energy_control(c, args.elf, args.core1, slots)

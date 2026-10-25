@@ -30,7 +30,6 @@
 #include "target_sense.h"
 
 static_assert(DAP_PACKET_SIZE == DAP_SHARED_PACKET_SIZE, "dap_shared.h repeats DAP_PACKET_SIZE");
-static_assert(DAP_RESPONSE_SIZE == DAP_SHARED_RESPONSE_SIZE, "dap_shared.h repeats DAP_RESPONSE_SIZE");
 
 dap_shared_t dap_shared __attribute__((section(".dap_shared")));
 dap_stage_t dap_stage __attribute__((section(".dap_stage")));
@@ -50,7 +49,7 @@ volatile uint32_t marker_mask = J8_PIN_MASK;
  * through dap_stage.
  */
 alignas(DAP_USB_BUFFER_ALIGN) static uint8_t request_copy[DAP_PACKET_SIZE];
-alignas(DAP_USB_BUFFER_ALIGN) static uint8_t response_copy[DAP_RESPONSE_SIZE];
+alignas(DAP_USB_BUFFER_ALIGN) static uint8_t response_copy[DAP_PACKET_SIZE];
 
 /** The same two buffers, read through volatile so link-time optimisation cannot specialise
  *  DAP_ExecuteCommandSized to them. tools/cycles.py and tools/image.py call it with buffers of

@@ -331,7 +331,7 @@ endif()
 
 # How the two images share the part. CPU 1 runs the bit paths from RAM, and their load copies are
 # most of its flash, so it gets the larger share of both. CPU 0's RAM is SRAM0 alone. CPU 1's is
-# SRAM1 up to the top 16 KB of SRAM3, with its stack in SRAM4. The cores meet in that top of
+# SRAM1 up to the top 8 KB of SRAM3, with its stack in SRAM4. The cores meet in that top of
 # SRAM3, which holds dap_stage, the commands CPU 0 stages for CPU 1, and in USB SRAM, split between
 # TinyUSB's buffers and dap_shared (both in src/dap_shared.h). Not SRAM4 for dap_stage: a load
 # next to a store costs a cycle more there than in SRAM1 to SRAM3, and the generated transfers
@@ -340,9 +340,9 @@ set(CORE1_FLASH_ORIGIN 0x00040000)
 set(CORE1_FLASH_END    0x0009D800)  # where the SDK's own reservation for CPU 1 ends
 set(CORE0_RAM_LENGTH   0x00010000)
 set(CORE1_RAM_ORIGIN   0x20010000)
-set(CORE1_RAM_LENGTH   0x0002C000)
-set(DAP_STAGE_ORIGIN   0x2003C000)
-set(DAP_STAGE_LENGTH   0x00004000)
+set(CORE1_RAM_LENGTH   0x0002E000)
+set(DAP_STAGE_ORIGIN   0x2003E000)
+set(DAP_STAGE_LENGTH   0x00002000)
 set(CORE1_STACK_ORIGIN 0x20040000)
 set(CORE1_STACK_LENGTH 0x00004000)
 set(CORE0_USB_LENGTH   0x00001000)
@@ -547,6 +547,9 @@ if(UV_EXECUTABLE)
   set(IMAGE_CHECK_ARGS --packet-count ${DAP_PACKET_COUNT} --core-clock-mhz ${CORE_CLOCK_MHZ})
   if(CODE_LAB)
     list(APPEND IMAGE_CHECK_ARGS --code-lab)
+  endif()
+  if(DAP_TIMING_DIAGNOSTICS)
+    list(APPEND IMAGE_CHECK_ARGS --timing-diagnostics)
   endif()
   add_custom_target(check_wire
     COMMAND ${UV_EXECUTABLE} run ${CMAKE_CURRENT_SOURCE_DIR}/tools/cycles.py

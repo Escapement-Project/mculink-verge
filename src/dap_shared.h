@@ -25,10 +25,9 @@
 #define REQUEST_SLOTS 3U
 #endif
 
-/** DAP_PACKET_SIZE and DAP_RESPONSE_SIZE, which CPU 1 checks against DAP_config.h. Repeated here
+/** DAP_PACKET_SIZE, which CPU 1 checks against DAP_config.h. Repeated here
  *  so the host simulator can include this header without the device headers. */
 #define DAP_SHARED_PACKET_SIZE 512U
-#define DAP_SHARED_RESPONSE_SIZE (DAP_SHARED_PACKET_SIZE + 2U + (8U * 255U) + 4U)
 
 #define DAP_SHARED_ALIGN alignas(DAP_USB_BUFFER_ALIGN)
 
@@ -42,10 +41,6 @@
 
 /** dap_stage's request buffers for each transport: one more than the slots (see dap_stage_t). */
 #define DAP_STAGE_REQUESTS (REQUEST_SLOTS + 1U)
-
-/** A reply slot in dap_stage: DAP_SHARED_RESPONSE_SIZE, rounded up so the next slot is aligned. */
-#define DAP_STAGE_RESPONSE_SIZE \
-    ((DAP_SHARED_RESPONSE_SIZE + DAP_USB_BUFFER_ALIGN - 1U) & ~(DAP_USB_BUFFER_ALIGN - 1U))
 
 /** The HID report size, which CPU 0 checks against CFG_TUD_HID_EP_BUFSIZE. */
 #define DAP_SHARED_HID_REPORT_SIZE 64U
@@ -194,7 +189,6 @@ typedef struct {
     volatile dap_core1_status_t core1;
 
     DAP_SHARED_ALIGN uint8_t request[REQUEST_SLOTS][DAP_SHARED_PACKET_SIZE];
-    // A reply is never more than a packet: CPU 1 builds it in its own buffer and copies a packet out.
     DAP_SHARED_ALIGN uint8_t response[REQUEST_SLOTS][DAP_SHARED_PACKET_SIZE];
     DAP_SHARED_ALIGN uint8_t hid_request[REQUEST_SLOTS][DAP_SHARED_HID_REPORT_SIZE];
 
@@ -210,7 +204,7 @@ extern dap_shared_t dap_shared;
 /** Commands and replies in Normal memory, where CPU 1 runs them in place. CPU 0 copies each staged
  *  command in from its USB slot as it arrives and each staged reply out as it starts to send it,
  *  so CPU 1 copies nothing while commands are queued. Each image defines it in `.dap_stage`, which
- *  both link scripts place at the top of SRAM3 (CMakeLists.txt says why there). CPU 1 has the
+ *  both link scripts place in the top 8 KiB of SRAM3 (CMakeLists.txt says why there). CPU 1 has the
  *  highest AHB matrix priority (src/main.c), so CPU 0's copies cannot delay the accesses a
  *  transfer makes to its buffers.
  *
@@ -225,9 +219,7 @@ extern dap_shared_t dap_shared;
 typedef struct {
     DAP_SHARED_ALIGN uint8_t request[DAP_STAGE_REQUESTS][DAP_SHARED_PACKET_SIZE];
     DAP_SHARED_ALIGN uint8_t hid_request[DAP_STAGE_REQUESTS][DAP_SHARED_PACKET_SIZE];
-    // The command layer may write past the packet before the reply is cut to it, as CPU 1's own
-    // reply buffer allows for.
-    DAP_SHARED_ALIGN uint8_t response[REQUEST_SLOTS][DAP_STAGE_RESPONSE_SIZE];
+    DAP_SHARED_ALIGN uint8_t response[REQUEST_SLOTS][DAP_SHARED_PACKET_SIZE];
 #ifdef DAP_TIMING_DIAGNOSTICS
     volatile uint32_t request_tick[REQUEST_SLOTS];
     volatile uint32_t response_tx_tick[REQUEST_SLOTS];
