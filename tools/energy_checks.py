@@ -4,7 +4,7 @@ import struct
 
 from cycles import Machine, Model, RETURN_MAGIC, SCRATCH, Target, u32
 from unicorn import UC_HOOK_CODE, UC_HOOK_MEM_WRITE
-from unicorn.arm_const import UC_ARM_REG_PC, UC_ARM_REG_PRIMASK
+from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_PRIMASK, UC_ARM_REG_R0
 
 DMA_BASE = 0x40082000
 ENERGY_MASK = 1 << 21
@@ -322,6 +322,28 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
     c.note("ADC monitor command registers at averaging boundaries use the actual timer rate")
     c.note("ADC calibration command/trigger checks " +
            ("passed" if "target_sense_convert_pair_for_calibration" in symbols else "not run: entry inlined"))
+
+    if c.check("current_calibrate" in symbols, "calibration entry missing from rate checks"):
+        for requested, expected in ((1901, 1900), (7601, 7600), (15201, 15199), (29198, 29197),
+                                    (54795, 54794), (97561, 97560), (100000, 100000)):
+            probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+            local("capture_running", 0)
+            seen = []
+
+            def calibration(uc, at, size, data):
+                if at == probe.sym["current_calibrate"]:
+                    seen.append(uc.reg_read(UC_ARM_REG_R0))
+                    uc.reg_write(UC_ARM_REG_R0, 0)
+                    uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+
+            call_hook = probe.uc.hook_add(UC_HOOK_CODE, calibration)
+            probe.uc.ctl_flush_tb()
+            reply = probe.command(bytes([0x90, 0]) + u32(requested))
+            c.check(seen == [expected], f"calibration rate {seen} for request {requested}, expected {expected}")
+            c.check(reply == bytes([0x90, 0, 6]) + bytes(4), f"mock calibration failure reply: {reply.hex()}")
+            probe.uc.hook_del(call_hook)
+            probe.uc.hook_del(hook)
+    c.note("energy start passes the effective timer rate to calibration at averaging boundaries")
 
     probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
     written(0)

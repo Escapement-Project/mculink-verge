@@ -254,7 +254,7 @@ static void calibration_prepare(energy_calibration_t* calibration) {
     }
 }
 
-static bool current_calibrate(uint32_t rate_hz) {
+__attribute__((noinline)) static bool current_calibrate(uint32_t rate_hz) {
     current_calibrated = false;
     if (current_range == TARGET_SENSE_CURRENT_RANGE_UNKNOWN) {
         return false;
@@ -583,7 +583,7 @@ energy_monitor_status_t energy_monitor_start(uint32_t rate_hz) {
         return ENERGY_MONITOR_ADC_ERROR;
     }
     current_range = target_sense_current_range();
-    if (!current_calibrate(rate_hz)) {
+    if (!current_calibrate(timer_effective_rate(rate_hz))) {
         requested_rate_hz = 0U;
         return ENERGY_MONITOR_ADC_ERROR;
     }
