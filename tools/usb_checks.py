@@ -3,7 +3,7 @@
 from cycles import Model, RETURN_MAGIC, SCRATCH, STACK_TOP, build, u16, u32
 from energy_checks import machine
 from unicorn import UC_HOOK_CODE
-from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2
+from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3
 
 
 class Usb:
@@ -26,6 +26,11 @@ class Usb:
                 if self.accept_tx:
                     self.sent.append(bytes(uc.mem_read(address, length)))
                 result = length if self.accept_tx else 0
+            elif at == self.cpu0.sym["tud_hid_n_report"]:
+                address, length = uc.reg_read(UC_ARM_REG_R2), uc.reg_read(UC_ARM_REG_R3)
+                if self.accept_tx:
+                    self.sent.append(bytes(uc.mem_read(address, length)))
+                result = int(self.accept_tx)
             else:
                 return
             uc.reg_write(UC_ARM_REG_R0, result)

@@ -799,11 +799,13 @@ def check_hid_padding(c: Checker, elf: str, slots: int) -> None:
 
 def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int) -> None:
     from usb_checks import check_transport
+    from usb_lifecycle import check_sequences
 
     fields = ("transfer_abort", "request", "request_tail", "rx_armed_slot", "next_request_seq", "first_live_seq",
               "response_len", "response_tail", "response_seq", "response_transport", "response_head")
     offsets = shared_offsets(slots, *fields, small_enums=short_enums(elf0))
     check_transport(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
+    check_sequences(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
 
 
 def check_identity(c: Checker, elf: str, code_lab: bool) -> None:

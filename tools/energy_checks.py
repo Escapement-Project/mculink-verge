@@ -502,3 +502,5 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
                 f"{fault}: successful start did not clear failure")
         probe.uc.hook_del(hook)
     c.note("energy partial/full/pending segments, FIFO tail, split tuples, Q32 carry and session resume/reset")
+    from energy_lifecycle import check_sequences
+    check_sequences(c, setup, result)
