@@ -175,15 +175,32 @@ static void test_console_reader(void) {
 static void test_copy_wraps(void) {
     static uint8_t ring[SWO_RING_BYTES];
     for (uint32_t i = 0U; i < SWO_RING_BYTES; i++) {
-        ring[i] = (uint8_t)(i * 7U);
+        ring[i] = (uint8_t)((i * 7U) ^ (i >> 8U));
     }
-    uint8_t out[16];
-    uint32_t const from = (5U * SWO_RING_BYTES) - 8U;
-    swo_copy(out, ring, from, sizeof(out));
-    for (uint32_t i = 0U; i < sizeof(out); i++) {
-        assert(out[i] == ring[(from + i) % SWO_RING_BYTES]);
+    static uint8_t out[2U * SWO_RING_BYTES + 19U];
+    uint32_t const counts[] = {0U, 1U, 2U, 3U, 4U, 7U, 16U, 60U, 508U};
+    for (uint32_t offset = 0U; offset < SWO_RING_BYTES; offset++) {
+        // The last lap also crosses the uint32_t position boundary.
+        for (uint32_t lap = 0U; lap < 2U; lap++) {
+            uint32_t const from = offset + (lap ? UINT32_MAX - SWO_RING_BYTES + 1U : 0U);
+            for (uint32_t k = 0U; k < sizeof(counts) / sizeof(counts[0]); k++) {
+                uint32_t const count = counts[k];
+                memset(out, 0xA5, count + 2U);
+                swo_copy(out + 1U, ring, from, count);
+                assert(out[0] == 0xA5 && out[count + 1U] == 0xA5);
+                for (uint32_t i = 0U; i < count; i++) {
+                    assert(out[i + 1U] == ring[(from + i) % SWO_RING_BYTES]);
+                }
+            }
+        }
     }
-    assert(out[8] == ring[0]);
+    uint32_t const count = sizeof(out) - 2U;
+    memset(out, 0xA5, sizeof(out));
+    swo_copy(out + 1U, ring, UINT32_MAX - 3U, count);
+    assert(out[0] == 0xA5 && out[count + 1U] == 0xA5);
+    for (uint32_t i = 0U; i < count; i++) {
+        assert(out[i + 1U] == ring[(UINT32_MAX - 3U + i) % SWO_RING_BYTES]);
+    }
 }
 
 /** Every oversampling and divider, for the period whose rate is closest, measured exactly; then

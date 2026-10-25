@@ -2094,6 +2094,9 @@ def main() -> int:
     check_timestamp(c, args.core1)
     if swo:
         check_swo_baudrate(c, args.config, 96_000_000, args.core_clock_mhz * 1_000_000)
+        from swo_checks import check_copy
+        offset = shared_offsets(slots, "swo_ring", small_enums=short_enums(args.core1))["swo_ring"]
+        check_copy(c, args.core1, offset)
     check_info(c, args.core1, args.packet_size, args.packet_count, swo)
     for image in (args.elf, args.core1):
         check_serial(c, image, bytes(range(1, 17)), args.prefix)

@@ -35,8 +35,18 @@ static inline uint32_t swo_resync(uint32_t written) {
 
 /** Copy `count` bytes from position `read` out of the ring, across its end if need be. */
 static inline void swo_copy(uint8_t* out, volatile uint8_t const* ring, uint32_t read, uint32_t count) {
-    for (uint32_t i = 0U; i < count; i++) {
-        out[i] = ring[(read + i) % SWO_RING_BYTES];
+    uint32_t offset = read % SWO_RING_BYTES;
+    while (count != 0U) {
+        uint32_t run = SWO_RING_BYTES - offset;
+        if (run > count) {
+            run = count;
+        }
+        for (uint32_t i = 0U; i < run; i++) {
+            out[i] = ring[offset + i];
+        }
+        out += run;
+        count -= run;
+        offset = 0U;
     }
 }
 
