@@ -18,11 +18,14 @@
 #include "DAP_config.h"
 
 #include "DAP.h"
+#include "dap_block.h"
 #include "cjtag.h"
 #include "hot.h"
 #include "jtag_block.h"
 #include "jtag_dp.h"
 #include "jtag_gen.h"
+
+static_assert(DAP_JTAG_DEV_CNT + 4U <= JTAG_GEN_FRAMES_MAX, "JTAG transfer header exceeds frame capacity");
 
 /** ARM's TDI pin on two pins, where no pin holds it: the level a frame carries when nothing sets
  * it. On four wires the pin itself is the state, as it is for ARM. */
@@ -142,7 +145,7 @@ COMMAND_PATH static uint32_t frames(uint32_t tdi, uint32_t count, uint32_t tms) 
     } else {
         tdo = jtag_gen_scan(tdi, count, tms);
     }
-    tdi_level = (tdi >> (count - 1U)) & 1U;
+    tdi_level = (tdi >> (count - 1U)) & 1U; // NOLINT(clang-analyzer-core.BitwiseShift): callers pass 1..32 frames
     return tdo;
 }
 
@@ -418,10 +421,5 @@ end:
 COMMAND_PATH uint32_t jgen_TransferBlock(const uint8_t* request, uint8_t* response) {
     uint32_t num = block_whole(request, response);
 
-    if ((*(request + 3) & DAP_TRANSFER_RnW) != 0U) {
-        num |= 4U << 16;
-    } else {
-        num |= (4U + (((uint32_t)(*(request + 1)) | (uint32_t)(*(request + 2) << 8)) * 4)) << 16;
-    }
-    return num;
+    return dap_block_result(request, num);
 }

@@ -25,6 +25,7 @@
 #include "DAP_config.h"
 
 #include "DAP.h"
+#include "dap_block.h"
 #include "hot.h"
 #include "jtag_block.h"
 #include "jtag_dp.h"
@@ -195,10 +196,5 @@ COMMAND_PATH uint32_t JTAG_TransferBlock(const uint8_t* request, uint8_t* respon
         num = JTAG_TransferBlockSlow(request, response);
     }
 
-    if ((*(request + 3) & DAP_TRANSFER_RnW) != 0U) {
-        num |= 4U << 16;
-    } else {
-        num |= (4U + (((uint32_t)(*(request + 1)) | (uint32_t)(*(request + 2) << 8)) * 4)) << 16;
-    }
-    return num;
+    return dap_block_result(request, num);
 }
