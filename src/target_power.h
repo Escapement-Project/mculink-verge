@@ -12,7 +12,7 @@
 void target_power_init(void);
 
 /** Set the Pro's supply state. Returns false on boards without a switched supply. */
-bool target_power_set(bool enabled);
+[[nodiscard]] bool target_power_set(bool enabled);
 
 /** The last state requested since boot. */
 bool target_power_enabled(void);

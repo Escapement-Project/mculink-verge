@@ -19,18 +19,6 @@
 #include "dio.h"
 #include "swo.h"
 
-#define SPI_REQUEST_FIXED 8U
-#define SPI_RESPONSE_FIXED 4U
-#define I2C_REQUEST_FIXED 10U
-#define I2C_RESPONSE_FIXED 4U
-
-#define PRO_BUS_OK 0U
-#define PRO_BUS_UNAVAILABLE 1U
-#define PRO_BUS_INVALID 2U
-#define PRO_BUS_BUSY 3U
-#define PRO_BUS_TRANSFER_ERROR 4U
-#define PRO_BUS_NACK 5U
-
 #define SPI_MODE_CPOL (1U << 0)
 #define SPI_MODE_CPHA (1U << 1)
 #define SPI_MODE_LSB_FIRST (1U << 2)
@@ -70,22 +58,21 @@ static void spi_pinmux(void) {
 
 uint32_t pro_spi_command(const uint8_t* request, uint8_t* response) {
     uint16_t const length = get_u16(request + 6U);
-    uint32_t const consumed = SPI_REQUEST_FIXED + length;
-    uint8_t result = PRO_BUS_INVALID;
-    response[1] = result;
+    uint32_t const consumed = PRO_SPI_REQUEST_FIXED + length;
+    response[1] = PRO_BUS_INVALID;
     put_u16(response + 2U, 0U);
 
-    if ((length == 0U) || (length > DAP_PACKET_SIZE - SPI_REQUEST_FIXED) ||
+    if ((length == 0U) || (length > DAP_PACKET_SIZE - PRO_SPI_REQUEST_FIXED) ||
         ((request[1] & (uint8_t)~SPI_MODE_MASK) != 0U)) {
-        return (consumed << 16U) | SPI_RESPONSE_FIXED;
+        return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
     }
     if (!pro_bus_available()) {
         response[1] = PRO_BUS_UNAVAILABLE;
-        return (consumed << 16U) | SPI_RESPONSE_FIXED;
+        return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
     }
     if (!dio_spi_begin()) {
         response[1] = PRO_BUS_BUSY;
-        return (consumed << 16U) | SPI_RESPONSE_FIXED;
+        return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
     }
 
     uint32_t const requested_clock = get_u32(request + 2U);
@@ -96,7 +83,7 @@ uint32_t pro_spi_command(const uint8_t* request, uint8_t* response) {
         CLOCK_AttachClk(kNONE_to_HSLSPI);
         dio_spi_end();
         response[1] = PRO_BUS_INVALID;
-        return (consumed << 16U) | SPI_RESPONSE_FIXED;
+        return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
     }
 
     spi_pinmux();
@@ -110,8 +97,8 @@ uint32_t pro_spi_command(const uint8_t* request, uint8_t* response) {
     status_t status = SPI_MasterInit(SPI8, &config, source_clock);
     if (status == kStatus_Success) {
         spi_transfer_t transfer = {
-            .txData = request + SPI_REQUEST_FIXED,
-            .rxData = response + SPI_RESPONSE_FIXED,
+            .txData = request + PRO_SPI_REQUEST_FIXED,
+            .rxData = response + PRO_BUS_RESPONSE_FIXED,
             .dataSize = length,
             .configFlags = kSPI_FrameAssert,
         };
@@ -124,11 +111,11 @@ uint32_t pro_spi_command(const uint8_t* request, uint8_t* response) {
     if (status == kStatus_Success) {
         response[1] = PRO_BUS_OK;
         put_u16(response + 2U, length);
-        return (consumed << 16U) | (SPI_RESPONSE_FIXED + length);
+        return (consumed << 16U) | (PRO_BUS_RESPONSE_FIXED + length);
     }
 
     response[1] = PRO_BUS_TRANSFER_ERROR;
-    return (consumed << 16U) | SPI_RESPONSE_FIXED;
+    return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
 }
 
 static status_t i2c_transfer(uint8_t address, i2c_direction_t direction, uint8_t* data,
@@ -148,23 +135,23 @@ uint32_t pro_i2c_command(const uint8_t* request, uint8_t* response) {
     uint32_t const requested_clock = get_u32(request + 2U);
     uint16_t const tx_length = get_u16(request + 6U);
     uint16_t const rx_length = get_u16(request + 8U);
-    uint32_t const consumed = I2C_REQUEST_FIXED + tx_length;
+    uint32_t const consumed = PRO_I2C_REQUEST_FIXED + tx_length;
     response[1] = PRO_BUS_INVALID;
     put_u16(response + 2U, 0U);
 
     if (((address & 0x80U) != 0U) || ((tx_length == 0U) && (rx_length == 0U)) ||
-        (tx_length > DAP_PACKET_SIZE - I2C_REQUEST_FIXED) ||
-        (rx_length > DAP_PACKET_SIZE - I2C_RESPONSE_FIXED) ||
+        (tx_length > DAP_PACKET_SIZE - PRO_I2C_REQUEST_FIXED) ||
+        (rx_length > DAP_PACKET_SIZE - PRO_BUS_RESPONSE_FIXED) ||
         (requested_clock < I2C_MIN_CLOCK_HZ) || (requested_clock > I2C_MAX_CLOCK_HZ)) {
-        return (consumed << 16U) | I2C_RESPONSE_FIXED;
+        return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
     }
     if (!pro_bus_available()) {
         response[1] = PRO_BUS_UNAVAILABLE;
-        return (consumed << 16U) | I2C_RESPONSE_FIXED;
+        return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
     }
     if (SWO_IsConfigured()) {
         response[1] = PRO_BUS_BUSY;
-        return (consumed << 16U) | I2C_RESPONSE_FIXED;
+        return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
     }
 
     CLOCK_EnableClock(kCLOCK_Iocon);
@@ -190,12 +177,12 @@ uint32_t pro_i2c_command(const uint8_t* request, uint8_t* response) {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-qual"
         // The SDK declares its write buffer mutable, though this transfer only reads it.
-        status = i2c_transfer(address, kI2C_Write, (uint8_t*)(request + I2C_REQUEST_FIXED), tx_length, flags);
+        status = i2c_transfer(address, kI2C_Write, (uint8_t*)(request + PRO_I2C_REQUEST_FIXED), tx_length, flags);
 #pragma GCC diagnostic pop
     }
     if ((status == kStatus_Success) && (rx_length != 0U)) {
         uint32_t const flags = (tx_length != 0U) ? kI2C_TransferRepeatedStartFlag : kI2C_TransferDefaultFlag;
-        status = i2c_transfer(address, kI2C_Read, response + I2C_RESPONSE_FIXED, rx_length, flags);
+        status = i2c_transfer(address, kI2C_Read, response + PRO_BUS_RESPONSE_FIXED, rx_length, flags);
     }
     I2C_MasterDeinit(I2C3);
 
@@ -212,5 +199,5 @@ i2c_release_pins:
     IOCON_PinMuxSet(IOCON, 0U, 4U, IOCON_FUNC0 | I2C_PIN_MODE);
     IOCON_PinMuxSet(IOCON, 0U, 21U, IOCON_FUNC0 | I2C_PIN_MODE);
     CLOCK_AttachClk(kNONE_to_FLEXCOMM3);
-    return (consumed << 16U) | (I2C_RESPONSE_FIXED + returned);
+    return (consumed << 16U) | (PRO_BUS_RESPONSE_FIXED + returned);
 }

@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "pro_bus.h"
+
 typedef struct {
     uint32_t consumed;
     uint32_t produced;
@@ -266,18 +268,18 @@ static inline bool dap_packet_plan(const uint8_t* p, uint32_t length, uint32_t c
         out = p[1] == 0U ? 7U : p[1] == 1U ? 21U : p[1] == 2U ? 3U : p[1] == 3U ? 19U : 2U;
         break;
     case 0x91:
-        if (length < 8U) {
+        if (length < PRO_SPI_REQUEST_FIXED) {
             return false;
         }
-        in = 8U + dap_packet_u16(p + 6U);
-        out = 4U + dap_packet_u16(p + 6U);
+        in = PRO_SPI_REQUEST_FIXED + dap_packet_u16(p + 6U);
+        out = PRO_BUS_RESPONSE_FIXED + dap_packet_u16(p + 6U);
         break;
     case 0x92:
-        if (length < 10U) {
+        if (length < PRO_I2C_REQUEST_FIXED) {
             return false;
         }
-        in = 10U + dap_packet_u16(p + 6U);
-        out = 4U + dap_packet_u16(p + 8U);
+        in = PRO_I2C_REQUEST_FIXED + dap_packet_u16(p + 6U);
+        out = PRO_BUS_RESPONSE_FIXED + dap_packet_u16(p + 8U);
         break;
 #ifdef DAP_TIMING_DIAGNOSTICS
     case 0x93:

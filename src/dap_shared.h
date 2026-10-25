@@ -13,6 +13,7 @@
 #ifndef DAP_SHARED_H
 #define DAP_SHARED_H
 
+#include <stdalign.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -29,15 +30,15 @@
 #define DAP_SHARED_PACKET_SIZE 512U
 #define DAP_SHARED_RESPONSE_SIZE (DAP_SHARED_PACKET_SIZE + 2U + (8U * 255U) + 4U)
 
-#define DAP_SHARED_ALIGN __attribute__((aligned(DAP_USB_BUFFER_ALIGN)))
+#define DAP_SHARED_ALIGN alignas(DAP_USB_BUFFER_ALIGN)
 
 /** DMA0's descriptor table, which SRAMBASE points at: an entry per channel through ADC0 FIFO0's
  *  channel 21. CPU 0 writes channels 4 to 7 for VCOM, and CPU 1 writes channels 8 and 21 for SWO
  *  and energy capture. A table starts on 512 bytes. */
 #define DAP_SHARED_DMA_CHANNELS 22U
-#define DAP_SHARED_DMA_TABLE_ALIGN __attribute__((aligned(512)))
+#define DAP_SHARED_DMA_TABLE_ALIGN alignas(512)
 /** Descriptors start on 16 bytes. */
-#define DAP_SHARED_DMA_DESCRIPTOR_ALIGN __attribute__((aligned(16)))
+#define DAP_SHARED_DMA_DESCRIPTOR_ALIGN alignas(16)
 
 /** dap_stage's request buffers for each transport: one more than the slots (see dap_stage_t). */
 #define DAP_STAGE_REQUESTS (REQUEST_SLOTS + 1U)

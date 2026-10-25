@@ -55,4 +55,5 @@ observations.
   and hardware do not show is the emulator; check with `tools/gen_host.py` or on hardware before
   blaming a compiler.
 - **Nothing obliges a compiler to word-align a byte array.** Buffers that the generated code or a
-  word copy touches carry `__attribute__((aligned(4)))`. clang left the reply buffer on a halfword.
+  word copy touches carry `alignas` with at least four-byte alignment. clang left the reply buffer
+  on a halfword.

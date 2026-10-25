@@ -123,8 +123,7 @@ static struct {
  *  fenced by a __DMB, whose memory clobber makes the compiler read and write them for real. */
 static uint8_t vcom_rx_ring[CFG_TUD_CDC][VCOM_RX_RING_BYTES];
 static uint8_t vcom_tx_buffer[CFG_TUD_CDC][VCOM_TX_BYTES];
-static volatile dma_descriptor_t vcom_rx_descriptors[CFG_TUD_CDC][VCOM_RX_SEGMENTS]
-    __attribute__((aligned(16)));
+alignas(16) static volatile dma_descriptor_t vcom_rx_descriptors[CFG_TUD_CDC][VCOM_RX_SEGMENTS];
 
 static bool vcom_configure(uint32_t instance) {
     USART_Type* const uart = vcom[instance].usart;

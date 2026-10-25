@@ -31,8 +31,7 @@
      DMA_CHANNEL_XFERCFG_XFERCOUNT(ENERGY_SEGMENT_WORDS - 1U))
 
 static volatile uint32_t energy_ring[ENERGY_RING_WORDS];
-static volatile dma_descriptor_t energy_descriptors[ENERGY_SEGMENTS]
-    DAP_SHARED_DMA_DESCRIPTOR_ALIGN;
+DAP_SHARED_DMA_DESCRIPTOR_ALIGN static volatile dma_descriptor_t energy_descriptors[ENERGY_SEGMENTS];
 static uint32_t requested_rate_hz;
 static uint32_t actual_rate_hz;
 static uint64_t energy_scale_q32;
@@ -610,7 +609,7 @@ energy_monitor_status_t energy_monitor_stop(void) {
 }
 
 energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {
-    if (sample == NULL) {
+    if (sample == nullptr) {
         return ENERGY_MONITOR_BAD_ARGUMENT;
     }
     if (!dap_shared.energy_available) {
@@ -686,7 +685,7 @@ energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {
 }
 
 energy_monitor_status_t energy_monitor_accumulated(uint64_t* energy_nj, uint64_t* pairs) {
-    if ((energy_nj == NULL) || (pairs == NULL)) {
+    if ((energy_nj == nullptr) || (pairs == nullptr)) {
         return ENERGY_MONITOR_BAD_ARGUMENT;
     }
     if (!dap_shared.energy_available) {

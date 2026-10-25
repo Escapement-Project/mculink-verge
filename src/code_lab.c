@@ -47,7 +47,7 @@
 #define LAB_READ_HEADER 2U  // id, status
 #define LAB_RUN_REQUEST 21U
 
-static uint8_t lab_sram[LAB_SRAM_SIZE] __attribute__((aligned(32)));
+alignas(32) static uint8_t lab_sram[LAB_SRAM_SIZE];
 
 struct arena {
     uint8_t* base;

@@ -18,16 +18,16 @@ typedef struct {
     uint8_t pin;
 } strap_t;
 
-static const strap_t hw_ver_2 = {1U, 30U};
-static const strap_t hw_ver_3 = {1U, 4U};
-static const strap_t hw_ver_4 = {1U, 5U};
-static const strap_t hw_ver_5 = {1U, 6U};
-static const strap_t hw_ver_6 = {0U, 18U};
-static const strap_t hw_ver_7 = {0U, 27U};
+static constexpr strap_t hw_ver_2 = {1U, 30U};
+static constexpr strap_t hw_ver_3 = {1U, 4U};
+static constexpr strap_t hw_ver_4 = {1U, 5U};
+static constexpr strap_t hw_ver_5 = {1U, 6U};
+static constexpr strap_t hw_ver_6 = {0U, 18U};
+static constexpr strap_t hw_ver_7 = {0U, 27U};
 
 /** Loop iterations for the pull-ups to charge the strap pins: at two cycles or more each, at least
  *  40 us at 150 MHz. */
-#define STRAP_SETTLE 3000U
+static constexpr uint32_t strap_settle = 3000U;
 
 /** Digital input with its pull-up, which stays on afterwards as DAPLink leaves it. */
 static void strap_input(strap_t strap) {
@@ -41,11 +41,11 @@ __attribute__((noinline)) void board_read_straps(void) {
     CLOCK_EnableClock(kCLOCK_Iocon);
     CLOCK_EnableClock(kCLOCK_Gpio0);
     CLOCK_EnableClock(kCLOCK_Gpio1);
-    static const strap_t straps[] = {hw_ver_2, hw_ver_3, hw_ver_4, hw_ver_5, hw_ver_6, hw_ver_7};
+    static constexpr strap_t straps[] = {hw_ver_2, hw_ver_3, hw_ver_4, hw_ver_5, hw_ver_6, hw_ver_7};
     for (size_t i = 0U; i < sizeof(straps) / sizeof(straps[0]); i++) {
         strap_input(straps[i]);
     }
-    for (volatile uint32_t i = 0U; i < STRAP_SETTLE; i++) {
+    for (volatile uint32_t i = 0U; i < strap_settle; i++) {
     }
 
     uint8_t board = BOARD_KIND_PLAIN;

@@ -213,7 +213,7 @@ target_sense_status_t target_sense_convert(uint8_t channel, bool side_b, uint16_
 
 target_sense_status_t target_sense_convert_pair_for_calibration(uint32_t rate_hz, uint16_t* voltage_code,
                                                                 uint16_t* current_code) {
-    if ((voltage_code == NULL) || (current_code == NULL)) {
+    if ((voltage_code == nullptr) || (current_code == nullptr)) {
         return TARGET_SENSE_NO_RESULT;
     }
     if (!energy_monitor_pause()) {

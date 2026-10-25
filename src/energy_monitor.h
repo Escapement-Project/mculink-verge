@@ -34,17 +34,17 @@ typedef struct {
 void energy_monitor_init(void);
 
 /** Start timer-triggered ADC capture at `rate_hz` paired samples per second. */
-energy_monitor_status_t energy_monitor_start(uint32_t rate_hz);
+[[nodiscard]] energy_monitor_status_t energy_monitor_start(uint32_t rate_hz);
 uint32_t energy_monitor_rate(void);
 
 /** Stop acquisition and leave the ADC ready for on-demand target-sense reads. */
 [[nodiscard]] energy_monitor_status_t energy_monitor_stop(void);
 
 /** Return the newest complete pair of raw ADC codes, if one exists. */
-energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample);
+[[nodiscard]] energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample);
 
 /** Read accumulated calibrated energy since the most recent successful start. */
-energy_monitor_status_t energy_monitor_accumulated(uint64_t* energy_nj, uint64_t* pairs);
+[[nodiscard]] energy_monitor_status_t energy_monitor_accumulated(uint64_t* energy_nj, uint64_t* pairs);
 
 /** Integrate one complete DMA segment. Called by CPU 0's DMA interrupt. */
 void energy_monitor_process_segment(void);

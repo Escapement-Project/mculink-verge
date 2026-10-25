@@ -237,12 +237,12 @@ COMMAND_PATH uint32_t DAP_ExecuteCommandSized(const uint8_t* request, uint32_t r
         if (result != 0U) {
             return result;
         }
-        if ((request[0] == ID_DAP_Vendor17 || request[0] == ID_DAP_Vendor18) && packet_size >= 4U) {
+        if ((request[0] == ID_DAP_Vendor17 || request[0] == ID_DAP_Vendor18) && packet_size >= PRO_BUS_RESPONSE_FIXED) {
             response[0] = request[0];
-            response[1] = 2U; // PRO_BUS_INVALID
+            response[1] = PRO_BUS_INVALID;
             response[2] = 0U;
             response[3] = 0U;
-            return (request_length << 16U) | 4U;
+            return (request_length << 16U) | PRO_BUS_RESPONSE_FIXED;
         }
         response[0] = ID_DAP_Invalid;
         return (request_length << 16U) | 1U;

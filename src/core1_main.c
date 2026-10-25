@@ -49,8 +49,8 @@ volatile uint32_t marker_mask = J8_PIN_MASK;
  * and its reply copied back out, both between word-aligned buffers: here by CPU 1, or by CPU 0
  * through dap_stage.
  */
-static uint8_t request_copy[DAP_PACKET_SIZE] __attribute__((aligned(DAP_USB_BUFFER_ALIGN)));
-static uint8_t response_copy[DAP_RESPONSE_SIZE] __attribute__((aligned(DAP_USB_BUFFER_ALIGN)));
+alignas(DAP_USB_BUFFER_ALIGN) static uint8_t request_copy[DAP_PACKET_SIZE];
+alignas(DAP_USB_BUFFER_ALIGN) static uint8_t response_copy[DAP_RESPONSE_SIZE];
 
 /** The same two buffers, read through volatile so link-time optimisation cannot specialise
  *  DAP_ExecuteCommandSized to them. tools/cycles.py and tools/image.py call it with buffers of
