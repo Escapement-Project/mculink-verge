@@ -2115,6 +2115,10 @@ def main() -> int:
     check_response_bounds(c, args.core1, args.packet_size)
     check_request_bounds(c, args.core1, args.packet_size)
     check_bounded_commands(c, args.core1, slots)
+    from dispatch_fuzz import campaign
+    for seed in (23, 24301):
+        for capacity in (64, 512):
+            campaign(c, args.core1, symbols_with_size(args.core1), seed=seed, steps=128, capacity=capacity)
     check_jtag_chain(c, args.core1)
     check_energy_descriptors(c, args.core1, slots)
     check_energy_control(c, args.elf, args.core1, slots)
