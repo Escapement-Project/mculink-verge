@@ -339,6 +339,7 @@ endif()
 set(CORE1_FLASH_ORIGIN 0x00040000)
 set(CORE1_FLASH_END    0x0009D800)  # where the SDK's own reservation for CPU 1 ends
 set(CORE0_RAM_LENGTH   0x00010000)
+set(CORE0_STACK_LENGTH 0x00001000)
 set(CORE1_RAM_ORIGIN   0x20010000)
 set(CORE1_RAM_LENGTH   0x0002E000)
 set(DAP_STAGE_ORIGIN   0x2003E000)
@@ -436,6 +437,8 @@ function(rewrite_ld pattern replacement what)
   string(REGEX REPLACE "${pattern}" "${replacement}" _ld "${_ld}")
   set(_ld "${_ld}" PARENT_SCOPE)
 endfunction()
+# A later --defsym does not override the size already selected by the script's DEFINED test.
+rewrite_ld("STACK_SIZE = [^\n]*;" "STACK_SIZE = ${CORE0_STACK_LENGTH};" "the stack size assignment")
 rewrite_ld("(m_text +\\(RX\\) +: ORIGIN = 0x00000200, LENGTH = )0x[0-9A-Fa-f]+"
            "\\1${CORE0_TEXT_LENGTH}" "the m_text region")
 rewrite_ld("(m_core1_image +\\(RX\\) +: )ORIGIN = 0x[0-9A-Fa-f]+, LENGTH = 0x[0-9A-Fa-f]+"

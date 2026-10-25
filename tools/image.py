@@ -808,6 +808,16 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int) -> None:
     check_sequences(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
 
 
+def check_stacks(c: Checker, elf0: str, elf1: str) -> None:
+    cpu0, cpu1 = symbols(elf0), symbols(elf1)
+    c.check(cpu0["__StackTop"] == 0x20010000 and cpu0["__StackLimit"] == 0x2000f000,
+            "CPU0 does not reserve its configured 4 KiB stack")
+    c.check(cpu0["__HeapLimit"] <= cpu0["__StackLimit"], "CPU0 data/heap overlaps its reserved stack")
+    c.check(cpu1.get("__core1_stack_bottom") == 0x20040000 and cpu1["__core1_stack_top"] == 0x20044000,
+            "CPU1 does not reserve its configured 16 KiB stack")
+    c.note("linked stack reservations: CPU0 4 KiB, CPU1 16 KiB, no CPU0 data/heap overlap")
+
+
 def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
     """A host has to be able to recognise this firmware and tell two builds of it apart.
 
@@ -2070,7 +2080,14 @@ def main() -> int:
     ap.add_argument("--code-lab", action="store_true", help="check the optional vendor 0x88 code lab")
     ap.add_argument("--timing-diagnostics", action="store_true", help="include timing counters in the staged layout")
     ap.add_argument("--core-clock-mhz", type=int, default=150, help="the main clock, src/core_clock.h")
+    ap.add_argument("--stack-report", help="record executed-call SP minima as JSON; not a worst-case bound")
     args = ap.parse_args()
+
+    observer = None
+    if args.stack_report:
+        from stack_usage import StackObserver
+        observer = StackObserver()
+        observer.install()
 
     sym = symbols_with_size(args.elf)
     missing = [n for n in ("desc_bos",) if n not in sym]
@@ -2088,6 +2105,7 @@ def main() -> int:
     slots = args.packet_count
     swo = bool(config_value(args.config, "SWO_UART"))
     check_core1_image(c, args.elf, args.core1, slots, args.timing_diagnostics)
+    check_stacks(c, args.elf, args.core1)
     check_sram_code(c, args.elf, "CPU 0 waits for work", ("wait_for_work", "energy_control_task", "vcom_ready", "tud_cdc_n_available",
                                                          "tud_cdc_n_write_available", "tu_edpt_stream_write_available"))
     check_sram_code(c, args.elf, "CPU 0 runs a command's USB work",
@@ -2153,6 +2171,8 @@ def main() -> int:
         print(f"  FAIL  {p}")
     if not c.problems:
         print("  descriptors and serial are self-consistent")
+    if observer is not None:
+        observer.finish(args.stack_report, not c.problems)
     return 1 if c.problems else 0
 
 

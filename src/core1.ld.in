@@ -62,5 +62,6 @@ SECTIONS
   /* newlib's snprintf links its allocator, whose sbrk starts at `end`. Nothing here allocates. */
   PROVIDE(end = __bss_end__);
 
+  __core1_stack_bottom = ORIGIN(m_stack);
   __core1_stack_top = ORIGIN(m_stack) + LENGTH(m_stack);
 }
