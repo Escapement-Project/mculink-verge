@@ -99,7 +99,7 @@ def attach_swd(probe: dap.Probe) -> int:
     return 0
 
 
-def attach_icepick(probe: dap.Probe, two_pin: bool) -> int:
+def attach_icepick(probe: dap.Probe, two_pin: bool, scan_format: int = dap.OSCAN1) -> int:
     """nRESET, the wire's bring-up as probe-rs does it, then the ICEPick routed to the Cortex-M DAP."""
     probe.command(bytes([dap.DAP_VENDOR_CJTAG_CONTROL, 0]))
     probe.connect(2)
@@ -113,7 +113,7 @@ def attach_icepick(probe: dap.Probe, two_pin: bool) -> int:
         # probe-rs's activate_oscan1: a reset escape and wake clocks, then TI's steps after their
         # Test-Logic-Reset, which would drop OScan1 again.
         wake = [("escape", 10), ("raw", "1" * 20), ("raw", "0"), ("pause", 200)]
-        dap.run_ti_activation(probe, wake + dap.TI_OSCAN1[1:])
+        dap.run_ti_activation(probe, wake + dap.ti_steps(scan_format, "command"))
     else:
         # The part leaves reset in cJTAG mode. probe-rs's ctag_to_jtag switches it to four pins:
         # two zero-bit scans, then DR scans of 1, 2 and 9 bits.

@@ -108,8 +108,6 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
         response[1] = DAP_OK;
         return (3U << 16) | 2U;
     }
-    // The single-register command, for the SWD port only. The JTAG and two-pin copies are ARM's
-    // because their transfer is reached through a shadowed pin layer, and the win is smaller.
     if ((*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_SWD)) {
 #ifdef SWD_CODEGEN
         if (swd_sweep_pending()) {
@@ -118,6 +116,21 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
 #endif
         *response = *request;
         return (1U << 16) + 1U + SWD_TransferCommand(request + 1, response + 1);
+    }
+    if ((*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {
+#ifdef JTAG_CODEGEN
+        if (jtag_sweep_pending()) {
+            uint32_t const result = jtag_sweep_connect(request, response);
+            jtag_gen_learn(jtag_gen_wire());
+            return result;
+        }
+#endif
+        *response = *request;
+        uint32_t const result = (1U << 16) + 1U + JTAG_TransferCommand(request + 1, response + 1);
+#ifdef JTAG_CODEGEN
+        jtag_gen_learn(jtag_gen_wire());
+#endif
+        return result;
     }
     if (*request == ID_DAP_JTAG_Configure) {
         // Validate the whole chain before ARM's handler or either sweep watcher changes it.
@@ -147,13 +160,7 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
 #endif
         }
     }
-#ifdef JTAG_CODEGEN
-    const bool connecting =
-        (*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_JTAG) && jtag_sweep_pending();
-    const uint32_t result = connecting ? jtag_sweep_connect(request, response) : arm_command(request, response);
-#else
     const uint32_t result = arm_command(request, response);
-#endif
     // Generate now rather than in the first transfer, which would carry the time it takes; for
     // JTAG the scans alone, since a host often changes the chain or the framing again before it
     // transfers, and the first transfer builds the transfers (jtag_gen_ready_transfers).
@@ -172,9 +179,6 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
          (*request == ID_DAP_TransferConfigure)) &&
         (DAP_Data.debug_port == DAP_PORT_JTAG)) {
         (void)jtag_gen_ready(jtag_gen_wire());
-    }
-    if ((*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {
-        jtag_gen_learn(jtag_gen_wire());
     }
 #endif
     return result;

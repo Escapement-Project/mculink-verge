@@ -69,9 +69,9 @@ static_assert(TIMESTAMP_CLOCK != 0U, "swd_transfer.h was generated with timestam
 FOOTER = "\n#endif\n"
 
 
-def extract(text: str) -> list[str]:
+def extract(text: str, function: str = "DAP_SWD_Transfer") -> list[str]:
     lines = text.splitlines()
-    start = next(i for i, l in enumerate(lines) if l.startswith("static uint32_t DAP_SWD_Transfer"))
+    start = next(i for i, l in enumerate(lines) if l.startswith(f"static uint32_t {function}("))
     end = next(i for i in range(start, len(lines)) if lines[i] == "}")
     return lines[start : end + 1]
 

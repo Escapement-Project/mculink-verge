@@ -1420,7 +1420,7 @@ def foreign_instructions(elf: str) -> list[str]:
 # A branch in an objdump listing: address, mnemonic, target, and the symbol objdump names it by.
 # objdump indents an address only when it has fewer than eight digits.
 BRANCH = re.compile(r"^\s*([0-9a-f]+):\s+(bl|blx|b(?:eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)?(?:\.[nw])?)"
-                    r"\s+([0-9a-f]+)?(?: <(\S+)>)?")
+                    r"\s+([0-9a-f]+)(?=\s|$)(?: <(\S+)>)?")
 
 
 def check_sram_code(c: Checker, elf: str, what: str, names: tuple[str, ...], allow: tuple[str, ...] = ()) -> None:
@@ -1431,7 +1431,7 @@ def check_sram_code(c: Checker, elf: str, what: str, names: tuple[str, ...], all
 
     `allow` names flash functions a branch may reach anyway, ones that run once rather than per
     command or per wait, matched without the suffix LTO adds to a local symbol's name. A call
-    through a register is not checked: on these paths it goes to the generated code in SRAMX."""
+    through a register has no static target and is not checked here."""
     sym = symbols_with_size(elf)
     sram = range(0x2000_0000, 0x3000_0000)
     before = len(c.problems)
@@ -2068,7 +2068,7 @@ def main() -> int:
         jtag_gen = ()
     check_sram_code(c, args.core1, "CPU 1 runs a command's dispatch",
                     ("serve", "DAP_ExecuteCommandSized", "execute_one", "DAP_ProcessCommand", "transfer_block", "SWD_TransferBlock",
-                     "SWD_TransferCommand", "memcpy") + jtag_gen,
+                     "SWD_TransferCommand", "JTAG_TransferCommand", "memcpy") + jtag_gen,
                     allow=("arm_command", "arm_DAP_ProcessCommand", "regenerate", "swd_sweep_connect", "jtag_sweep_connect"))
     check_clocks(c, args.elf, slots)
     check_led(c, args.elf, slots)

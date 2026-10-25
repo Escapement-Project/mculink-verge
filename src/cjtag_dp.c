@@ -12,6 +12,7 @@
 
 #include "DAP.h"
 #include "cjtag.h"
+#include "hot.h"
 #include "jtag_dp.h"
 #ifdef JTAG_CODEGEN
 #include "jtag_gen.h"
@@ -87,3 +88,22 @@ void JTAG_WriteAbort(uint32_t data) {
 uint8_t JTAG_Transfer(uint32_t request, uint32_t* data) {
     return cJTAG_Active() ? CJTAG_ROUTE_TRANSFERS(Transfer)(request, data) : JTAG4_ROUTE_TRANSFERS(Transfer)(request, data);
 }
+
+struct jtag_transfer_fns {
+    void (*ir)(uint32_t ir);
+    uint8_t (*transfer)(uint32_t request, uint32_t* data);
+};
+
+static struct jtag_transfer_fns resolve_transfers(void) {
+#ifdef JTAG_CODEGEN
+    if (jtag_gen_ready_transfers(jtag_gen_wire())) {
+        return (struct jtag_transfer_fns){jgen_IR, jgen_Transfer};
+    }
+#endif
+    if (cJTAG_Active()) {
+        return (struct jtag_transfer_fns){CJTAG_PICK(IR), CJTAG_PICK(Transfer)};
+    }
+    return (struct jtag_transfer_fns){jtag4_IR, jtag4_Transfer};
+}
+
+#include "jtag_transfer.h"
