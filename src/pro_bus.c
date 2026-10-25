@@ -131,26 +131,12 @@ uint32_t pro_spi_command(const uint8_t* request, uint8_t* response) {
     return (consumed << 16U) | SPI_RESPONSE_FIXED;
 }
 
-static status_t i2c_write(uint8_t address, uint8_t* data, uint16_t length, uint32_t flags) {
+static status_t i2c_transfer(uint8_t address, i2c_direction_t direction, uint8_t* data,
+                            uint16_t length, uint32_t flags) {
     i2c_master_transfer_t transfer = {
         .flags = flags,
         .slaveAddress = address,
-        .direction = kI2C_Write,
-        .subaddress = 0U,
-        .subaddressSize = 0U,
-        .data = data,
-        .dataSize = length,
-    };
-    return I2C_MasterTransferBlocking(I2C3, &transfer);
-}
-
-static status_t i2c_read(uint8_t address, uint8_t* data, uint16_t length, uint32_t flags) {
-    i2c_master_transfer_t transfer = {
-        .flags = flags,
-        .slaveAddress = address,
-        .direction = kI2C_Read,
-        .subaddress = 0U,
-        .subaddressSize = 0U,
+        .direction = direction,
         .data = data,
         .dataSize = length,
     };
@@ -204,12 +190,12 @@ uint32_t pro_i2c_command(const uint8_t* request, uint8_t* response) {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-qual"
         // The SDK declares its write buffer mutable, though this transfer only reads it.
-        status = i2c_write(address, (uint8_t*)(request + I2C_REQUEST_FIXED), tx_length, flags);
+        status = i2c_transfer(address, kI2C_Write, (uint8_t*)(request + I2C_REQUEST_FIXED), tx_length, flags);
 #pragma GCC diagnostic pop
     }
     if ((status == kStatus_Success) && (rx_length != 0U)) {
         uint32_t const flags = (tx_length != 0U) ? kI2C_TransferRepeatedStartFlag : kI2C_TransferDefaultFlag;
-        status = i2c_read(address, response + I2C_RESPONSE_FIXED, rx_length, flags);
+        status = i2c_transfer(address, kI2C_Read, response + I2C_RESPONSE_FIXED, rx_length, flags);
     }
     I2C_MasterDeinit(I2C3);
 
