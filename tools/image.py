@@ -119,11 +119,12 @@ def shared_fields() -> list[str]:
     return fields(structs["dap_shared_t"])
 
 
-def shared_offsets(request_slots: int, *fields: str, small_enums: bool = True) -> dict[str, int]:
+def shared_offsets(request_slots: int, *fields: str, small_enums: bool = True,
+                   struct_type: str = "dap_shared_t") -> dict[str, int]:
     """Member offsets of dap_shared_t, and its size as "size", as the firmware's compiler lays it
     out. A host compiler would not: its pointers are a different size. An image's enum size is
     its compiler's choice, so pass the image's own."""
-    entries = [f"offsetof(dap_shared_t, {f})" for f in fields] + ["sizeof(dap_shared_t)"]
+    entries = [f"offsetof({struct_type}, {f})" for f in fields] + [f"sizeof({struct_type})"]
     source = '#include <stddef.h>\n#include "dap_shared.h"\n'
     source += f"const unsigned layout[] = {{{', '.join(entries)}}};\n"
     with tempfile.TemporaryDirectory() as tmp:
@@ -728,6 +729,55 @@ def check_console_recovery(c: Checker, elf: str, slots: int) -> None:
     offsets = shared_offsets(slots, "dma_table", "swo_segments", small_enums=short_enums(elf))
     check_dma(c, elf, symbols_with_size(elf), offsets)
     check_line(c, elf, symbols_with_size(elf))
+
+
+def check_hid_padding(c: Checker, elf: str, slots: int) -> None:
+    from energy_checks import machine
+
+    sym = symbols_with_size(elf)
+    if not c.check("dap_task" in sym, "CPU1 command task missing from HID checks"):
+        return
+    names = ("hid_request_len", "hid_request_seq", "hid_request_stage", "hid_request_head",
+             "hid_request", "response_tail", "response_len", "response", "response_staged")
+    fields = shared_offsets(slots, *names, small_enums=short_enums(elf))
+    stage = shared_offsets(slots, "hid_request", "response", "response[1]",
+                           small_enums=short_enums(elf), struct_type="dap_stage_t")
+    stride = stage["response[1]"] - stage["response"]
+    for staged in (False, True):
+        probe = machine(elf, sym)
+        shared = probe.sym["dap_shared"]
+        staging = probe.sym["dap_stage"]
+        # Each round reuses every reply slot. A one-byte Info retains a stale ff selector.
+        for payload, prefix in ((b"\x00\x02", None), (b"\x7e", b"\xff"),
+                                (b"\x00", b"\xff"), (b"\x00\xff", b"\x00\x02\x40\x00")):
+            for slot in range(slots):
+                probe.uc.mem_write(shared + fields["hid_request_head"], bytes([slot]))
+                probe.uc.mem_write(shared + fields["response_tail"], bytes([slot]))
+                probe.uc.mem_write(shared + fields["hid_request_len"] + slot * 2, u16(len(payload)))
+                probe.uc.mem_write(shared + fields["hid_request_seq"] + slot * 4, u32(1))
+                probe.uc.mem_write(shared + fields["hid_request_stage"] + slot, bytes([slot + 1 if staged else 0]))
+                probe.uc.mem_write(shared + fields["response_len"] + slot * 2, u16(0))
+                request = staging + stage["hid_request"] + 512 * slot if staged else shared + fields["hid_request"] + 64 * slot
+                probe.uc.mem_write(request, b"\xa5\xff" + b"\xa5" * 62)
+                probe.uc.mem_write(request, payload)
+                response = staging + stage["response"] + stride * slot if staged else shared + fields["response"] + 512 * slot
+                if prefix is None:
+                    probe.uc.mem_write(response, b"\xa5" * 64)
+                probe.call("dap_task")
+                c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC, "HID command task did not return")
+                reply = bytes(probe.uc.mem_read(response, 64))
+                if prefix is None:
+                    c.check(reply[0] == 0 and reply[1] > 4, "long HID fixture did not produce a string")
+                    meaningful = 2 + reply[1]
+                else:
+                    meaningful = len(prefix)
+                    c.check(reply[:meaningful] == prefix, "HID payload or packet-size override changed")
+                c.check(reply[meaningful:] == bytes(64 - meaningful), "HID reply leaked its previous tail")
+                c.check(bytes(probe.uc.mem_read(shared + fields["response_len"] + slot * 2, 2)) == u16(64),
+                        "HID reply did not publish a full report")
+                c.check(bytes(probe.uc.mem_read(shared + fields["response_staged"] + slot, 1)) == bytes([staged]),
+                        "HID reply used the wrong staging mode")
+    c.note("HID long/short/malformed Info replies, zero padding and packet size across both staging modes and all slots")
 
 
 def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
@@ -2032,6 +2082,7 @@ def main() -> int:
     check_energy_descriptors(c, args.core1, slots)
     check_energy_control(c, args.elf, args.core1, slots)
     check_console_recovery(c, args.elf, slots)
+    check_hid_padding(c, args.core1, slots)
     check_identity(c, args.core1, args.code_lab)
     check_board(c, args.core1, slots)
     check_dio(c, args.core1, slots)

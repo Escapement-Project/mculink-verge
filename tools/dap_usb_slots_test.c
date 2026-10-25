@@ -1,8 +1,10 @@
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #include "dap_core.h"
+#include "dap_hid.h"
 #include "dap_usb_slots.h"
 #include "dap_shared.h"
 #include "dap_core_security.h"
@@ -304,7 +306,37 @@ static void test_cpu0_usb_reboot_request(void) {
     assert(!reboot_wait_for_response(false, true));
 }
 
+static void test_hid_padding(void) {
+    uint8_t response[DAP_SHARED_HID_REPORT_SIZE + 1U];
+    for (uint32_t length = 0U; length <= 2U; length++) {
+        uint8_t* request = malloc(length == 0U ? 1U : length);
+        assert(request != NULL);
+        if (length > 0U) { request[0] = 0x00U; }
+        if (length > 1U) { request[1] = 0xFFU; }
+        for (uint32_t produced = 0U; produced <= DAP_SHARED_HID_REPORT_SIZE; produced++) {
+            memset(response, 0xA5, sizeof(response));
+            if (produced >= 4U) {
+                response[0] = 0U; response[1] = 2U; response[2] = 0U; response[3] = 2U;
+            }
+            assert(dap_hid_reply(request, length, response, produced) == DAP_SHARED_HID_REPORT_SIZE);
+            for (uint32_t i = produced; i < DAP_SHARED_HID_REPORT_SIZE; i++) { assert(response[i] == 0U); }
+            assert(response[DAP_SHARED_HID_REPORT_SIZE] == 0xA5U);
+            if (produced >= 4U) {
+                assert(response[2] == (length == 2U ? 64U : 0U));
+                assert(response[3] == (length == 2U ? 0U : 2U));
+            }
+        }
+        free(request);
+    }
+    uint8_t request[] = {0U, 0xFFU};
+    memset(response, 0xA5, sizeof(response));
+    response[0] = 0xFFU;
+    dap_hid_reply(request, sizeof(request), response, 4U);
+    assert(response[2] == 0xA5U && response[3] == 0xA5U);
+}
+
 int main(void) {
+    test_hid_padding();
     test_rx_completion_during_arm();
     test_tx_completion_during_start();
     test_cross_core_response_handoff();

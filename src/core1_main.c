@@ -15,6 +15,7 @@
 #include "board_pins.h"
 #include "dap_core.h"
 #include "dap_dispatch.h"
+#include "dap_hid.h"
 #include "dap_shared.h"
 #ifdef DAP_TIMING_DIAGNOSTICS
 #include "dap_timing.h"
@@ -63,15 +64,6 @@ static uint8_t reboot_after_reply = REBOOT_NONE;
 
 void reboot_request(uint8_t mode) {
     reboot_after_reply = mode;
-}
-
-/** Answer the v1 host with the v1 packet size. */
-static void hid_report_packet_size(const uint8_t* req, uint8_t* resp) {
-    if ((req[0] == ID_DAP_Info) && (req[1] == DAP_ID_PACKET_SIZE)) {
-        resp[1] = 2U;
-        resp[2] = (uint8_t)(DAP_SHARED_HID_REPORT_SIZE & 0xFFU);
-        resp[3] = (uint8_t)(DAP_SHARED_HID_REPORT_SIZE >> 8);
-    }
 }
 
 /** CPU 0 waits for work off flash (src/main.c), and this is how it hears of CPU 1's. */
@@ -170,13 +162,12 @@ COMMAND_PATH static bool dap_task(void) {
         dap_stage.timing.dap_execute_cycles += dap_timing_now() - execute_start;
     }
 #endif
-    if (produced > DAP_PACKET_SIZE) {
-        produced = DAP_PACKET_SIZE;
+    if (produced > packet_size) {
+        produced = packet_size;
     }
 
     if (use_hid) {
-        hid_report_packet_size(request, response);
-        produced = DAP_SHARED_HID_REPORT_SIZE;
+        produced = dap_hid_reply(request, request_length, response, produced);
     }
     if (produced != 0U) {
         if (!staged) {
