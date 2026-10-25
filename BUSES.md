@@ -68,7 +68,7 @@ contends with any other.
 | CPU 0 | 11 | The consoles' channel entries in DMA0's table | Each send |
 | CPU 0 | 7 | CTimer 3 (the status LED), and on the Pro CTimer 1 (FUNC) | 488 times a second |
 | CPU 0 | 8 | Ordinary GPIO port 1 (the Pro's switched LEDs) | 488 times a second, on the Pro |
-| CPU 0 | 7 | SYSCON and IOCON through `vcom_configure` (`USART_Init`, `CLOCK_*`) | When a host sets the line coding (a terminal opening the port) |
+| CPU 0 | 7 | SYSCON and IOCON through `vcom_start` (`USART_Init`, `CLOCK_*`) | Console initialization; line-coding changes touch only port 8 |
 | CPU 0 | 7 | SYSCON and IOCON reads for the SWO status request; SYSCON NMISRC for the CPU 1 wake | Those vendor control requests |
 | CPU 0 | 7 | SYSCON (CPU 1 start), PMC (reboot) | Boot and reboot only |
 | CPU 0 | 8 | Ordinary GPIO (the board straps) | Boot only |
@@ -92,7 +92,7 @@ for the whole update before using the DMA position. Pause drains the settled rin
   (SYSCON AHBMATPRIO, set in `start_core1`), so CPU 1 wins every tie there and on every other
   port. The lab measurement below found no cycle lost to CPU 0 at that priority.
 
-No timed window uses port 7, so CPU 0's APB accesses (the LED, the VCOM line coding, the SWO
+No timed window uses port 7, so CPU 0's APB accesses (the LED, the console initialization, the SWO
 status request) cannot move an edge. A timed path that touches an APB peripheral would bring all
 of them back as exposures.
 

@@ -27,6 +27,7 @@
 #include "led.h"
 #include "tusb.h"
 #include "vcom.h"
+#include "vcom_line.h"
 
 #define VCOM_PIN_MODE (IOCON_MODE_INACT | IOCON_DIGITAL_EN | IOCON_SLEW_FAST)
 
@@ -111,9 +112,11 @@ static struct {
 static struct {
     uint32_t channel;
     volatile bool busy;           // a send is running; vcom_dma_done clears it
-    bool recode;                  // `coding` is waiting for the send to finish
-    cdc_line_coding_t coding;
     volatile bool failed;
+    bool recode;
+    uint32_t cfg;
+    uint32_t osr;
+    uint32_t brg;
 } vcom_tx[CFG_TUD_CDC];
 
 /** DMA0 writes the rings and reads the send buffers behind the compiler's back. Each access is
@@ -123,22 +126,27 @@ static uint8_t vcom_tx_buffer[CFG_TUD_CDC][VCOM_TX_BYTES];
 static volatile dma_descriptor_t vcom_rx_descriptors[CFG_TUD_CDC][VCOM_RX_SEGMENTS]
     __attribute__((aligned(16)));
 
-static void vcom_configure(uint32_t instance, uint32_t baud, uint8_t stop_bits, uint8_t parity, uint8_t data_bits) {
-    usart_config_t config;
-    USART_GetDefaultConfig(&config);
-
-    config.baudRate_Bps = baud;
-    config.enableTx = true;
-    config.enableRx = true;
-    config.stopBitCount = (stop_bits == 2U) ? kUSART_TwoStopBit : kUSART_OneStopBit;
-    config.parityMode = (parity == 1U) ? kUSART_ParityOdd : (parity == 2U) ? kUSART_ParityEven : kUSART_ParityDisabled;
-    config.bitCountPerChar = (data_bits == 7U) ? kUSART_7BitsPerChar : kUSART_8BitsPerChar;
-
-    // USART_Deinit waits for the transmitter to go idle. With no send running, that is the FIFO.
-    USART_Deinit(vcom[instance].usart);
-    USART_Init(vcom[instance].usart, &config, vcom[instance].clock_hz);
-    // USART_Deinit turns the DMA requests off and USART_Init leaves them off.
-    vcom[instance].usart->FIFOCFG |= USART_FIFOCFG_DMARX_MASK | USART_FIFOCFG_DMATX_MASK;
+static bool vcom_configure(uint32_t instance) {
+    USART_Type* const uart = vcom[instance].usart;
+    if ((uart->STAT & USART_STAT_TXIDLE_MASK) == 0U) {
+        return false;
+    }
+    uint32_t const mask = 1UL << vcom_rx[instance].channel;
+    DMA0->COMMON[0].ENABLECLR = mask;
+    if ((DMA0->COMMON[0].BUSY & mask) != 0U) {
+        return false;
+    }
+    // Keep the FIFOs and RX ring intact across the format change.
+    uart->CFG &= ~USART_CFG_ENABLE_MASK;
+    uart->OSR = vcom_tx[instance].osr;
+    uart->BRG = vcom_tx[instance].brg;
+    uart->CFG = vcom_tx[instance].cfg | USART_CFG_ENABLE_MASK;
+    DMA0->COMMON[0].ENABLESET = mask;
+    // An error interrupt can disable the channel between the idle check and this enable.
+    if (vcom_rx[instance].failed) {
+        DMA0->COMMON[0].ENABLECLR = mask;
+    }
+    return true;
 }
 
 /** Start the receive ring, which runs from here on, through every reconfiguration. */
@@ -217,6 +225,15 @@ static void vcom_start(const vcom_uart_t* uart) {
     CLOCK_SetClkDiv(uart->fractional_divider, 0U, false);
     IOCON_PinMuxSet(IOCON, uart->port, uart->rxd, uart->function | VCOM_PIN_MODE);
     IOCON_PinMuxSet(IOCON, uart->port, uart->txd, uart->function | VCOM_PIN_MODE);
+    usart_config_t config;
+    USART_GetDefaultConfig(&config);
+    config.baudRate_Bps = VCOM_DEFAULT_BAUD;
+    config.enableTx = true;
+    config.enableRx = true;
+    if (USART_Init(uart->usart, &config, CLOCK_GetFlexCommClkFreq(uart->flexcomm)) != kStatus_Success) {
+        return;
+    }
+    uart->usart->FIFOCFG |= USART_FIFOCFG_DMARX_MASK | USART_FIFOCFG_DMATX_MASK;
     uint32_t const instance = vcom_count++;
     vcom[instance].usart = uart->usart;
     vcom[instance].clock_hz = CLOCK_GetFlexCommClkFreq(uart->flexcomm);
@@ -224,7 +241,6 @@ static void vcom_start(const vcom_uart_t* uart) {
     vcom_tx[instance].channel = VCOM_DMA_TX_CHANNEL(uart->flexcomm);
     tx_start(instance);
     rx_start(instance);
-    vcom_configure(instance, VCOM_DEFAULT_BAUD, 1U, 0U, 8U);
 }
 
 __attribute__((noinline)) void vcom_init(void) {
@@ -246,11 +262,21 @@ __attribute__((noinline)) void vcom_init(void) {
  *  signals. */
 void BOARD_InitBootPeripherals(void) {}
 
-/** The host setting the port's parameters is what a terminal does on open, so follow it, once the
- *  bytes the host wrote before it have gone at the old ones (send). */
+/** Unsupported settings leave the last accepted coding intact. TinyUSB still reports the host's
+ *  requested coding through GET_LINE_CODING. */
 void tud_cdc_line_coding_cb(uint8_t itf, cdc_line_coding_t const* coding) {
     if (itf < vcom_count) {
-        vcom_tx[itf].coding = *coding;
+        uint32_t osr, brg;
+        if (!vcom_line_divisors(vcom[itf].clock_hz, coding->bit_rate, coding->stop_bits,
+                                coding->parity, coding->data_bits, &osr, &brg)) {
+            return;
+        }
+        uint32_t const parity = coding->parity == 1U ? kUSART_ParityOdd :
+                                coding->parity == 2U ? kUSART_ParityEven : kUSART_ParityDisabled;
+        vcom_tx[itf].cfg = USART_CFG_PARITYSEL(parity) | USART_CFG_STOPLEN(coding->stop_bits == 2U) |
+                          USART_CFG_DATALEN(coding->data_bits == 8U);
+        vcom_tx[itf].osr = osr;
+        vcom_tx[itf].brg = brg;
         vcom_tx[itf].recode = true;
     }
 }
@@ -267,9 +293,10 @@ __attribute__((section(".ramfunc"))) static void send(uint32_t instance) {
         return;
     }
     if (vcom_tx[instance].recode) {
-        cdc_line_coding_t const* const coding = &vcom_tx[instance].coding;
+        if (!vcom_configure(instance)) {
+            return;
+        }
         vcom_tx[instance].recode = false;
-        vcom_configure(instance, coding->bit_rate, coding->stop_bits, coding->parity, coding->data_bits);
     }
     if (tud_cdc_n_available(instance) == 0U) {
         return;

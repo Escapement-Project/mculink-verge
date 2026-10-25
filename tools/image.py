@@ -723,10 +723,11 @@ def check_energy_control(c: Checker, elf0: str, elf1: str, slots: int) -> None:
 
 
 def check_console_recovery(c: Checker, elf: str, slots: int) -> None:
-    from vcom_checks import check_dma
+    from vcom_checks import check_dma, check_line
 
     offsets = shared_offsets(slots, "dma_table", "swo_segments", small_enums=short_enums(elf))
     check_dma(c, elf, symbols_with_size(elf), offsets)
+    check_line(c, elf, symbols_with_size(elf))
 
 
 def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
@@ -1932,6 +1933,8 @@ def check_clocks(c: Checker, elf: str, request_slots: int) -> None:
                 c.note(f"{symbol} was inlined away; the console clocks not checked")
                 return
         probe.uc.mem_write(probe.sym["dap_shared"] + board, bytes([kind]))
+        for port in range(2):
+            probe.uc.mem_write(0x40086ff8 + port * 4096, u32(0x10))  # USART present
         model_syscon(probe)
         probe.call("board_clocks_init")
         probe.call("dma0_init", timeout_insns=100_000)
