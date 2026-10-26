@@ -182,7 +182,7 @@ typedef struct {
     volatile uint32_t energy_control_ack;
     /** CPU 0's energy accumulator, read by CPU 1 with the sequence counter. */
     volatile uint32_t energy_accumulator_sequence;
-    volatile uint64_t energy_accumulator_nj;
+    volatile uint64_t energy_accumulator_pj;
     volatile uint64_t energy_accumulator_pairs;
     volatile uint32_t energy_accumulator_fraction_q32;
 

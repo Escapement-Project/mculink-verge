@@ -139,13 +139,13 @@ static lpadc_hardware_average_mode_t monitor_average_mode(uint32_t rate_hz) {
     return kLPADC_HardwareAverageCount1;
 }
 
-static void configure_pair_commands(uint32_t rate_hz, uint32_t current_next,
+static void configure_pair_commands(lpadc_hardware_average_mode_t average, uint32_t current_next,
                                      lpadc_conv_command_config_t* command) {
     LPADC_GetDefaultConvCommandConfig(command);
     command->channelNumber = 0U;
     command->sampleChannelMode = kLPADC_SampleChannelSingleEndSideA;
     command->conversionResolutionMode = kLPADC_ConversionResolutionHigh;
-    command->hardwareAverageMode = monitor_average_mode(rate_hz);
+    command->hardwareAverageMode = average;
     command->sampleTimeMode = kLPADC_SampleTimeADCK3;
     command->chainedNextCommandNumber = 2U;
     LPADC_SetConvCommandConfig(ADC0, 1U, command);
@@ -158,7 +158,7 @@ static void configure_pair_commands(uint32_t rate_hz, uint32_t current_next,
 
 void target_sense_configure_monitor(uint32_t rate_hz) {
     lpadc_conv_command_config_t command;
-    configure_pair_commands(rate_hz, 3U, &command);
+    configure_pair_commands(monitor_average_mode(rate_hz), 3U, &command);
 
     command.channelNumber = 2U;
     command.sampleChannelMode = kLPADC_SampleChannelSingleEndSideA;
@@ -218,8 +218,7 @@ target_sense_status_t target_sense_convert(uint8_t channel, bool side_b, uint16_
     return target_sense_convert_sample(channel, side_b, code, kLPADC_HardwareAverageCount16);
 }
 
-target_sense_status_t target_sense_convert_pair_for_calibration(uint32_t rate_hz, uint16_t* voltage_code,
-                                                                uint16_t* current_code) {
+target_sense_status_t target_sense_convert_pair_for_calibration(uint16_t* voltage_code, uint16_t* current_code) {
     if ((voltage_code == nullptr) || (current_code == nullptr)) {
         return TARGET_SENSE_NO_RESULT;
     }
@@ -234,7 +233,9 @@ target_sense_status_t target_sense_convert_pair_for_calibration(uint32_t rate_hz
 
     LPADC_DoResetFIFO0(ADC0);
     lpadc_conv_command_config_t command;
-    configure_pair_commands(rate_hz, 0U, &command);
+    // The capture's sample time with the most averaging: averaging leaves the transfer alone and
+    // takes the noise out of the points every later reading is scaled by.
+    configure_pair_commands(kLPADC_HardwareAverageCount128, 0U, &command);
 
     lpadc_conv_trigger_config_t trigger;
     LPADC_GetDefaultConvTriggerConfig(&trigger);

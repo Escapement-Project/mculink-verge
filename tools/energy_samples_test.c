@@ -32,41 +32,53 @@ int main(void) {
     assert(decoder.sequence == 0U && decoder.have_sample && decoder.last_voltage == 4U);
 
     energy_total_t total = {0};
-    energy_total_add(&total, 3300U, 1000U, 4194304U);
-    assert(total.nj == 3222U && total.fraction_q32 == 0xa8000000U && total.pairs == 1U);
-    for (uint32_t i = 1U; i < 32U; i++) { energy_total_add(&total, 3300U, 1000U, 4194304U); }
-    assert(total.nj == 103125U && total.fraction_q32 == 0U && total.pairs == 32U);
+    energy_total_add(&total, 3300U * 1000U, 4194304U);
+    assert(total.pj == 3222U && total.fraction_q32 == 0xa8000000U && total.pairs == 1U);
+    for (uint32_t i = 1U; i < 32U; i++) { energy_total_add(&total, 3300U * 1000U, 4194304U); }
+    assert(total.pj == 103125U && total.fraction_q32 == 0U && total.pairs == 32U);
     total = (energy_total_t){0};
-    energy_total_add(&total, 3300U, 1000U, 4294967U);
-    assert(total.nj == 3299U && total.fraction_q32 == 0xfff11860U);
-    uint64_t const prior = total.nj;
-    energy_total_add(&total, 6600U, 0U, 4294967U);
-    assert(total.nj == prior && total.pairs == 2U);
+    energy_total_add(&total, 3300U * 1000U, 4294967U);
+    assert(total.pj == 3299U && total.fraction_q32 == 0xfff11860U);
+    uint64_t const prior = total.pj;
+    energy_total_add(&total, 0U, 4294967U);
+    assert(total.pj == prior && total.pairs == 2U);
     total = (energy_total_t){0};
-    energy_total_add(&total, UINT32_MAX, UINT32_MAX, UINT64_C(1) << 32U);
-    assert(total.nj == (uint64_t)UINT32_MAX * UINT32_MAX && total.fraction_q32 == 0U);
+    energy_total_add(&total, (uint64_t)UINT32_MAX * UINT32_MAX, UINT64_C(1) << 32U);
+    assert(total.pj == (uint64_t)UINT32_MAX * UINT32_MAX && total.fraction_q32 == 0U);
     total = (energy_total_t){UINT64_MAX - 1U, UINT64_MAX, UINT32_MAX};
-    energy_total_add(&total, 3300U, 1000U, 4194304U);
-    assert(total.nj == UINT64_MAX && total.pairs == UINT64_MAX);
+    energy_total_add(&total, 3300U * 1000U, 4194304U);
+    assert(total.pj == UINT64_MAX && total.pairs == UINT64_MAX);
 
     energy_calibration_t const calibration = {
-        .code = {10U, 20U, 30U}, .current_ua = {0U, 1000U, 3000U},
-        .slope_ua_per_code_q16 = {100U * 65536U, 200U * 65536U}, .count = 3U,
+        .code = {10U, 20U, 30U}, .current_na = {0U, 1000U, 3000U},
+        .slope_na_per_code_q16 = {100U * 65536U, 200U * 65536U}, .count = 3U,
     };
-    assert(energy_current_ua(0U, &calibration) == 0);
-    assert(energy_current_ua(15U, &calibration) == 500);
-    assert(energy_current_ua(20U, &calibration) == 1000);
-    assert(energy_current_ua(25U, &calibration) == 2000);
-    assert(energy_current_ua(35U, &calibration) == 4000);
+    assert(energy_shunt_na(0U, &calibration) == 0U);
+    assert(energy_shunt_na(15U, &calibration) == 500U);
+    assert(energy_shunt_na(20U, &calibration) == 1000U);
+    assert(energy_shunt_na(25U, &calibration) == 2000U);
+    assert(energy_shunt_na(35U, &calibration) == 4000U);
     energy_calibration_t const fractional = {
-        .code = {10U, 20U}, .current_ua = {1000U, 1005U},
-        .slope_ua_per_code_q16 = {32768U}, .count = 2U,
+        .code = {10U, 20U}, .current_na = {1000U, 1005U},
+        .slope_na_per_code_q16 = {32768U}, .count = 2U,
     };
-    assert(energy_current_ua(9U, &fractional) == 1000);
+    assert(energy_shunt_na(9U, &fractional) == 1000U);
     energy_calibration_t const large = {
-        .code = {0U, 65535U}, .slope_ua_per_code_q16 = {UINT32_MAX}, .count = 2U,
+        .code = {0U, 65535U}, .current_na = {UINT32_MAX - 1000U}, .slope_na_per_code_q16 = {UINT32_MAX},
+        .count = 2U,
     };
-    assert(energy_current_ua(65535U, &large) == INT32_MAX);
+    assert(energy_shunt_na(65535U, &large) == UINT32_MAX);
+
+    // The divider's current to within a nanoamp of mV * 1e6 / 660000, and never past the shunt's.
+    for (uint32_t mv = 0U; mv <= 6600U; mv++) {
+        uint64_t const exact_x660000 = (uint64_t)mv * 1000000U;
+        uint32_t const divider = 2000000U - energy_target_na(2000000U, mv);
+        assert((uint64_t)divider * 660000U <= exact_x660000 + 660000U &&
+               exact_x660000 <= ((uint64_t)divider + 1U) * 660000U);
+    }
+    assert(energy_target_na(5000U, 3300U) == 0U);
+    assert(energy_target_na(0U, 3300U) == 0U);
+    assert(energy_target_na(1000000U, 1800U) == 997273U);
 
     uint32_t const rates[] = {1U, 10U, 1000U, 1024U, 100000U};
     uint32_t seed = 19U;
@@ -80,9 +92,9 @@ int main(void) {
             seed = seed * 1664525U + 1013904223U;
             uint32_t const current = seed;
             exact += (__uint128_t)voltage * current * scale;
-            energy_total_add(&total, voltage, current, scale);
+            energy_total_add(&total, (uint64_t)voltage * current, scale);
             uint64_t const expected = exact >> 32U > UINT64_MAX ? UINT64_MAX : (uint64_t)(exact >> 32U);
-            assert(total.nj == expected && total.fraction_q32 == (uint32_t)exact && total.pairs == i + 1U);
+            assert(total.pj == expected && total.fraction_q32 == (uint32_t)exact && total.pairs == i + 1U);
         }
     }
 }

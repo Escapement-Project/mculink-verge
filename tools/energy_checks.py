@@ -82,6 +82,148 @@ def machine(elf, symbols):
     return probe
 
 
+ORDINARY_GPIO = 0x4008C000
+IOCON_BASE = 0x40001000
+BOARD_KIND_PRO = 1
+
+
+class Circuit:
+    """The Pro's energy circuit as calibration sees it (PRO.md): the probe's 3.3 V on the shunts,
+    loads from node T to ground, the divider, and the sense amplifier's gain of 30. The amplifier's
+    offset and output floor are the ones a unit showed on the bench, in codes."""
+
+    OFFSET = -9
+    FLOOR = 57
+
+    LOADS = {22: 6650.0, 23: 66.5, 26: 1650.0, 29: 16.5}  # PIO1 pin: ohms
+    CAL_DISC = 24
+
+    def __init__(self, setting_ma, gain=1.0, switch_ohms=0.24, supply=3.3, full_scale=3.0):
+        self.low = 50.0 if setting_ma == 350 else 200.0
+        self.high = (0.24 if setting_ma == 350 else 2.0) + 0.0165  # Q3 at a gate-source voltage of -3.3 V
+        self.gain, self.switch_ohms, self.supply, self.full_scale = gain, switch_ohms, supply, full_scale
+
+    def shunt(self, low_range):
+        return self.low if low_range else 1 / (1 / self.low + 1 / self.high)
+
+    def code(self, volts):
+        return max(0, min(65535, round(volts / self.full_scale * 65536)))
+
+    def current_code(self, amps, low_range):
+        ideal = self.code(30 * self.gain * amps * self.shunt(low_range))
+        return min(65535, max(self.FLOOR, ideal + self.OFFSET))
+
+    def node(self, port1, low_range):
+        """The shunt current and node T's voltage with the probe's 3.3 V on the shunts."""
+        if not port1 >> self.CAL_DISC & 1:
+            return 0.0, 0.0
+        loads = [ohms + self.switch_ohms for pin, ohms in self.LOADS.items() if port1 >> pin & 1]
+        node_ohms = 1 / (1 / 660e3 + sum(1 / ohms for ohms in loads))
+        amps = self.supply / (0.05 + self.shunt(low_range) + node_ohms)
+        return amps, amps * node_ohms
+
+    def codes(self, port1, low_range):
+        amps, volts = self.node(port1, low_range)
+        return self.code(volts / 2), self.current_code(amps, low_range)
+
+    def comparator(self, port1, low_range):
+        """CMP0_OUT: low while the amplifier's output is over the ladder's step 28."""
+        amps, _ = self.node(port1, low_range)
+        return 0 if 30 * self.gain * amps * self.shunt(low_range) > 28 / 31 * self.full_scale else 1
+
+
+class Gpio:
+    """Ports 0 and 1 of the ordinary GPIO, with U18 behind them: clock P0_17, reset P0_29, Q on
+    P0_30. `comparator` gives CMP0_OUT's level, which P0_29 carries in function 7. `took_29` records
+    whether anything made P0_29 an output."""
+
+    def __init__(self, probe, comparator=lambda: 1):
+        self.probe = probe
+        self.out = [0, 0]
+        self.dir = [0, 0]
+        self.q = 0
+        self.comparator = comparator
+        self.took_29 = False
+        probe.uc.mem_unmap(ORDINARY_GPIO, 0x4000)
+        probe.uc.mmio_map(ORDINARY_GPIO, 0x4000, self.read, None, self.write, None)
+
+    def function_29(self):
+        return int.from_bytes(self.probe.uc.mem_read(IOCON_BASE + 29 * 4, 4), "little") & 0xF
+
+    def reset_level(self):
+        if self.function_29() == 0 and self.dir[0] >> 29 & 1:
+            return self.out[0] >> 29 & 1
+        return self.comparator() if self.function_29() == 7 else 1
+
+    def read(self, uc, offset, size, data):
+        register, port = offset & ~0x7F, (offset & 0x7F) // 4
+        if port > 1:
+            return 0
+        if register == 0x2000:
+            return self.dir[port]
+        if register == 0x2100:
+            level = self.out[port] & self.dir[port]
+            if port == 0:
+                level = (level & ~(3 << 29)) | self.reset_level() << 29 | self.q << 30
+            return level
+        return 0
+
+    def write(self, uc, offset, size, value, data):
+        register, port = offset & ~0x7F, (offset & 0x7F) // 4
+        if port > 1:
+            return
+        clock = self.out[0] >> 17 & 1
+        if register == 0x2000:
+            self.dir[port] = value
+        elif register == 0x2200:
+            self.out[port] |= value
+        elif register == 0x2280:
+            self.out[port] &= ~value
+        elif register == 0x2300:
+            self.out[port] ^= value
+        elif register == 0x2380:
+            self.dir[port] |= value
+        elif register == 0x2400:
+            self.dir[port] &= ~value
+        self.took_29 |= bool(self.dir[0] >> 29 & 1)
+        if not self.reset_level():
+            self.q = 0
+        elif not clock and self.out[0] >> 17 & 1:
+            self.q = 1
+
+
+class CircuitAdc(Adc):
+    """Answers each software-triggered pair from the circuit's state at the trigger."""
+
+    def __init__(self, probe, circuit, gpio):
+        self.circuit, self.gpio, self.states = circuit, gpio, []
+        super().__init__(probe)
+
+    def write(self, uc, offset, size, value, data):
+        if offset == 0x34 and value & 1:
+            self.software_commands.append(
+                tuple(int.from_bytes(self.page[at:at + 4], "little") for at in range(0x100, 0x118, 4)))
+            loads = self.gpio.out[1] & sum(1 << pin for pin in Circuit.LOADS)
+            self.states.append((self.gpio.q, loads))
+            voltage, current = self.circuit.codes(self.gpio.out[1], self.gpio.q == 1)
+            self.fifo += [0x81000000 | voltage, 0x82000000 | current]
+            self.page[offset:offset + size] = value.to_bytes(size, "little")
+            return
+        super().write(uc, offset, size, value, data)
+
+
+def firmware_target_na(table, current_code, voltage_code, full_scale_mv=3000):
+    """energy_shunt_na, then energy_target_na, as src/energy_samples.h computes them."""
+    codes, currents, slopes, count = table
+    segment = 0
+    while segment + 2 < count and current_code >= codes[segment + 1]:
+        segment += 1
+    product = (current_code - codes[segment]) * slopes[segment]
+    shunt = max(0, currents[segment] + (abs(product) // 65536) * (1 if product >= 0 else -1))
+    mv = voltage_code * 2 * full_scale_mv >> 16
+    return max(0, shunt - (mv * DIVIDER_NA_PER_MV_Q16 >> 16))
+
+
 def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1):
     probe = machine(elf0, symbols0)
     dma = Dma(probe)
@@ -165,7 +307,7 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1):
         for name, value, size in (("capture_running", 1, 1), ("sample_decoder", 2, 1)):
             cpu1.uc.mem_write(cpu1.sym[name], value.to_bytes(size, "little"))
         for name, value, size in (("energy_available", 1, 1), ("energy_control_request", request, 4),
-                                  ("energy_control_ack", ack, 4), ("energy_accumulator_nj", 12345, 8),
+                                  ("energy_control_ack", ack, 4), ("energy_accumulator_pj", 12345, 8),
                                   ("energy_accumulator_pairs", 123, 8)):
             cpu1.uc.mem_write(base + offsets1[name], value.to_bytes(size, "little"))
         dma1.set(0x38, busy)
@@ -180,7 +322,7 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1):
                 f"{label}: DMA aborted/status cleared before ownership")
         c.check(int.from_bytes(cpu1.uc.mem_read(ADC_BASE + 0x10, 4), "little") & 0x100 == 0,
                 f"{label}: FIFO reset before ownership")
-        c.check(bytes(cpu1.uc.mem_read(base + offsets1["energy_accumulator_nj"], 8)) == struct.pack("<Q", 12345),
+        c.check(bytes(cpu1.uc.mem_read(base + offsets1["energy_accumulator_pj"], 8)) == struct.pack("<Q", 12345),
                 f"{label}: old total lost")
         c.check(bytes(cpu1.uc.mem_read(base + offsets1["energy_dma_error"], 1)) == b"\x01",
                 f"{label}: failure not latched")
@@ -189,7 +331,7 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1):
             c.check(len(reply) == 7 and reply[2] == 7, "start did not report missing ownership")
             reply = cpu1.command(bytes([0x90, 2]))
             c.check(len(reply) == 3 and reply[2] == 7, "stop did not report missing ownership")
-            c.check(bytes(cpu1.uc.mem_read(base + offsets1["energy_accumulator_nj"], 8)) == struct.pack("<Q", 12345),
+            c.check(bytes(cpu1.uc.mem_read(base + offsets1["energy_accumulator_pj"], 8)) == struct.pack("<Q", 12345),
                     "failed start/stop reset the retained total")
 
     cpu1 = machine(elf1, symbols1)
@@ -223,6 +365,17 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1):
     c.note(f"energy quiet admission across {len(trace)} IRQ instructions, SWO isolation and bounded ownership failures")
 
 
+# The fixture's calibration: this shunt current at every code.
+SHUNT_NA = 1_000_000
+DIVIDER_NA_PER_MV_Q16 = (65536 * 1_000_000 + 330_000) // 660_000
+
+
+def power_pw(voltage_code):
+    """One sample's power at the plain board's full scale, less the voltage divider's current."""
+    mv = voltage_code * 2 * 3300 >> 16
+    return mv * (SHUNT_NA - (mv * DIVIDER_NA_PER_MV_Q16 >> 16))
+
+
 def check_samples(c, elf, symbols, offsets, model_syscon):
     def result(command, code):
         return 0x80070000 | command << 24 | code
@@ -248,8 +401,8 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
                             ("actual_rate_hz", 1024), ("requested_rate_hz", 1024), ("energy_scale_q32", 4194304),
                             ("current_range", 1), ("adc_ready", 1), ("inputmux_ready", 1)):
             local(name, value)
-        calibration = struct.pack("<4H7IB3x", 0, 65535, 0, 0, 1000, 1000, 0, 0, 0, 0, 0, 2)
-        for name in ("current_calibration_high", "current_calibration_low"):
+        calibration = struct.pack("<4H7IB3x", 0, 65535, 0, 0, SHUNT_NA, SHUNT_NA, 0, 0, 0, 0, 0, 2)
+        for name in ("low_range_calibration", "high_range_calibration"):
             c.check(symbols[name][1] == len(calibration), "calibration fixture layout changed")
             probe.uc.mem_write(probe.sym[name], calibration)
         probe.uc.mem_write(0x40013010, u32(0x40000000))  # Enable the SDK's 96 MHz FRO source.
@@ -276,9 +429,9 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
                     "energy tail pause did not return successfully")
 
         def total(voltage_codes):
-            expected_q32 = sum((v * 6600 // 65536) * 1000 * 4194304 for v in voltage_codes)
+            expected_q32 = sum(power_pw(v) * 4194304 for v in voltage_codes)
             c.check(get("energy_accumulator_pairs", 8) == len(voltage_codes), "tail sample count mismatch")
-            c.check(get("energy_accumulator_nj", 8) == expected_q32 >> 32 and
+            c.check(get("energy_accumulator_pj", 8) == expected_q32 >> 32 and
                     get("energy_accumulator_fraction_q32") == expected_q32 & 0xffffffff,
                     "tail energy or fractional carry mismatch")
 
@@ -307,43 +460,43 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
         c.check(int.from_bytes(adc.page[0xBC:0xC0], "little") == 0x01000001,
                 "ADC monitor is not hardware trigger 7 starting at command 1")
         probe.uc.hook_del(hook)
-        if "target_sense_convert_pair_for_calibration" in symbols:
-            probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
-            local("capture_running", 0)
-            local("requested_rate_hz", 0)
-            value = probe.call("target_sense_convert_pair_for_calibration", rate, SCRATCH, SCRATCH + 4)
-            c.check(value == 0 and probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC, "ADC calibration pair failed")
-            check_commands(adc.software_commands[-1], next(avg for limit, avg in limits if rate <= limit), True)
-            c.check(int.from_bytes(adc.page[0xA0:0xA4], "little") == 0x01000000,
-                    "ADC calibration is not software trigger 0 starting at command 1")
-            c.check(bytes(probe.uc.mem_read(SCRATCH, 2)) == b"\x45\x23" and
-                    bytes(probe.uc.mem_read(SCRATCH + 4, 2)) == b"\x34\x12", "ADC calibration pair lost its results")
-            probe.uc.hook_del(hook)
     c.note("ADC monitor command registers at averaging boundaries use the actual timer rate")
-    c.note("ADC calibration command/trigger checks " +
+
+    if "target_sense_convert_pair_for_calibration" in symbols:
+        probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+        local("capture_running", 0)
+        local("requested_rate_hz", 0)
+        value = probe.call("target_sense_convert_pair_for_calibration", SCRATCH, SCRATCH + 4)
+        c.check(value == 0 and probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC, "ADC calibration pair failed")
+        check_commands(adc.software_commands[-1], 7, True)
+        c.check(int.from_bytes(adc.page[0xA0:0xA4], "little") == 0x01000000,
+                "ADC calibration is not software trigger 0 starting at command 1")
+        c.check(bytes(probe.uc.mem_read(SCRATCH, 2)) == b"\x45\x23" and
+                bytes(probe.uc.mem_read(SCRATCH + 4, 2)) == b"\x34\x12", "ADC calibration pair lost its results")
+        probe.uc.hook_del(hook)
+    c.note("ADC calibration pair at 128x averaging " +
            ("passed" if "target_sense_convert_pair_for_calibration" in symbols else "not run: entry inlined"))
 
-    if c.check("current_calibrate" in symbols, "calibration entry missing from rate checks"):
-        for requested, expected in ((1901, 1900), (7601, 7600), (15201, 15199), (29198, 29197),
-                                    (54795, 54794), (97561, 97560), (100000, 100000)):
-            probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
-            local("capture_running", 0)
-            seen = []
+    if c.check("current_calibrate" in symbols, "calibration entry missing"):
+        probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+        local("capture_running", 0)
+        calls = 0
 
-            def calibration(uc, at, size, data):
-                if at == probe.sym["current_calibrate"]:
-                    seen.append(uc.reg_read(UC_ARM_REG_R0))
-                    uc.reg_write(UC_ARM_REG_R0, 0)
-                    uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+        def calibration(uc, at, size, data):
+            nonlocal calls
+            if at == probe.sym["current_calibrate"]:
+                calls += 1
+                uc.reg_write(UC_ARM_REG_R0, 0)
+                uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
 
-            call_hook = probe.uc.hook_add(UC_HOOK_CODE, calibration)
-            probe.uc.ctl_flush_tb()
-            reply = probe.command(bytes([0x90, 0]) + u32(requested))
-            c.check(seen == [expected], f"calibration rate {seen} for request {requested}, expected {expected}")
-            c.check(reply == bytes([0x90, 0, 6]) + bytes(4), f"mock calibration failure reply: {reply.hex()}")
-            probe.uc.hook_del(call_hook)
-            probe.uc.hook_del(hook)
-    c.note("energy start passes the effective timer rate to calibration at averaging boundaries")
+        call_hook = probe.uc.hook_add(UC_HOOK_CODE, calibration)
+        probe.uc.ctl_flush_tb()
+        reply = probe.command(bytes([0x90, 0]) + u32(1000))
+        c.check(calls == 1, f"energy start calibrated {calls} times")
+        c.check(reply == bytes([0x90, 0, 6]) + bytes(4), f"mock calibration failure reply: {reply.hex()}")
+        probe.uc.hook_del(call_hook)
+        probe.uc.hook_del(hook)
+    c.note("energy start calibrates once and reports a failed calibration")
 
     probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
     written(0)
@@ -483,7 +636,7 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
         reply = probe.command(bytes([0x90, 1]))
         c.check(len(reply) == 21 and reply[2] == 7, f"{fault}: latest hid capture failure")
         reply = probe.command(bytes([0x90, 3]))
-        c.check(len(reply) == 19 and reply[2] == 7 and int.from_bytes(reply[3:11], "little") == 3222 and
+        c.check(len(reply) == 19 and reply[2] == 7 and int.from_bytes(reply[3:11], "little") == (power_pw(32768) * 4194304 >> 32) // 1000 and
                 int.from_bytes(reply[11:19], "little") == 1, f"{fault}: total status/layout lost retained data")
         feed(words, 1024)
         probe.call("energy_monitor_process_segment")
@@ -504,3 +657,81 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
     c.note("energy partial/full/pending segments, FIFO tail, split tuples, Q32 carry and session resume/reset")
     from energy_lifecycle import check_sequences
     check_sequences(c, setup, result)
+
+
+def check_calibration(c, elf, symbols, model_syscon):
+    """The Pro's calibration against a model of its circuit, in both jumper settings."""
+
+    def run(setting_ma, **parts):
+        probe = machine(elf, symbols)
+        model_syscon(probe)
+        circuit = Circuit(setting_ma, **parts)
+        gpio = Gpio(probe, lambda: circuit.comparator(gpio.out[1], gpio.q == 1))
+        adc = CircuitAdc(probe, circuit, gpio)
+        for name, value in (("board_kind", BOARD_KIND_PRO), ("adc_ready", 1),
+                            ("current_range", 1 if setting_ma == 350 else 2)):
+            probe.uc.mem_write(probe.sym[name], value.to_bytes(symbols[name][1], "little"))
+        probe.uc.mem_write(IOCON_BASE + 29 * 4, u32(7))  # CMP0_OUT, as pins_init leaves it
+        delay = probe.sym["calibration_delay"]
+
+        def skip(uc, at, size, data):
+            uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+
+        hook = probe.uc.hook_add(UC_HOOK_CODE, skip, begin=delay, end=delay)
+        probe.uc.ctl_flush_tb()
+        ok = probe.call("current_calibrate") == 1 and probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC
+        probe.uc.hook_del(hook)
+        tables = {}
+        for low in (True, False):
+            name = "low_range_calibration" if low else "high_range_calibration"
+            fields = struct.unpack("<4H7IB3x", bytes(probe.uc.mem_read(probe.sym[name], symbols[name][1])))
+            tables[low] = (fields[0:4], fields[4:8], fields[8:11], fields[11])
+        return probe, gpio, circuit, adc, ok, tables
+
+    plans = {350: ({22, 26}, {26, 23, 29}), 50: ({22}, {22, 26, 23})}
+    for setting_ma, (low_loads, high_loads) in plans.items():
+        probe, gpio, circuit, adc, ok, tables = run(setting_ma)
+        c.check(ok, f"{setting_ma} mA: calibration failed on nominal parts")
+        c.check(tables[True][3] == len(low_loads) + 1 and tables[False][3] == len(high_loads),
+                f"{setting_ma} mA: points {tables[True][3]} low, {tables[False][3]} high")
+        loads_seen = {low: {pin for q, loads in adc.states if q == low for pin in Circuit.LOADS if loads >> pin & 1}
+                      for low in (1, 0)}
+        c.check(loads_seen[1] == low_loads and loads_seen[0] == high_loads,
+                f"{setting_ma} mA: loads by latch state {loads_seen}")
+        c.check(all((words[1] >> 12) & 7 == 7 and (words[3] >> 12) & 7 == 7 for words in adc.software_commands),
+                f"{setting_ma} mA: a calibration conversion averaged fewer than 128 times")
+        c.check(gpio.out[1] & ((1 << Circuit.CAL_DISC) | sum(1 << pin for pin in Circuit.LOADS)) == 0 and
+                gpio.function_29() == 7 and not gpio.dir[0] >> 29 & 1 and not gpio.out[0] >> 17 & 1,
+                f"{setting_ma} mA: calibration left the target isolated, a load on or the comparator off the latch")
+        # Target currents across each range, at two supplies, read back through a copy of
+        # src/energy_samples.h's arithmetic, which tools/energy_samples_test.c holds to the C. The high
+        # range's include where it starts to matter: the re-arm limit and the trip.
+        trip = 28 / 31 * 3.0 / 30 / circuit.shunt(True)
+        rearm = 1.5e-3 if setting_ma == 350 else 400e-6
+        worst = 0.0
+        for low in (True, False):
+            top = trip if low else setting_ma / 1000
+            step = circuit.full_scale / 65536 / 30 / circuit.shunt(low)
+            extra = () if low else (rearm / top, trip / top)
+            for volts in (3.3, 1.8):
+                for fraction in (0.01, 0.05, 0.2, 0.5, 0.9) + extra:
+                    target = top * fraction
+                    if not low and circuit.current_code(target, False) <= circuit.FLOOR:
+                        continue
+                    shunt_amps = target + volts / 660e3
+                    measured = firmware_target_na(tables[low], circuit.current_code(shunt_amps, low),
+                                                  circuit.code(volts / 2)) / 1e9
+                    error = abs(measured - target)
+                    worst = max(worst, error / target)
+                    c.check(error <= max(0.002 * target, 3 * step),
+                            f"{setting_ma} mA {'low' if low else 'high'} range, {target * 1e6:.1f} uA at {volts} V: "
+                            f"read {measured * 1e6:.3f} uA")
+        c.note(f"calibration {setting_ma} mA: loads by range as planned, worst read-back {worst:.3%}")
+
+    _, _, _, _, ok, tables = run(350, gain=1.03)
+    c.check(ok and tables[True][3] == 2, "350 mA: a saturated R3 point did not drop out of the low range")
+    _, _, _, _, ok, _ = run(50, gain=1.025)
+    c.check(ok, "50 mA: calibration failed 2.5% above nominal gain")
+    _, _, _, _, ok, _ = run(50, gain=1.04)
+    c.check(not ok, "50 mA: calibration passed with its only low-range load saturated")
+    c.note("calibration drops a saturated point and fails when a range keeps fewer than two")

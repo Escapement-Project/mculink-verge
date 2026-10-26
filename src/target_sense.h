@@ -43,9 +43,8 @@ target_sense_status_t target_sense_convert(uint8_t channel, bool side_b, uint16_
 /** VREFP in millivolts, which code 65536 stands for. */
 uint32_t target_sense_full_scale_mv(void);
 
-/** Read voltage and current through the monitor's chained conversion path. */
-target_sense_status_t target_sense_convert_pair_for_calibration(uint32_t rate_hz, uint16_t* voltage_code,
-                                                                uint16_t* current_code);
+/** Read voltage and current through the monitor's chained conversion path, averaged 128 times. */
+target_sense_status_t target_sense_convert_pair_for_calibration(uint16_t* voltage_code, uint16_t* current_code);
 
 /** Initialize ADC0, then configure chained voltage/current conversions for the monitor. */
 target_sense_status_t target_sense_adc_init(void);

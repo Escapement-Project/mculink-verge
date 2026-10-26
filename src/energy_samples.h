@@ -4,12 +4,17 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/** Current-channel codes against the current through the shunt, in increasing order. */
 typedef struct {
     uint16_t code[4];
-    uint32_t current_ua[4];
-    uint32_t slope_ua_per_code_q16[3];
+    uint32_t current_na[4];
+    uint32_t slope_na_per_code_q16[3];
     uint8_t count;
 } energy_calibration_t;
+
+/** R73 and R75, the voltage channel's divider, sit on the target side of the shunts (PRO.md), so
+ *  their current is in every current reading: 5 uA at 3.3 V. */
+#define ENERGY_DIVIDER_OHMS 660000U
 
 typedef enum : uint8_t {
     ENERGY_EXPECT_VOLTAGE,
@@ -29,7 +34,7 @@ typedef struct {
 } energy_sample_decoder_t;
 
 typedef struct {
-    uint64_t nj;
+    uint64_t pj;
     uint64_t pairs;
     uint32_t fraction_q32;
 } energy_total_t;
@@ -57,27 +62,35 @@ static inline bool energy_sample_feed(energy_sample_decoder_t* decoder, uint32_t
     return false;
 }
 
-static inline int32_t energy_current_ua(uint16_t code, const energy_calibration_t* calibration) {
+static inline uint32_t energy_shunt_na(uint16_t code, const energy_calibration_t* calibration) {
     uint32_t segment = 0U;
     while ((segment + 2U) < calibration->count && code >= calibration->code[segment + 1U]) {
         segment++;
     }
     int64_t const code_delta = (int32_t)code - calibration->code[segment];
-    int64_t const correction = code_delta * calibration->slope_ua_per_code_q16[segment] / 65536;
-    int64_t const current = calibration->current_ua[segment] + correction;
-    return current <= 0 ? 0 : current > INT32_MAX ? INT32_MAX : (int32_t)current;
+    int64_t const correction = code_delta * calibration->slope_na_per_code_q16[segment] / 65536;
+    int64_t const current = calibration->current_na[segment] + correction;
+    return current <= 0 ? 0U : current > UINT32_MAX ? UINT32_MAX : (uint32_t)current;
 }
 
-/** scale_q32 is floor(2^32 / sample_rate), with a rate of at least one sample/s. */
-static inline void energy_total_add(energy_total_t* total, uint32_t voltage_mv, uint32_t current_ua,
-                                    uint64_t scale_q32) {
-    uint64_t const power_nw = (uint64_t)voltage_mv * current_ua;
-    uint64_t const low = (uint64_t)(uint32_t)power_nw * scale_q32;
-    uint64_t increment = (power_nw >> 32U) * scale_q32 + (low >> 32U);
+/** Nanoamps per millivolt through the divider, Q16. A multiply, because this runs per sample. */
+#define ENERGY_DIVIDER_NA_PER_MV_Q16 ((uint32_t)((UINT64_C(65536000000) + ENERGY_DIVIDER_OHMS / 2U) / ENERGY_DIVIDER_OHMS))
+
+/** The target's current: the shunt's, less the divider's. */
+static inline uint32_t energy_target_na(uint32_t shunt_na, uint32_t voltage_mv) {
+    uint32_t const divider_na = (uint32_t)(((uint64_t)voltage_mv * ENERGY_DIVIDER_NA_PER_MV_Q16) >> 16U);
+    return shunt_na <= divider_na ? 0U : shunt_na - divider_na;
+}
+
+/** Adds one sample's power, in picowatts (millivolts times nanoamps). scale_q32 is
+ *  floor(2^32 / sample_rate), with a rate of at least one sample/s. */
+static inline void energy_total_add(energy_total_t* total, uint64_t power_pw, uint64_t scale_q32) {
+    uint64_t const low = (uint64_t)(uint32_t)power_pw * scale_q32;
+    uint64_t increment = (power_pw >> 32U) * scale_q32 + (low >> 32U);
     uint32_t const previous = total->fraction_q32;
     total->fraction_q32 += (uint32_t)low;
     increment += total->fraction_q32 < previous;
-    total->nj = UINT64_MAX - total->nj < increment ? UINT64_MAX : total->nj + increment;
+    total->pj = UINT64_MAX - total->pj < increment ? UINT64_MAX : total->pj + increment;
     if (total->pairs != UINT64_MAX) {
         total->pairs++;
     }

@@ -43,8 +43,8 @@ static bool pins_ready;
 static bool controls_ready;
 static bool inputmux_ready;
 static target_sense_current_range_t current_range;
-static energy_calibration_t current_calibration_high;
-static energy_calibration_t current_calibration_low;
+static energy_calibration_t low_range_calibration;
+static energy_calibration_t high_range_calibration;
 static bool current_calibrated;
 static bool accumulator_started;
 static energy_sample_decoder_t sample_decoder;
@@ -73,7 +73,7 @@ static void accumulator_write_end(void) {
 
 static void accumulator_reset(void) {
     accumulator_write_begin();
-    dap_shared.energy_accumulator_nj = 0U;
+    dap_shared.energy_accumulator_pj = 0U;
     dap_shared.energy_accumulator_pairs = 0U;
     dap_shared.energy_accumulator_fraction_q32 = 0U;
     accumulator_write_end();
@@ -139,7 +139,7 @@ void energy_monitor_init(void) {
     pins_init();
     dap_shared.energy_accumulator_sequence = 0U;
     dap_shared.energy_dma_sequence = 0U;
-    dap_shared.energy_accumulator_nj = 0U;
+    dap_shared.energy_accumulator_pj = 0U;
     dap_shared.energy_accumulator_pairs = 0U;
     dap_shared.energy_accumulator_fraction_q32 = 0U;
     dap_shared.energy_range_retry_pending = 0U;
@@ -150,190 +150,213 @@ void energy_monitor_init(void) {
     dap_shared.energy_segment_handler = energy_monitor_process_segment;
 }
 
-static void calibration_delay(void) {
+/** Out of line, so tools/energy_checks.py can skip it. */
+__attribute__((noinline)) static void calibration_delay(void) {
     for (volatile uint32_t i = 0U; i < 1500000U; i++) {
         __NOP();
     }
 }
 
-static bool calibration_read_pair(uint32_t rate_hz, uint16_t* voltage_code, uint16_t* current_code) {
+/** The voltage channel halves node T (R73 and R75) on its way to VREFP's full scale. */
+static uint32_t voltage_mv(uint16_t code, uint32_t full_scale_mv) {
+    return ((uint32_t)code * 2U * full_scale_mv) >> 16U;
+}
+
+/** A calibration load and its GPIO port 1 switch, from node T to ground (schematic sheet 7). The
+ *  switch is a PMF250XNE driven at 3.3 V, which its data sheet puts between 212 mohm (4.5 V) and
+ *  269 mohm (2.5 V), typical. */
+typedef struct {
+    uint32_t pin;
+    uint32_t milliohms;
+} calibration_load_t;
+
+#define LOAD_SWITCH_MILLIOHMS 250U
+/** No load: only the divider's current. */
+static const calibration_load_t no_load = {0U, 0U};
+static const calibration_load_t load_r1 = {1UL << 22U, 6650000U + LOAD_SWITCH_MILLIOHMS};
+static const calibration_load_t load_r2 = {1UL << 23U, 66500U + LOAD_SWITCH_MILLIOHMS};
+static const calibration_load_t load_r3 = {1UL << 26U, 1650000U + LOAD_SWITCH_MILLIOHMS};
+static const calibration_load_t load_r4 = {1UL << 29U, 16500U + LOAD_SWITCH_MILLIOHMS};
+#define CAL_DISC (1UL << 24U)
+
+/** Each range's loads, smallest current first (PRO.md, "Calibration"). The divider's current alone
+ *  is a point only in the low ranges: in the high ones it sits under the amplifier's output floor. */
+static const calibration_load_t* const loads_350_low[] = {&no_load, &load_r1, &load_r3, nullptr};
+static const calibration_load_t* const loads_350_high[] = {&load_r3, &load_r2, &load_r4, nullptr};
+static const calibration_load_t* const loads_50_low[] = {&no_load, &load_r1, nullptr};
+static const calibration_load_t* const loads_50_high[] = {&load_r1, &load_r3, &load_r2, nullptr};
+
+/** 99.8% of full scale. The loads put up to 97 mV on a range that ends at 100 mV, so a unit whose
+ *  tolerances add up can saturate; below this the 128 averaged conversions stay clear of 65535. */
+#define CALIBRATION_CODE_LIMIT 65400U
+/** Two points closer than this give no slope worth having. */
+#define CALIBRATION_MIN_STEP 64U
+/** Node T with the probe's 3.3 V on the shunts. Less means CTRL_CAL_DISC did not switch it. */
+#define CALIBRATION_MIN_MV 2500U
+
+typedef enum : uint8_t {
+    POINT_OK,
+    POINT_SATURATED,
+    POINT_FAILED,
+} calibration_point_t;
+
+static bool calibration_read_pair(uint16_t* voltage_code, uint16_t* current_code) {
     uint32_t voltage_sum = 0U;
     uint32_t current_sum = 0U;
     for (uint32_t i = 0U; i < 4U; i++) {
         uint16_t voltage = 0U;
         uint16_t current = 0U;
-        if (target_sense_convert_pair_for_calibration(rate_hz, &voltage, &current) != TARGET_SENSE_OK) {
+        if (target_sense_convert_pair_for_calibration(&voltage, &current) != TARGET_SENSE_OK) {
             return false;
         }
         voltage_sum += voltage;
         current_sum += current;
     }
-    *voltage_code = (uint16_t)(voltage_sum / 4U);
-    *current_code = (uint16_t)(current_sum / 4U);
+    *voltage_code = (uint16_t)((voltage_sum + 2U) / 4U);
+    *current_code = (uint16_t)((current_sum + 2U) / 4U);
     return true;
 }
 
-static bool calibration_point(uint32_t rate_hz, uint32_t resistor_pin, uint32_t resistor_milliohms,
-                              uint16_t* code, uint32_t* current_ua) {
-    uint16_t voltage_code = 0U;
-    GPIO->SET[1] = resistor_pin;
+/** The current through the shunt with `load` on, besides the divider's. */
+static calibration_point_t calibration_point(const calibration_load_t* load, uint16_t* code,
+                                             uint32_t* current_na) {
+    GPIO->SET[1] = load->pin;
     calibration_delay();
-    bool const read_ok = calibration_read_pair(rate_hz, &voltage_code, code);
-    GPIO->CLR[1] = resistor_pin;
-    if (!read_ok || (voltage_code < 10000U)) {
-        return false;
+    uint16_t voltage_code = 0U;
+    bool const read_ok = calibration_read_pair(&voltage_code, code);
+    GPIO->CLR[1] = load->pin;
+    uint32_t const full_scale_mv = target_sense_full_scale_mv();
+    if (!read_ok || voltage_mv(voltage_code, full_scale_mv) < CALIBRATION_MIN_MV) {
+        return POINT_FAILED;
     }
-    uint32_t const voltage_mv = ((uint32_t)voltage_code * 2U * target_sense_full_scale_mv()) >> 16U;
-    if ((voltage_mv == 0U) || (resistor_milliohms == 0U)) {
-        return false;
+    if (*code > CALIBRATION_CODE_LIMIT) {
+        return POINT_SATURATED;
     }
-    uint64_t const current = ((uint64_t)voltage_mv * 1000000U) / resistor_milliohms;
-    if ((current == 0U) || (current > UINT32_MAX)) {
-        return false;
+    // Node T in millivolts, times 65536.
+    uint64_t const node = (uint64_t)voltage_code * 2U * full_scale_mv;
+    uint64_t current = node * 1000000U / ((uint64_t)ENERGY_DIVIDER_OHMS << 16U);
+    if (load->milliohms != 0U) {
+        current += node * 1000000000U / ((uint64_t)load->milliohms << 16U);
     }
-    *current_ua = (uint32_t)current;
-    return true;
+    *current_na = (uint32_t)current;
+    return POINT_OK;
 }
 
-static bool calibration_range(uint32_t rate_hz, energy_calibration_t* calibration, uint32_t reset_release,
-                              uint32_t first_resistor, uint32_t first_resistor_milliohms,
-                              uint32_t second_resistor, uint32_t second_resistor_milliohms,
-                              uint32_t third_resistor, uint32_t third_resistor_milliohms) {
-    uint32_t const p30 = 1UL << 30U;
-    bool const high = reset_release != 0U;
-    bool const state_matches = ((GPIO->PIN[0] & p30) != 0U) == high;
-    uint16_t offset_voltage = 0U;
-    uint16_t offset_code = 0U;
-    if (!state_matches || !calibration_read_pair(rate_hz, &offset_voltage, &offset_code)) {
-        return false;
-    }
-    calibration->code[0] = offset_code;
-    calibration->current_ua[0] = 0U;
-    calibration->count = 1U;
-    uint32_t const resistors[] = {first_resistor, second_resistor, third_resistor};
-    uint32_t const resistances[] = {first_resistor_milliohms, second_resistor_milliohms,
-                                    third_resistor_milliohms};
-    for (uint32_t i = 0U; i < 3U; i++) {
-        if (resistors[i] == 0U) {
+/** Fills `calibration` with the points kept so far, whether or not the range succeeds. */
+static bool calibration_range(const calibration_load_t* const* loads, energy_calibration_t* calibration) {
+    *calibration = (energy_calibration_t){0};
+    for (; (*loads != nullptr) && (calibration->count < 4U); loads++) {
+        uint16_t code = 0U;
+        uint32_t current_na = 0U;
+        calibration_point_t const result = calibration_point(*loads, &code, &current_na);
+        if (result == POINT_FAILED) {
+            return false;
+        }
+        if (result == POINT_SATURATED) {
             break;
         }
-        uint32_t const point = calibration->count;
-        if (!calibration_point(rate_hz, resistors[i], resistances[i], &calibration->code[point],
-                               &calibration->current_ua[point])) {
+        uint8_t const count = calibration->count;
+        if (count > 0U) {
+            if ((code <= calibration->code[count - 1U]) || (current_na <= calibration->current_na[count - 1U])) {
+                return false;
+            }
+            if (((uint32_t)code - calibration->code[count - 1U]) < CALIBRATION_MIN_STEP) {
+                continue;
+            }
+        }
+        calibration->code[count] = code;
+        calibration->current_na[count] = current_na;
+        calibration->count = count + 1U;
+    }
+    for (uint32_t i = 0U; (i + 1U) < calibration->count; i++) {
+        uint64_t const current_delta = calibration->current_na[i + 1U] - calibration->current_na[i];
+        uint32_t const code_delta = calibration->code[i + 1U] - calibration->code[i];
+        uint64_t const slope = (current_delta << 16U) / code_delta;
+        if (slope > UINT32_MAX) {
             return false;
         }
-        if ((calibration->code[point] <= calibration->code[point - 1U]) ||
-            (calibration->current_ua[point] <= calibration->current_ua[point - 1U])) {
-            return false;
-        }
-        calibration->count++;
+        calibration->slope_na_per_code_q16[i] = (uint32_t)slope;
     }
     return calibration->count >= 2U;
 }
 
-static bool calibration_high_range(uint32_t rate_hz, energy_calibration_t* calibration, uint32_t reset_release,
-                                   uint32_t resistor, uint32_t resistor_milliohms) {
-    uint32_t const p30 = 1UL << 30U;
-    uint16_t voltage = 0U;
-    uint16_t offset = 0U;
-    uint16_t loaded = 0U;
-    uint32_t current_ua = 0U;
-    bool const state_matches = ((GPIO->PIN[0] & p30) != 0U) == (reset_release != 0U);
-    if (!state_matches || !calibration_read_pair(rate_hz, &voltage, &offset) ||
-        !calibration_point(rate_hz, resistor, resistor_milliohms, &loaded, &current_ua) || (loaded <= offset)) {
-        return false;
-    }
-    calibration->code[0] = offset;
-    calibration->code[1] = loaded;
-    calibration->current_ua[0] = 0U;
-    calibration->current_ua[1] = current_ua;
-    calibration->count = 2U;
-    return true;
+/** U18's Q, CTRL_HIGH_CURR, read back on P0_30: high while Q3 is off and only the low range's
+ *  shunt carries the current. */
+static bool latch_in_low_range(void) {
+    return (GPIO->PIN[0] & (1UL << 30U)) != 0U;
 }
 
-static void calibration_prepare(energy_calibration_t* calibration) {
-    for (uint32_t i = 0U; (i + 1U) < calibration->count; i++) {
-        uint64_t const current_delta = calibration->current_ua[i + 1U] - calibration->current_ua[i];
-        uint32_t const code_delta = calibration->code[i + 1U] - calibration->code[i];
-        calibration->slope_ua_per_code_q16[i] = (uint32_t)((current_delta << 16U) / code_delta);
-    }
-}
-
-__attribute__((noinline)) static bool current_calibrate(uint32_t rate_hz) {
+/** PRO.md, "Calibration". */
+__attribute__((noinline)) static bool current_calibrate(void) {
     current_calibrated = false;
+    low_range_calibration = (energy_calibration_t){0};
+    high_range_calibration = (energy_calibration_t){0};
     if (current_range == TARGET_SENSE_CURRENT_RANGE_UNKNOWN) {
         return false;
     }
-
+    bool const wide = current_range == TARGET_SENSE_CURRENT_RANGE_350_MA;
     uint32_t const p29 = 1UL << 29U;
     uint32_t const p17 = 1UL << 17U;
-    uint32_t const cal_disc = 1UL << 24U;
-    uint32_t const cal_r1 = 1UL << 22U;
-    uint32_t const cal_r2 = 1UL << 23U;
-    uint32_t const cal_r3 = 1UL << 26U;
-    uint32_t const cal_r4 = 1UL << 29U;
-    bool high_ok = false;
-    bool low_ok = false;
-    current_calibration_high = (energy_calibration_t){0};
-    current_calibration_low = (energy_calibration_t){0};
+    uint32_t const loads = load_r1.pin | load_r2.pin | load_r3.pin | load_r4.pin;
 
-    GPIO->CLR[1] = cal_r1 | cal_r2 | cal_r3 | cal_r4;
-    GPIO->SET[1] = cal_disc;
+    GPIO->CLR[1] = loads;
+    GPIO->SET[1] = CAL_DISC;
+    // U18's reset, held high here rather than by the comparator: the low range's loads go past
+    // the threshold, and the comparator would clear the latch under them.
     GPIO->SET[0] = p29;
     GPIO->DIRSET[0] = p29;
     IOCON->PIO[0][29] = IOCON_FUNC0 | IOCON_MODE_INACT | IOCON_DIGITAL_EN;
+    // A rising CTRL_HIGH_CURR_EN loads U18's tied-high D.
     GPIO->CLR[0] = p17;
     calibration_delay();
     GPIO->SET[0] = p17;
     calibration_delay();
-    high_ok = calibration_high_range(rate_hz, &current_calibration_high, p29, cal_r1, 6650000U);
+    bool const low_ok = latch_in_low_range() &&
+                        calibration_range(wide ? loads_350_low : loads_50_low, &low_range_calibration);
 
     GPIO->CLR[0] = p29;
     calibration_delay();
-    if (current_range == TARGET_SENSE_CURRENT_RANGE_350_MA) {
-        low_ok = calibration_range(rate_hz, &current_calibration_low, 0U, cal_r1, 6650000U,
-                                   cal_r3, 1650000U, cal_r4, 16500U);
-    } else {
-        low_ok = calibration_range(rate_hz, &current_calibration_low, 0U, cal_r1, 6650000U,
-                                   cal_r3, 1650000U, cal_r2, 66500U);
-    }
+    bool const high_ok = !latch_in_low_range() &&
+                         calibration_range(wide ? loads_350_high : loads_50_high, &high_range_calibration);
 
-    GPIO->CLR[1] = cal_disc | cal_r1 | cal_r2 | cal_r3 | cal_r4;
+    GPIO->CLR[1] = CAL_DISC | loads;
     IOCON->PIO[0][29] = IOCON_FUNC7 | IOCON_SLEW_FAST | IOCON_DIGITAL_EN;
     GPIO->DIRCLR[0] = p29;
     GPIO->CLR[0] = p17;
     calibration_delay();
 
-    current_calibrated = high_ok && low_ok;
-    if (high_ok) {
-        calibration_prepare(&current_calibration_high);
-    }
-    if (low_ok) {
-        calibration_prepare(&current_calibration_low);
-    }
+    current_calibrated = low_ok && high_ok;
     return current_calibrated;
 }
 
 static energy_total_t accumulator_values(void) {
-    return (energy_total_t){dap_shared.energy_accumulator_nj, dap_shared.energy_accumulator_pairs,
+    return (energy_total_t){dap_shared.energy_accumulator_pj, dap_shared.energy_accumulator_pairs,
                             dap_shared.energy_accumulator_fraction_q32};
 }
 
 static void accumulator_publish(const energy_total_t* total) {
-    dap_shared.energy_accumulator_nj = total->nj;
+    dap_shared.energy_accumulator_pj = total->pj;
     dap_shared.energy_accumulator_pairs = total->pairs;
     dap_shared.energy_accumulator_fraction_q32 = total->fraction_q32;
 }
 
-static void consume_result(uint32_t result, energy_total_t* total) {
+/** CTRL_HIGH_CURR, converted after each pair: U18's Q, high while the low range is in. */
+static bool low_range(uint16_t range_code) {
+    return range_code >= 32768U;
+}
+
+static energy_calibration_t const* range_calibration(bool low) {
+    return low ? &low_range_calibration : &high_range_calibration;
+}
+
+static void consume_result(uint32_t result, energy_total_t* total, uint32_t full_scale_mv) {
     if (!energy_sample_feed(&sample_decoder, result) || !current_calibrated || actual_rate_hz == 0U) {
         return;
     }
-    energy_calibration_t const* const calibration = sample_decoder.last_range >= 32768U
-                                                     ? &current_calibration_high : &current_calibration_low;
-    uint32_t const current_ua = (uint32_t)energy_current_ua(sample_decoder.last_current, calibration);
-    uint32_t const voltage_mv = ((uint32_t)sample_decoder.last_voltage * 2U * target_sense_full_scale_mv()) >> 16U;
-    energy_total_add(total, voltage_mv, current_ua, energy_scale_q32);
+    bool const low = low_range(sample_decoder.last_range);
+    uint32_t const shunt_na = energy_shunt_na(sample_decoder.last_current, range_calibration(low));
+    uint32_t const mv = voltage_mv(sample_decoder.last_voltage, full_scale_mv);
+    energy_total_add(total, (uint64_t)mv * energy_target_na(shunt_na, mv), energy_scale_q32);
 }
 
 /** Only the IRQ writer or CPU1 with acknowledged quiet may advance the consumed position. */
@@ -343,11 +366,12 @@ static bool consume_until(uint32_t written) {
         dap_shared.energy_dma_error = 1U;
         return false;
     }
+    uint32_t const full_scale_mv = target_sense_full_scale_mv();
     accumulator_write_begin();
     energy_total_t total = accumulator_values();
     while (consumed_bytes != written) {
         uint32_t const index = (consumed_bytes / sizeof(uint32_t)) % ENERGY_RING_WORDS;
-        consume_result(energy_ring[index], &total);
+        consume_result(energy_ring[index], &total, full_scale_mv);
         consumed_bytes += sizeof(uint32_t);
     }
     accumulator_publish(&total);
@@ -400,7 +424,7 @@ static bool capture_drain(void) {
             empty = true;
             break;
         }
-        consume_result(result, &total);
+        consume_result(result, &total, target_sense_full_scale_mv());
     }
     // An incomplete tuple belongs to this capture, even when the next one uses the same rate.
     sample_decoder.phase = ENERGY_EXPECT_VOLTAGE;
@@ -588,7 +612,7 @@ energy_monitor_status_t energy_monitor_start(uint32_t rate_hz) {
         return ENERGY_MONITOR_ADC_ERROR;
     }
     current_range = target_sense_current_range();
-    if (!current_calibrate(timer_effective_rate(rate_hz))) {
+    if (!current_calibrate()) {
         requested_rate_hz = 0U;
         return ENERGY_MONITOR_ADC_ERROR;
     }
@@ -671,19 +695,18 @@ energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {
     sample->current_code = decoder.last_current;
     sample->range_code = decoder.last_range;
     sample->sequence = decoder.sequence;
-    sample->voltage_mv = ((uint32_t)sample->voltage_code * 2U * target_sense_full_scale_mv()) >> 16U;
+    sample->voltage_mv = voltage_mv(sample->voltage_code, target_sense_full_scale_mv());
     sample->range_id = 0U;
     sample->current_ua = 0;
     sample->calibrated = false;
     if (current_range != TARGET_SENSE_CURRENT_RANGE_UNKNOWN) {
-        bool const high_gain = sample->range_code >= 32768U;
-        sample->range_id = (current_range == TARGET_SENSE_CURRENT_RANGE_350_MA)
-                               ? (high_gain ? 1U : 2U)
-                               : (high_gain ? 3U : 4U);
+        bool const low = low_range(sample->range_code);
+        sample->range_id = (current_range == TARGET_SENSE_CURRENT_RANGE_350_MA) ? (low ? 1U : 2U)
+                                                                                 : (low ? 3U : 4U);
         if (current_calibrated) {
-            energy_calibration_t const* const calibration =
-                high_gain ? &current_calibration_high : &current_calibration_low;
-            sample->current_ua = energy_current_ua(sample->current_code, calibration);
+            uint32_t const target_na = energy_target_na(
+                energy_shunt_na(sample->current_code, range_calibration(low)), sample->voltage_mv);
+            sample->current_ua = (int32_t)(((uint64_t)target_na + 500U) / 1000U);
             sample->calibrated = true;
         }
     }
@@ -702,14 +725,16 @@ energy_monitor_status_t energy_monitor_accumulated(uint64_t* energy_nj, uint64_t
     }
     uint32_t before;
     uint32_t after;
+    uint64_t energy_pj;
     do {
         before = dap_shared.energy_accumulator_sequence;
         __DMB();
-        *energy_nj = dap_shared.energy_accumulator_nj;
+        energy_pj = dap_shared.energy_accumulator_pj;
         *pairs = dap_shared.energy_accumulator_pairs;
         __DMB();
         after = dap_shared.energy_accumulator_sequence;
     } while ((before != after) || ((before & 1U) != 0U));
+    *energy_nj = energy_pj / 1000U;
     if (capture_failed()) {
         return ENERGY_MONITOR_DMA_ERROR;
     }

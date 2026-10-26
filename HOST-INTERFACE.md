@@ -139,7 +139,11 @@ is paused does not contribute. Reads do not reset the total, which remains reada
 Range IDs are 1 for 350 mA high gain, 2 for 350 mA low gain, 3 for 50 mA high gain, 4 for 50 mA
 low gain, and 0 when the range is unknown. `calibrated-valid` is 1 when the firmware can convert
 both readings to physical units. Voltage and current are scaled to the Pro's 3.0 V reference.
-Current calibration supports the 350 mA and 50 mA jumper settings.
+Current calibration supports the 350 mA and 50 mA jumper settings. The current is the target's:
+the firmware takes off what the probe's own voltage divider draws through the sense resistor.
+
+A start calibrates first. Calibration disconnects J9 from the target while it runs, so a target
+powered through J9 loses its supply for that time. PRO.md, "Energy measurement", has the details.
 
 | Result | Meaning |
 | --- | --- |
@@ -149,7 +153,7 @@ Current calibration supports the 350 mA and 50 mA jumper settings.
 | 3 | Energy capture is unavailable on this board |
 | 4 | Requested rate is zero or above 100,000 pairs/s |
 | 5 | Invalid argument |
-| 6 | ADC calibration failed |
+| 6 | Calibration failed: the ADC did not answer, or a range kept fewer than two usable points |
 | 7 | DMA failed or the ADC FIFO overflowed |
 
 Result 7 persists after stop and failed starts. The firmware retains the recorded total and stops
