@@ -6,6 +6,7 @@
 #include "fsl_lpadc.h"
 #include "fsl_power.h"
 
+#include "board_pins.h"
 #include "core_clock.h"
 #include "energy_monitor.h"
 
@@ -42,11 +43,16 @@ void target_sense_init(void) {
     GPIO->DIRCLR[SENSE_DETECT_PORT] = 1UL << SENSE_DETECT_PIN;
 }
 
+uint32_t target_sense_full_scale_mv(void) {
+    return board_kind == BOARD_KIND_PRO ? 3000U : 3300U;
+}
+
 /** Bring the converter up on first use, so a probe nobody asks spends nothing on it.
  *
  * FRO_HF clocks it rather than MAIN_CLK, so the rate does not move with the core clock: 96 MHz
- * over 8 is 12 MHz. VDDA and VREFP are tied together on this board, so either reference is the
- * probe's own supply, and a reading is only as absolute as that regulator.
+ * over 8 is 12 MHz. The reference is VREFP. The plain board ties it to VDDA, the probe's own
+ * 3.3 V supply, so a reading there is only as absolute as that regulator. The Pro gives it an
+ * LM4040 3.0 V reference instead (schematic sheet 2), which PRO.md's energy section builds on.
  */
 static target_sense_status_t adc_init(void) {
     CLOCK_SetClkDiv(kCLOCK_DivAdcAsyncClk, 8U, true);
@@ -56,7 +62,8 @@ static target_sense_status_t adc_init(void) {
     lpadc_config_t config;
     LPADC_GetDefaultConfig(&config);
     config.enableAnalogPreliminary = true;
-    config.referenceVoltageSource = kLPADC_ReferenceVoltageAlt2;
+    // CFG[REFSEL] 2, VREFP (UM11126 Table 720). Alt2 is 1, VDDA.
+    config.referenceVoltageSource = kLPADC_ReferenceVoltageAlt3;
     config.conversionAverageMode = kLPADC_ConversionAverage128;
     LPADC_Init(ADC0, &config);
 

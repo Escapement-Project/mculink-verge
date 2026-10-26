@@ -177,7 +177,7 @@ static bool calibration_point(uint32_t rate_hz, uint32_t resistor_pin, uint32_t 
     if (!read_ok || (voltage_code < 10000U)) {
         return false;
     }
-    uint32_t const voltage_mv = ((uint32_t)voltage_code * 6600U) / 65536U;
+    uint32_t const voltage_mv = ((uint32_t)voltage_code * 2U * target_sense_full_scale_mv()) >> 16U;
     if ((voltage_mv == 0U) || (resistor_milliohms == 0U)) {
         return false;
     }
@@ -326,7 +326,7 @@ static void consume_result(uint32_t result, energy_total_t* total) {
     energy_calibration_t const* const calibration = sample_decoder.last_range >= 32768U
                                                      ? &current_calibration_high : &current_calibration_low;
     uint32_t const current_ua = (uint32_t)energy_current_ua(sample_decoder.last_current, calibration);
-    uint32_t const voltage_mv = ((uint32_t)sample_decoder.last_voltage * 6600U) / 65536U;
+    uint32_t const voltage_mv = ((uint32_t)sample_decoder.last_voltage * 2U * target_sense_full_scale_mv()) >> 16U;
     energy_total_add(total, voltage_mv, current_ua, energy_scale_q32);
 }
 
@@ -665,7 +665,7 @@ energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {
     sample->current_code = decoder.last_current;
     sample->range_code = decoder.last_range;
     sample->sequence = decoder.sequence;
-    sample->voltage_mv = ((uint32_t)sample->voltage_code * 6600U) / 65536U;
+    sample->voltage_mv = ((uint32_t)sample->voltage_code * 2U * target_sense_full_scale_mv()) >> 16U;
     sample->range_id = 0U;
     sample->current_ua = 0;
     sample->calibrated = false;

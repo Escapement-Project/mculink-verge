@@ -138,8 +138,8 @@ is paused does not contribute. Reads do not reset the total, which remains reada
 
 Range IDs are 1 for 350 mA high gain, 2 for 350 mA low gain, 3 for 50 mA high gain, 4 for 50 mA
 low gain, and 0 when the range is unknown. `calibrated-valid` is 1 when the firmware can convert
-both readings to physical units. Voltage uses the probe's nominal 3.3 V ADC reference. Current
-calibration supports the 350 mA and 50 mA jumper settings.
+both readings to physical units. Voltage and current are scaled to the Pro's 3.0 V reference.
+Current calibration supports the 350 mA and 50 mA jumper settings.
 
 | Result | Meaning |
 | --- | --- |

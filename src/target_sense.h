@@ -36,9 +36,12 @@ typedef enum {
     TARGET_SENSE_CURRENT_RANGE_50_MA,
 } target_sense_current_range_t;
 
-/** Convert one ADC0 channel, side A or B, to a 16-bit code against the probe's own supply. A
- *  converter that failed to come up is brought up again on the next call. */
+/** Convert one ADC0 channel, side A or B, to a 16-bit code against VREFP. A converter that
+ *  failed to come up is brought up again on the next call. */
 target_sense_status_t target_sense_convert(uint8_t channel, bool side_b, uint16_t* code);
+
+/** VREFP in millivolts, which code 65536 stands for. */
+uint32_t target_sense_full_scale_mv(void);
 
 /** Read voltage and current through the monitor's chained conversion path. */
 target_sense_status_t target_sense_convert_pair_for_calibration(uint32_t rate_hz, uint16_t* voltage_code,

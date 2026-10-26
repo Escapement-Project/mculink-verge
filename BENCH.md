@@ -67,8 +67,9 @@ nothing. **Ours reads both**: vendor 0x86, `tools/dap.py target`. The ADC
 channel was not in any document here and one third-party source contradicted the obvious guess,
 so it was found on the board: `dap.py target --sweep` with the target unpowered and then powered.
 ADC0 3A went 542 to 1634 mV at the pin, half the supply. No other channel moved by more than
-174 mV. Five repeat reads agree to 2 codes in 65536. The reading is only as absolute as the
-probe's own 3V3, which VDDA and VREFP are tied to. 
+174 mV. Five repeat reads agree to 2 codes in 65536. On the plain board the reading is only as
+absolute as the probe's own 3V3, which VDDA and VREFP are tied to. The Pro's VREFP is a 3.0 V
+reference (PRO.md).
 
 **Adding code that never runs cost 0.06% of block throughput** (126 words: 702.8 to 702.3 KiB/s,
 three runs each). The ADC only wakes when asked, so this is placement in flash, not work. Treat

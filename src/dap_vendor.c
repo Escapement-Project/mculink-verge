@@ -255,9 +255,10 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
  * the pin; it is how the supply's channel was found, and how to check it again. Detect is 1 while
  * something grounds J6 pin 9.
  *
- * Millivolts are against the probe's own supply taken as 3300, which is what VDDA and VREFP are
- * tied to, so a reading is only as absolute as that regulator. Status is DAP_ERROR if the
- * converter could not be brought up or did not answer, and the other fields are then zero.
+ * Millivolts are against VREFP: the probe's own 3.3 V supply on the plain board, so a reading
+ * there is only as absolute as that regulator, and a 3.0 V reference on the Pro. Status is
+ * DAP_ERROR if the converter could not be brought up or did not answer, and the other fields are
+ * then zero.
  */
 #define TARGET_MODE_SUPPLY 0U
 #define TARGET_MODE_CHANNEL 1U
@@ -274,8 +275,7 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
  *  is the output latch's last value since startup; it does not confirm voltage at the target.
  */
 
-/** Full scale, the probe's own 3V3, and R22/R23 halving pin 1 on its way to the ADC. */
-#define TARGET_FULL_SCALE_MV 3300U
+/** R22/R23 halve pin 1 on its way to the ADC. */
 #define TARGET_DIVIDER 2U
 
 #if defined(SWD_CODEGEN) || defined(JTAG_CODEGEN)
@@ -472,7 +472,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             code = (uint16_t)status;
         } else {
             response[1] = DAP_OK;
-            mv = ((uint32_t)code * TARGET_FULL_SCALE_MV) >> 16;
+            mv = ((uint32_t)code * target_sense_full_scale_mv()) >> 16;
             if (supply) {
                 mv *= TARGET_DIVIDER;
             }
