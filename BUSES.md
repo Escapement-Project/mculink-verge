@@ -50,14 +50,15 @@ contends with any other.
 | CPU 1 | 10 | ADC0 (target sense, `dap_vendor`) and settled energy FIFO results | Own core, never during a window; FIFO drain at capture pause/stop |
 | CPU 1 | 4 | Energy ring reads for latest-pair replies and the unconsumed capture tail | Host polls while capture runs; tail drain after acknowledged quiet |
 | CPU 1 | 8 | Ordinary GPIO ports 0 and 1: the Pro's DIO pins and their translators' directions (`dio.c`), and port 0 pin 8 for the target regulator (`target_power.c`) | Vendor 0x8E and 0x8F, own core, never during a window |
-| CPU 1 | 7 | CTimer 2 for the Pro's energy-capture trigger; SYSCON, IOCON and INPUTMUX for setup | Energy capture start/stop |
+| CPU 1 | 7 | CTimer 2 for the Pro's energy-capture trigger; SYSCON, IOCON and INPUTMUX for setup | Energy capture start/stop; CTimer 2 stopped and started around each read-latency measurement |
+| CPU 1 | 8, 10 | DMA0's busy bit and ADC0's status, polled until the held capture is idle | Before each read-latency measurement, while capture runs |
 | CPU 1 | 7 | SYSCON clocks and IOCON for the DIO pins (`dio_init`) | Boot only, on the Pro |
 | CPU 1 | 7, 8 | SWO setup: SYSCON resets and clocks, Flexcomm 3, DMA0 channel 8's regs and its bit in the shared ones, each written one bit per channel | SWO commands only |
 | DMA0 | 8 then 11 | Flexcomm 3 FIFO to the SWO ring | Whenever SWO bytes arrive |
 | DMA0 | 8 then 2 | Flexcomm 0 and 1 FIFOs to the consoles' receive rings | Whenever console bytes arrive |
 | DMA0 | 2 then 8 | The consoles' send buffers to Flexcomm 0 and 1 FIFOs | Each send from the host |
 | DMA0 | 11, 2 | Descriptors: channel entries and SWO's ring in `dap_shared`, the consoles' rings in SRAM0 | Each send, and each segment of a ring |
-| DMA0 | 10, 4, 11 | ADC0 RESFIFO to the two-segment 8 KiB energy ring in SRAM2; channel 21's descriptors in `dap_shared` | While energy capture runs, nine DMA reads per voltage/current/range sample; about 879 interrupts/s at 100 kpair/s |
+| DMA0 | 10, 4, 11 | ADC0 RESFIFO to the two-segment 8 KiB energy ring in SRAM2; channel 21's descriptors in `dap_shared` | While energy capture runs, except during a read-latency measurement; nine DMA reads per voltage/current/range sample; about 879 interrupts/s at 100 kpair/s |
 | USB HS controller | 11 | Endpoint buffers in USB SRAM | Every USB transfer |
 | CPU 0 | 0, 2 | Code and data | Always |
 | CPU 0 | 9, 11 | USB device regs and buffers (TinyUSB) | Every USB transfer |
@@ -85,7 +86,11 @@ for the whole update before using the DMA position. Pause drains the settled rin
   `.ramfunc` paths). The ordinary GPIO on port 8 shares with Flexcomm 0 to 4 and the mailbox, which
   CPU 0 polls; that is why the bit paths moved to the secure alias. During energy capture, DMA0
   reads ADC0 on port 10 and writes the ring on port 4. ADC access can stall secure GPIO accesses.
-  Ring writes can stall a `.ramfunc` path that fetches from SRAM2. Capture is disabled by default.
+  With capture running, clock phases stretched and read-latency measurements found later latencies
+  or none. Holding the conversion trigger for a measurement (`energy_monitor_hold`) stops the ADC
+  reads, the ring writes and CPU 0's segment interrupts together, and the measurements came back
+  right; transfers run with capture. Ring writes can stall a `.ramfunc` path that fetches from
+  SRAM2. Capture is disabled by default.
   No other master accesses SRAMX or SRAM1. During capture, CPU 1 reads and DMA0 writes SRAM2.
 - **A staged command's buffers** (port 5). CPU 0 copies the next command in and the last reply out
   while CPU 1's transfer runs. CPU 0 boots with CPU 1's data bus at the top AHB matrix priority

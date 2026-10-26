@@ -49,7 +49,8 @@ static inline bool jtag_sweep_pending(void) { return jtag_sweep_configured; }
 uint32_t jtag_sweep_connect(const uint8_t* request, uint8_t* response);
 
 /** Measures the latency of the wire in use at the current clock and chain position, uses what it
- * found (latency_result.latency, when not 0; a cycle more on two pins) and generates for it.
+ * found (latency_result.latency, when not 0; a cycle more on two pins) and generates for it. A
+ * running energy capture is held for the measurement (energy_monitor_hold).
  *
  * Each candidate latency is generated, the scan function alone, and reads the IDCODE of the TAP
  * at DAP_Data's chain index. An IDCODE scan changes nothing in the TAP, however many bits it

@@ -135,7 +135,9 @@ Mode 3 returns `[0x90, DAP_OK, result, energy_nJ:u64LE, pairs:u64LE]` in 19 byte
 `STOPPED` before the first successful start and `NO_SAMPLE` until it integrates a calibrated pair.
 The pair count includes zero-current samples. Negative calibrated current is clipped to zero.
 Each pair contributes one sample period using the fixed effective capture rate. Time while capture
-is paused does not contribute. Reads do not reset the total, which remains readable after stop.
+is paused does not contribute. Neither does a read-latency measurement, which holds the conversion
+trigger: at a connection at fast clocks, again when a measurement contradicts itself, and on vendor
+`0x89` or `0x8A` mode 1. Reads do not reset the total, which remains readable after stop.
 
 Mode 4 returns `[0x90, DAP_OK, result, count, points]` in 28 bytes. `points` is four entries of an
 ADC code (u16) and the current through the sense resistor at that code in nA (u32), lowest first;

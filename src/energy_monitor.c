@@ -604,6 +604,30 @@ __attribute__((noinline)) bool energy_monitor_pause(void) {
     return true;
 }
 
+/** Out of line, so tools/energy_checks.py can call it. */
+__attribute__((noinline)) bool energy_monitor_hold(void) {
+    // A pause that failed part way leaves capture running with its timer stopped; release must not
+    // start it.
+    if (!capture_running || ((CTIMER2->TCR & CTIMER_TCR_CEN_MASK) == 0U)) {
+        return false;
+    }
+    CTIMER2->TCR = 0U;
+    __DSB();
+    // The conversion under way, and DMA0's reads of what it leaves at the FIFO's watermark.
+    for (uint32_t polls = 0U; polls < ENERGY_CONTROL_POLLS; polls++) {
+        if (((ADC0->STAT & ADC_STAT_ADC_ACTIVE_MASK) == 0U) && ((DMA0->COMMON[0].BUSY & ENERGY_DMA_MASK) == 0U)) {
+            break;
+        }
+    }
+    return true;
+}
+
+__attribute__((noinline)) void energy_monitor_release(bool held) {
+    if (held) {
+        CTIMER2->TCR = CTIMER_TCR_CEN_MASK;
+    }
+}
+
 bool energy_monitor_resume(void) {
     if ((requested_rate_hz == 0U) || capture_running) {
         return true;

@@ -71,4 +71,11 @@ void energy_monitor_process_segment(void);
 [[nodiscard]] bool energy_monitor_pause(void);
 [[nodiscard]] bool energy_monitor_resume(void);
 
+/** Stop the conversion trigger for a latency measurement, so that DMA0 stops reading ADC0 on the
+ *  AHB port the bit paths use (BUSES.md). Returns whether it held a running capture; give that to
+ *  energy_monitor_release. Nothing is converted meanwhile, so the energy total leaves the held time
+ *  out. */
+[[nodiscard]] bool energy_monitor_hold(void);
+void energy_monitor_release(bool held);
+
 #endif

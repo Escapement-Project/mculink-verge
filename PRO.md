@@ -235,3 +235,7 @@ circuitry and a known voltage applied. The firmware calibrates when a capture st
 - The sheet gives no tolerance for the divider. It moves the current taken off each sample, which
   matters in the low ranges.
 - The reply with the latest sample reports whole microamps. The energy total adds up nanoamps.
+- While the probe measures the target's read latency, it stops the conversions, and the energy
+  total leaves that time out. It measures at a connection at fast clocks, again when a measurement
+  contradicts itself, and when a host asks. With capture running, the measurement found later
+  latencies, or none, and those connections failed.

@@ -4,6 +4,7 @@
 #include "DAP_config.h"
 
 #include "DAP.h"
+#include "energy_monitor.h"
 #include "gen.h"
 #include "swd_connect.h"
 #include "swd_dp.h"
@@ -193,7 +194,9 @@ void swd_sweep(void) {
     context.read_period =
         context.config.period < SWD_GEN_READ_PERIOD_MIN ? SWD_GEN_READ_PERIOD_MIN : context.config.period;
     static const struct latency_wire wire = {.safe_period = SWD_GEN_SAFE_PERIOD, .open_below = false};
+    const bool held = energy_monitor_hold();
     latency_measure(&wire, context.read_period, swd_gen_latency, try_latency, &context, &swd_sweep_last.result);
+    energy_monitor_release(held);
     if (swd_sweep_last.result.latency != 0U) {
         swd_gen_latency = swd_sweep_last.result.latency;
     }

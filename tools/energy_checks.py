@@ -400,6 +400,88 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1):
     c.note(f"energy quiet admission across {len(trace)} IRQ instructions, SWO isolation and bounded ownership failures")
 
 
+CTIMER2_BASE = 0x40028000
+
+
+class Trigger:
+    """CTimer 2's TCR, the conversion trigger's enable, writes logged beside the ADC's and DMA0's
+    status reads."""
+
+    def __init__(self, probe, log, running):
+        self.tcr = 1 if running else 0
+        self.log = log
+        probe.uc.mem_unmap(CTIMER2_BASE, 4096)
+        probe.uc.mmio_map(CTIMER2_BASE, 4096, self.read, None, self.write, None)
+
+    def read(self, uc, offset, size, data):
+        return self.tcr if offset == 0x04 else 0
+
+    def write(self, uc, offset, size, value, data):
+        self.log.append(("tcr", offset, value))
+        if offset == 0x04:
+            self.tcr = value
+
+
+class BusyAdc(Adc):
+    def __init__(self, probe, log, busy):
+        self.log = log
+        super().__init__(probe)
+        self.active_reads = busy
+
+    def read(self, uc, offset, size, data):
+        if offset == 0x14:
+            self.log.append(("adc",))
+        return super().read(uc, offset, size, data)
+
+
+class BusyDma(Dma):
+    def __init__(self, probe, log, busy):
+        self.log = log
+        self.busy = busy
+        super().__init__(probe)
+
+    def read(self, uc, offset, size, data):
+        if offset == 0x38:
+            self.log.append(("dma",))
+            if self.busy:
+                self.busy -= 1
+                return ENERGY_MASK
+        return super().read(uc, offset, size, data)
+
+
+def check_hold(c, elf1, symbols1):
+    """A latency measurement's hold: the trigger stops before anything waits, the wait lasts until
+    the ADC and DMA0's energy channel are idle, and release starts the trigger again. Without a
+    running capture, or with its timer already stopped by a pause that failed, nothing moves."""
+    if "swd_sweep_last" not in symbols1 and "jtag_sweep_last" not in symbols1:
+        c.note("no latency measurement in this image, so no hold to check")
+        return
+    if not c.check("energy_monitor_hold" in symbols1 and "energy_monitor_release" in symbols1,
+                   "the latency measurement's hold is missing from the image"):
+        return
+    for running, timer_on, expect in ((1, True, True), (0, True, False), (1, False, False)):
+        label = f"hold, capture {'running' if running else 'stopped'}, timer {'on' if timer_on else 'off'}"
+        cpu1 = machine(elf1, symbols1)
+        log = []
+        trigger = Trigger(cpu1, log, timer_on)
+        adc = BusyAdc(cpu1, log, 3)
+        dma = BusyDma(cpu1, log, 3)
+        cpu1.uc.mem_write(cpu1.sym["capture_running"], bytes([running]))
+        held = cpu1.call("energy_monitor_hold")
+        if expect:
+            c.check(held == 1 and log[:1] == [("tcr", 0x04, 0)], f"{label}: {held}, first access {log[:1]}")
+            c.check(adc.active_reads == 0 and dma.busy == 0 and trigger.tcr == 0,
+                    f"{label}: trigger {trigger.tcr}, ADC {adc.active_reads} and DMA {dma.busy} busy polls left")
+        else:
+            c.check(held == 0 and not [entry for entry in log if entry[0] == "tcr"],
+                    f"{label}: {held}, wrote {log}")
+        before = len(log)
+        cpu1.call("energy_monitor_release", held)
+        writes = [entry for entry in log[before:] if entry[0] == "tcr"]
+        c.check(writes == ([("tcr", 0x04, 1)] if expect else []), f"{label}: release wrote {writes}")
+    c.note("latency-measurement hold stops, drains and restarts the energy trigger, and only a running one")
+
+
 # The fixture's calibration: this shunt current at every code.
 SHUNT_NA = 1_000_000
 DIVIDER_NA_PER_MV_Q16 = (65536 * 1_000_000 + 330_000) // 660_000

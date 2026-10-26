@@ -5,6 +5,7 @@
 
 #include "DAP.h"
 #include "cjtag.h"
+#include "energy_monitor.h"
 #include "gen.h"
 #include "jtag_dp.h"
 #include "jtag_gen.h"
@@ -121,7 +122,9 @@ void jtag_sweep(void) {
     struct jtag_gen_config config = jtag_gen_inputs(wire);
     static const struct latency_wire search = {.safe_period = JTAG_GEN_SAFE_PERIOD, .open_below = true};
     const uint32_t pins = JTAG_GEN_PINS(wire);
+    const bool held = energy_monitor_hold();
     latency_measure(&search, config.period, jtag_gen_latency[pins], try_latency, &config, &jtag_sweep_last.result);
+    energy_monitor_release(held);
     const uint32_t measured = jtag_sweep_last.result.latency;
     if (measured != 0U) {
         const uint32_t latency = pins == JTAG_GEN_TWO_PIN ? measured + TWO_PIN_SLACK : measured;

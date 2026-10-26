@@ -730,7 +730,7 @@ def check_energy_descriptors(c: Checker, elf: str, slots: int) -> None:
 
 
 def check_energy_control(c: Checker, elf0: str, elf1: str, slots: int) -> None:
-    from energy_checks import check_calibration, check_control, check_samples
+    from energy_checks import check_calibration, check_control, check_hold, check_samples
 
     fields = ("energy_control_request", "energy_control_ack", "energy_segments", "swo_segments",
               "energy_dma_error", "energy_segment_handler", "energy_available", "energy_accumulator_pj",
@@ -740,6 +740,7 @@ def check_energy_control(c: Checker, elf0: str, elf1: str, slots: int) -> None:
     check_control(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), *offsets)
     check_samples(c, elf1, symbols_with_size(elf1), offsets[1], model_syscon)
     check_calibration(c, elf1, symbols_with_size(elf1), offsets[1], model_syscon)
+    check_hold(c, elf1, symbols_with_size(elf1))
 
 
 def check_console_recovery(c: Checker, elf: str, slots: int) -> None:

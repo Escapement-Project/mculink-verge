@@ -41,7 +41,8 @@ static inline bool swd_sweep_pending(void) { return swd_sweep_line.reset; }
 uint32_t swd_sweep_connect(const uint8_t* request, uint8_t* response);
 
 /** Measures the latency at the current clock and DAP_Data settings, uses what it found
- * (latency_result.latency, when not 0) and generates for it.
+ * (latency_result.latency, when not 0) and generates for it. A running energy capture is held for
+ * the measurement (energy_monitor_hold).
  *
  * Each candidate latency is generated and runs DPIDR reads, the one read every SW-DP has to
  * answer OK whatever its state (ADIv5 B4). They are generated with DAP_Data's data phase on, so
