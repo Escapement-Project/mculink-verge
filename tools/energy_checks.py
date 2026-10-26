@@ -817,6 +817,22 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     reply = probe.command(bytes([0x90, 1]))
     c.check(len(reply) == 21 and reply[2] == 0 and int.from_bytes(reply[3:5], "little") == 49152 and
             int.from_bytes(reply[7:11], "little") == 114, "latest lost a tuple spanning DMA segments")
+    # The calibrated fields: millivolts, and nanoamps less the divider's share.
+    mv = 49152 * 2 * 3300 >> 16
+    calibrated = (mv, SHUNT_NA - (mv * DIVIDER_NA_PER_MV_Q16 >> 16), 1)
+    got = struct.unpack_from("<IixB", reply, 11)
+    c.check(got == calibrated, f"latest's calibrated fields {got}, not {calibrated}")
+    # A current past i32's nanoamps reads as the largest, not as a negative one.
+    table = bytes(probe.uc.mem_read(probe.sym["high_range_calibration"], struct.calcsize("<4H7IB3x")))
+    probe.uc.mem_write(probe.sym["high_range_calibration"],
+                       struct.pack("<4H7IB3x", 0, 65535, 0, 0, 4_000_000_000, 4_000_000_000, 0, 0, 0, 0, 0, 2))
+    got = struct.unpack_from("<i", probe.command(bytes([0x90, 1])), 15)[0]
+    probe.uc.mem_write(probe.sym["high_range_calibration"], table)
+    c.check(got == 2**31 - 1, f"latest's current past i32 read {got} nA")
+    # Calibrated fields on bit 5, in nA; bit 1 meant uA, and a host that knows only it reads none.
+    info = probe.command(bytes([0x82]))
+    extended = int.from_bytes(info[14 + info[8]:18 + info[8]], "little")
+    c.check(extended & 0b100111 == 0b100101, f"energy's extended capabilities {extended:#x}")
     total(codes)  # Reading latest must not integrate the same tail twice.
     pause()
     codes.append(49152)

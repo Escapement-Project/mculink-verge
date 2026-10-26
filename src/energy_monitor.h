@@ -30,7 +30,7 @@ typedef struct {
     uint16_t range_code;
     uint32_t sequence; /**< Complete pairs captured since the current start. */
     uint32_t voltage_mv;
-    int32_t current_ua;
+    int32_t current_na;
     uint8_t range_id;
     bool calibrated;
 } energy_monitor_sample_t;

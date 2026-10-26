@@ -253,7 +253,6 @@ With 5 ms it read it right.
   target-sense read a host asks for. When capture pauses after a switching sample, before the next
   one arrives, that sample keeps its own current. The reply with the latest sample shows each
   sample as it was converted.
-- The reply with the latest sample reports whole microamps. The energy total adds up nanoamps.
 - While the probe measures the target's read latency, it stops the conversions, and the energy
   total leaves that time out. It measures at a connection at fast clocks, again when a measurement
   contradicts itself, and when a host asks. With capture running, the measurement found later

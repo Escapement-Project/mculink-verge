@@ -592,8 +592,8 @@ def show_energy_sample(probe: Probe) -> str:
     voltage, current, sequence = struct.unpack_from("<HHI", body)
     line = f"#{sequence}: voltage code {voltage}, current code {current}"
     if len(body) >= 18:
-        mv, ua, range_id, calibrated = struct.unpack_from("<IiBB", body, 8)
-        line += f"; {mv} mV, {ua} uA, {ENERGY_RANGES.get(range_id, f'range {range_id}')}"
+        mv, na, range_id, calibrated = struct.unpack_from("<IiBB", body, 8)
+        line += f"; {mv} mV, {na / 1000:.3f} uA, {ENERGY_RANGES.get(range_id, f'range {range_id}')}"
         line += "" if calibrated else ", uncalibrated"
     return line
 

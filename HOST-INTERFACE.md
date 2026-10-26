@@ -39,9 +39,10 @@ Bits 0 and 4 are clear on the unsupported on-board variant. Bit 6 is clear if th
 disabled USB-SIO when the probe started.
 
 Format 6 extended-capability bit 0 advertises energy capture on Pro units with HW_VER_5 fitted.
-Bit 1 advertises calibrated fields appended to the `0x90` latest reply. Bit 2 advertises accumulated
-energy reads through `0x90` mode 3. Bits 3 and 4 advertise SPI and I2C bridges on Pro units when J15
-leaves USB-SIO enabled. Other extended bits are reserved.
+Bit 2 advertises accumulated energy reads through `0x90` mode 3. Bits 3 and 4 advertise SPI and I2C
+bridges on Pro units when J15 leaves USB-SIO enabled. Bit 5 advertises calibrated fields appended to
+the `0x90` latest reply. Bit 1 advertised the same fields with the current in µA; firmware no longer
+sets it. Other extended bits are reserved.
 
 Fields are appended in later formats. Use the format version before reading fields added by a
 later format. Ignore fields you do not understand. The format 4 and later cJTAG mask reports what
@@ -125,8 +126,8 @@ reply reports the timer's effective pair rate.
 
 Every recognized request returns `DAP_OK` followed by a result byte. Start replies with the
 effective rate as a u32 after the result. Latest replies with voltage code (u16), current code
-(u16), and sample sequence (u32) after the result. When extended-capability bit 1 is set, the reply
-appends voltage in mV (u32), current in µA (i32), range ID (u8), and calibrated-valid (u8). The
+(u16), and sample sequence (u32) after the result. When extended-capability bit 5 is set, the reply
+appends voltage in mV (u32), current in nA (i32), range ID (u8), and calibrated-valid (u8). The
 full reply is 21 bytes including the command byte. If the result is not `OK`, every sample field is
 zero. The sequence counts complete pairs since capture started, beginning at 1. Stop replies with
 only the result.

@@ -723,7 +723,7 @@ energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {
     sample->sequence = decoder.sequence;
     sample->voltage_mv = energy_voltage_mv(sample->voltage_code, target_sense_full_scale_mv());
     sample->range_id = 0U;
-    sample->current_ua = 0;
+    sample->current_na = 0;
     sample->calibrated = false;
     if (current_range != TARGET_SENSE_CURRENT_RANGE_UNKNOWN) {
         bool const low = energy_low_range(sample->range_code);
@@ -732,7 +732,7 @@ energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {
         if (current_calibrated) {
             uint32_t const target_na = energy_target_na(
                 energy_shunt_na(sample->current_code, range_calibration(low)), sample->voltage_mv);
-            sample->current_ua = (int32_t)(((uint64_t)target_na + 500U) / 1000U);
+            sample->current_na = (target_na > (uint32_t)INT32_MAX) ? INT32_MAX : (int32_t)target_na;
             sample->calibrated = true;
         }
     }

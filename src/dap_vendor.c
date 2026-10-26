@@ -82,8 +82,8 @@
  *     [8..]   build string, n bytes, not terminated
  *     [8+n]   board                   BOARD_KIND_* (board_pins.h); format 3 on
  *     [9+n]   scan formats, u32 LE    bit n: SCNFMT n offered (cJTAG_Offered); format 4 on
- *     [13+n]  extended capabilities   u32 LE; bit 0: energy capture; bit 1: calibrated energy fields;
- *                                     bit 2: accumulated energy; bits 3–4: SPI and I2C
+ *     [13+n]  extended capabilities   u32 LE; bit 0: energy capture; bit 2: accumulated energy;
+ *                                     bits 3–4: SPI and I2C; bit 5: calibrated energy fields
  *
  * A host checks the magic to know it is us, the flags to know what it may use, and the build
  * string to know which image it is talking to. The capability flags are what makes this worth
@@ -127,8 +127,10 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
 #define CJTAG_CAP_TARGET_POWER (1U << 7)
 /// Extended capability format 6: vendor command 0x90 controls energy capture.
 #define CJTAG_EXT_CAP_ENERGY (1U << 0)
-/// ID_VENDOR_ENERGY appends calibrated voltage, current and range fields.
-#define CJTAG_EXT_CAP_ENERGY_CALIBRATED (1U << 1)
+/// ID_VENDOR_ENERGY appends calibrated voltage, current in nA, and range fields. Bit 1 advertised
+/// them with the current in uA, so a host that knows only bit 1 reads no current rather than one
+/// a thousand times too large.
+#define CJTAG_EXT_CAP_ENERGY_CALIBRATED (1U << 5)
 /// ID_VENDOR_ENERGY mode 3 reads accumulated energy and the number of integrated pairs.
 #define CJTAG_EXT_CAP_ENERGY_ACCUMULATED (1U << 2)
 /// ID_VENDOR_SPI is available on the Pro when J15 leaves USB-SIO enabled.
@@ -535,10 +537,10 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             response[12] = (uint8_t)(sample.voltage_mv >> 8U);
             response[13] = (uint8_t)(sample.voltage_mv >> 16U);
             response[14] = (uint8_t)(sample.voltage_mv >> 24U);
-            response[15] = (uint8_t)sample.current_ua;
-            response[16] = (uint8_t)((uint32_t)sample.current_ua >> 8U);
-            response[17] = (uint8_t)((uint32_t)sample.current_ua >> 16U);
-            response[18] = (uint8_t)((uint32_t)sample.current_ua >> 24U);
+            response[15] = (uint8_t)sample.current_na;
+            response[16] = (uint8_t)((uint32_t)sample.current_na >> 8U);
+            response[17] = (uint8_t)((uint32_t)sample.current_na >> 16U);
+            response[18] = (uint8_t)((uint32_t)sample.current_na >> 24U);
             response[19] = sample.range_id;
             response[20] = sample.calibrated ? 1U : 0U;
             return (2U << 16) | 21U;
