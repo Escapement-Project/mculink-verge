@@ -1715,6 +1715,12 @@ def jtag_read_right(probe: "Machine", tag: str) -> list[str]:
     return []
 
 
+def latency_in_use(wire: str, measured: int) -> int:
+    """What the probe builds for after measuring `measured`: a cycle later on two pins
+    (src/jtag_sweep.c, TWO_PIN_SLACK)."""
+    return measured + 1 if wire in TWO_PIN else measured
+
+
 def jtag_measure_latency(elf: str, model: Model, wire: str, latency: int, hz: int) -> list[str]:
     """Vendor 0x8A's measurement against a TAP whose TDO comes `latency` cycles after each fall."""
     probe = timed_idcode_target(elf, model, wire, latency, hz)
@@ -1724,7 +1730,7 @@ def jtag_measure_latency(elf: str, model: Model, wire: str, latency: int, hz: in
     probe.end()
     tag = f"{wire} latency {latency} at {hz / 1e6:g} MHz"
     in_use = reply[2] if wire in TWO_PIN else reply[3]
-    if reply[1] != 0 or reply[31] != 1 or reply[33] != latency or in_use != latency:
+    if reply[1] != 0 or reply[31] != 1 or reply[33] != latency or in_use != latency_in_use(wire, latency):
         return [f"{tag}: measured outcome {reply[31]}, latency {reply[33]}, in use {in_use}"]
     return jtag_read_right(probe, tag)
 
@@ -1745,7 +1751,7 @@ def jtag_connect(elf: str, model: Model, wire: str, latency: int, hz: int, rescu
     tag = f"{wire} connecting at {hz / 1e6:g} MHz to latency {latency}"
     if reply != bytes([ID_TRANSFER, 2, 1]) + u32(JTAG_WORD) * 2:
         return [f"{tag}: the first DAP_Transfer answered {reply.hex()}"]
-    if in_use != latency or measurements != 1 or rescues != (1 if rescued else 0):
+    if in_use != latency_in_use(wire, latency) or measurements != 1 or rescues != (1 if rescued else 0):
         return [f"{tag}: latency {in_use} after {measurements} measurements, {rescues} rescues"]
     return jtag_read_right(probe, tag)
 
@@ -1956,16 +1962,17 @@ def check(
             failures += measure_latency(elf, model, latency, hz)
         failures += connect_measures(elf, model, 11, 37_500_000)
         failures += connect_rescued(elf, model, 12, 25_000_000)
-    # The same on both JTAG wires, with IDCODE reads.
+    # The same with IDCODE reads, on four wires, OScan1, and OScan5 and OScan6 in Shift.
     if "jtag_sweep_last" in symbols(elf):
         if "jtag" in wires:
             for latency, hz in ((7, 30_000_000), (13, 25_000_000)):
                 failures += jtag_measure_latency(elf, model, "jtag", latency, hz)
             failures += jtag_connect(elf, model, "jtag", 13, 30_000_000, rescued=False)
             failures += jtag_connect(elf, model, "jtag", 16, 10_000_000, rescued=True)
-        if "cjtag" in wires:
-            failures += jtag_measure_latency(elf, model, "cjtag", 10, 50_000_000)
-            failures += jtag_connect(elf, model, "cjtag", 10, 50_000_000, rescued=False)
+        for wire in ("cjtag", "cjtag5", "cjtag6"):
+            if wire in wires:
+                failures += jtag_measure_latency(elf, model, wire, 10, 50_000_000)
+                failures += jtag_connect(elf, model, wire, 10, 50_000_000, rescued=False)
 
     known_path = os.path.join(baseline_dir, "known-overshoot.txt")
     known = set()

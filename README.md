@@ -23,7 +23,7 @@ record the builds and methods.
 | SWD writes | 50 MHz | Bench, normal path, 2026-10-20 | Nothing | 10.7 MHz |
 | SWD reads | 37.5 MHz | Bench, normal path, 2026-10-20 | Nothing | 9.6 MHz |
 | JTAG, four wires (reads and writes) | 30 MHz | Bench and firmware timing report | The target's TDO delay | Not measured yet |
-| cJTAG, two pins (reads and writes) | 50 MHz per wire packet; per JTAG clock in Shift, 8.3 MHz in OScan1 and OScan2, 9.4 MHz in OScan5 and OScan6 | Firmware timing report; target-dependent | The target's TDO delay | Not supported |
+| cJTAG, two pins (reads and writes) | 50 MHz per wire packet; per JTAG clock in Shift, 7.9 MHz in OScan1 and OScan2, 9.4 MHz in OScan5 and OScan6 | Firmware timing report; target-dependent | The target's TDO delay | Not supported |
 | Console (VCOM) | 19.2 Mbaud | Bench loopback | Nothing | 3 Mbaud or more; its limit not measured yet |
 | SWO | 30 Mbaud, UART encoding only | Bench capture | Nothing | Not measured yet |
 | USB | High speed, 512-byte packets, 3 commands held | Firmware report | Nothing | 512-byte packets, 8 commands reported |
@@ -41,17 +41,18 @@ A request above the maximum gets the maximum.
   adds one to the clock: 18.75 MHz at 12, 12.5 at 16. A CC1312R1 measures 7 after a pin reset
   and 11 after a system reset.
 - **cJTAG, two pins.** The wire carries packets at up to 50 MHz, and three packets make one JTAG
-  clock. That frame takes 18 core cycles at the CC1312R1's delay of 8, or 8.3 MHz. A target with
-  a longer delay adds a cycle to the frame for each cycle of delay. In OScan2, a clock outside
-  Shift-DR and Shift-IR is a single packet. Through probe-rs that reads a CC1312R1 4 to 7% faster
-  than OScan1. In OScan5, a clock in Shift-DR and Shift-IR is two packets, and the last one leaves
-  with an escape. That frame takes 16 core cycles at the same delay, or 9.4 MHz. dap.py reads a
-  CC1312R1 27% faster in OScan5 than in OScan1 at 12.5 MHz, 15% faster at 25 MHz and 6% faster
-  at 50 MHz, where USB starts to set the rate. OScan6 sends a clock outside Shift as one packet and
-  a clock in Shift as OScan5 does. On a CC1312R1 it reads level with OScan5 at 12.5 MHz and slower
-  from 25 MHz, where the target answers WAIT more often to the shorter frames. The host selects one of
-  the formats both the probe and the target offer, and `verge cjtag --formats` limits the probe's
-  offer until it restarts.
+  clock. The probe samples TDO a cycle past the delay it measures, and each cycle adds one to the
+  frame. A CC1312R1 measures 8 in OScan1, so that frame takes 19 core cycles, or 7.9 MHz (the
+  generator's frame lengths, 2026-10-26). In OScan2, a clock outside Shift-DR and Shift-IR is a
+  single packet. Through probe-rs that reads a CC1312R1 4 to 7% faster than OScan1. In OScan5, a
+  clock in Shift-DR and Shift-IR is two packets, and the last one leaves with an escape. A CC1312R1
+  measures 7 there, and that frame takes 16 core cycles, or 9.4 MHz. dap.py reads a CC1312R1 27%
+  faster in OScan5 than in OScan1 at 12.5 MHz, 15% faster at 25 MHz and 6% faster at 50 MHz, where
+  USB starts to set the rate. OScan6 sends a clock outside Shift as one packet and a clock in Shift
+  as OScan5 does. On a CC1312R1 it reads level with OScan5 at 12.5 MHz and slower from 25 MHz, where
+  the target answers WAIT more often to the shorter frames. The host selects one of the formats both
+  the probe and the target offer, and `verge cjtag --formats` limits the probe's offer until it
+  restarts.
 - **Console.** Loopback passed at 19.2 Mbaud, including both Pro ports running together.
   This is the UART clock's highest rate. Rates above 10 Mbaud exceed NXP's specification (below).
 - **Stock.** Its SWD figures are measured data-bit rates at requests of 25 MHz and above, where

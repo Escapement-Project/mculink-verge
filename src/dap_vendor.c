@@ -196,8 +196,9 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
  *
  *     [30]      1 while the probe measures on its own, 0 once pinned
  *     [31]      what it found, LATENCY_* (latency.h)
- *     [32]      the wire it measured, 0 four-wire, 1 two-pin
- *     [33]      the latency it set, or 0 if it kept the one in use
+ *     [32]      the wire it measured, JTAG_GEN_* (jtag_gen.h)
+ *     [33]      the latency it measured, or 0 if it kept the one in use; two pins use one more, at
+ *               most 64 (src/jtag_sweep.c)
  *     [34]      generations it ran reads with, at most 255, every attempt's (as ID_VENDOR_SWD_GEN)
  *     [35]      periods it measured at, the host's included, every attempt's
  *     [36..39]  the IDCODE that read right

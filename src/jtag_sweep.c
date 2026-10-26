@@ -12,6 +12,12 @@
 /** IDCODE reads at each candidate, as SWD reads DPIDR. */
 #define SWEEP_READS 64U
 
+/** Cycles past the measured latency that two-pin builds sample. The measurement finds the first
+ *  cycle on which every IDCODE read agrees, which leaves transfers no margin: on the Pro's CC1312
+ *  about one 256 KiB OScan5 or OScan6 read in three failed on an acknowledge above 20 MHz at the
+ *  measured latency, and none one cycle later. */
+#define TWO_PIN_SLACK 1U
+
 struct jtag_sweep_result jtag_sweep_last;
 bool jtag_sweep_automatic = true;
 bool jtag_sweep_configured;
@@ -114,9 +120,12 @@ void jtag_sweep(void) {
     JTAG_IR(JTAG_IDCODE);
     struct jtag_gen_config config = jtag_gen_inputs(wire);
     static const struct latency_wire search = {.safe_period = JTAG_GEN_SAFE_PERIOD, .open_below = true};
-    latency_measure(&search, config.period, jtag_gen_latency[JTAG_GEN_PINS(wire)], try_latency, &config, &jtag_sweep_last.result);
-    if (jtag_sweep_last.result.latency != 0U) {
-        jtag_gen_latency[JTAG_GEN_PINS(wire)] = jtag_sweep_last.result.latency;
+    const uint32_t pins = JTAG_GEN_PINS(wire);
+    latency_measure(&search, config.period, jtag_gen_latency[pins], try_latency, &config, &jtag_sweep_last.result);
+    const uint32_t measured = jtag_sweep_last.result.latency;
+    if (measured != 0U) {
+        const uint32_t latency = pins == JTAG_GEN_TWO_PIN ? measured + TWO_PIN_SLACK : measured;
+        jtag_gen_latency[pins] = latency < LATENCY_MAX ? latency : LATENCY_MAX;
     }
     // SRAMX holds the last candidate's code, which nothing describes.
     gen_owner = GEN_OWNER_NONE;

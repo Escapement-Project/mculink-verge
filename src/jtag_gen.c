@@ -1544,8 +1544,8 @@ struct jtag_gen_log_entry jtag_gen_log[JTAG_GEN_LOG_SIZE];
 // two-pin wire and back to four-wire at either end, and each switch writes over SRAMX. A build
 // depends on its configuration alone, which regenerate already relies on when it keeps the code in
 // place. Its scans serve a scan-only request as well. Two, because a connect builds at the default
-// latency and again at the one it measures, which differ for OScan5 from 25 MHz up; the least
-// recently used goes when a third comes.
+// latency and again at the one its measurement leads to, which can differ from 25 MHz up; the
+// least recently used goes when a third comes.
 #define SAVED_BUILDS 2U
 static COLD_BSS struct saved_build {
     bool valid;
