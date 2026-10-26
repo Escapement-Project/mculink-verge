@@ -171,6 +171,9 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
  *     [46..53]  u64: the latencies every read agrees with, bit n - 1 for latency n
  *     [54..57]  connections whose DPIDR read failed and read right once measured
  *
+ * A measurement that ends with no latency agreeing with every read runs again, up to
+ * LATENCY_ATTEMPTS in all; [32] and [33] count every attempt's.
+ *
  * Status is DAP_ERROR for a latency or a mode out of range, which change nothing, and for a
  * measurement asked for while the port is not plain SWD, which does not run. `ok` is 0 when the
  * current configuration could not be generated and transfers run ARM's own code.
@@ -195,8 +198,8 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
  *     [31]      what it found, LATENCY_* (latency.h)
  *     [32]      the wire it measured, 0 four-wire, 1 two-pin
  *     [33]      the latency it set, or 0 if it kept the one in use
- *     [34]      generations it ran reads with, at most 255
- *     [35]      periods it measured at, the host's included
+ *     [34]      generations it ran reads with, at most 255, every attempt's (as ID_VENDOR_SWD_GEN)
+ *     [35]      periods it measured at, the host's included, every attempt's
  *     [36..39]  the IDCODE that read right
  *     [40..43]  core cycles it took
  *     [44..47]  measurements since the probe started

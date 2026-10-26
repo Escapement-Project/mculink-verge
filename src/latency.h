@@ -24,6 +24,9 @@
  * there does not answer at all, and costs that one generation rather than one for every latency.
  * What it reads is the word the rest must match: a read whose samples come early or late can agree
  * on a wrong word, and on JTAG nothing else says so.
+ *
+ * A search that ends with no latency agreeing with every read runs again, up to LATENCY_ATTEMPTS
+ * in all: a read another master stalled on the bit paths' port contradicts the rest (BUSES.md).
  */
 #ifndef LATENCY_H
 #define LATENCY_H
@@ -36,6 +39,9 @@
 
 /** Longer read periods tried after the host's, while two latencies or more are left. */
 #define LATENCY_EXTRA_PERIODS 3U
+
+/** Searches run while each ends with no latency agreeing with every read. */
+#define LATENCY_ATTEMPTS 3U
 
 /** What a measurement found. */
 #define LATENCY_NEVER 0U        // none has run
@@ -71,8 +77,8 @@ struct latency_result {
     uint32_t latency;    // the one to use, or 0 to keep the latency in use
     uint64_t consistent; // bit n - 1 for every latency n every read agrees with
     uint32_t word;       // what the passing reads read
-    uint32_t tries;      // generations that ran reads
-    uint32_t periods;    // read periods measured at, the host's included
+    uint32_t tries;      // generations that ran reads, every attempt's
+    uint32_t periods;    // read periods measured at, the host's included, every attempt's
 };
 
 static inline uint64_t latency_range(int32_t first, int32_t last) {
@@ -203,9 +209,9 @@ static inline void latency_top(struct latency_search* s, uint32_t start) {
     }
 }
 
-/** Measures from `start`, the latency in use, at read period `period` and then longer ones. */
-static inline void latency_measure(const struct latency_wire* wire, uint32_t period, uint32_t start,
-                                   latency_try_fn try_latency, void* context, struct latency_result* result) {
+/** One search from `start`, the latency in use, at read period `period` and then longer ones. */
+static inline void latency_measure_once(const struct latency_wire* wire, uint32_t period, uint32_t start,
+                                        latency_try_fn try_latency, void* context, struct latency_result* result) {
     *result = (struct latency_result){.consistent = latency_range(1, (int32_t)LATENCY_MAX)};
     struct latency_search s = {.try_latency = try_latency, .context = context, .result = result};
     if ((start < 1U) || (start > LATENCY_MAX)) {
@@ -250,6 +256,23 @@ static inline void latency_measure(const struct latency_wire* wire, uint32_t per
             result->latency = highest;
         }
     }
+}
+
+/** Measures from `start`, the latency in use, at read period `period` and then longer ones. */
+static inline void latency_measure(const struct latency_wire* wire, uint32_t period, uint32_t start,
+                                   latency_try_fn try_latency, void* context, struct latency_result* result) {
+    uint32_t tries = 0U;
+    uint32_t periods = 0U;
+    for (uint32_t attempt = 0U; attempt < LATENCY_ATTEMPTS; attempt++) {
+        latency_measure_once(wire, period, start, try_latency, context, result);
+        tries += result->tries;
+        periods += result->periods;
+        if (result->outcome != LATENCY_INCONSISTENT) {
+            break;
+        }
+    }
+    result->tries = tries;
+    result->periods = periods;
 }
 
 #endif

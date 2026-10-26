@@ -22,6 +22,8 @@ struct target {
     uint32_t write_period;
     uint32_t read_period;
     uint32_t odd_word_at; // a latency whose reads come back right but different, or 0
+    uint32_t odd_tries;   // and only for this many generations, or 0 for all of them
+    uint32_t tries;
 };
 
 static bool served(const struct swd_gen_config* config, uint32_t latency) {
@@ -35,7 +37,7 @@ static bool served(const struct swd_gen_config* config, uint32_t latency) {
 }
 
 static void try_latency(uint32_t period, uint32_t latency, struct latency_try* out, void* context) {
-    const struct target* t = context;
+    struct target* t = context;
     const struct swd_gen_config config = {
         .period = period == t->read_period ? t->write_period : period,
         .latency = latency,
@@ -52,7 +54,9 @@ static void try_latency(uint32_t period, uint32_t latency, struct latency_try* o
     out->last = swd_gen_info.read_last;
     out->same_below = swd_gen_info.masked_from;
     out->passed = (t->latency != 0U) && (out->first <= (int32_t)t->latency) && ((int32_t)t->latency <= out->last);
-    out->word = latency == t->odd_word_at ? DPIDR ^ 0x10U : DPIDR;
+    const bool odd = (latency == t->odd_word_at) && ((t->odd_tries == 0U) || (t->tries < t->odd_tries));
+    out->word = odd ? DPIDR ^ 0x10U : DPIDR;
+    t->tries++;
 }
 
 static uint32_t code_hash(void) {
@@ -206,6 +210,16 @@ int main(void) {
                 struct latency_result r;
                 latency_measure(&wire, t.read_period, starts[s], try_latency, &t, &r);
                 outcomes[r.outcome]++;
+                // Only a search that ends inconsistent runs again.
+                struct latency_result once;
+                latency_measure_once(&wire, t.read_period, starts[s], try_latency, &t, &once);
+                if ((r.outcome != LATENCY_INCONSISTENT) &&
+                    ((once.outcome != r.outcome) || (once.latency != r.latency) || (once.tries != r.tries) ||
+                     (once.periods != r.periods))) {
+                    printf("  period %u/%u, latency %u, from %u: searched again after outcome %u\n", t.write_period,
+                           t.read_period, latency, starts[s], r.outcome);
+                    failures++;
+                }
                 most_tries[p] = r.tries > most_tries[p] ? r.tries : most_tries[p];
                 const uint32_t used = r.latency != 0U ? r.latency : starts[s];
                 const struct swd_gen_config production = {
@@ -237,6 +251,20 @@ int main(void) {
     struct target odd = {7U, 4U, 4U, 6U};
     latency_measure(&wire, 4U, 7U, try_latency, &odd, &r);
     assert((r.word == DPIDR) && (r.outcome == LATENCY_INCONSISTENT) && (r.latency == 0U));
+    assert((odd.tries == r.tries) && (r.tries % LATENCY_ATTEMPTS == 0U) && (r.periods % LATENCY_ATTEMPTS == 0U));
+    const uint32_t first_periods = r.periods / LATENCY_ATTEMPTS;
+
+    // The same read gone wrong only during the first search, as a stall by another master on the
+    // port does: the next search ends where an undisturbed one does, and the generations add up.
+    const uint32_t first_search = odd.tries / LATENCY_ATTEMPTS;
+    struct target clean = {7U, 4U, 4U, 0U};
+    struct latency_result undisturbed;
+    latency_measure(&wire, 4U, 7U, try_latency, &clean, &undisturbed);
+    struct target disturbed = {7U, 4U, 4U, 6U, first_search};
+    latency_measure(&wire, 4U, 7U, try_latency, &disturbed, &r);
+    assert((r.outcome == undisturbed.outcome) && (r.latency == undisturbed.latency) && (r.latency != 0U) &&
+           (r.tries == first_search + undisturbed.tries) && (disturbed.tries == r.tries) &&
+           (r.periods == first_periods + undisturbed.periods));
 
     printf("  outcomes: %u measured, %u ambiguous, %u unresolved, %u no band, %u inconsistent\n", outcomes[1],
            outcomes[2], outcomes[3], outcomes[4], outcomes[5]);
