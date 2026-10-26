@@ -66,6 +66,7 @@ DAP_VENDOR_SWD_GEN = 0x89
 DAP_VENDOR_JTAG_GEN = 0x8A
 DAP_VENDOR_JTAG_LOG = 0x8D
 DAP_VENDOR_DIO = 0x8E
+DAP_VENDOR_ENERGY = 0x90
 
 INFO_FIELDS = {
     0x01: ("vendor", "str"),
@@ -563,6 +564,86 @@ def cmd_target_power(args) -> int:
     if reply[1] != 0:
         raise RuntimeError("the target supply is unavailable on this board or the request was rejected")
     print(f"target supply {'on' if reply[2] else 'off'}")
+    probe.release()
+    return 0
+
+
+ENERGY_RESULTS = ("ok", "stopped", "no sample", "unavailable", "bad rate", "bad argument", "ADC error",
+                  "DMA error")
+ENERGY_RANGES = {0: "range unknown", 1: "350 mA setting, low range", 2: "350 mA setting, high range",
+                 3: "50 mA setting, low range", 4: "50 mA setting, high range"}
+
+
+def energy(probe: Probe, request: bytes) -> tuple[int, bytes]:
+    reply = probe.command(bytes([DAP_VENDOR_ENERGY]) + request)
+    if len(reply) < 3 or reply[0] != DAP_VENDOR_ENERGY or reply[1] != 0:
+        raise RuntimeError(f"vendor 0x90 answered {reply.hex()}; is this a Pro with energy capture?")
+    return reply[2], reply[3:]
+
+
+def energy_result(result: int) -> str:
+    return ENERGY_RESULTS[result] if result < len(ENERGY_RESULTS) else f"result {result}"
+
+
+def show_energy_sample(probe: Probe) -> str:
+    result, body = energy(probe, bytes([1]))
+    if result != 0:
+        return energy_result(result)
+    voltage, current, sequence = struct.unpack_from("<HHI", body)
+    line = f"#{sequence}: voltage code {voltage}, current code {current}"
+    if len(body) >= 18:
+        mv, ua, range_id, calibrated = struct.unpack_from("<IiBB", body, 8)
+        line += f"; {mv} mV, {ua} uA, {ENERGY_RANGES.get(range_id, f'range {range_id}')}"
+        line += "" if calibrated else ", uncalibrated"
+    return line
+
+
+def show_energy_total(probe: Probe) -> str:
+    result, body = energy(probe, bytes([3]))
+    nj, pairs = struct.unpack_from("<QQ", body)
+    return f"{energy_result(result)}: {nj} nJ over {pairs} pairs"
+
+
+def show_energy_calibration(probe: Probe) -> str:
+    lines = []
+    for index, name in ((0, "low range"), (1, "high range")):
+        result, body = energy(probe, bytes([4, index]))
+        points = [struct.unpack_from("<HI", body, 1 + 6 * i) for i in range(body[0])]
+        text = ", ".join(f"code {code} at {na / 1000:.3f} uA" for code, na in points)
+        slopes = ", ".join(f"{(b[1] - a[1]) / (b[0] - a[0]):.2f}" for a, b in zip(points, points[1:]))
+        lines.append(f"{name} ({energy_result(result)}): {text or 'no points'}" +
+                     (f"; nA per code {slopes}" if slopes else ""))
+    return "\n".join(lines)
+
+
+def cmd_energy(args) -> int:
+    """The Pro's energy capture through vendor 0x90 (HOST-INTERFACE.md).
+
+    `watch` starts a capture at `--rate`, prints the newest sample every `--every` seconds for
+    `--seconds`, then the total, and stops. Starting a capture calibrates first, which disconnects
+    J9 for the length of the calibration.
+    """
+    probe = one(args)
+    if args.action in ("start", "watch"):
+        result, body = energy(probe, bytes([0]) + args.rate.to_bytes(4, "little"))
+        if result != 0:
+            raise RuntimeError(f"start: {energy_result(result)}")
+        print(f"started at {int.from_bytes(body[:4], 'little')} pairs/s")
+    if args.action == "latest":
+        print(show_energy_sample(probe))
+    elif args.action == "calibration":
+        print(show_energy_calibration(probe))
+    elif args.action == "total":
+        print(show_energy_total(probe))
+    elif args.action == "watch":
+        end = time.monotonic() + args.seconds
+        while time.monotonic() < end:
+            time.sleep(args.every)
+            print(show_energy_sample(probe))
+        print(show_energy_total(probe))
+    if args.action in ("stop", "watch"):
+        result, _ = energy(probe, bytes([2]))
+        print(f"stopped: {energy_result(result)}")
     probe.release()
     return 0
 
@@ -1930,6 +2011,13 @@ def main() -> int:
     target_power = sub.add_parser("target-power", help="switch the Pro's target supply")
     target_power.add_argument("state", choices=("off", "on", "read"))
     target_power.set_defaults(run=cmd_target_power)
+
+    energy_parser = sub.add_parser("energy", help="the Pro's energy capture: start, read, stop")
+    energy_parser.add_argument("action", choices=("start", "latest", "total", "stop", "watch", "calibration"))
+    energy_parser.add_argument("--rate", type=int, default=1000, help="pairs per second to start at")
+    energy_parser.add_argument("--seconds", type=float, default=5.0, help="how long `watch` runs")
+    energy_parser.add_argument("--every", type=float, default=0.5, help="seconds between `watch` samples")
+    energy_parser.set_defaults(run=cmd_energy)
 
     pins = sub.add_parser("pins", help="read, and optionally drive, the probe's own pins")
     pins.add_argument("--connect", action="store_true", help="DAP_Connect first, so pins are outputs")
