@@ -69,9 +69,6 @@ uint32_t energy_monitor_rate(void);
 /** Read accumulated calibrated energy since the most recent successful start. */
 [[nodiscard]] energy_monitor_status_t energy_monitor_accumulated(uint64_t* energy_nj, uint64_t* pairs);
 
-/** Integrate one complete DMA segment. Called by CPU 0's DMA interrupt. */
-void energy_monitor_process_segment(void);
-
 /** Pause and resume capture around an on-demand ADC conversion. */
 [[nodiscard]] bool energy_monitor_pause(void);
 [[nodiscard]] bool energy_monitor_resume(void);

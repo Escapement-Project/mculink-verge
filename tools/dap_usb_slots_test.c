@@ -255,13 +255,17 @@ static void test_shared_state_initialization(void) {
         bytes[i] = 0xA5U;
     }
 
-    dap_shared_init(&state);
+    static struct energy_integration energy;
+    dap_shared_init(&state, &energy);
 
+    size_t const pointer = offsetof(dap_shared_t, energy_integration);
     for (size_t i = 0U; i < offsetof(dap_shared_t, request); i++) {
-        if ((i != offsetof(dap_shared_t, reboot_mode)) && (i != offsetof(dap_shared_t, stage_commands))) {
+        if ((i != offsetof(dap_shared_t, reboot_mode)) && (i != offsetof(dap_shared_t, stage_commands)) &&
+            ((i < pointer) || (i >= pointer + sizeof(state.energy_integration)))) {
             assert(bytes[i] == 0U);
         }
     }
+    assert(state.energy_integration == &energy);
     for (size_t i = 0U; i < REQUEST_SLOTS; i++) {
         assert(dap_usb_slot_free(state.response_len, (uint8_t)i));
         assert(dap_usb_slot_free(state.hid_request_len, (uint8_t)i));

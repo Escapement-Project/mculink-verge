@@ -2,7 +2,7 @@
 
 import struct
 
-from cycles import Machine, Model, RETURN_MAGIC, SCRATCH, Target, u32
+from cycles import Machine, Model, RETURN_MAGIC, SCRATCH, Target, sections, u32
 from unicorn import UC_HOOK_CODE, UC_HOOK_MEM_WRITE
 from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_PRIMASK, UC_ARM_REG_R0
 
@@ -79,6 +79,54 @@ class Adc:
 def machine(elf, symbols):
     probe = Machine(elf, Target([]), restart_at=set(), model=Model())
     probe.sym.update({name: address for name, (address, _) in symbols.items()})
+    return probe
+
+
+# struct energy_integration's members (src/dap_shared.h), which image.py lays out.
+INTEGRATION_FIELDS = ("low_range", "high_range", "scale_q32", "full_scale_mv", "rearm_below_na", "segments_at_start",
+                      "calibrated", "running", "consumed_bytes", "decoder", "on_high_range", "rearm_blocked",
+                      "descriptors", "ring")
+# Where a machine without CPU 0's image keeps the struct: SRAM0, which CPU 1's image leaves alone.
+INTEGRATION_AT = 0x20008000
+
+
+class Integration:
+    """struct energy_integration in an emulated machine's memory."""
+
+    def __init__(self, probe, at, layout):
+        self.probe, self.at, self.layout = probe, at, layout
+
+    def put(self, field, value, size, offset=0):
+        self.probe.uc.mem_write(self.at + self.layout[field] + offset, value.to_bytes(size, "little"))
+
+    def get(self, field, size, offset=0):
+        return int.from_bytes(self.probe.uc.mem_read(self.at + self.layout[field] + offset, size), "little")
+
+    def write(self, field, data, offset=0):
+        self.probe.uc.mem_write(self.at + self.layout[field] + offset, data)
+
+    def read(self, field, size, offset=0):
+        return bytes(self.probe.uc.mem_read(self.at + self.layout[field] + offset, size))
+
+    def decoder_size(self):
+        return self.layout["on_high_range"] - self.layout["decoder"]
+
+
+def attach_integration(probe, offsets, layout, at=INTEGRATION_AT):
+    """Points dap_shared.energy_integration at `at`, as CPU 0 does before it starts CPU 1."""
+    probe.uc.mem_write(probe.sym["dap_shared"] + offsets["energy_integration"], u32(at))
+    return Integration(probe, at, layout)
+
+
+def dual_machine(elf0, symbols0, elf1, symbols1):
+    """CPU 1's image and statics with CPU 0's beside them, in one memory: CPU 0's image carries
+    CPU 1's code at its flash origin, and the two cores' RAM does not overlap. Names are CPU 1's;
+    CPU 0's DMA interrupt is "cpu0:DMA0_IRQHandler"."""
+    probe = Machine(elf0, Target([]), restart_at=set(), model=Model())
+    size, vma, lma = sections(elf1)[".data"]
+    probe.uc.mem_write(vma, bytes(probe.uc.mem_read(lma, size)))
+    probe.sym = {name: address for name, (address, _) in symbols1.items()}
+    probe.sym["cpu0:DMA0_IRQHandler"] = symbols0["DMA0_IRQHandler"][0]
     return probe
 
 
@@ -224,7 +272,7 @@ def firmware_target_na(table, current_code, voltage_code, full_scale_mv=3000):
     return max(0, shunt - (mv * DIVIDER_NA_PER_MV_Q16 >> 16))
 
 
-def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1):
+def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1, layout):
     probe = machine(elf0, symbols0)
     dma = Dma(probe)
     shared = probe.sym["dap_shared"]
@@ -235,11 +283,8 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1):
     def get(field, size=4):
         return int.from_bytes(probe.uc.mem_read(shared + offsets0[field], size), "little")
 
-    # In CPU 1's flash, past its image: CMakeLists.txt's CORE1_FLASH_ORIGIN and CORE1_FLASH_END.
-    core1_flash = (0x00040000, 0x0009D800)
-    stub = core1_flash[1] - 0x40
-    probe.uc.mem_write(stub, bytes.fromhex("00bf") * 8 + bytes.fromhex("7047"))
-    put("energy_segment_handler", stub | 1)
+    # CPU 0's own struct, with no capture running, so the integration returns at once.
+    integrate = probe.sym["energy_integrate_segment"]
     trace = []
     hook = probe.uc.hook_add(UC_HOOK_CODE, lambda uc, at, size, data: trace.append(at))
     probe.uc.ctl_flush_tb()
@@ -265,7 +310,7 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1):
             nonlocal step, calls
             if step == cut:
                 put("energy_control_request", 3)
-            if at == stub:
+            if at == integrate:
                 calls += 1
             c.check(get("energy_control_ack") == 0, "quiet acknowledged inside the DMA handler")
             step += 1
@@ -294,33 +339,6 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1):
         dma.set(0x58, ENERGY_MASK)
         probe.call("DMA0_IRQHandler")
         c.check(get("energy_segments") == 2, "resumed energy handler stayed suppressed")
-
-    # A pointer a faulting CPU 1 left behind is not called, and the segment is still counted:
-    # unpublished, ARM state, CPU 0's flash, RAM, past CPU 1's flash.
-    for pointer in (0, stub, 0x00000201, SCRATCH | 1, core1_flash[1] | 1):
-        put("energy_control_request", 0)
-        put("energy_control_ack", 0)
-        put("energy_segments", 0)
-        put("energy_segment_handler", pointer)
-        dma.set(0x40, 0)
-        dma.set(0x58, ENERGY_MASK)
-        target = pointer & ~1
-        entered = []
-
-        def stray(uc, at, size, data):
-            if at == target:
-                entered.append(at)
-                uc.emu_stop()
-
-        hook = probe.uc.hook_add(UC_HOOK_CODE, stray)
-        probe.uc.ctl_flush_tb()
-        probe.call("DMA0_IRQHandler")
-        probe.uc.hook_del(hook)
-        probe.uc.ctl_flush_tb()
-        c.check(not entered and get("energy_segments") == 1 and probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC,
-                f"energy IRQ with handler {pointer:#x}: entered {entered}, {get('energy_segments')} segments")
-    put("energy_segment_handler", stub | 1)
-    c.note("energy IRQ calls only a Thumb handler in CPU 1's flash")
 
     # CPU 0's re-arm clocks U18 with P0_29 left on the comparator: the low range comes back only
     # while the comparator holds the reset high, including when it falls between the task's
@@ -368,8 +386,9 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1):
         cpu1 = machine(elf1, symbols1)
         dma1 = Dma(cpu1)
         base = cpu1.sym["dap_shared"]
-        for name, value, size in (("capture_running", 1, 1), ("sample_decoder", 2, 1)):
-            cpu1.uc.mem_write(cpu1.sym[name], value.to_bytes(size, "little"))
+        energy = attach_integration(cpu1, offsets1, layout)
+        energy.put("running", 1, 1)
+        energy.put("decoder", 2, 1)  # the phase
         for name, value, size in (("energy_available", 1, 1), ("energy_control_request", request, 4),
                                   ("energy_control_ack", ack, 4), ("energy_accumulator_pj", 12345, 8),
                                   ("energy_accumulator_pairs", 123, 8)):
@@ -379,8 +398,7 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1):
         result = cpu1.call("energy_monitor_pause")
         c.check(cpu1.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC and result == 0,
                 f"{label}: pause did not fail within its bound")
-        c.check(bytes(cpu1.uc.mem_read(cpu1.sym["capture_running"], 1)) == b"\x01" and
-                bytes(cpu1.uc.mem_read(cpu1.sym["sample_decoder"], 1)) == b"\x02",
+        c.check(energy.get("running", 1) == 1 and energy.get("decoder", 1) == 2,
                 f"{label}: capture state reused without ownership")
         c.check(not any(offset == 0x78 for offset, _ in dma1.writes) and dma1.get(0x58) == ENERGY_MASK,
                 f"{label}: DMA aborted/status cleared before ownership")
@@ -402,7 +420,8 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1):
     dma1 = Dma(cpu1)
     base = cpu1.sym["dap_shared"]
     cpu1.uc.mem_write(base + offsets1["energy_available"], b"\x01")
-    cpu1.uc.mem_write(cpu1.sym["capture_running"], b"\x01")
+    energy = attach_integration(cpu1, offsets1, layout)
+    energy.put("running", 1, 1)
     pending = 0
 
     def acknowledge(uc, at, size, data):
@@ -421,7 +440,7 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1):
     result = cpu1.call("energy_monitor_pause")
     cpu1.uc.hook_del(hook)
     cpu1.uc.ctl_flush_tb()
-    c.check(result == 1 and pending == 30 and bytes(cpu1.uc.mem_read(cpu1.sym["capture_running"], 1)) == b"\x00",
+    c.check(result == 1 and pending == 30 and energy.get("running", 1) == 0,
             "pause did not wait for delayed ownership before stopping")
     c.check(any(offset == 0x78 for offset, _ in dma1.writes) and
             int.from_bytes(cpu1.uc.mem_read(ADC_BASE + 0x10, 4), "little") & 0x100 != 0,
@@ -478,7 +497,7 @@ class BusyDma(Dma):
         return super().read(uc, offset, size, data)
 
 
-def check_hold(c, elf1, symbols1):
+def check_hold(c, elf1, symbols1, offsets1, layout):
     """A latency measurement's hold: the trigger stops before anything waits, the wait lasts until
     the ADC and DMA0's energy channel are idle, and release starts the trigger again. Without a
     running capture, or with its timer already stopped by a pause that failed, nothing moves."""
@@ -488,14 +507,17 @@ def check_hold(c, elf1, symbols1):
     if not c.check("energy_monitor_hold" in symbols1 and "energy_monitor_release" in symbols1,
                    "the latency measurement's hold is missing from the image"):
         return
-    for running, timer_on, expect in ((1, True, True), (0, True, False), (1, False, False)):
-        label = f"hold, capture {'running' if running else 'stopped'}, timer {'on' if timer_on else 'off'}"
+    for available, running, timer_on, expect in ((1, 1, True, True), (1, 0, True, False), (1, 1, False, False),
+                                                 (0, 1, True, False)):
+        label = (f"hold, energy {'available' if available else 'unavailable'}, capture "
+                 f"{'running' if running else 'stopped'}, timer {'on' if timer_on else 'off'}")
         cpu1 = machine(elf1, symbols1)
         log = []
         trigger = Trigger(cpu1, log, timer_on)
         adc = BusyAdc(cpu1, log, 3)
         dma = BusyDma(cpu1, log, 3)
-        cpu1.uc.mem_write(cpu1.sym["capture_running"], bytes([running]))
+        cpu1.uc.mem_write(cpu1.sym["dap_shared"] + offsets1["energy_available"], bytes([available]))
+        attach_integration(cpu1, offsets1, layout).put("running", running, 1)
         held = cpu1.call("energy_monitor_hold")
         if expect:
             c.check(held == 1 and log[:1] == [("tcr", 0x04, 0)], f"{label}: {held}, first access {log[:1]}")
@@ -508,7 +530,8 @@ def check_hold(c, elf1, symbols1):
         cpu1.call("energy_monitor_release", held)
         writes = [entry for entry in log[before:] if entry[0] == "tcr"]
         c.check(writes == ([("tcr", 0x04, 1)] if expect else []), f"{label}: release wrote {writes}")
-    c.note("latency-measurement hold stops, drains and restarts the energy trigger, and only a running one")
+    c.note("latency-measurement hold stops, drains and restarts the energy trigger, and only a running one on a"
+           " probe with energy capture")
 
 
 # The fixture's calibration: this shunt current at every code.
@@ -522,12 +545,14 @@ def power_pw(voltage_code):
     return mv * (SHUNT_NA - (mv * DIVIDER_NA_PER_MV_Q16 >> 16))
 
 
-def check_samples(c, elf, symbols, offsets, model_syscon):
+def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_syscon):
+    symbols = symbols1
+
     def result(command, code):
         return 0x80070000 | command << 24 | code
 
     def setup():
-        probe = machine(elf, symbols)
+        probe = dual_machine(elf0, symbols0, elf1, symbols1)
         dma = Dma(probe)
         adc = Adc(probe)
         model_syscon(probe)
@@ -543,14 +568,29 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
             probe.uc.mem_write(probe.sym[name], value.to_bytes(symbols[name][1], "little"))
 
         put("energy_available", 1, 1)
-        for name, value in (("capture_running", 1), ("current_calibrated", 1), ("accumulator_started", 1),
-                            ("actual_rate_hz", 1024), ("requested_rate_hz", 1024), ("energy_scale_q32", 4194304),
-                            ("current_range", 1), ("adc_ready", 1), ("inputmux_ready", 1)):
+        energy = attach_integration(probe, offsets, layout, symbols0["energy_integration"][0])
+        probe.energy = energy
+
+        def integrate():
+            """A completed segment, through CPU 0's whole interrupt, which integrates it and then
+            counts it."""
+            dma.set(0x58, dma.get(0x58) | ENERGY_MASK)
+            probe.call("cpu0:DMA0_IRQHandler")
+
+        probe.integrate = integrate
+        for name, value in (("current_calibrated", 1), ("accumulator_started", 1), ("actual_rate_hz", 1024),
+                            ("requested_rate_hz", 1024), ("current_range", 1), ("adc_ready", 1), ("inputmux_ready", 1)):
             local(name, value)
+        # What a start publishes for CPU 0: the plain board's full scale, the 350 mA setting's limit.
+        for field, value, size in (("running", 1, 1), ("calibrated", 1, 1), ("scale_q32", 4194304, 8),
+                                   ("full_scale_mv", 3300, 4), ("rearm_below_na", 1500000, 4)):
+            energy.put(field, value, size)
         calibration = struct.pack("<4H7IB3x", 0, 65535, 0, 0, SHUNT_NA, SHUNT_NA, 0, 0, 0, 0, 0, 2)
         for name in ("low_range_calibration", "high_range_calibration"):
             c.check(symbols[name][1] == len(calibration), "calibration fixture layout changed")
             probe.uc.mem_write(probe.sym[name], calibration)
+        for field in ("low_range", "high_range"):
+            energy.write(field, calibration)
         probe.uc.mem_write(0x40013010, u32(0x40000000))  # Enable the SDK's 96 MHz FRO source.
 
         def acknowledge(uc, access, at, size, value, data):
@@ -567,7 +607,7 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
 
         def feed(words, start=0):
             for i, word in enumerate(words):
-                probe.uc.mem_write(probe.sym["energy_ring"] + ((start + i) % 2048) * 4, u32(word))
+                energy.write("ring", u32(word), ((start + i) % 2048) * 4)
 
         def pause():
             value = probe.call("energy_monitor_pause")
@@ -608,9 +648,31 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
         probe.uc.hook_del(hook)
     c.note("ADC monitor command registers at averaging boundaries use the actual timer rate")
 
+    # A start hands CPU 0 what CPU 1 holds, whatever the struct held before: the tables, whether
+    # they are good, the rate's scale, the board's full scale and the setting's re-arm limit.
+    probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+    low = struct.pack("<4H7IB3x", 0, 30000, 65535, 0, 0, 900000, 2000000, 0, 30 << 16, 23 << 16, 0, 3)
+    high = struct.pack("<4H7IB3x", 100, 65535, 0, 0, 5000, 50000000, 0, 0, 760 << 16, 0, 0, 2)
+    probe.uc.mem_write(probe.sym["low_range_calibration"], low)
+    probe.uc.mem_write(probe.sym["high_range_calibration"], high)
+    local("current_range", 2)
+    local("requested_rate_hz", 1000)
+    for field, size in (("low_range", len(low)), ("high_range", len(high)), ("calibrated", 1), ("scale_q32", 8),
+                        ("full_scale_mv", 4), ("rearm_below_na", 4)):
+        probe.energy.write(field, bytes([0xee]) * size)
+    value = probe.call("energy_capture_start", 1)
+    actual = int.from_bytes(probe.uc.mem_read(probe.sym["actual_rate_hz"], 4), "little")
+    published = (probe.energy.read("low_range", len(low)), probe.energy.read("high_range", len(high)),
+                 probe.energy.get("calibrated", 1), probe.energy.get("scale_q32", 8),
+                 probe.energy.get("full_scale_mv", 4), probe.energy.get("rearm_below_na", 4))
+    c.check(value == 1 and published == (low, high, 1, (1 << 32) // actual, 3300, 400000),
+            f"a start published {published[2:]} and {'the' if published[:2] == (low, high) else 'other'} tables")
+    probe.uc.hook_del(hook)
+    c.note("a start publishes CPU 1's tables and constants to CPU 0's integration")
+
     if "target_sense_convert_pair_for_calibration" in symbols:
         probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
-        local("capture_running", 0)
+        probe.energy.put("running", 0, 1)
         local("requested_rate_hz", 0)
         value = probe.call("target_sense_convert_pair_for_calibration", SCRATCH, SCRATCH + 4)
         c.check(value == 0 and probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC, "ADC calibration pair failed")
@@ -633,7 +695,7 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
             instructions. pauses_fail_after: pauses past this many fail, as an unreadable setting."""
             probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
             put("energy_available", available, 1)
-            local("capture_running", 0)
+            probe.energy.put("running", 0, 1)
             local("current_calibrated", calibrated)
             local("current_range", setting)
             if ack_after:
@@ -723,7 +785,7 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
         words[i * 9:i * 9 + 3] = [result(1, code), result(2, 1), result(3, 0)]
     words[-1] = result(1, 49152)
     feed(words)
-    probe.call("energy_monitor_process_segment")
+    probe.integrate()
     put("energy_segments", 1)
     total(codes)
     feed([result(2, 1), result(3, 0), result(1, 4096)], 1024)
@@ -739,7 +801,7 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
     reply = probe.command(bytes([0x86, 1, 0]))
     c.check(len(reply) == 7 and reply[1] == 0, "on-demand sense/resume failed")
     c.check((adc.software_commands[-1][1] >> 8) & 7 == 5, "on-demand sensing lost its ADCK35 sample time")
-    c.check(bytes(probe.uc.mem_read(probe.sym["capture_running"], 1)) == b"\x01", "sense did not resume capture")
+    c.check(probe.energy.get("running", 1) == 1, "sense did not resume capture")
     total(codes)
     feed([result(2, 1), result(3, 0), result(1, 32768), result(2, 1), result(3, 0)])
     written(5)
@@ -765,7 +827,7 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
             codes.append(code)
     for segment in range(4):
         feed(stream[segment * 1024:(segment + 1) * 1024], segment * 1024)
-        probe.call("energy_monitor_process_segment")
+        probe.integrate()
         put("energy_segments", segment + 1)
     feed(stream[4 * 1024:], 4 * 1024)
     written(len(stream), pending=True)
@@ -780,18 +842,18 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
 
     for byte_wrap in (True, False):
         probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
-        local("consumed_bytes", 0xfffff000 if byte_wrap else 0)
-        local("energy_segments_at_start", 0 if byte_wrap else 0xffffffff)
+        probe.energy.put("consumed_bytes", 0xfffff000 if byte_wrap else 0, 4)
+        probe.energy.put("segments_at_start", 0 if byte_wrap else 0xffffffff, 4)
         put("energy_segments", 0xfffff if byte_wrap else 0xffffffff)
         put("energy_accumulator_pairs", 0xffffffff, 8)
-        decoder = bytearray(symbols["sample_decoder"][1])
+        decoder = bytearray(probe.energy.decoder_size())
         decoder[12:16] = u32(0xffffffff)
         decoder[16] = 1
-        probe.uc.mem_write(probe.sym["sample_decoder"], bytes(decoder))
+        probe.energy.write("decoder", bytes(decoder))
         words = [result(i % 9 + 1, 32768 if i % 9 == 0 else 1 if i % 9 == 1 else 0)
                  if i % 9 < 3 else 0 for i in range(1024)]
         feed(words, 1024 if byte_wrap else 0)
-        probe.call("energy_monitor_process_segment")
+        probe.integrate()
         put("energy_segments", 0x100000 if byte_wrap else 0)
         written(0)
         reply = probe.command(bytes([0x90, 1]))
@@ -818,8 +880,7 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
     samples = 300
     probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
     # 100 nA a code, so 10000 is 1 mA and 20000 is 2 mA.
-    probe.uc.mem_write(probe.sym["high_range_calibration"],
-                       struct.pack("<4H7IB3x", 0, 65535, 0, 0, 0, 6553500, 0, 0, 100 << 16, 0, 0, 2))
+    probe.energy.write("high_range", struct.pack("<4H7IB3x", 0, 65535, 0, 0, 0, 6553500, 0, 0, 100 << 16, 0, 0, 2))
     for segment, (label, currents, ranges, expected) in enumerate((
             ("one sample over", [10000] * (samples - 1) + [20000], [0] * samples, 0),
             ("under the limit, after one over", [10000] * samples, [0] * samples, 1),
@@ -830,7 +891,7 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
                  for word in (result(1, 32768), result(2, current), result(3, state))]
         feed(words + [0] * (1024 - len(words)), segment * 1024)
         put("energy_segments", segment)
-        probe.call("energy_monitor_process_segment")
+        probe.integrate()
         c.check(get("energy_range_retry_pending", 1) == expected, f"low-range re-arm, {label}")
     probe.uc.hook_del(hook)
     c.note("a high-range segment under the low range's limit re-arms it; one over or a low-range end does not")
@@ -845,7 +906,7 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
         probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
         words = [result(1, 32768), result(2, 1), result(3, 0)] + [0] * 1021
         feed(words)
-        probe.call("energy_monitor_process_segment")
+        probe.integrate()
         put("energy_segments", 1)
         written(1024)
         total([32768])
@@ -861,7 +922,7 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
         c.check(len(reply) == 19 and reply[2] == 7 and int.from_bytes(reply[3:11], "little") == (power_pw(32768) * 4194304 >> 32) // 1000 and
                 int.from_bytes(reply[11:19], "little") == 1, f"{fault}: total status/layout lost retained data")
         feed(words, 1024)
-        probe.call("energy_monitor_process_segment")
+        probe.integrate()
         total([32768])
         reply = probe.command(bytes([0x90, 2]))
         c.check(reply == bytes([0x90, 0, 7]), f"{fault}: stop hid capture failure")

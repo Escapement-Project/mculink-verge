@@ -700,12 +700,17 @@ def check_energy_descriptors(c: Checker, elf: str, slots: int) -> None:
     sym = symbols_with_size(elf)
     if not c.check("capture_ring_init" in sym, "energy ring initialization missing"):
         return
+    from energy_checks import INTEGRATION_AT, INTEGRATION_FIELDS
+
     probe = Machine(elf, Target([]), restart_at=set(), model=Model())
     probe.sym["capture_ring_init"] = sym["capture_ring_init"][0]
-    offsets = shared_offsets(slots, "dma_table", small_enums=short_enums(elf))
+    offsets = shared_offsets(slots, "dma_table", "energy_integration", small_enums=short_enums(elf))
+    layout = shared_offsets(slots, *INTEGRATION_FIELDS, small_enums=short_enums(elf),
+                            struct_type="struct energy_integration")
+    probe.uc.mem_write(sym["dap_shared"][0] + offsets["energy_integration"], struct.pack("<I", INTEGRATION_AT))
     entry = sym["dap_shared"][0] + offsets["dma_table"] + 21 * 16
-    ring, size = sym["energy_ring"]
-    descriptors, descriptor_bytes = sym["energy_descriptors"]
+    ring, size = INTEGRATION_AT + layout["ring"], layout["size"] - layout["ring"]
+    descriptors, descriptor_bytes = INTEGRATION_AT + layout["descriptors"], layout["ring"] - layout["descriptors"]
     c.check(size == 8192 and descriptor_bytes == 32, "energy ring/descriptor dimensions changed")
     for restart in range(2):
         probe.uc.mem_write(descriptors, bytes([0xee]) * descriptor_bytes)
@@ -723,24 +728,35 @@ def check_energy_descriptors(c: Checker, elf: str, slots: int) -> None:
             if i != 0:
                 c.check((config >> 16) & 0x3ff == 1023 and (config >> 8) & 3 == 2,
                         "energy descriptor count/word width mismatch")
-            c.check(link in (descriptors, descriptors + 16), "energy descriptor link outside ring")
+            c.check(link in (descriptors, descriptors + 16) and link % 16 == 0,
+                    f"energy descriptor link {link:#x} outside the ring or off 16 bytes")
             at = link
         c.check(destinations == [0, 1, 0, 1, 0], f"energy startup/restart {restart}: {destinations}")
     c.note("actual energy descriptor links alternate segments from the first transfer, including restart")
 
 
 def check_energy_control(c: Checker, elf0: str, elf1: str, slots: int) -> None:
-    from energy_checks import check_calibration, check_control, check_hold, check_samples
+    from energy_checks import INTEGRATION_FIELDS, check_calibration, check_control, check_hold, check_samples
 
     fields = ("energy_control_request", "energy_control_ack", "energy_segments", "swo_segments",
-              "energy_dma_error", "energy_segment_handler", "energy_available", "energy_accumulator_pj",
+              "energy_dma_error", "energy_integration", "energy_available", "energy_accumulator_pj",
               "energy_accumulator_pairs", "energy_accumulator_fraction_q32", "energy_dma_sequence",
               "energy_range_retry_pending", "energy_range_retry_enabled")
     offsets = [shared_offsets(slots, *fields, small_enums=short_enums(elf)) for elf in (elf0, elf1)]
-    check_control(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), *offsets)
-    check_samples(c, elf1, symbols_with_size(elf1), offsets[1], model_syscon)
-    check_calibration(c, elf1, symbols_with_size(elf1), offsets[1], model_syscon)
-    check_hold(c, elf1, symbols_with_size(elf1))
+    # CPU 0 owns the struct and CPU 1 writes into it, so both compilers' layouts have to agree.
+    layouts = [shared_offsets(slots, *INTEGRATION_FIELDS, small_enums=short_enums(elf),
+                              struct_type="struct energy_integration") for elf in (elf0, elf1)]
+    if not c.check(layouts[0] == layouts[1], f"struct energy_integration differs: CPU 0 {layouts[0]}, CPU 1 {layouts[1]}"):
+        return
+    symbols0, symbols1 = symbols_with_size(elf0), symbols_with_size(elf1)
+    # DMA0 reads a reload descriptor only on 16 bytes, and writes the ring a word at a time.
+    at = symbols0["energy_integration"][0]
+    c.check((at + layouts[0]["descriptors"]) % 16 == 0 and (at + layouts[0]["ring"]) % 4 == 0,
+            f"energy descriptors at {at + layouts[0]['descriptors']:#x}, ring at {at + layouts[0]['ring']:#x}")
+    check_control(c, elf0, elf1, symbols0, symbols1, *offsets, layouts[0])
+    check_samples(c, elf0, elf1, symbols0, symbols1, offsets[1], layouts[0], model_syscon)
+    check_calibration(c, elf1, symbols1, offsets[1], model_syscon)
+    check_hold(c, elf1, symbols1, offsets[1], layouts[0])
 
 
 def check_console_recovery(c: Checker, elf: str, slots: int) -> None:
@@ -2111,6 +2127,7 @@ def main() -> int:
     check_stacks(c, args.elf, args.core1)
     check_sram_code(c, args.elf, "CPU 0 waits for work", ("wait_for_work", "energy_control_task", "vcom_ready", "tud_cdc_n_available",
                                                          "tud_cdc_n_write_available", "tu_edpt_stream_write_available"))
+    check_sram_code(c, args.elf, "CPU 0 integrates energy", ("DMA0_IRQHandler", "energy_integrate_segment"))
     check_sram_code(c, args.elf, "CPU 0 runs a command's USB work",
                     ("serve", "tud_vendor_rx_cb", "tud_vendor_tx_cb", "tud_hid_set_report_cb",
                      "tud_hid_report_complete_cb", "memcpy"),

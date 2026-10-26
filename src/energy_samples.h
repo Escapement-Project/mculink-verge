@@ -63,8 +63,11 @@ static inline bool energy_sample_feed(energy_sample_decoder_t* decoder, uint32_t
 }
 
 static inline uint32_t energy_shunt_na(uint16_t code, const energy_calibration_t* calibration) {
+    // At most the four points a table holds, whatever count says: CPU 0's interrupt runs this on a
+    // copy CPU 1 wrote.
+    uint32_t const count = calibration->count < 4U ? calibration->count : 4U;
     uint32_t segment = 0U;
-    while ((segment + 2U) < calibration->count && code >= calibration->code[segment + 1U]) {
+    while ((segment + 2U) < count && code >= calibration->code[segment + 1U]) {
         segment++;
     }
     int64_t const code_delta = (int32_t)code - calibration->code[segment];

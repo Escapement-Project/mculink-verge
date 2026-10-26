@@ -27,9 +27,8 @@ executed cases; unexecuted paths can use more stack. Peripheral and endpoint mod
 same limitations as the ordinary image checks.
 
 CPU0's budget must include interrupted foreground code, nested handlers and their exception
-frames. The energy callback is CPU1 code called by CPU0's DMA handler, so its frames use CPU0's
-stack. A report for CPU0's ELF alone cannot account for that callback. CPU1's normal command
-path has no enabled peripheral interrupts; faults still need exception-frame space.
+frames, the DMA handler's energy integration among them. CPU1's normal command path has no
+enabled peripheral interrupts; faults still need exception-frame space.
 
 The gate checks the linked reservations and tests the analyzer against assembled fixtures.
 Neither a passing gate nor observed stack use establishes a whole-program worst-case bound.

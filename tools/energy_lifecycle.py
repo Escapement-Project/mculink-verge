@@ -15,8 +15,7 @@ def check_sequences(c, setup, result):
             context = f"energy lifecycle seed={seed} turn={turn}"
             # Resume restarts the DMA position, while the IRQ completion counter remains global.
             if turn:
-                c.check(probe.command(b"\x86\x01\x00")[1] == 0 and
-                        bytes(probe.uc.mem_read(probe.sym["capture_running"], 1)) == b"\x01",
+                c.check(probe.command(b"\x86\x01\x00")[1] == 0 and probe.energy.get("running", 1) == 1,
                         f"{context}: sense/resume failed")
             count = rng.randrange(1, 310)
             codes = [rng.randrange(1, 65536) for _ in range(count)]
@@ -33,8 +32,7 @@ def check_sequences(c, setup, result):
                 feed(words[segment * 1024:(segment + 1) * 1024], segment * 1024)
                 if pending and segment == len(words) // 1024 - 1:
                     continue
-                probe.call("energy_monitor_process_segment")
-                put("energy_segments", get("energy_segments") + 1)
+                probe.integrate()
                 processed += 1024
             tail = len(words) // 1024 * 1024
             feed(words[tail:], tail)

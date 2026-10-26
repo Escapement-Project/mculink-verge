@@ -21,7 +21,7 @@ Source: UM11126 rev 2.8 tables 4, 5 and 6.
 | --- | --- | --- |
 | 0 | 0x0000_0000 flash, 0x0300_0000 boot ROM | Both cores' C code (CPU 0 from 0x200, CPU 1 from 0x4_0000) |
 | 1 | 0x0400_0000 SRAMX, 32 KB | Generated code (SWD, JTAG), code lab arena at 0x0400_4000 |
-| 2 | 0x2000_0000 SRAM0, 64 KB | CPU 0's data, stack (top 4 KB, see [STACK.md](STACK.md)) and `.ramfunc` (`vcom_task` among them); the consoles' receive rings, send buffers and ring descriptors, which DMA0 reaches |
+| 2 | 0x2000_0000 SRAM0, 64 KB | CPU 0's data, stack (top 4 KB, see [STACK.md](STACK.md)) and `.ramfunc` (`vcom_task` and the energy integration among them); the consoles' receive rings, send buffers and ring descriptors, and the energy ring, its reload descriptors and its integration state (`energy_integration`), which DMA0 reaches |
 | 3 | 0x2001_0000 SRAM1, 64 KB | CPU 1's `.data` and `.ramfunc` (cJTAG blocks and command loops); Clang's command buffers also fit here |
 | 4 | 0x2002_0000 SRAM2, 64 KB | The rest of CPU 1's `.ramfunc` (JTAG blocks and transfer command loops), then `.bss`, including GCC's `response_copy` and `request_copy`. Placement varies by compiler |
 | 5 | 0x2003_0000 SRAM3, 64 KB | `dap_stage` in the top 8 KB from 0x2003_E000: packet-sized commands and replies CPU 0 stages for CPU 1. Below it, CPU 1's `.data` and `.bss` where they outgrow SRAM2 (the builds without generated SWD), and the tail of `.cold_bss` (the JTAG generator's two saved builds, 32 KB, touched only on a wire or configuration switch), which comes after every other `.bss` so that the statics each command reads stay in SRAM2 |
@@ -48,7 +48,7 @@ contends with any other.
 | CPU 1 | 0, 3, 4, 6 | C code, `.ramfunc`, data and stack between transfers | Between timed windows |
 | CPU 1 | 11 | `dap_shared`: unstaged requests and replies, the queues, the LED inputs | Between timed windows |
 | CPU 1 | 10 | ADC0 (target sense, `dap_vendor`, the Pro's energy calibration) and settled energy FIFO results | Own core, never during a window: at boot on the Pro, a host's sense reads, a start that calibrates; FIFO drain at capture pause/stop |
-| CPU 1 | 4 | Energy ring reads for latest-pair replies and the unconsumed capture tail | Host polls while capture runs; tail drain after acknowledged quiet |
+| CPU 1 | 2 | CPU 0's `energy_integration` in SRAM0: ring reads for latest-pair replies and the unconsumed capture tail; each start's tables, constants, descriptors and position; the running flag; the segment count a capture started at | Host polls while capture runs; tail drain and capture setup around the quiet handshake; the running flag before each read-latency measurement and around each sense conversion. Never during a window |
 | CPU 1 | 8 | Ordinary GPIO ports 0 and 1: the Pro's DIO pins and their translators' directions (`dio.c`), port 0 pin 8 for the target regulator (`target_power.c`), and the energy circuit's latch and calibration pins (`energy_monitor.c`) | Vendor 0x8E, 0x8F and 0x90, and the energy calibration at boot; own core, never during a window |
 | CPU 1 | 7 | CTimer 2 for the Pro's energy-capture trigger; SYSCON, IOCON and INPUTMUX for setup | Energy capture start/stop, and IOCON at boot on the Pro; CTimer 2 stopped and started around each read-latency measurement |
 | CPU 1 | 8, 10 | DMA0's busy bit and ADC0's status, polled until the held capture is idle | Before each read-latency measurement, while capture runs |
@@ -58,13 +58,13 @@ contends with any other.
 | DMA0 | 8 then 2 | Flexcomm 0 and 1 FIFOs to the consoles' receive rings | Whenever console bytes arrive |
 | DMA0 | 2 then 8 | The consoles' send buffers to Flexcomm 0 and 1 FIFOs | Each send from the host |
 | DMA0 | 11, 2 | Descriptors: channel entries and SWO's ring in `dap_shared`, the consoles' rings in SRAM0 | Each send, and each segment of a ring |
-| DMA0 | 10, 4, 11 | ADC0 RESFIFO to the two-segment 8 KiB energy ring in SRAM2; channel 21's descriptors in `dap_shared` | While energy capture runs, except during a read-latency measurement; nine DMA reads per voltage/current/range sample; about 879 interrupts/s at 100 kpair/s |
+| DMA0 | 10, 2, 11 | ADC0 RESFIFO to the two-segment 8 KiB energy ring in SRAM0; channel 21's table entry in `dap_shared`, its reload descriptors in SRAM0 | While energy capture runs, except during a read-latency measurement; nine DMA reads per voltage/current/range sample; about 879 interrupts/s at 100 kpair/s |
 | USB HS controller | 11 | Endpoint buffers in USB SRAM | Every USB transfer |
 | CPU 0 | 0, 2 | Code and data | Always |
 | CPU 0 | 9, 11 | USB device regs and buffers (TinyUSB) | Every USB transfer |
 | CPU 0 | 11 then 5 | Each staged command, from its USB slot into `dap_stage`, and each staged reply back | As each arrives and as each starts to send, so during CPU 1's windows when commands are queued |
 | CPU 0 | 8 | USART0/1 (VCOM), mailbox, DMA0 regs: its setup, the console channels, the interrupt for both rings | Continuously; the consoles' ring positions while it waits |
-| CPU 0 | 4, 7, 8, 10, 11 | Calls CPU 1's energy-segment handler from the DMA interrupt; it checks ADC0 overflow, reads completed samples from SRAM2 and updates the accumulator in `dap_shared` | Each completed energy segment, except while CPU 1 owns capture state |
+| CPU 0 | 2, 8, 10, 11 | Integrates each completed energy segment in the DMA interrupt, running from SRAM0: checks DMA0's error and ADC0's overflow bits, reads the samples and its state in SRAM0, and updates the accumulator in `dap_shared` | Each completed energy segment, except while CPU 1 owns capture state |
 | CPU 0 | 8 | GPIO0: reads P0_29 and P0_30, pulses P0_17, to re-arm the energy capture's low range | At most once per completed energy-ring segment, after one that stayed on the high range under the low range's limit |
 | CPU 0 | 11 | The consoles' channel entries in DMA0's table | Each send |
 | CPU 0 | 7 | CTimer 3 (the status LED), and on the Pro CTimer 1 (FUNC) | 488 times a second |
@@ -85,13 +85,14 @@ for the whole update before using the DMA position. Pause drains the settled rin
 - **Bit paths, all wires** (port 10 secure GPIO; code from port 1, or ports 3 and 4 for the
   `.ramfunc` paths). The ordinary GPIO on port 8 shares with Flexcomm 0 to 4 and the mailbox, which
   CPU 0 polls; that is why the bit paths moved to the secure alias. During energy capture, DMA0
-  reads ADC0 on port 10 and writes the ring on port 4. ADC access can stall secure GPIO accesses.
+  reads ADC0 on port 10 and writes the ring on port 2. ADC access can stall secure GPIO accesses.
   With capture running, clock phases stretched and read-latency measurements found later latencies
   or none. Holding the conversion trigger for a measurement (`energy_monitor_hold`) stops the ADC
   reads, the ring writes and CPU 0's segment interrupts together, and the measurements came back
-  right; transfers run with capture. Ring writes can stall a `.ramfunc` path that fetches from
-  SRAM2. Capture is disabled by default.
-  No other master accesses SRAMX or SRAM1. During capture, CPU 1 reads and DMA0 writes SRAM2.
+  right; transfers run with capture. Capture is disabled by default.
+  CPU 0's segment interrupt reads ADC0's status once a segment, on port 10 too.
+  No other master accesses SRAMX, SRAM1 or SRAM2. During capture, DMA0 writes SRAM0 and CPU 1 reads
+  it, between windows.
 - **A staged command's buffers** (port 5). CPU 0 copies the next command in and the last reply out
   while CPU 1's transfer runs. CPU 0 boots with CPU 1's data bus at the top AHB matrix priority
   (SYSCON AHBMATPRIO, set in `start_core1`), so CPU 1 wins every tie there and on every other

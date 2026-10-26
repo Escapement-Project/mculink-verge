@@ -68,6 +68,15 @@ int main(void) {
         .count = 2U,
     };
     assert(energy_shunt_na(65535U, &large) == UINT32_MAX);
+    // A count past the four points a table holds, as a faulting CPU 1 could leave in CPU 0's copy,
+    // reads as four: the sanitizers fail an index past the arrays.
+    energy_calibration_t full = {
+        .code = {10U, 20U, 30U, 40U}, .current_na = {0U, 1000U, 3000U, 6000U},
+        .slope_na_per_code_q16 = {100U * 65536U, 200U * 65536U, 300U * 65536U}, .count = 4U,
+    };
+    uint32_t const four = energy_shunt_na(65535U, &full);
+    full.count = 255U;
+    assert(energy_shunt_na(65535U, &full) == four);
 
     // The divider's current to within a nanoamp of mV * 1e6 / 660000, and never past the shunt's.
     for (uint32_t mv = 0U; mv <= 6600U; mv++) {

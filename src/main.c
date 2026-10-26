@@ -23,6 +23,7 @@
 #ifdef DAP_TIMING_DIAGNOSTICS
 #include "dap_timing.h"
 #endif
+#include "energy_integration.h"
 #include "energy_monitor.h"
 #include "dap_usb_slots.h"
 #include "led.h"
@@ -40,6 +41,9 @@ static_assert(DAP_PACKET_SIZE == DAP_SHARED_PACKET_SIZE, "dap_shared.h repeats D
 static_assert(CFG_TUD_HID_EP_BUFSIZE == DAP_SHARED_HID_REPORT_SIZE, "dap_shared.h repeats the HID report size");
 
 dap_shared_t dap_shared __attribute__((section(".dap_shared")));
+
+/** In SRAM0, CPU 0's own bank: DMA0's ring writes and the interrupt's reads stay off CPU 1's. */
+static struct energy_integration energy_integration;
 dap_stage_t dap_stage __attribute__((section(".dap_stage")));
 
 /** The dap_stage request buffer each transport's next staged command goes in. */
@@ -253,8 +257,8 @@ __attribute__((section(".ramfunc"))) static void usb_transport_task(void) {
     send_head();
 }
 
-/** Re-arm the Pro's low range outside the DMA interrupt, once the segment handler has seen the
- *  high range's current stay under the low range's limit for a whole segment. */
+/** Re-arm the Pro's low range outside the DMA interrupt, once the integration has seen the high
+ *  range's current stay under the low range's limit for a whole segment. */
 __attribute__((section(".ramfunc"), noinline)) static void energy_range_retry_task(void) {
     if ((dap_shared.energy_control_ack & DAP_ENERGY_QUIET_FLAG) != 0U ||
         dap_shared.energy_range_retry_pending == 0U) {
@@ -389,6 +393,13 @@ __attribute__((section(".ramfunc"))) static void idle(void) {
     __enable_irq();
 }
 
+/** One completed energy segment, integrated from SRAM. Out of line, so tools/energy_checks.py can
+ *  call it. */
+__attribute__((section(".ramfunc"), noinline)) void energy_integrate_segment(void);
+__attribute__((section(".ramfunc"), noinline)) void energy_integrate_segment(void) {
+    energy_integrate(&energy_integration);
+}
+
 /** The startup file's vector table names it, weakly; this is the strong definition. */
 void DMA0_IRQHandler(void);
 
@@ -424,13 +435,7 @@ __attribute__((section(".ramfunc"))) void DMA0_IRQHandler(void) {
         dap_shared.swo_segments++;
     }
     if ((done & ENERGY_DMA_MASK) != 0U) {
-        // As with transfer_abort, a faulting CPU 1 can leave anything in the pointer, and a call
-        // through it would take CPU 0 down: call only Thumb code in CPU 1's flash.
-        dap_energy_segment_handler_fn const handler = dap_shared.energy_segment_handler;
-        uintptr_t const address = (uintptr_t)handler;
-        if (((address & 1U) != 0U) && (address > CORE1_FLASH_ORIGIN) && (address < CORE1_FLASH_END)) {
-            handler();
-        }
+        energy_integrate_segment();
         dap_shared.energy_segments++;
         __DMB();
         dap_shared.energy_dma_sequence++;
@@ -576,7 +581,7 @@ int main(void) {
     reboot_clear_boot_mode();
     board_core_clock_init();
     board_clocks_init();
-    dap_shared_init(&dap_shared);
+    dap_shared_init(&dap_shared, &energy_integration);
 #ifdef DAP_TIMING_DIAGNOSTICS
     dap_timing_init();
 #endif

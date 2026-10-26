@@ -16,13 +16,9 @@
 #include "board_pins.h"
 #include "core_clock.h"
 #include "dma_ring.h"
+#include "energy_integration.h"
 #include "target_sense.h"
 
-#define ENERGY_SEGMENT_BYTES 4096U
-#define ENERGY_SEGMENT_WORDS (ENERGY_SEGMENT_BYTES / sizeof(uint32_t))
-#define ENERGY_SEGMENTS 2U
-#define ENERGY_RING_WORDS (ENERGY_SEGMENT_WORDS * ENERGY_SEGMENTS)
-#define ENERGY_RING_BYTES (ENERGY_RING_WORDS * sizeof(uint32_t))
 #define ENERGY_DMA_SOURCE (&ADC0->RESFIFO[0])
 
 #define ENERGY_SEGMENT_XFERCFG                                                                       \
@@ -31,13 +27,8 @@
      DMA_CHANNEL_XFERCFG_SRCINC(0U) | DMA_CHANNEL_XFERCFG_DSTINC(1U) |                                \
      DMA_CHANNEL_XFERCFG_XFERCOUNT(ENERGY_SEGMENT_WORDS - 1U))
 
-static volatile uint32_t energy_ring[ENERGY_RING_WORDS];
-DAP_SHARED_DMA_DESCRIPTOR_ALIGN static volatile dma_descriptor_t energy_descriptors[ENERGY_SEGMENTS];
 static uint32_t requested_rate_hz;
 static uint32_t actual_rate_hz;
-static uint64_t energy_scale_q32;
-static uint32_t energy_segments_at_start;
-static bool capture_running;
 
 #define ENERGY_CONTROL_POLLS 1000000U
 static bool pins_ready;
@@ -48,41 +39,27 @@ static energy_calibration_t low_range_calibration;
 static energy_calibration_t high_range_calibration;
 static bool current_calibrated;
 static bool accumulator_started;
-static energy_sample_decoder_t sample_decoder;
-static uint32_t consumed_bytes;
-/** What the samples since the last DMA segment say about re-arming the low range. */
-static bool on_high_range;
-static bool rearm_blocked;
 
 static_assert(ADC_RESFIFO_VALID_MASK == 0x80000000U && ADC_RESFIFO_TSRC_SHIFT == 16U,
               "energy_samples.h must match the ADC result layout");
 
+/** CPU 0's, which CPU 1 reaches only through this pointer. */
+static struct energy_integration* integration(void) {
+    return dap_shared.energy_integration;
+}
+
 static bool capture_failed(void) {
-    if ((DMA0->COMMON[0].ERRINT & ENERGY_DMA_MASK) != 0U ||
-        (capture_running && (ADC0->STAT & ADC_STAT_FOF0_MASK) != 0U)) {
-        dap_shared.energy_dma_error = 1U;
-    }
-    return dap_shared.energy_dma_error != 0U;
-}
-
-static void accumulator_write_begin(void) {
-    dap_shared.energy_accumulator_sequence++;
-    __DMB();
-}
-
-static void accumulator_write_end(void) {
-    __DMB();
-    dap_shared.energy_accumulator_sequence++;
+    return energy_capture_failed(integration());
 }
 
 static void accumulator_reset(void) {
-    accumulator_write_begin();
+    energy_accumulator_write_begin();
     dap_shared.energy_accumulator_pj = 0U;
     dap_shared.energy_accumulator_pairs = 0U;
     dap_shared.energy_accumulator_fraction_q32 = 0U;
-    accumulator_write_end();
-    sample_decoder = (energy_sample_decoder_t){0};
-    consumed_bytes = 0U;
+    energy_accumulator_write_end();
+    integration()->decoder = (energy_sample_decoder_t){0};
+    integration()->consumed_bytes = 0U;
 }
 
 static void controls_init(void) {
@@ -151,7 +128,6 @@ void energy_monitor_init(void) {
     dap_shared.energy_range_retry_enabled = 0U;
     dap_shared.energy_control_request = 0U;
     dap_shared.energy_control_ack = 0U;
-    dap_shared.energy_segment_handler = energy_monitor_process_segment;
 }
 
 /** How long each calibration step waits before it converts. With 1 ms, the first calibration
@@ -164,11 +140,6 @@ __attribute__((noinline)) static void calibration_settle(void) {
     uint32_t const start = DWT->CYCCNT;
     while ((DWT->CYCCNT - start) < CALIBRATION_SETTLE_US * (CORE_CLOCK_HZ / 1000000U)) {
     }
-}
-
-/** The voltage channel halves node T (R73 and R75) on its way to VREFP's full scale. */
-static uint32_t voltage_mv(uint16_t code, uint32_t full_scale_mv) {
-    return ((uint32_t)code * 2U * full_scale_mv) >> 16U;
 }
 
 /** A calibration load and its GPIO port 1 switch, from node T to ground (schematic sheet 7). The
@@ -235,7 +206,7 @@ static calibration_point_t calibration_point(const calibration_load_t* load, uin
     bool const read_ok = calibration_read_pair(&voltage_code, code);
     GPIO->CLR[1] = load->pin;
     uint32_t const full_scale_mv = target_sense_full_scale_mv();
-    if (!read_ok || voltage_mv(voltage_code, full_scale_mv) < CALIBRATION_MIN_MV) {
+    if (!read_ok || energy_voltage_mv(voltage_code, full_scale_mv) < CALIBRATION_MIN_MV) {
         return POINT_FAILED;
     }
     if (*code > CALIBRATION_CODE_LIMIT) {
@@ -338,22 +309,6 @@ __attribute__((noinline)) static bool current_calibrate(void) {
     return current_calibrated;
 }
 
-static energy_total_t accumulator_values(void) {
-    return (energy_total_t){dap_shared.energy_accumulator_pj, dap_shared.energy_accumulator_pairs,
-                            dap_shared.energy_accumulator_fraction_q32};
-}
-
-static void accumulator_publish(const energy_total_t* total) {
-    dap_shared.energy_accumulator_pj = total->pj;
-    dap_shared.energy_accumulator_pairs = total->pairs;
-    dap_shared.energy_accumulator_fraction_q32 = total->fraction_q32;
-}
-
-/** CTRL_HIGH_CURR, converted after each pair: U18's Q, high while the low range is in. */
-static bool low_range(uint16_t range_code) {
-    return range_code >= 32768U;
-}
-
 static energy_calibration_t const* range_calibration(bool low) {
     return low ? &low_range_calibration : &high_range_calibration;
 }
@@ -364,51 +319,6 @@ static uint32_t rearm_below_na(void) {
     return current_range == TARGET_SENSE_CURRENT_RANGE_350_MA ? 1500000U : 400000U;
 }
 
-static void consume_result(uint32_t result, energy_total_t* total, uint32_t full_scale_mv) {
-    if (!energy_sample_feed(&sample_decoder, result) || !current_calibrated || actual_rate_hz == 0U) {
-        return;
-    }
-    bool const low = low_range(sample_decoder.last_range);
-    uint32_t const shunt_na = energy_shunt_na(sample_decoder.last_current, range_calibration(low));
-    on_high_range = !low;
-    if (!low && shunt_na >= rearm_below_na()) {
-        rearm_blocked = true;
-    }
-    uint32_t const mv = voltage_mv(sample_decoder.last_voltage, full_scale_mv);
-    energy_total_add(total, (uint64_t)mv * energy_target_na(shunt_na, mv), energy_scale_q32);
-}
-
-/** Only the IRQ writer or CPU1 with acknowledged quiet may advance the consumed position. */
-static bool consume_until(uint32_t written) {
-    uint32_t const bytes = written - consumed_bytes;
-    if (bytes > ENERGY_RING_BYTES || (bytes % sizeof(uint32_t)) != 0U) {
-        dap_shared.energy_dma_error = 1U;
-        return false;
-    }
-    uint32_t const full_scale_mv = target_sense_full_scale_mv();
-    accumulator_write_begin();
-    energy_total_t total = accumulator_values();
-    while (consumed_bytes != written) {
-        uint32_t const index = (consumed_bytes / sizeof(uint32_t)) % ENERGY_RING_WORDS;
-        consume_result(energy_ring[index], &total, full_scale_mv);
-        consumed_bytes += sizeof(uint32_t);
-    }
-    accumulator_publish(&total);
-    accumulator_write_end();
-    return true;
-}
-
-void energy_monitor_process_segment(void) {
-    if (!capture_running || actual_rate_hz == 0U || capture_failed()) {
-        return;
-    }
-    uint32_t const completed = dap_shared.energy_segments - energy_segments_at_start + 1U;
-    if (consume_until(completed * ENERGY_SEGMENT_BYTES) && on_high_range && !rearm_blocked) {
-        dap_shared.energy_range_retry_pending = 1U;
-    }
-    rearm_blocked = false;
-}
-
 static uint32_t ring_written(void) {
     uint32_t const mask = ENERGY_DMA_MASK;
     for (;;) {
@@ -417,13 +327,13 @@ static uint32_t ring_written(void) {
         if ((sequence & 1U) != 0U) {
             continue;
         }
-        uint32_t const counted = dap_shared.energy_segments - energy_segments_at_start;
+        uint32_t const counted = dap_shared.energy_segments - integration()->segments_at_start;
         __DMB();
         bool const pending = (DMA0->COMMON[0].INTA & mask) != 0U;
         uint32_t const xfercfg = DMA0->CHANNEL[ENERGY_DMA_CHANNEL].XFERCFG;
         bool const still_pending = (DMA0->COMMON[0].INTA & mask) != 0U;
         __DMB();
-        if ((pending == still_pending) && (counted == (dap_shared.energy_segments - energy_segments_at_start)) &&
+        if ((pending == still_pending) && (counted == (dap_shared.energy_segments - integration()->segments_at_start)) &&
             (sequence == dap_shared.energy_dma_sequence)) {
             uint32_t const left = ((xfercfg >> DMA_XFERCOUNT_SHIFT) & DMA_XFERCOUNT_MASK) + 1U;
             uint32_t const words = ((counted + (pending ? 1U : 0U)) * ENERGY_SEGMENT_WORDS) +
@@ -434,11 +344,12 @@ static uint32_t ring_written(void) {
 }
 
 static bool capture_drain(void) {
-    if (!consume_until(ring_written())) {
+    struct energy_integration* const energy = integration();
+    if (!energy_consume_until(energy, ring_written())) {
         return false;
     }
-    accumulator_write_begin();
-    energy_total_t total = accumulator_values();
+    energy_accumulator_write_begin();
+    energy_total_t total = energy_accumulator_values();
     bool empty = false;
     for (uint32_t i = 0U; i < 32U; i++) {
         uint32_t const result = ADC0->RESFIFO[0];
@@ -446,12 +357,12 @@ static bool capture_drain(void) {
             empty = true;
             break;
         }
-        consume_result(result, &total, target_sense_full_scale_mv());
+        energy_consume_result(energy, result, &total);
     }
     // An incomplete tuple belongs to this capture, even when the next one uses the same rate.
-    sample_decoder.phase = ENERGY_EXPECT_VOLTAGE;
-    accumulator_publish(&total);
-    accumulator_write_end();
+    energy->decoder.phase = ENERGY_EXPECT_VOLTAGE;
+    energy_accumulator_publish(&total);
+    energy_accumulator_write_end();
     if (!empty) {
         dap_shared.energy_dma_error = 1U;
     }
@@ -482,20 +393,20 @@ static void timer_start(uint32_t rate_hz) {
 }
 
 __attribute__((noinline)) static void capture_ring_init(void) {
+    struct energy_integration* const energy = integration();
     uint32_t const source = (uint32_t)ENERGY_DMA_SOURCE;
     for (uint32_t i = 0U; i < ENERGY_SEGMENTS; i++) {
-        energy_descriptors[i].xfercfg = ENERGY_SEGMENT_XFERCFG;
-        energy_descriptors[i].source_end = source;
-        energy_descriptors[i].destination_end =
-            (uint32_t)&energy_ring[((i + 1U) * ENERGY_SEGMENT_WORDS) - 1U];
-        energy_descriptors[i].link = (uint32_t)&energy_descriptors[(i + 1U) % ENERGY_SEGMENTS];
+        energy->descriptors[i].xfercfg = ENERGY_SEGMENT_XFERCFG;
+        energy->descriptors[i].source_end = source;
+        energy->descriptors[i].destination_end = (uint32_t)&energy->ring[((i + 1U) * ENERGY_SEGMENT_WORDS) - 1U];
+        energy->descriptors[i].link = (uint32_t)&energy->descriptors[(i + 1U) % ENERGY_SEGMENTS];
     }
 
     volatile dma_descriptor_t* const entry = &dap_shared.dma_table[ENERGY_DMA_CHANNEL];
     entry->xfercfg = 0U;
     entry->source_end = source;
-    entry->destination_end = (uint32_t)&energy_ring[ENERGY_SEGMENT_WORDS - 1U];
-    entry->link = energy_descriptors[0].link;
+    entry->destination_end = (uint32_t)&energy->ring[ENERGY_SEGMENT_WORDS - 1U];
+    entry->link = energy->descriptors[0].link;
 }
 
 /** CPU 0 acknowledges from its loop only. */
@@ -521,22 +432,28 @@ static bool capture_quiet(bool quiet) {
 }
 
 __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
+    struct energy_integration* const energy = integration();
     capture_ring_init();
     DMA0->COMMON[0].ENABLECLR = ENERGY_DMA_MASK;
     DMA0->COMMON[0].ABORT = ENERGY_DMA_MASK;
     DMA0->COMMON[0].INTENCLR = ENERGY_DMA_MASK;
     DMA0->COMMON[0].ERRINT = ENERGY_DMA_MASK;
     DMA0->COMMON[0].INTA = ENERGY_DMA_MASK;
-    energy_segments_at_start = dap_shared.energy_segments;
+    energy->segments_at_start = dap_shared.energy_segments;
     dap_shared.energy_range_retry_pending = 0U;
     dap_shared.energy_range_retry_enabled = 1U;
-    on_high_range = false;
-    rearm_blocked = false;
-    sample_decoder.phase = ENERGY_EXPECT_VOLTAGE;
-    consumed_bytes = 0U;
+    energy->on_high_range = false;
+    energy->rearm_blocked = false;
+    energy->decoder.phase = ENERGY_EXPECT_VOLTAGE;
+    energy->consumed_bytes = 0U;
     LPADC_DoResetFIFO0(ADC0);
     actual_rate_hz = timer_effective_rate(requested_rate_hz);
-    energy_scale_q32 = (UINT64_C(1) << 32U) / actual_rate_hz;
+    energy->scale_q32 = (UINT64_C(1) << 32U) / actual_rate_hz;
+    energy->low_range = low_range_calibration;
+    energy->high_range = high_range_calibration;
+    energy->calibrated = current_calibrated;
+    energy->full_scale_mv = target_sense_full_scale_mv();
+    energy->rearm_below_na = rearm_below_na();
     target_sense_configure_monitor(actual_rate_hz);
     CLOCK_EnableClock(kCLOCK_InputMux);
     if (!inputmux_ready) {
@@ -555,7 +472,7 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
         ADC0->STAT = ADC_STAT_FOF0_MASK;
         dap_shared.energy_dma_error = 0U;
     }
-    capture_running = true;
+    energy->running = true;
     __DMB();
     DMA0->CHANNEL[ENERGY_DMA_CHANNEL].CFG = DMA_CHANNEL_CFG_PERIPHREQEN_MASK;
     DMA0->COMMON[0].INTENSET = ENERGY_DMA_MASK;
@@ -575,7 +492,7 @@ __attribute__((noinline)) bool energy_monitor_pause(void) {
     dap_shared.energy_range_retry_enabled = 0U;
     dap_shared.energy_range_retry_pending = 0U;
     __DMB();
-    if (capture_running) {
+    if (integration()->running) {
         CTIMER2->TCR = 0U;
         __DSB();
         uint32_t adc_polls = 0U;
@@ -600,19 +517,19 @@ __attribute__((noinline)) bool energy_monitor_pause(void) {
     if (!capture_quiet(true)) {
         return false;
     }
-    if (!capture_running) {
+    if (!integration()->running) {
         return true;
     }
     if (!capture_failed() && !capture_drain()) {
         return false;
     }
-    sample_decoder.phase = ENERGY_EXPECT_VOLTAGE;
+    integration()->decoder.phase = ENERGY_EXPECT_VOLTAGE;
     DMA0->COMMON[0].ABORT = ENERGY_DMA_MASK;
     DMA0->COMMON[0].INTA = ENERGY_DMA_MASK;
     DMA0->COMMON[0].ERRINT = ENERGY_DMA_MASK;
     INPUTMUX->DMA0_REQ_ENA_CLR = ENERGY_DMA_MASK;
     LPADC_DoResetFIFO0(ADC0);
-    capture_running = false;
+    integration()->running = false;
     return true;
 }
 
@@ -620,7 +537,7 @@ __attribute__((noinline)) bool energy_monitor_pause(void) {
 __attribute__((noinline)) bool energy_monitor_hold(void) {
     // A pause that failed part way leaves capture running with its timer stopped; release must not
     // start it.
-    if (!capture_running || ((CTIMER2->TCR & CTIMER_TCR_CEN_MASK) == 0U)) {
+    if (!dap_shared.energy_available || !integration()->running || ((CTIMER2->TCR & CTIMER_TCR_CEN_MASK) == 0U)) {
         return false;
     }
     CTIMER2->TCR = 0U;
@@ -641,7 +558,7 @@ __attribute__((noinline)) void energy_monitor_release(bool held) {
 }
 
 bool energy_monitor_resume(void) {
-    if ((requested_rate_hz == 0U) || capture_running) {
+    if ((requested_rate_hz == 0U) || integration()->running) {
         return true;
     }
     if (dap_shared.energy_dma_error != 0U) {
@@ -729,7 +646,8 @@ energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {
     if (capture_failed()) {
         return ENERGY_MONITOR_DMA_ERROR;
     }
-    if (!capture_running) {
+    struct energy_integration* const energy = integration();
+    if (!energy->running) {
         return ENERGY_MONITOR_STOPPED;
     }
     energy_sample_decoder_t decoder;
@@ -739,8 +657,8 @@ energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {
         if ((before & 1U) != 0U) {
             continue;
         }
-        decoder = sample_decoder;
-        uint32_t const consumed = consumed_bytes;
+        decoder = energy->decoder;
+        uint32_t const consumed = energy->consumed_bytes;
         uint32_t const written = ring_written();
         __DMB();
         if (before != dap_shared.energy_accumulator_sequence) {
@@ -753,7 +671,7 @@ energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {
         }
         for (uint32_t position = consumed; position != written; position += sizeof(uint32_t)) {
             uint32_t const index = (position / sizeof(uint32_t)) % ENERGY_RING_WORDS;
-            (void)energy_sample_feed(&decoder, energy_ring[index]);
+            (void)energy_sample_feed(&decoder, energy->ring[index]);
         }
         uint32_t const after = ring_written();
         __DMB();
@@ -776,12 +694,12 @@ energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {
     sample->current_code = decoder.last_current;
     sample->range_code = decoder.last_range;
     sample->sequence = decoder.sequence;
-    sample->voltage_mv = voltage_mv(sample->voltage_code, target_sense_full_scale_mv());
+    sample->voltage_mv = energy_voltage_mv(sample->voltage_code, target_sense_full_scale_mv());
     sample->range_id = 0U;
     sample->current_ua = 0;
     sample->calibrated = false;
     if (current_range != TARGET_SENSE_CURRENT_RANGE_UNKNOWN) {
-        bool const low = low_range(sample->range_code);
+        bool const low = energy_low_range(sample->range_code);
         sample->range_id = (current_range == TARGET_SENSE_CURRENT_RANGE_350_MA) ? (low ? 1U : 2U)
                                                                                  : (low ? 3U : 4U);
         if (current_calibrated) {

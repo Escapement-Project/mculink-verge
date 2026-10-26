@@ -18,6 +18,8 @@
 #include <stdint.h>
 
 #include "dap_usb_slots.h"
+#include "dma_ring.h"
+#include "energy_samples.h"
 #include "reboot.h"
 #include "swo_ring.h"
 
@@ -45,8 +47,38 @@
 /** The HID report size, which CPU 0 checks against CFG_TUD_HID_EP_BUFSIZE. */
 #define DAP_SHARED_HID_REPORT_SIZE 64U
 
-/** Called by CPU 0's DMA interrupt for each completed energy segment. */
-typedef void (*dap_energy_segment_handler_fn)(void);
+#define ENERGY_SEGMENT_BYTES 4096U
+#define ENERGY_SEGMENT_WORDS (ENERGY_SEGMENT_BYTES / sizeof(uint32_t))
+#define ENERGY_SEGMENTS 2U
+#define ENERGY_RING_WORDS (ENERGY_SEGMENT_WORDS * ENERGY_SEGMENTS)
+#define ENERGY_RING_BYTES (ENERGY_RING_WORDS * sizeof(uint32_t))
+
+/** Energy capture's integration state, in CPU 0's SRAM. src/energy_integration.h has the code
+ *  both cores run on it, and who may change what. */
+struct energy_integration {
+    /** Set by CPU 1 for each capture, while CPU 0 has acknowledged quiet: copies of CPU 1's
+     *  calibration and what the conversion needs from the start. */
+    energy_calibration_t low_range;
+    energy_calibration_t high_range;
+    uint64_t scale_q32; // floor(2^32 / rate)
+    uint32_t full_scale_mv;
+    uint32_t rearm_below_na; // UM11673 Table 4's low-range limit for the setting
+    uint32_t segments_at_start; // dap_shared.energy_segments when the ring started
+    bool calibrated;
+    /** From a start to the end of the pause that follows: set and cleared by CPU 1 while CPU 0
+     *  cannot take an energy completion. */
+    bool running;
+
+    /** Advanced by whichever core owns the capture. */
+    uint32_t consumed_bytes;
+    energy_sample_decoder_t decoder;
+    /** What the samples since the last segment say about re-arming the low range. */
+    bool on_high_range;
+    bool rearm_blocked;
+
+    DAP_SHARED_DMA_DESCRIPTOR_ALIGN volatile dma_descriptor_t descriptors[ENERGY_SEGMENTS];
+    volatile uint32_t ring[ENERGY_RING_WORDS];
+};
 
 #define DAP_ENERGY_QUIET_FLAG 1U
 
@@ -171,8 +203,8 @@ typedef struct {
     /** Odd while CPU 0 clears an energy completion, integrates it and publishes its count. */
     volatile uint32_t energy_dma_sequence;
     volatile uint8_t energy_dma_error;
-    /** CPU 1 publishes a handler that CPU 0 calls before the DMA ring reuses a segment. */
-    dap_energy_segment_handler_fn volatile energy_segment_handler;
+    /** CPU 0's, set before CPU 1 starts. */
+    struct energy_integration* volatile energy_integration;
     /** The Pro range latch needs a pulse; CPU 0 defers it out of the DMA interrupt. */
     volatile uint8_t energy_range_retry_pending;
     volatile uint8_t energy_range_retry_active;
@@ -230,14 +262,17 @@ typedef struct {
 
 extern dap_stage_t dap_stage;
 
-/** Clear the hand-off state. USB SRAM is not cleared by either startup. */
-static inline void dap_shared_init(volatile dap_shared_t* state) {
+/** Clear the hand-off state, which neither startup does in USB SRAM. CPU 0 calls it before it starts
+ *  CPU 1. `energy` is CPU 0's integration state, which CPU 1 reaches only through the pointer set
+ *  here. */
+static inline void dap_shared_init(volatile dap_shared_t* state, struct energy_integration* energy) {
     volatile uint8_t* bytes = (volatile uint8_t*)state;
     for (size_t i = 0U; i < offsetof(dap_shared_t, request); i++) {
         bytes[i] = 0U;
     }
     state->reboot_mode = REBOOT_NONE;
     state->stage_commands = 1U;
+    state->energy_integration = energy;
 }
 
 #endif
