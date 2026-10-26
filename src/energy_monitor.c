@@ -119,12 +119,18 @@ static void pins_init(void) {
     IOCON_PinMuxSet(IOCON, 1U, 8U, IOCON_FUNC0 | IOCON_MODE_INACT | IOCON_ANALOG_EN | IOCON_PIO_ASW_MASK);
     IOCON_PinMuxSet(IOCON, 1U, 14U,
                     IOCON_FUNC0 | IOCON_MODE_INACT | IOCON_ANALOG_EN | IOCON_PIO_ASW_MASK);
+    // ACMPVREF, tied to the 3.0 V reference. Its analog switch resets open.
+    IOCON_PinMuxSet(IOCON, 1U, 19U,
+                    IOCON_FUNC0 | IOCON_MODE_INACT | IOCON_ANALOG_EN | IOCON_PIO_ASW_MASK);
     IOCON_PinMuxSet(IOCON, 0U, 17U, IOCON_FUNC0 | IOCON_MODE_INACT | IOCON_DIGITAL_EN);
     IOCON_PinMuxSet(IOCON, 0U, 29U, IOCON_FUNC7 | IOCON_SLEW_FAST | IOCON_DIGITAL_EN);
     IOCON_PinMuxSet(IOCON, 0U, 30U, IOCON_FUNC0 | IOCON_MODE_INACT | IOCON_DIGITAL_EN);
 
+    // PRO.md, "Range switching": the amplified current on the negative input, the ladder at 28/31
+    // of ACMPVREF on the positive. The output falls, and clears U18, above 90 mV on the shunt.
     POWER_DisablePD(kPDRUNCFG_PD_COMP);
-    PMC->COMP = PMC_COMP_NMUX(4U) | PMC_COMP_VREF(28U);
+    PMC->COMP = PMC_COMP_HYST(0U) | PMC_COMP_VREFINPUT(0U) | PMC_COMP_LOWPOWER(0U) | PMC_COMP_PMUX(0U) |
+                PMC_COMP_NMUX(4U) | PMC_COMP_VREF(28U);
     pins_ready = true;
 }
 
