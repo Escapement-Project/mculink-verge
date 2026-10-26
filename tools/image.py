@@ -734,7 +734,8 @@ def check_energy_control(c: Checker, elf0: str, elf1: str, slots: int) -> None:
 
     fields = ("energy_control_request", "energy_control_ack", "energy_segments", "swo_segments",
               "energy_dma_error", "energy_segment_handler", "energy_available", "energy_accumulator_pj",
-              "energy_accumulator_pairs", "energy_accumulator_fraction_q32", "energy_dma_sequence")
+              "energy_accumulator_pairs", "energy_accumulator_fraction_q32", "energy_dma_sequence",
+              "energy_range_retry_pending", "energy_range_retry_enabled")
     offsets = [shared_offsets(slots, *fields, small_enums=short_enums(elf)) for elf in (elf0, elf1)]
     check_control(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), *offsets)
     check_samples(c, elf1, symbols_with_size(elf1), offsets[1], model_syscon)

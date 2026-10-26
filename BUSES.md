@@ -64,7 +64,7 @@ contends with any other.
 | CPU 0 | 11 then 5 | Each staged command, from its USB slot into `dap_stage`, and each staged reply back | As each arrives and as each starts to send, so during CPU 1's windows when commands are queued |
 | CPU 0 | 8 | USART0/1 (VCOM), mailbox, DMA0 regs: its setup, the console channels, the interrupt for both rings | Continuously; the consoles' ring positions while it waits |
 | CPU 0 | 4, 7, 8, 10, 11 | Calls CPU 1's energy-segment handler from the DMA interrupt; it checks ADC0 overflow, reads completed samples from SRAM2 and updates the accumulator in `dap_shared` | Each completed energy segment, except while CPU 1 owns capture state |
-| CPU 0 | 7, 8 | IOCON P0_29 mux plus GPIO0 P0_17/P0_29 during the deferred energy range-latch retry | At most once per four completed energy-ring segments |
+| CPU 0 | 8 | GPIO0: reads P0_29 and P0_30, pulses P0_17, to re-arm the energy capture's low range | At most once per completed energy-ring segment, after one that stayed on the high range under the low range's limit |
 | CPU 0 | 11 | The consoles' channel entries in DMA0's table | Each send |
 | CPU 0 | 7 | CTimer 3 (the status LED), and on the Pro CTimer 1 (FUNC) | 488 times a second |
 | CPU 0 | 8 | Ordinary GPIO port 1 (the Pro's switched LEDs) | 488 times a second, on the Pro |

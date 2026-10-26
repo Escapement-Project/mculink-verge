@@ -5,6 +5,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "fsl_device_registers.h"
+
 #define ENERGY_DMA_CHANNEL 21U
 #define ENERGY_DMA_MASK (1UL << ENERGY_DMA_CHANNEL)
 #define ENERGY_MAX_RATE_HZ 100000U
@@ -32,6 +34,16 @@ typedef struct {
 } energy_monitor_sample_t;
 
 void energy_monitor_init(void);
+
+/** A rising edge on CTRL_HIGH_CURR_EN (PIO0_17). It sets U18, the low range, only while the
+ *  comparator holds U18's reset high. The barrier keeps the low time to two bus cycles at least,
+ *  against the '1G175's 3.5 ns. */
+static inline void energy_latch_clock(void) {
+    GPIO->CLR[0] = 1UL << 17U;
+    __DSB();
+    GPIO->SET[0] = 1UL << 17U;
+    __DSB();
+}
 
 /** Start timer-triggered ADC capture at `rate_hz` paired samples per second. */
 [[nodiscard]] energy_monitor_status_t energy_monitor_start(uint32_t rate_hz);

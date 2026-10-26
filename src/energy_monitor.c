@@ -49,6 +49,9 @@ static bool current_calibrated;
 static bool accumulator_started;
 static energy_sample_decoder_t sample_decoder;
 static uint32_t consumed_bytes;
+/** What the samples since the last DMA segment say about re-arming the low range. */
+static bool on_high_range;
+static bool rearm_blocked;
 
 static_assert(ADC_RESFIFO_VALID_MASK == 0x80000000U && ADC_RESFIFO_TSRC_SHIFT == 16U,
               "energy_samples.h must match the ADC result layout");
@@ -349,12 +352,22 @@ static energy_calibration_t const* range_calibration(bool low) {
     return low ? &low_range_calibration : &high_range_calibration;
 }
 
+/** UM11673 Table 4's low-range limits. The comparator trips above both (PRO.md, "Range
+ *  switching"), so a high-range segment that stays under its setting's limit re-arms the low range. */
+static uint32_t rearm_below_na(void) {
+    return current_range == TARGET_SENSE_CURRENT_RANGE_350_MA ? 1500000U : 400000U;
+}
+
 static void consume_result(uint32_t result, energy_total_t* total, uint32_t full_scale_mv) {
     if (!energy_sample_feed(&sample_decoder, result) || !current_calibrated || actual_rate_hz == 0U) {
         return;
     }
     bool const low = low_range(sample_decoder.last_range);
     uint32_t const shunt_na = energy_shunt_na(sample_decoder.last_current, range_calibration(low));
+    on_high_range = !low;
+    if (!low && shunt_na >= rearm_below_na()) {
+        rearm_blocked = true;
+    }
     uint32_t const mv = voltage_mv(sample_decoder.last_voltage, full_scale_mv);
     energy_total_add(total, (uint64_t)mv * energy_target_na(shunt_na, mv), energy_scale_q32);
 }
@@ -384,7 +397,10 @@ void energy_monitor_process_segment(void) {
         return;
     }
     uint32_t const completed = dap_shared.energy_segments - energy_segments_at_start + 1U;
-    (void)consume_until(completed * ENERGY_SEGMENT_BYTES);
+    if (consume_until(completed * ENERGY_SEGMENT_BYTES) && on_high_range && !rearm_blocked) {
+        dap_shared.energy_range_retry_pending = 1U;
+    }
+    rearm_blocked = false;
 }
 
 static uint32_t ring_written(void) {
@@ -502,6 +518,8 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     energy_segments_at_start = dap_shared.energy_segments;
     dap_shared.energy_range_retry_pending = 0U;
     dap_shared.energy_range_retry_enabled = 1U;
+    on_high_range = false;
+    rearm_blocked = false;
     sample_decoder.phase = ENERGY_EXPECT_VOLTAGE;
     consumed_bytes = 0U;
     LPADC_DoResetFIFO0(ADC0);
@@ -532,7 +550,8 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     DMA0->COMMON[0].ENABLESET = ENERGY_DMA_MASK;
     DMA0->CHANNEL[ENERGY_DMA_CHANNEL].XFERCFG =
         ENERGY_SEGMENT_XFERCFG | DMA_CHANNEL_XFERCFG_SWTRIG_MASK;
-    GPIO->SET[0] = 1UL << 17U;
+    // An edge whatever P0_17 was left at: CPU 0's re-arm can raise it after a pause lowered it.
+    energy_latch_clock();
     timer_start(requested_rate_hz);
     return true;
 }

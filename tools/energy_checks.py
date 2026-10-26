@@ -293,6 +293,41 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1):
         probe.call("DMA0_IRQHandler")
         c.check(get("energy_segments") == 2, "resumed energy handler stayed suppressed")
 
+    # CPU 0's re-arm clocks U18 with P0_29 left on the comparator: the low range comes back only
+    # while the comparator holds the reset high, including when it falls between the task's
+    # check of P0_29 and its clock edge.
+    for label, expected in (("high", 1), ("low", 0), ("falling after the check", 0)):
+        rearm = machine(elf0, symbols0)
+        reads = 0
+
+        def comparator():
+            return {"high": 1, "low": 0}.get(label, 1 if reads == 0 else 0)
+
+        gpio = Gpio(rearm, comparator)
+        plain_read = gpio.read
+
+        def counted_read(uc, offset, size, data):
+            nonlocal reads
+            value = plain_read(uc, offset, size, data)
+            reads += offset == 0x2100
+            return value
+
+        gpio.read = counted_read
+        rearm.uc.mem_unmap(ORDINARY_GPIO, 0x4000)
+        rearm.uc.mmio_map(ORDINARY_GPIO, 0x4000, gpio.read, None, gpio.write, None)
+        rearm.uc.mem_write(IOCON_BASE + 29 * 4, u32(7))
+        iocon_writes = []
+        rearm.uc.hook_add(UC_HOOK_MEM_WRITE, lambda uc, access, at, size, value, data: iocon_writes.append(value),
+                          begin=IOCON_BASE + 29 * 4, end=IOCON_BASE + 29 * 4 + 3)
+        gpio.out[0] = gpio.dir[0] = 1 << 17
+        for field, value in (("energy_range_retry_pending", 1), ("energy_range_retry_enabled", 1)):
+            rearm.uc.mem_write(shared + offsets0[field], bytes([value]))
+        rearm.call("energy_range_retry_task")
+        c.check(gpio.q == expected and not iocon_writes and not gpio.took_29 and gpio.out[0] >> 17 & 1,
+                f"re-arm with the comparator {label}: latch {gpio.q}, P0_29 mux writes {iocon_writes}, "
+                f"P0_29 made an output {gpio.took_29}")
+    c.note("CPU 0's re-arm sets the latch only through the comparator's reset, and never takes P0_29")
+
     probe.uc.reg_write(UC_ARM_REG_PRIMASK, 1)
     put("energy_control_request", 7)
     probe.call("energy_control_task")
@@ -612,6 +647,29 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
             "failed new-session release was accepted")
     total([32768])
     c.check(not any(offset == 0x20 for offset, _ in dma.writes), "failed start enabled DMA")
+
+    # A segment that stays on the high range under the 350 mA setting's 1.5 mA asks for the low
+    # range back; one sample over, or a segment that ends on the low range, does not. The cases run
+    # in turn on one machine, so a segment over the limit must not hold back the next.
+    samples = 300
+    probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+    # 100 nA a code, so 10000 is 1 mA and 20000 is 2 mA.
+    probe.uc.mem_write(probe.sym["high_range_calibration"],
+                       struct.pack("<4H7IB3x", 0, 65535, 0, 0, 0, 6553500, 0, 0, 100 << 16, 0, 0, 2))
+    for segment, (label, currents, ranges, expected) in enumerate((
+            ("one sample over", [10000] * (samples - 1) + [20000], [0] * samples, 0),
+            ("under the limit, after one over", [10000] * samples, [0] * samples, 1),
+            ("ends on the low range", [10000] * samples, [0] * (samples - 1) + [65535], 0),
+            ("under the limit again", [10000] * samples, [0] * samples, 1))):
+        put("energy_range_retry_pending", 0, 1)
+        words = [word for current, state in zip(currents, ranges)
+                 for word in (result(1, 32768), result(2, current), result(3, state))]
+        feed(words + [0] * (1024 - len(words)), segment * 1024)
+        put("energy_segments", segment)
+        probe.call("energy_monitor_process_segment")
+        c.check(get("energy_range_retry_pending", 1) == expected, f"low-range re-arm, {label}")
+    probe.uc.hook_del(hook)
+    c.note("a high-range segment under the low range's limit re-arms it; one over or a low-range end does not")
 
     probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
     adc.active_reads = -1
