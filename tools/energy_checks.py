@@ -717,7 +717,7 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
     check_sequences(c, setup, result)
 
 
-def check_calibration(c, elf, symbols, model_syscon):
+def check_calibration(c, elf, symbols, offsets, model_syscon):
     """The Pro's calibration against a model of its circuit, in both jumper settings."""
 
     def run(setting_ma, **parts):
@@ -745,6 +745,15 @@ def check_calibration(c, elf, symbols, model_syscon):
             fields = struct.unpack("<4H7IB3x", bytes(probe.uc.mem_read(probe.sym[name], symbols[name][1])))
             tables[low] = (fields[0:4], fields[4:8], fields[8:11], fields[11])
         return probe, gpio, circuit, adc, ok, tables
+
+    def readout(probe, high):
+        """Vendor 0x90 mode 4: the result, then the table as the struct holds it. Set only now:
+        with energy available, calibration's reads would wait on CPU 0, which this machine lacks."""
+        probe.uc.mem_write(probe.sym["dap_shared"] + offsets["energy_available"], b"\x01")
+        reply = probe.command(bytes([0x90, 4, 1 if high else 0]))
+        c.check(len(reply) == 28 and reply[1] == 0, f"mode 4 reply {reply.hex()}")
+        points = [struct.unpack_from("<HI", reply, 4 + 6 * i) for i in range(4)]
+        return reply[2], (tuple(code for code, _ in points), tuple(na for _, na in points), reply[3])
 
     plans = {350: ({22, 26}, {26, 23, 29}), 50: ({22}, {22, 26, 23})}
     for setting_ma, (low_loads, high_loads) in plans.items():
@@ -785,11 +794,19 @@ def check_calibration(c, elf, symbols, model_syscon):
                             f"{setting_ma} mA {'low' if low else 'high'} range, {target * 1e6:.1f} uA at {volts} V: "
                             f"read {measured * 1e6:.3f} uA")
         c.note(f"calibration {setting_ma} mA: loads by range as planned, worst read-back {worst:.3%}")
+        for low in (True, False):
+            result, (codes, currents, count) = readout(probe, not low)
+            c.check(result == 0 and (codes, currents, count) == (tables[low][0], tables[low][1], tables[low][3]),
+                    f"{setting_ma} mA: mode 4 differs from the {'low' if low else 'high'} range's table")
 
     _, _, _, _, ok, tables = run(350, gain=1.03)
     c.check(ok and tables[True][3] == 2, "350 mA: a saturated R3 point did not drop out of the low range")
     _, _, _, _, ok, _ = run(50, gain=1.025)
     c.check(ok, "50 mA: calibration failed 2.5% above nominal gain")
-    _, _, _, _, ok, _ = run(50, gain=1.04)
+    probe, _, _, _, ok, _ = run(50, gain=1.04)
     c.check(not ok, "50 mA: calibration passed with its only low-range load saturated")
-    c.note("calibration drops a saturated point and fails when a range keeps fewer than two")
+    result, (codes, currents, count) = readout(probe, False)
+    c.check(result == 6 and count == 1 and codes[1:] == (0, 0, 0) and currents[1:] == (0, 0, 0),
+            f"mode 4 after a failed calibration: result {result}, {count} points, {codes}, {currents}")
+    c.note("calibration drops a saturated point and fails when a range keeps fewer than two; mode 4 reports"
+           " the kept points")

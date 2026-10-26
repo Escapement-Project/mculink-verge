@@ -121,6 +121,7 @@ reply reports the timer's effective pair rate.
 | `[0x90, 1]` | Read the newest complete voltage/current pair. |
 | `[0x90, 2]` | Stop capture. Repeated stop requests are safe. |
 | `[0x90, 3]` | Read accumulated energy in nJ and the number of integrated pairs. |
+| `[0x90, 4, range]` | Read the calibration points of the low range (0) or the high range (1). |
 
 Every recognized request returns `DAP_OK` followed by a result byte. Start replies with the
 effective rate as a u32 after the result. Latest replies with voltage code (u16), current code
@@ -135,6 +136,12 @@ Mode 3 returns `[0x90, DAP_OK, result, energy_nJ:u64LE, pairs:u64LE]` in 19 byte
 The pair count includes zero-current samples. Negative calibrated current is clipped to zero.
 Each pair contributes one sample period using the fixed effective capture rate. Time while capture
 is paused does not contribute. Reads do not reset the total, which remains readable after stop.
+
+Mode 4 returns `[0x90, DAP_OK, result, count, points]` in 28 bytes. `points` is four entries of an
+ADC code (u16) and the current through the sense resistor at that code in nA (u32), lowest first;
+entries past `count` are zero. `count` is 0 before the first start. The result is `OK` when the
+latest calibration succeeded and 6 when it failed, with the points it measured before failing.
+Firmware without mode 4 answers `DAP_ERROR`.
 
 Range IDs are 1 for 350 mA high gain, 2 for 350 mA low gain, 3 for 50 mA high gain, 4 for 50 mA
 low gain, and 0 when the range is unknown. `calibrated-valid` is 1 when the firmware can convert

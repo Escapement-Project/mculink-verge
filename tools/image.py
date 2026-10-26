@@ -739,7 +739,7 @@ def check_energy_control(c: Checker, elf0: str, elf1: str, slots: int) -> None:
     offsets = [shared_offsets(slots, *fields, small_enums=short_enums(elf)) for elf in (elf0, elf1)]
     check_control(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), *offsets)
     check_samples(c, elf1, symbols_with_size(elf1), offsets[1], model_syscon)
-    check_calibration(c, elf1, symbols_with_size(elf1), model_syscon)
+    check_calibration(c, elf1, symbols_with_size(elf1), offsets[1], model_syscon)
 
 
 def check_console_recovery(c: Checker, elf: str, slots: int) -> None:

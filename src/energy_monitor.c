@@ -732,6 +732,17 @@ energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {
     return ENERGY_MONITOR_OK;
 }
 
+energy_monitor_status_t energy_monitor_calibration(bool high_range, energy_calibration_t* calibration) {
+    if (calibration == nullptr) {
+        return ENERGY_MONITOR_BAD_ARGUMENT;
+    }
+    if (!dap_shared.energy_available) {
+        return ENERGY_MONITOR_UNAVAILABLE;
+    }
+    *calibration = *range_calibration(!high_range);
+    return current_calibrated ? ENERGY_MONITOR_OK : ENERGY_MONITOR_ADC_ERROR;
+}
+
 energy_monitor_status_t energy_monitor_accumulated(uint64_t* energy_nj, uint64_t* pairs) {
     if ((energy_nj == nullptr) || (pairs == nullptr)) {
         return ENERGY_MONITOR_BAD_ARGUMENT;

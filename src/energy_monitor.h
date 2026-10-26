@@ -7,6 +7,8 @@
 
 #include "fsl_device_registers.h"
 
+#include "energy_samples.h"
+
 #define ENERGY_DMA_CHANNEL 21U
 #define ENERGY_DMA_MASK (1UL << ENERGY_DMA_CHANNEL)
 #define ENERGY_MAX_RATE_HZ 100000U
@@ -54,6 +56,10 @@ uint32_t energy_monitor_rate(void);
 
 /** Return the newest complete pair of raw ADC codes, if one exists. */
 [[nodiscard]] energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample);
+
+/** The low or high range's calibration points from the most recent start: count zero before any.
+ *  ENERGY_MONITOR_ADC_ERROR unless that calibration succeeded. */
+[[nodiscard]] energy_monitor_status_t energy_monitor_calibration(bool high_range, energy_calibration_t* calibration);
 
 /** Read accumulated calibrated energy since the most recent successful start. */
 [[nodiscard]] energy_monitor_status_t energy_monitor_accumulated(uint64_t* energy_nj, uint64_t* pairs);

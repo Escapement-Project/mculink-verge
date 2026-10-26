@@ -264,8 +264,8 @@ static inline bool dap_packet_plan(const uint8_t* p, uint32_t length, uint32_t c
         if (length < 2U) {
             return false;
         }
-        in = p[1] == 0U ? 6U : 2U;
-        out = p[1] == 0U ? 7U : p[1] == 1U ? 21U : p[1] == 2U ? 3U : p[1] == 3U ? 19U : 2U;
+        in = p[1] == 0U ? 6U : p[1] == 4U ? 3U : 2U;
+        out = p[1] == 0U ? 7U : p[1] == 1U ? 21U : p[1] == 2U ? 3U : p[1] == 3U ? 19U : p[1] == 4U ? 28U : 2U;
         break;
     case 0x91:
         if (length < PRO_SPI_REQUEST_FIXED) {

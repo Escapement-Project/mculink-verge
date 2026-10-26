@@ -557,6 +557,22 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             }
             return (2U << 16) | 19U;
         }
+        if (mode == 4U) {
+            energy_calibration_t table = {0};
+            energy_monitor_status_t const status =
+                request[2] > 1U ? ENERGY_MONITOR_BAD_ARGUMENT : energy_monitor_calibration(request[2] == 1U, &table);
+            response[2] = (uint8_t)status;
+            response[3] = table.count;
+            for (uint32_t i = 0U; i < 4U; i++) {
+                uint8_t* const point = response + 4U + (6U * i);
+                point[0] = (uint8_t)table.code[i];
+                point[1] = (uint8_t)(table.code[i] >> 8U);
+                for (uint32_t j = 0U; j < 4U; j++) {
+                    point[2U + j] = (uint8_t)(table.current_na[i] >> (8U * j));
+                }
+            }
+            return (3U << 16) | 28U;
+        }
         response[1] = DAP_ERROR;
         return (2U << 16) | 2U;
     }
