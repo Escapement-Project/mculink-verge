@@ -235,7 +235,9 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1):
     def get(field, size=4):
         return int.from_bytes(probe.uc.mem_read(shared + offsets0[field], size), "little")
 
-    stub = SCRATCH + 2048
+    # In CPU 1's flash, past its image: CMakeLists.txt's CORE1_FLASH_ORIGIN and CORE1_FLASH_END.
+    core1_flash = (0x00040000, 0x0009D800)
+    stub = core1_flash[1] - 0x40
     probe.uc.mem_write(stub, bytes.fromhex("00bf") * 8 + bytes.fromhex("7047"))
     put("energy_segment_handler", stub | 1)
     trace = []
@@ -292,6 +294,33 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1):
         dma.set(0x58, ENERGY_MASK)
         probe.call("DMA0_IRQHandler")
         c.check(get("energy_segments") == 2, "resumed energy handler stayed suppressed")
+
+    # A pointer a faulting CPU 1 left behind is not called, and the segment is still counted:
+    # unpublished, ARM state, CPU 0's flash, RAM, past CPU 1's flash.
+    for pointer in (0, stub, 0x00000201, SCRATCH | 1, core1_flash[1] | 1):
+        put("energy_control_request", 0)
+        put("energy_control_ack", 0)
+        put("energy_segments", 0)
+        put("energy_segment_handler", pointer)
+        dma.set(0x40, 0)
+        dma.set(0x58, ENERGY_MASK)
+        target = pointer & ~1
+        entered = []
+
+        def stray(uc, at, size, data):
+            if at == target:
+                entered.append(at)
+                uc.emu_stop()
+
+        hook = probe.uc.hook_add(UC_HOOK_CODE, stray)
+        probe.uc.ctl_flush_tb()
+        probe.call("DMA0_IRQHandler")
+        probe.uc.hook_del(hook)
+        probe.uc.ctl_flush_tb()
+        c.check(not entered and get("energy_segments") == 1 and probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC,
+                f"energy IRQ with handler {pointer:#x}: entered {entered}, {get('energy_segments')} segments")
+    put("energy_segment_handler", stub | 1)
+    c.note("energy IRQ calls only a Thumb handler in CPU 1's flash")
 
     # CPU 0's re-arm clocks U18 with P0_29 left on the comparator: the low range comes back only
     # while the comparator holds the reset high, including when it falls between the task's

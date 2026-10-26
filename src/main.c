@@ -424,8 +424,12 @@ __attribute__((section(".ramfunc"))) void DMA0_IRQHandler(void) {
         dap_shared.swo_segments++;
     }
     if ((done & ENERGY_DMA_MASK) != 0U) {
-        if (dap_shared.energy_segment_handler != nullptr) {
-            dap_shared.energy_segment_handler();
+        // As with transfer_abort, a faulting CPU 1 can leave anything in the pointer, and a call
+        // through it would take CPU 0 down: call only Thumb code in CPU 1's flash.
+        dap_energy_segment_handler_fn const handler = dap_shared.energy_segment_handler;
+        uintptr_t const address = (uintptr_t)handler;
+        if (((address & 1U) != 0U) && (address > CORE1_FLASH_ORIGIN) && (address < CORE1_FLASH_END)) {
+            handler();
         }
         dap_shared.energy_segments++;
         __DMB();
