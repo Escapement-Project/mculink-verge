@@ -51,9 +51,12 @@ observations.
   and the generator never returned, so `tools/cycles.py` installs its memory hooks only between
   `begin()` and `end()`. A read hook on a load inside an IT block also breaks the IT state: the
   next branch's target skips its first instruction (a `blx` into generated code lost its `push`).
-  So loads are counted from the code hook and only writes are hooked. A fault or hang that QEMU
-  and hardware do not show is the emulator; check with `tools/gen_host.py` or on hardware before
-  blaming a compiler.
+  So loads are counted from the code hook and only writes are hooked. A write hook over an IT
+  block's conditional store breaks it too: the instruction at the next 1 KiB boundary ran as if
+  still conditional, and a translation made that way was reused on later calls. So the image
+  checks watch the ordinary GPIO through an MMIO page (`watch_gpio_ports`), not a write hook. A
+  fault or hang that QEMU and hardware do not show is the emulator; check with `tools/gen_host.py`
+  or on hardware before blaming a compiler.
 - **Nothing obliges a compiler to word-align a byte array.** Buffers that the generated code or a
   word copy touches carry `alignas` with at least four-byte alignment. clang left the reply buffer
   on a halfword.

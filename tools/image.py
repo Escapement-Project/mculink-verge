@@ -50,7 +50,6 @@ from cycles import (  # noqa: E402
     u16,
     u32,
 )
-from unicorn import UC_HOOK_MEM_WRITE  # noqa: E402
 from unicorn.arm_const import UC_ARM_REG_PC, UC_ARM_REG_R0  # noqa: E402
 
 UUID_ADDRESS = 0x0009FC70
@@ -1185,6 +1184,26 @@ CAP_TARGET_POWER = 1 << 7
 GPIO_PORT_REGS = {0x2200: "SET", 0x2280: "CLR", 0x2300: "NOT", 0x2380: "DIRSET", 0x2400: "DIRCLR", 0x2480: "DIRNOT"}
 
 
+def watch_gpio_ports(probe, store) -> None:
+    """Calls store(address, value) for each store to the ordinary GPIO's port registers. The page
+    becomes MMIO over its own bytes rather than taking a write hook: under a write hook unicorn
+    2.1.4 ran an instruction at a 1 KiB boundary after an IT block's conditional store as if it
+    were still conditional, and dio_set's GPIO stores are all conditional."""
+    page = ORDINARY_GPIO + 0x2000
+    memory = bytearray(probe.uc.mem_read(page, 0x1000))
+    probe.uc.mem_unmap(page, 0x1000)
+
+    def read(uc, offset, size, user) -> int:
+        return int.from_bytes(memory[offset:offset + size], "little")
+
+    def write(uc, offset, size, value, user) -> None:
+        memory[offset:offset + size] = value.to_bytes(size, "little")
+        if min(GPIO_PORT_REGS) - 0x2000 <= offset < max(GPIO_PORT_REGS) + 0x80 - 0x2000:
+            store(page + offset, value)
+
+    probe.uc.mmio_map(page, 0x1000, read, None, write, None)
+
+
 class DioPins:
     """Every store to the ordinary GPIO's port registers, replayed onto the DIO pins: each pin's
     translator input (A) and header (B) level after each store. A is driven by the probe's pin while
@@ -1201,14 +1220,13 @@ class DioPins:
         self.header = ["z"] * 4
         self.moves = [0] * 4
         self.fights: list[str] = []
-        base = ORDINARY_GPIO + min(GPIO_PORT_REGS)
-        probe.uc.hook_add(UC_HOOK_MEM_WRITE, self._store, begin=base, end=base + 0x300 - 1)
+        watch_gpio_ports(probe, self._store)
 
     def bit(self, words: list[int], index: int) -> int:
         port, pin = DIO_PINS[index]
         return (words[port] >> pin) & 1
 
-    def _store(self, uc, access, address, size, value, user) -> None:
+    def _store(self, address: int, value: int) -> None:
         offset = address - ORDINARY_GPIO
         reg, port = GPIO_PORT_REGS.get(offset & ~0x7F, "?"), (offset & 0x7F) // 4
         self.stores.append((reg, port, value))
@@ -1317,13 +1335,12 @@ def check_target_power(c: Checker, elf: str, request_slots: int) -> None:
         probe.call("board_debug_pins_init")
         stores = []
 
-        def record(uc, access, address, size, value, user) -> None:
+        def record(address: int, value: int) -> None:
             offset = address - ORDINARY_GPIO
             reg = GPIO_PORT_REGS.get(offset & ~0x7F, "?")
             stores.append((reg, (offset & 0x7F) // 4, value))
 
-        base = ORDINARY_GPIO + min(GPIO_PORT_REGS)
-        probe.uc.hook_add(UC_HOOK_MEM_WRITE, record, begin=base, end=base + 0x300 - 1)
+        watch_gpio_ports(probe, record)
         probe.call("target_power_init")
         if board == BOARD_PRO:
             pin = int.from_bytes(probe.uc.mem_read(IOCON + 4 * 8, 4), "little")
