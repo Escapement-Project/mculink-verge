@@ -47,7 +47,8 @@ does with them.
 
 - **Energy capture** is available on Pro units with HW_VER_5 fitted. The host can start a background
   ADC capture and read raw voltage/current codes, calibrated voltage/current, and accumulated
-  energy. The probe calibrates against its own loads when a capture starts. The accumulator
+  energy. The probe calibrates against its own loads as it boots. A capture start calibrates again
+  only after a failed calibration or a change of jumper setting. The accumulator
   updates without host polling and remains readable after capture stops. "Energy measurement"
   below derives the circuit's settings from the documents.
 
@@ -177,7 +178,13 @@ the probe's target supply can give.
 ### Calibration
 
 UM11673 says the circuit calibrates itself at power-on, with transistors isolating the sensing
-circuitry and a known voltage applied. The firmware calibrates when a capture starts.
+circuitry and a known voltage applied. The firmware calibrates as it boots, before it answers the
+first command, and keeps the result. A capture start calibrates again only when the last
+calibration failed, or when CURR_RANGE_SET reads a different setting from the one calibrated.
+
+Each step of a calibration waits 20 ms before it converts, so a calibration takes about 0.2 s. With
+1 ms waits, the first calibration after flashing read the no-load point at the amplifier's floor.
+With 5 ms it read it right.
 
 - **Isolation.** CTRL_CAL_DISC disconnects J9 and puts the probe's 3.3 V on the sense resistors.
 - **The loads.** Four switched resistors load the target side to ground: R97 (6.65 kΩ,
@@ -228,8 +235,8 @@ circuitry and a known voltage applied. The firmware calibrates when a capture st
   target, the 350 mA setting's high range reads 2.8% high: Q3 goes from 16.5 mΩ to 23.7 mΩ
   (PMPB15XP Fig. 8) beside R69's 0.24 Ω. In the 50 mA setting the same target reads 0.35% high.
   UM11673 gives the 350 mA setting's high range 5% accuracy and the others 1%.
-- J17's contact is in the high range's resistance too. Calibration measures it at each start, so
-  moving the jumper calls for a new start.
+- J17's contact is in the high range's resistance too. Calibration measures it, but moving the
+  jumpers away and back leaves the setting as it was, so only a reset calibrates again.
 - The calibration switches are counted at their typical on-resistance. Their spread moves the
   350 mA setting's high range by up to about 0.3%, through R4.
 - The sheet gives no tolerance for the divider. It moves the current taken off each sample, which

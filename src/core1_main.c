@@ -262,5 +262,8 @@ __attribute__((noinline, section(".data_core1_wait"))) static void wait_for_mail
     energy_monitor_init();
     dio_init();
     dap_shared.transfer_abort = &DAP_TransferAbort;
+    // Before the first command: calibration opens J9, and no session is under way yet. After
+    // board_timestamp_init, since its settling waits count CYCCNT.
+    energy_monitor_calibrate();
     serve();
 }

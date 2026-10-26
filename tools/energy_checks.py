@@ -594,26 +594,79 @@ def check_samples(c, elf, symbols, offsets, model_syscon):
     c.note("ADC calibration pair at 128x averaging " +
            ("passed" if "target_sense_convert_pair_for_calibration" in symbols else "not run: entry inlined"))
 
-    if c.check("current_calibrate" in symbols, "calibration entry missing"):
-        probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
-        local("capture_running", 0)
-        calls = 0
+    if c.check("current_calibrate" in symbols and "energy_monitor_calibrate" in symbols,
+               "calibration entries missing"):
+        # The ADC model answers every on-demand conversion with 0x2345, which CURR_RANGE_SET reads
+        # as the 50 mA setting (2). current_calibrate is a stub that fails and records the setting
+        # it was entered with.
+        def calibrating(calibrated, setting, available=1, ack_after=0, pauses_fail_after=None):
+            """ack_after: CPU 0 not yet in its loop, acknowledging each request only after that many
+            instructions. pauses_fail_after: pauses past this many fail, as an unreadable setting."""
+            probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+            put("energy_available", available, 1)
+            local("capture_running", 0)
+            local("current_calibrated", calibrated)
+            local("current_range", setting)
+            if ack_after:
+                probe.uc.hook_del(hook)
+            state = {"entered": [], "early": 0, "acks": 0, "waited": 0, "pauses": 0}
 
-        def calibration(uc, at, size, data):
-            nonlocal calls
-            if at == probe.sym["current_calibrate"]:
-                calls += 1
-                uc.reg_write(UC_ARM_REG_R0, 0)
-                uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+            def step(uc, at, size, data):
+                if ack_after:
+                    request = get("energy_control_request")
+                    if request != get("energy_control_ack"):
+                        state["waited"] += 1
+                        if state["waited"] >= ack_after:
+                            put("energy_control_ack", request)
+                            state["acks"] += 1
+                            state["waited"] = 0
+                if at == probe.sym["energy_monitor_pause"]:
+                    state["pauses"] += 1
+                    state["early"] += ack_after and state["acks"] == 0
+                    if pauses_fail_after is not None and state["pauses"] > pauses_fail_after:
+                        uc.reg_write(UC_ARM_REG_R0, 0)
+                        uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+                if at == probe.sym["current_calibrate"]:
+                    state["entered"].append(bytes(uc.mem_read(probe.sym["current_range"], 1))[0])
+                    uc.reg_write(UC_ARM_REG_R0, 0)
+                    uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
 
-        call_hook = probe.uc.hook_add(UC_HOOK_CODE, calibration)
-        probe.uc.ctl_flush_tb()
+            call_hook = probe.uc.hook_add(UC_HOOK_CODE, step)
+            probe.uc.ctl_flush_tb()
+            return probe, local, state, lambda: (probe.uc.hook_del(call_hook), ack_after or probe.uc.hook_del(hook))
+
+        for calibrated, setting, label in ((0, 2, "nothing calibrated"), (1, 1, "the setting moved")):
+            probe, local, state, done = calibrating(calibrated, setting)
+            reply = probe.command(bytes([0x90, 0]) + u32(1000))
+            c.check(state["entered"] == [2], f"start with {label} calibrated with settings {state['entered']}")
+            c.check(reply == bytes([0x90, 0, 6]) + bytes(4), f"start with {label}: reply {reply.hex()}")
+            done()
+        probe, local, state, done = calibrating(1, 2)
         reply = probe.command(bytes([0x90, 0]) + u32(1000))
-        c.check(calls == 1, f"energy start calibrated {calls} times")
-        c.check(reply == bytes([0x90, 0, 6]) + bytes(4), f"mock calibration failure reply: {reply.hex()}")
-        probe.uc.hook_del(call_hook)
-        probe.uc.hook_del(hook)
-    c.note("energy start calibrates once and reports a failed calibration")
+        c.check(not state["entered"] and reply[:3] == bytes([0x90, 0, 0]),
+                f"start in the calibrated setting calibrated {state['entered']}, reply {reply.hex()}")
+        done()
+        # The start's own pause succeeds; the setting's conversions do not.
+        probe, local, state, done = calibrating(1, 2, pauses_fail_after=1)
+        reply = probe.command(bytes([0x90, 0]) + u32(1000))
+        kept = (bytes(probe.uc.mem_read(probe.sym["current_calibrated"], 1))[0],
+                bytes(probe.uc.mem_read(probe.sym["current_range"], 1))[0])
+        c.check(not state["entered"] and reply[:3] == bytes([0x90, 0, 6]) and kept == (1, 2),
+                f"unreadable setting: calibrated {state['entered']}, reply {reply.hex()}, kept {kept}")
+        done()
+        probe, local, state, done = calibrating(0, 0, ack_after=500)
+        probe.call("energy_monitor_calibrate")
+        c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC and state["entered"] == [2] and not state["early"],
+                f"boot calibration: settings {state['entered']}, {state['early']} pauses before CPU 0's loop answered")
+        done()
+        probe, local, state, done = calibrating(0, 0, available=0, ack_after=500)
+        probe.call("energy_monitor_calibrate")
+        c.check(not state["entered"] and not state["pauses"],
+                f"boot calibration without energy capture: settings {state['entered']}, {state['pauses']} pauses")
+        done()
+    c.note("a start calibrates only after a failure or with the setting moved, and keeps the tables when the"
+           " setting cannot be read; boot calibration waits for CPU 0's loop, reads the setting, and runs"
+           " only with energy capture")
 
     probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
     written(0)
@@ -812,7 +865,7 @@ def check_calibration(c, elf, symbols, offsets, model_syscon):
                             ("current_range", 1 if setting_ma == 350 else 2)):
             probe.uc.mem_write(probe.sym[name], value.to_bytes(symbols[name][1], "little"))
         probe.uc.mem_write(IOCON_BASE + 29 * 4, u32(7))  # CMP0_OUT, as pins_init leaves it
-        delay = probe.sym["calibration_delay"]
+        delay = probe.sym["calibration_settle"]
 
         def skip(uc, at, size, data):
             uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))

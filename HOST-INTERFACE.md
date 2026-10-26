@@ -141,8 +141,8 @@ trigger: at a connection at fast clocks, again when a measurement contradicts it
 
 Mode 4 returns `[0x90, DAP_OK, result, count, points]` in 28 bytes. `points` is four entries of an
 ADC code (u16) and the current through the sense resistor at that code in nA (u32), lowest first;
-entries past `count` are zero. `count` is 0 before the first start. The result is `OK` when the
-latest calibration succeeded and 6 when it failed, with the points it measured before failing.
+entries past `count` are zero. `count` is 0 until the probe has calibrated. The result is `OK` when
+the latest calibration succeeded and 6 when it failed, with the points it measured before failing.
 Firmware without mode 4 answers `DAP_ERROR`.
 
 Range IDs are 1 for 350 mA high gain, 2 for 350 mA low gain, 3 for 50 mA high gain, 4 for 50 mA
@@ -151,8 +151,13 @@ both readings to physical units. Voltage and current are scaled to the Pro's 3.0
 Current calibration supports the 350 mA and 50 mA jumper settings. The current is the target's:
 the firmware takes off what the probe's own voltage divider draws through the sense resistor.
 
-A start calibrates first. Calibration disconnects J9 from the target while it runs, so a target
-powered through J9 loses its supply for that time. PRO.md, "Energy measurement", has the details.
+The probe calibrates as it boots, before it answers the first command, and a start uses that
+calibration. A start calibrates again only when the last calibration failed, or when the setting
+J18 selects (CURR_RANGE_SET) differs from the one calibrated. A start that cannot read the setting
+fails with 6 and keeps the calibration. Calibration disconnects J9 from the target for about
+0.2 s, so a target powered through J9 loses its supply for that time. Moving the jumpers away and
+back to the same setting goes unseen; reset the probe to calibrate again. PRO.md, "Energy
+measurement", has the details.
 
 | Result | Meaning |
 | --- | --- |

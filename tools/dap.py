@@ -620,8 +620,9 @@ def cmd_energy(args) -> int:
     """The Pro's energy capture through vendor 0x90 (HOST-INTERFACE.md).
 
     `watch` starts a capture at `--rate`, prints the newest sample every `--every` seconds for
-    `--seconds`, then the total, and stops. Starting a capture calibrates first, which disconnects
-    J9 for the length of the calibration.
+    `--seconds`, then the total, and stops. The probe calibrates as it boots. A start calibrates
+    again, disconnecting J9 for about 0.2 s, only after a failed calibration or when the jumper
+    setting has changed.
     """
     probe = one(args)
     if args.action in ("start", "watch"):

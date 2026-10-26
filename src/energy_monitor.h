@@ -47,6 +47,11 @@ static inline void energy_latch_clock(void) {
     __DSB();
 }
 
+/** Calibrate the current ranges for the jumper setting, before CPU 1 serves commands. Calibration
+ *  opens J9 for its length, about 0.2 s; a start calibrates again only when nothing is calibrated
+ *  or the setting has changed. Waits for CPU 0 to reach its loop. */
+void energy_monitor_calibrate(void);
+
 /** Start timer-triggered ADC capture at `rate_hz` paired samples per second. */
 [[nodiscard]] energy_monitor_status_t energy_monitor_start(uint32_t rate_hz);
 uint32_t energy_monitor_rate(void);
@@ -57,8 +62,8 @@ uint32_t energy_monitor_rate(void);
 /** Return the newest complete pair of raw ADC codes, if one exists. */
 [[nodiscard]] energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample);
 
-/** The low or high range's calibration points from the most recent start: count zero before any.
- *  ENERGY_MONITOR_ADC_ERROR unless that calibration succeeded. */
+/** The low or high range's calibration points from the most recent calibration: count zero before
+ *  any. ENERGY_MONITOR_ADC_ERROR unless that calibration succeeded. */
 [[nodiscard]] energy_monitor_status_t energy_monitor_calibration(bool high_range, energy_calibration_t* calibration);
 
 /** Read accumulated calibrated energy since the most recent successful start. */

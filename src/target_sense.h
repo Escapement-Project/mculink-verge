@@ -7,8 +7,9 @@
  * tells the two apart. A target that is connected but unpowered pulls pin 1 well below a live
  * supply but not to zero: how far depends on how hard the dead board loads the 33K.
  *
- * Nothing here runs unless a host asks, and every wait on the converter is bounded: a sense read
- * that cannot finish reports an error rather than hanging the probe.
+ * Nothing here runs unless a host asks, apart from a Pro's energy calibration at boot. Every wait
+ * on the converter is bounded: a sense read that cannot finish reports an error rather than hanging
+ * the probe.
  */
 #ifndef TARGET_SENSE_H
 #define TARGET_SENSE_H
@@ -18,7 +19,7 @@
 
 /** Put the two sense pins in their modes: the divider's pin analog, the detect pin pulled up.
  *  At boot, so the pull-up has long settled by the time anything reads it. The converter itself
- *  stays off until a host asks for a reading. */
+ *  stays off until a host asks for a reading, or a Pro with energy capture calibrates at boot. */
 void target_sense_init(void);
 
 /** Why a reading failed. Vendor 0x86 reports it in an error reply's code field, where 0 is a

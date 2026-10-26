@@ -16,10 +16,10 @@ static_assert(DBGIF_TCK_SWCLK_PORT == DBGIF_PORT && DBGIF_TDI_PORT == DBGIF_PORT
 /** Start the cycle counter behind TIMESTAMP_GET.
  *
  * DWT is powered down until TRCENA is set and the counter does not run until CYCCNTENA is, so
- * without this DWT->CYCCNT reads 0 forever. Two commands depend on it. DAP_SWJ_Pins with a
- * non-zero wait spins until the counter passes a deadline, so a pin that never reaches the asked
- * level hangs the probe rather than timing out; and a transfer with DAP_TRANSFER_TIMESTAMP set
- * reports 0 to a host that asked for a time.
+ * without this DWT->CYCCNT reads 0 forever. DAP_SWJ_Pins with a non-zero wait spins until the
+ * counter passes a deadline, so a pin that never reaches the asked level hangs the probe rather
+ * than timing out. The Pro's energy calibration waits on it the same way, at boot. And a transfer
+ * with DAP_TRANSFER_TIMESTAMP set reports 0 to a host that asked for a time.
  */
 __attribute__((noinline)) void board_timestamp_init(void) {
     DCB->DEMCR |= DCB_DEMCR_TRCENA_Msk;

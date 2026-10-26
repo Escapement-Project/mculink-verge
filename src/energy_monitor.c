@@ -14,6 +14,7 @@
 #include "dap_core.h"
 #include "DAP_config.h"
 #include "board_pins.h"
+#include "core_clock.h"
 #include "dma_ring.h"
 #include "target_sense.h"
 
@@ -153,10 +154,15 @@ void energy_monitor_init(void) {
     dap_shared.energy_segment_handler = energy_monitor_process_segment;
 }
 
+/** How long each calibration step waits before it converts. With 1 ms, the first calibration
+ *  after flashing read the no-load point at the amplifier's floor, and 5 ms read it right; from
+ *  1 ms up, the slopes of later calibrations agree with 100 ms. */
+#define CALIBRATION_SETTLE_US 20000U
+
 /** Out of line, so tools/energy_checks.py can skip it. */
-__attribute__((noinline)) static void calibration_delay(void) {
-    for (volatile uint32_t i = 0U; i < 1500000U; i++) {
-        __NOP();
+__attribute__((noinline)) static void calibration_settle(void) {
+    uint32_t const start = DWT->CYCCNT;
+    while ((DWT->CYCCNT - start) < CALIBRATION_SETTLE_US * (CORE_CLOCK_HZ / 1000000U)) {
     }
 }
 
@@ -224,7 +230,7 @@ static bool calibration_read_pair(uint16_t* voltage_code, uint16_t* current_code
 static calibration_point_t calibration_point(const calibration_load_t* load, uint16_t* code,
                                              uint32_t* current_na) {
     GPIO->SET[1] = load->pin;
-    calibration_delay();
+    calibration_settle();
     uint16_t voltage_code = 0U;
     bool const read_ok = calibration_read_pair(&voltage_code, code);
     GPIO->CLR[1] = load->pin;
@@ -311,14 +317,14 @@ __attribute__((noinline)) static bool current_calibrate(void) {
     IOCON->PIO[0][29] = IOCON_FUNC0 | IOCON_MODE_INACT | IOCON_DIGITAL_EN;
     // A rising CTRL_HIGH_CURR_EN loads U18's tied-high D.
     GPIO->CLR[0] = p17;
-    calibration_delay();
+    calibration_settle();
     GPIO->SET[0] = p17;
-    calibration_delay();
+    calibration_settle();
     bool const low_ok = latch_in_low_range() &&
                         calibration_range(wide ? loads_350_low : loads_50_low, &low_range_calibration);
 
     GPIO->CLR[0] = p29;
-    calibration_delay();
+    calibration_settle();
     bool const high_ok = !latch_in_low_range() &&
                          calibration_range(wide ? loads_350_high : loads_50_high, &high_range_calibration);
 
@@ -326,7 +332,7 @@ __attribute__((noinline)) static bool current_calibrate(void) {
     IOCON->PIO[0][29] = IOCON_FUNC7 | IOCON_SLEW_FAST | IOCON_DIGITAL_EN;
     GPIO->DIRCLR[0] = p29;
     GPIO->CLR[0] = p17;
-    calibration_delay();
+    calibration_settle();
 
     current_calibrated = low_ok && high_ok;
     return current_calibrated;
@@ -492,12 +498,18 @@ __attribute__((noinline)) static void capture_ring_init(void) {
     entry->link = energy_descriptors[0].link;
 }
 
-static bool capture_quiet(bool quiet) {
+/** CPU 0 acknowledges from its loop only. */
+static uint32_t control_request(bool quiet) {
     uint32_t const requested = ((dap_shared.energy_control_request & ~DAP_ENERGY_QUIET_FLAG) + 2U) |
                                (quiet ? DAP_ENERGY_QUIET_FLAG : 0U);
     dap_shared.energy_control_request = requested;
     __DMB();
     MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQSET = DAP_CORE_MAILBOX_WAKE_MASK;
+    return requested;
+}
+
+static bool capture_quiet(bool quiet) {
+    uint32_t const requested = control_request(quiet);
     for (uint32_t i = 0U; i < ENERGY_CONTROL_POLLS; i++) {
         if (dap_shared.energy_control_ack == requested) {
             __DMB();
@@ -638,6 +650,37 @@ bool energy_monitor_resume(void) {
     return energy_capture_start(false);
 }
 
+/** Calibration opens J9, so it runs again only when the last one failed or CURR_RANGE_SET reads
+ *  another setting than the one calibrated. A setting that cannot be read leaves the tables alone. */
+static bool calibrate_for_setting(void) {
+    target_sense_current_range_t const setting = target_sense_current_range();
+    if (setting == TARGET_SENSE_CURRENT_RANGE_UNKNOWN) {
+        return false;
+    }
+    if (current_calibrated && (setting == current_range)) {
+        return true;
+    }
+    current_range = setting;
+    return current_calibrate();
+}
+
+/** Out of line, so tools/energy_checks.py can call it. */
+__attribute__((noinline)) void energy_monitor_calibrate(void) {
+    if (!dap_shared.energy_available) {
+        return;
+    }
+    // CPU 1 starts before CPU 0 brings USB up and enters its loop. Each conversion's pause allows
+    // CPU 0 a bounded time to acknowledge, so wait for the loop first, without a bound.
+    uint32_t const requested = control_request(true);
+    while (dap_shared.energy_control_ack != requested) {
+    }
+    __DMB();
+    pins_init();
+    if (target_sense_adc_init() == TARGET_SENSE_OK) {
+        (void)calibrate_for_setting();
+    }
+}
+
 energy_monitor_status_t energy_monitor_start(uint32_t rate_hz) {
     if (!dap_shared.energy_available) {
         return ENERGY_MONITOR_UNAVAILABLE;
@@ -651,12 +694,7 @@ energy_monitor_status_t energy_monitor_start(uint32_t rate_hz) {
     requested_rate_hz = 0U;
     actual_rate_hz = 0U;
     pins_init();
-    if (target_sense_adc_init() != TARGET_SENSE_OK) {
-        return ENERGY_MONITOR_ADC_ERROR;
-    }
-    current_range = target_sense_current_range();
-    if (!current_calibrate()) {
-        requested_rate_hz = 0U;
+    if ((target_sense_adc_init() != TARGET_SENSE_OK) || !calibrate_for_setting()) {
         return ENERGY_MONITOR_ADC_ERROR;
     }
     requested_rate_hz = rate_hz;

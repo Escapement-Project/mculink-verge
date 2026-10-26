@@ -47,7 +47,8 @@ uint32_t target_sense_full_scale_mv(void) {
     return board_kind == BOARD_KIND_PRO ? 3000U : 3300U;
 }
 
-/** Bring the converter up on first use, so a probe nobody asks spends nothing on it.
+/** Bring the converter up on first use, so a probe nobody asks spends nothing on it. A Pro with
+ * energy capture uses it as it boots, to calibrate.
  *
  * FRO_HF clocks it rather than MAIN_CLK, so the rate does not move with the core clock: 96 MHz
  * over 8 is 12 MHz. The reference is VREFP. The plain board ties it to VDDA, the probe's own
