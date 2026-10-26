@@ -711,27 +711,32 @@ def check_energy_descriptors(c: Checker, elf: str, slots: int) -> None:
     ring, size = INTEGRATION_AT + layout["ring"], layout["size"] - layout["ring"]
     descriptors, descriptor_bytes = INTEGRATION_AT + layout["descriptors"], layout["ring"] - layout["descriptors"]
     c.check(size == 8192 and descriptor_bytes == 32, "energy ring/descriptor dimensions changed")
-    for restart in range(2):
-        probe.uc.mem_write(descriptors, bytes([0xee]) * descriptor_bytes)
-        probe.uc.mem_write(entry, bytes([0xee]) * 16)
-        probe.call("capture_ring_init")
-        c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC, "energy ring init did not return")
-        at = entry
-        destinations = []
-        for i in range(5):
-            config, source, destination, link = struct.unpack("<4I", probe.uc.mem_read(at, 16))
-            destinations.append((destination + 4 - ring) // 4096 - 1)
-            c.check(source == struct.unpack("<I", probe.uc.mem_read(descriptors + 4, 4))[0],
-                    "energy descriptor changed ADC source")
-            c.check(destination == ring + (i % 2 + 1) * 4096 - 4, "energy destination/stride mismatch")
-            if i != 0:
-                c.check((config >> 16) & 0x3ff == 1023 and (config >> 8) & 3 == 2,
-                        "energy descriptor count/word width mismatch")
-            c.check(link in (descriptors, descriptors + 16) and link % 16 == 0,
-                    f"energy descriptor link {link:#x} outside the ring or off 16 bytes")
-            at = link
-        c.check(destinations == [0, 1, 0, 1, 0], f"energy startup/restart {restart}: {destinations}")
-    c.note("actual energy descriptor links alternate segments from the first transfer, including restart")
+    for words in (1024, 64, 16):
+        for restart in range(2):
+            probe.uc.mem_write(descriptors, bytes([0xee]) * descriptor_bytes)
+            probe.uc.mem_write(entry, bytes([0xee]) * 16)
+            probe.call("capture_ring_init", words)
+            c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC, "energy ring init did not return")
+            published = struct.unpack("<I", probe.uc.mem_read(INTEGRATION_AT + layout["segment_words"], 4))[0]
+            c.check(published == words, f"{words}-word segments published as {published}")
+            at = entry
+            destinations = []
+            for i in range(5):
+                config, source, destination, link = struct.unpack("<4I", probe.uc.mem_read(at, 16))
+                destinations.append((destination + 4 - ring) // (words * 4) - 1)
+                c.check(source == struct.unpack("<I", probe.uc.mem_read(descriptors + 4, 4))[0],
+                        "energy descriptor changed ADC source")
+                c.check(destination == ring + (i % 2 + 1) * words * 4 - 4,
+                        f"{words}-word segments: energy destination/stride mismatch")
+                if i != 0:
+                    c.check((config >> 16) & 0x3ff == words - 1 and (config >> 8) & 3 == 2,
+                            f"{words}-word segments: energy descriptor count/word width mismatch")
+                c.check(link in (descriptors, descriptors + 16) and link % 16 == 0,
+                        f"energy descriptor link {link:#x} outside the ring or off 16 bytes")
+                at = link
+            c.check(destinations == [0, 1, 0, 1, 0], f"{words}-word energy startup/restart {restart}: {destinations}")
+    c.note("actual energy descriptor links alternate segments from the first transfer, including restart, at"
+           " 1024-, 64- and 16-word segments")
 
 
 def check_energy_control(c: Checker, elf0: str, elf1: str, slots: int) -> None:

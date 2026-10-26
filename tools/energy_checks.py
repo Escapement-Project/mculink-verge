@@ -1,5 +1,6 @@
 """Energy DMA ownership checks executed by image.py against both linked images."""
 
+import itertools
 import struct
 
 from cycles import Machine, Model, RETURN_MAGIC, SCRATCH, Target, sections, u32
@@ -84,7 +85,7 @@ def machine(elf, symbols):
 
 # struct energy_integration's members (src/dap_shared.h), which image.py lays out.
 INTEGRATION_FIELDS = ("low_range", "high_range", "scale_q32", "full_scale_mv", "rearm_below_na", "segments_at_start",
-                      "calibrated", "running", "consumed_bytes", "decoder", "on_high_range", "rearm_blocked",
+                      "segment_words", "calibrated", "running", "consumed_bytes", "decoder", "on_high_range", "rearm_blocked",
                       "previous_low", "held", "held_mv", "held_na", "descriptors", "ring")
 # Where a machine without CPU 0's image keeps the struct: SRAM0, which CPU 1's image leaves alone.
 INTEGRATION_AT = 0x20008000
@@ -422,6 +423,7 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1, layout)
     cpu1.uc.mem_write(base + offsets1["energy_available"], b"\x01")
     energy = attach_integration(cpu1, offsets1, layout)
     energy.put("running", 1, 1)
+    energy.put("segment_words", 1024, 4)  # as a start leaves it
     pending = 0
 
     def acknowledge(uc, at, size, data):
@@ -536,6 +538,9 @@ def check_hold(c, elf1, symbols1, offsets1, layout):
 
 # The fixture's calibration: this shunt current at every code.
 SHUNT_NA = 1_000_000
+# The fixture's capture: a rate the timer makes exactly, with full-size segments.
+FIXTURE_RATE = 16000
+FIXTURE_SCALE = (1 << 32) // FIXTURE_RATE
 DIVIDER_NA_PER_MV_Q16 = (65536 * 1_000_000 + 330_000) // 660_000
 
 
@@ -578,13 +583,15 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
             probe.call("cpu0:DMA0_IRQHandler")
 
         probe.integrate = integrate
-        for name, value in (("current_calibrated", 1), ("accumulator_started", 1), ("actual_rate_hz", 1024),
-                            ("requested_rate_hz", 1024), ("current_range", 1), ("adc_ready", 1), ("inputmux_ready", 1)):
+        for name, value in (("current_calibrated", 1), ("accumulator_started", 1), ("actual_rate_hz", FIXTURE_RATE),
+                            ("requested_rate_hz", FIXTURE_RATE), ("current_range", 1), ("adc_ready", 1),
+                            ("inputmux_ready", 1)):
             local(name, value)
         # What a start publishes for CPU 0: the plain board's full scale, the 350 mA setting's limit.
         # The capture is under way on the high range, which every sample here reads.
-        for field, value, size in (("running", 1, 1), ("calibrated", 1, 1), ("scale_q32", 4194304, 8),
-                                   ("full_scale_mv", 3300, 4), ("rearm_below_na", 1500000, 4), ("previous_low", 0, 1)):
+        for field, value, size in (("running", 1, 1), ("calibrated", 1, 1), ("scale_q32", FIXTURE_SCALE, 8),
+                                   ("segment_words", 1024, 4), ("full_scale_mv", 3300, 4),
+                                   ("rearm_below_na", 1500000, 4), ("previous_low", 0, 1)):
             energy.put(field, value, size)
         calibration = struct.pack("<4H7IB3x", 0, 65535, 0, 0, SHUNT_NA, SHUNT_NA, 0, 0, 0, 0, 0, 2)
         for name in ("low_range_calibration", "high_range_calibration"):
@@ -602,22 +609,28 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         hook = probe.uc.hook_add(UC_HOOK_MEM_WRITE, acknowledge, begin=address, end=address + 3)
         probe.uc.ctl_flush_tb()
 
-        def written(words, pending=False):
+        def written(words, pending=False, run_out=False):
+            """run_out: at a segment's end, the descriptor that has just run out, whose XFERCOUNT
+            reads 0x3FF, rather than the next one loaded."""
+            segment = energy.get("segment_words", 4)
             dma.set(0x58, ENERGY_MASK if pending else 0)
-            dma.set(0x408 + 21 * 16, ((1024 - words % 1024) - 1) << 16)
+            left = 1024 if run_out and words % segment == 0 else segment - words % segment
+            dma.set(0x408 + 21 * 16, (left - 1) << 16)
 
         def feed(words, start=0):
+            ring = 2 * energy.get("segment_words", 4)
             for i, word in enumerate(words):
-                energy.write("ring", u32(word), ((start + i) % 2048) * 4)
+                energy.write("ring", u32(word), ((start + i) % ring) * 4)
 
         def pause():
             value = probe.call("energy_monitor_pause")
             c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC and value == 1,
                     "energy tail pause did not return successfully")
 
-        def total(voltage_codes):
-            expected_q32 = sum(power_pw(v) * 4194304 for v in voltage_codes)
-            c.check(get("energy_accumulator_pairs", 8) == len(voltage_codes), "tail sample count mismatch")
+        def total(voltage_codes, scale=FIXTURE_SCALE):
+            expected_q32 = sum(power_pw(v) * scale for v in voltage_codes)
+            pairs = get("energy_accumulator_pairs", 8)
+            c.check(pairs == len(voltage_codes), f"tail sample count {pairs}, against {len(voltage_codes)}")
             c.check(get("energy_accumulator_pj", 8) == expected_q32 >> 32 and
                     get("energy_accumulator_fraction_q32") == expected_q32 & 0xffffffff,
                     "tail energy or fractional carry mismatch")
@@ -625,8 +638,8 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         return probe, dma, adc, put, get, local, written, feed, pause, total, hook
 
     limits = ((1900, 7), (3800, 6), (7600, 5), (15200, 4), (29197, 3), (54794, 2), (97560, 1), (100000, 0))
-    rates = (1000, 1900, 1901, 3800, 3801, 7600, 7601, 15200, 15201, 29197, 29198,
-             54794, 54795, 97560, 97561, 100000)
+    rates = (1, 10, 177, 178, 355, 356, 1000, 1900, 1901, 3800, 3801, 7600, 7601, 11377, 11378, 15200, 15201,
+             29197, 29198, 54794, 54795, 97560, 97561, 100000)
 
     def check_commands(words, average, calibration):
         tail = 0 if calibration else 3
@@ -646,8 +659,17 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         check_commands(words, average, False)
         c.check(int.from_bytes(adc.page[0xBC:0xC0], "little") == 0x01000001,
                 "ADC monitor is not hardware trigger 7 starting at command 1")
+        # About 10 ms of the ring's nine words a pair: a power of two, no longer than 10 ms and over
+        # 5, within 16 to 1024 words.
+        segment = probe.energy.get("segment_words", 4)
+        counts = [probe.energy.get("descriptors", 4, 16 * i) >> 16 & 0x3ff for i in range(2)]
+        c.check(segment & (segment - 1) == 0 and 16 <= segment <= 1024 and
+                (segment * 100 <= actual * 9 or segment == 16) and (segment * 200 > actual * 9 or segment == 1024) and
+                counts == [segment - 1] * 2 and dma.get(0x408 + 21 * 16) >> 16 & 0x3ff == segment - 1,
+                f"{actual} pairs/s: segments of {segment} words, descriptors count {counts}")
         probe.uc.hook_del(hook)
-    c.note("ADC monitor command registers at averaging boundaries use the actual timer rate")
+    c.note("ADC monitor command registers at averaging boundaries use the actual timer rate; segments hold"
+           " about 10 ms of pairs")
 
     # A start hands CPU 0 what CPU 1 holds, whatever the struct held before: the tables, whether
     # they are good, the rate's scale, the board's full scale and the setting's re-arm limit.
@@ -659,14 +681,15 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     local("current_range", 2)
     local("requested_rate_hz", 1000)
     for field, size in (("low_range", len(low)), ("high_range", len(high)), ("calibrated", 1), ("scale_q32", 8),
-                        ("full_scale_mv", 4), ("rearm_below_na", 4)):
+                        ("full_scale_mv", 4), ("rearm_below_na", 4), ("segment_words", 4)):
         probe.energy.write(field, bytes([0xee]) * size)
     value = probe.call("energy_capture_start", 1)
     actual = int.from_bytes(probe.uc.mem_read(probe.sym["actual_rate_hz"], 4), "little")
     published = (probe.energy.read("low_range", len(low)), probe.energy.read("high_range", len(high)),
                  probe.energy.get("calibrated", 1), probe.energy.get("scale_q32", 8),
-                 probe.energy.get("full_scale_mv", 4), probe.energy.get("rearm_below_na", 4))
-    c.check(value == 1 and published == (low, high, 1, (1 << 32) // actual, 3300, 400000),
+                 probe.energy.get("full_scale_mv", 4), probe.energy.get("rearm_below_na", 4),
+                 probe.energy.get("segment_words", 4))
+    c.check(value == 1 and published == (low, high, 1, (1 << 32) // actual, 3300, 400000, 64),
             f"a start published {published[2:]} and {'the' if published[:2] == (low, high) else 'other'} tables")
     probe.uc.hook_del(hook)
     c.note("a start publishes CPU 1's tables and constants to CPU 0's integration")
@@ -817,29 +840,77 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     total([])
     probe.uc.hook_del(hook)
 
-    probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
-    codes = []
-    stream = []
-    for i in range(5 * 1024 + 17):
-        sample, phase = divmod(i, 9)
-        code = 4096 * (sample % 15 + 1)
-        stream.append(result(phase + 1, code if phase == 0 else 1 if phase == 1 else 0) if phase < 3 else 0)
-        if phase == 2:
-            codes.append(code)
-    for segment in range(4):
-        feed(stream[segment * 1024:(segment + 1) * 1024], segment * 1024)
+    # The fixture's full-size segments, and the sizes a start picks at 1,000 and 10 pairs/s. After an
+    # odd number of segments through CPU 0, the drain runs past the ring's end.
+    for (rate, size), counted in itertools.product(((FIXTURE_RATE, 1024), (1000, 64), (10, 16)), (3, 4)):
+        probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+        if rate != FIXTURE_RATE:
+            local("requested_rate_hz", rate)
+            c.check(probe.call("energy_capture_start", 1) == 1, f"{rate} pairs/s: start failed")
+        segment = probe.energy.get("segment_words", 4)
+        if not c.check(segment == size, f"{rate} pairs/s: segments of {segment} words, not {size}"):
+            probe.uc.hook_del(hook)
+            continue
+        codes = []
+        stream = []
+        # Segments through CPU 0, one more completed but not yet counted, and part of the next.
+        for i in range((counted + 1) * size + min(17, size - 1)):
+            sample, phase = divmod(i, 9)
+            code = 4096 * (sample % 15 + 1)
+            stream.append(result(phase + 1, code if phase == 0 else 1 if phase == 1 else 0) if phase < 3 else 0)
+            if phase == 2:
+                codes.append(code)
+        for index in range(counted):
+            feed(stream[index * size:(index + 1) * size], index * size)
+            probe.integrate()
+            put("energy_segments", index + 1)
+        feed(stream[counted * size:], counted * size)
+        # A descriptor that has just run out, counted or not yet.
+        for pending in (False, True):
+            words = (counted + pending) * size
+            whole = (words - 3) // 9 + 1
+            written(words, pending=pending, run_out=True)
+            reply = probe.command(bytes([0x90, 1]))
+            c.check(reply[2] == 0 and int.from_bytes(reply[3:5], "little") == codes[whole - 1] and
+                    int.from_bytes(reply[7:11], "little") == whole,
+                    f"{size}-word segments, {counted} through CPU 0, run out{' and pending' if pending else ''}:"
+                    f" latest {reply.hex()}")
+        written(len(stream), pending=True)
+        reply = probe.command(bytes([0x90, 1]))
+        c.check(reply[2] == 0 and int.from_bytes(reply[3:5], "little") == codes[-1] and
+                int.from_bytes(reply[7:11], "little") == len(codes),
+                f"{size}-word segments, {counted} through CPU 0: latest {reply.hex()}")
+        dma.set(0x58, ENERGY_MASK | SWO_MASK)
+        pause()
+        total(codes, (1 << 32) // rate)
+        c.check(dma.get(0x58) == SWO_MASK, "tail drain cleared another channel's completion")
+        # Repeated pauses do not consume the settled extent again.
+        pause()
+        total(codes, (1 << 32) // rate)
+        probe.uc.hook_del(hook)
+
+    # Two completions CPU 0 never took leave more than the ring holds: an error, at every size.
+    for rate in (FIXTURE_RATE, 1000, 10):
+        probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+        if rate != FIXTURE_RATE:
+            local("requested_rate_hz", rate)
+            c.check(probe.call("energy_capture_start", 1) == 1, f"{rate} pairs/s: start failed")
+        put("energy_segments", get("energy_segments") + 2)
+        written(0, pending=True)
+        value = probe.call("energy_monitor_pause")
+        c.check(value == 0 and get("energy_dma_error", 1) == 1,
+                f"{rate} pairs/s: a drain past the ring returned {value}, error {get('energy_dma_error', 1)}")
+        probe.uc.hook_del(hook)
+
+    # CPU 0 stays inside the ring whatever CPU 1 left in the segment size.
+    for words in (0, 3, 1000, 0x10000, 0xFFFFFFFF):
+        probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+        probe.energy.put("segment_words", words, 4)
         probe.integrate()
-        put("energy_segments", segment + 1)
-    feed(stream[4 * 1024:], 4 * 1024)
-    written(len(stream), pending=True)
-    dma.set(0x58, ENERGY_MASK | SWO_MASK)
-    pause()
-    total(codes)
-    c.check(dma.get(0x58) == SWO_MASK, "tail drain cleared another channel's completion")
-    # Repeated pauses do not consume the settled extent again.
-    pause()
-    total(codes)
-    probe.uc.hook_del(hook)
+        consumed = probe.energy.get("consumed_bytes", 4)
+        c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC and consumed <= 8192,
+                f"segments of {words:#x} words: CPU 0 consumed {consumed} bytes of an 8192-byte ring")
+        probe.uc.hook_del(hook)
 
     for byte_wrap in (True, False):
         probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
@@ -884,6 +955,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     probe.energy.write("high_range", struct.pack("<4H7IB3x", 0, 65535, 0, 0, 0, 6553500, 0, 0, 100 << 16, 0, 0, 2))
     for segment, (label, currents, ranges, expected) in enumerate((
             ("one sample over", [10000] * (samples - 1) + [20000], [0] * samples, 0),
+            ("no pair, after one over", [], [], 0),
             ("under the limit, after one over", [10000] * samples, [0] * samples, 1),
             ("ends on the low range", [10000] * samples, [0] * (samples - 1) + [65535], 0),
             ("under the limit again", [10000] * samples, [0] * samples, 1))):
@@ -895,7 +967,8 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         probe.integrate()
         c.check(get("energy_range_retry_pending", 1) == expected, f"low-range re-arm, {label}")
     probe.uc.hook_del(hook)
-    c.note("a high-range segment under the low range's limit re-arms it; one over or a low-range end does not")
+    c.note("a high-range segment under the low range's limit re-arms it; one over, a low-range end or no pair"
+           " does not")
 
     # A pair whose range differs from the previous pair's takes the next pair's current, unless that
     # pair switched too; one still waiting at a pause keeps its own; a start counts as the low range.
@@ -920,7 +993,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
             if switched and following and following[2] == low:
                 code = following[1]
             mv = voltage * 2 * 3300 >> 16
-            q32 += mv * max(code * per_code[low] - (mv * DIVIDER_NA_PER_MV_Q16 >> 16), 0) * 4194304
+            q32 += mv * max(code * per_code[low] - (mv * DIVIDER_NA_PER_MV_Q16 >> 16), 0) * FIXTURE_SCALE
         return q32
 
     def words(capture):
@@ -968,7 +1041,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     c.check(probe.energy.get("held", 1) == 1, "the segment's last pair is not waiting")
     put("energy_dma_error", 1, 1)
     pause()
-    local("requested_rate_hz", 1024)
+    local("requested_rate_hz", FIXTURE_RATE)
     c.check(probe.call("energy_capture_start", 1) == 1, "new session after a failure did not start")
     third = [(36000, 1000, True), (37000, 2000, True)]
     feed(words(third))
@@ -1005,7 +1078,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         reply = probe.command(bytes([0x90, 1]))
         c.check(len(reply) == 21 and reply[2] == 7, f"{fault}: latest hid capture failure")
         reply = probe.command(bytes([0x90, 3]))
-        c.check(len(reply) == 19 and reply[2] == 7 and int.from_bytes(reply[3:11], "little") == (power_pw(32768) * 4194304 >> 32) // 1000 and
+        c.check(len(reply) == 19 and reply[2] == 7 and int.from_bytes(reply[3:11], "little") == (power_pw(32768) * FIXTURE_SCALE >> 32) // 1000 and
                 int.from_bytes(reply[11:19], "little") == 1, f"{fault}: total status/layout lost retained data")
         feed(words, 1024)
         probe.integrate()
@@ -1017,7 +1090,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         reply = probe.command(bytes([0x90, 0]) + u32(0))
         c.check(reply[2] == 4 and probe.command(bytes([0x90, 3]))[2] == 7,
                 f"{fault}: failed start cleared sticky status")
-        local("requested_rate_hz", 1024)
+        local("requested_rate_hz", FIXTURE_RATE)
         c.check(probe.call("energy_capture_start", 1) == 1, f"{fault}: new-session recovery failed")
         total([])
         c.check(probe.command(bytes([0x90, 1]))[2] == 2 and probe.command(bytes([0x90, 3]))[2] == 2,
@@ -1025,7 +1098,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         probe.uc.hook_del(hook)
     c.note("energy partial/full/pending segments, FIFO tail, split tuples, Q32 carry and session resume/reset")
     from energy_lifecycle import check_sequences
-    check_sequences(c, setup, result)
+    check_sequences(c, setup, result, FIXTURE_RATE)
 
 
 def check_calibration(c, elf, symbols, offsets, model_syscon):

@@ -171,9 +171,12 @@ the probe's target supply can give.
   firmware looks at the samples taken on the high range. If every one read below Table 4's limit for
   its setting, it clocks the latch. The comparator still holds the latch's reset, so a current that
   has come back above the threshold keeps the high range. Between Table 4's limit and the
-  threshold, a current stays on whichever range it is on. A DMA segment holds 341 samples, and the
-  first whole segment under the limit re-arms the low range. That is within 6.8 ms of the current
-  falling at 100,000 samples a second, and within 68 s at 10.
+  threshold, a current stays on whichever range it is on. The firmware sizes the segments to the
+  sample rate: 5 to 10 ms of samples each, and at most 114 samples, which is under 10 ms from
+  11,378 samples a second. The first whole segment under the limit re-arms the low range: within
+  about 20 ms of the current falling from 200 samples a second up, and within 2.3 ms at 100,000.
+  Below 356 samples a second a segment holds under two samples, and the low range comes back within
+  four.
 
 ### Calibration
 

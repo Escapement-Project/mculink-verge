@@ -57,21 +57,38 @@ static inline void energy_accumulator_publish(const energy_total_t* total) {
     dap_shared.energy_accumulator_fraction_q32 = total->fraction_q32;
 }
 
+/** The words this capture's two segments use. Byte positions wrap at 2^32, so the ring has to be a
+ *  power of two; the mask also keeps CPU 0 inside the array whatever CPU 1 left in segment_words. */
+static inline uint32_t energy_ring_words(const struct energy_integration* energy) {
+    return (((ENERGY_SEGMENTS * energy->segment_words) - 1U) & (ENERGY_RING_WORDS - 1U)) + 1U;
+}
+
 /** Integrates the ring up to `written`, a byte position. Only the core that owns the capture may
  *  call it. */
 static inline bool energy_consume_until(struct energy_integration* energy, uint32_t written) {
+    uint32_t const ring_words = energy_ring_words(energy);
     uint32_t const bytes = written - energy->consumed_bytes;
-    if ((bytes > ENERGY_RING_BYTES) || ((bytes % sizeof(uint32_t)) != 0U)) {
+    if ((bytes > (ring_words * sizeof(uint32_t))) || ((bytes % sizeof(uint32_t)) != 0U)) {
         dap_shared.energy_dma_error = 1U;
         return false;
     }
     energy_accumulator_write_begin();
     energy_total_t total = energy_accumulator_values();
-    while (energy->consumed_bytes != written) {
-        uint32_t const index = (energy->consumed_bytes / sizeof(uint32_t)) % ENERGY_RING_WORDS;
-        energy_consume_result(energy, energy->ring[index], &total);
-        energy->consumed_bytes += sizeof(uint32_t);
+    uint32_t index = (energy->consumed_bytes / sizeof(uint32_t)) & (ring_words - 1U);
+    uint32_t left = bytes / sizeof(uint32_t);
+    // To the ring's end, then on from its start.
+    while (left != 0U) {
+        uint32_t const run = left < (ring_words - index) ? left : (ring_words - index);
+        volatile uint32_t const* word = &energy->ring[index];
+        volatile uint32_t const* const end = word + run;
+        while (word != end) {
+            energy_consume_result(energy, *word, &total);
+            word++;
+        }
+        left -= run;
+        index = 0U;
     }
+    energy->consumed_bytes = written;
     energy_accumulator_publish(&total);
     energy_accumulator_write_end();
     return true;
@@ -79,16 +96,17 @@ static inline bool energy_consume_until(struct energy_integration* energy, uint3
 
 /** CPU 0's DMA interrupt, for each completed segment before it counts it: integrates the segment,
  *  and asks for the low range back when every sample in it stayed on the high range under the
- *  setting's limit. */
+ *  setting's limit. A segment that completed no pair says nothing either way. */
 static inline void energy_integrate(struct energy_integration* energy) {
     if (!energy->running || energy_capture_failed(energy)) {
         return;
     }
     uint32_t const completed = dap_shared.energy_segments - energy->segments_at_start + 1U;
-    if (energy_consume_until(energy, completed * ENERGY_SEGMENT_BYTES) && energy->on_high_range &&
-        !energy->rearm_blocked) {
+    uint32_t const segment_bytes = (energy_ring_words(energy) / ENERGY_SEGMENTS) * sizeof(uint32_t);
+    if (energy_consume_until(energy, completed * segment_bytes) && energy->on_high_range && !energy->rearm_blocked) {
         dap_shared.energy_range_retry_pending = 1U;
     }
+    energy->on_high_range = false;
     energy->rearm_blocked = false;
 }
 

@@ -47,11 +47,10 @@
 /** The HID report size, which CPU 0 checks against CFG_TUD_HID_EP_BUFSIZE. */
 #define DAP_SHARED_HID_REPORT_SIZE 64U
 
-#define ENERGY_SEGMENT_BYTES 4096U
-#define ENERGY_SEGMENT_WORDS (ENERGY_SEGMENT_BYTES / sizeof(uint32_t))
+/** A segment's most words: XFERCOUNT's 1024 transfers. Each capture picks its own size up to this. */
+#define ENERGY_SEGMENT_MAX_WORDS 1024U
 #define ENERGY_SEGMENTS 2U
-#define ENERGY_RING_WORDS (ENERGY_SEGMENT_WORDS * ENERGY_SEGMENTS)
-#define ENERGY_RING_BYTES (ENERGY_RING_WORDS * sizeof(uint32_t))
+#define ENERGY_RING_WORDS (ENERGY_SEGMENT_MAX_WORDS * ENERGY_SEGMENTS)
 
 /** Energy capture's integration state, in CPU 0's SRAM. src/energy_integration.h has the code
  *  both cores run on it, and who may change what. */
@@ -64,6 +63,7 @@ struct energy_integration {
     uint32_t full_scale_mv;
     uint32_t rearm_below_na; // UM11673 Table 4's low-range limit for the setting
     uint32_t segments_at_start; // dap_shared.energy_segments when the ring started
+    uint32_t segment_words; // a power of two, for the rate (src/energy_integration.h)
     bool calibrated;
     /** From a start to the end of the pause that follows: set and cleared by CPU 1 while CPU 0
      *  cannot take an energy completion. */

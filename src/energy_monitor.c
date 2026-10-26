@@ -21,11 +21,19 @@
 
 #define ENERGY_DMA_SOURCE (&ADC0->RESFIFO[0])
 
-#define ENERGY_SEGMENT_XFERCFG                                                                       \
+#define ENERGY_SEGMENT_XFERCFG(words)                                                                \
     (DMA_CHANNEL_XFERCFG_CFGVALID_MASK | DMA_CHANNEL_XFERCFG_RELOAD_MASK |                           \
      DMA_CHANNEL_XFERCFG_SETINTA_MASK | DMA_CHANNEL_XFERCFG_WIDTH(2U) |                               \
      DMA_CHANNEL_XFERCFG_SRCINC(0U) | DMA_CHANNEL_XFERCFG_DSTINC(1U) |                                \
-     DMA_CHANNEL_XFERCFG_XFERCOUNT(ENERGY_SEGMENT_WORDS - 1U))
+     DMA_CHANNEL_XFERCFG_XFERCOUNT((words) - 1U))
+
+/** Ring words a pair takes: three results, and DMA0 reads the FIFO three times for each. The
+ *  watermark request is still raised for two reads after the one that empties the FIFO, and
+ *  those read an empty FIFO. */
+#define ENERGY_WORDS_PER_PAIR 9U
+/** DMA0 has one completion flag a channel, so two segment ends must not come closer together than
+ *  CPU 0's interrupt takes. Any 16 words span a gap between pairs. */
+#define ENERGY_SEGMENT_MIN_WORDS 16U
 
 static uint32_t requested_rate_hz;
 static uint32_t actual_rate_hz;
@@ -319,8 +327,20 @@ static uint32_t rearm_below_na(void) {
     return current_range == TARGET_SENSE_CURRENT_RANGE_350_MA ? 1500000U : 400000U;
 }
 
+/** About 10 ms of pairs, so the low range re-arms within 20 ms of the current falling (PRO.md,
+ *  "Range switching"): the most words that take no longer, as a power of two. */
+static uint32_t segment_words(uint32_t rate_hz) {
+    uint32_t const words_in_10_ms = (rate_hz * ENERGY_WORDS_PER_PAIR) / 100U;
+    uint32_t words = ENERGY_SEGMENT_MAX_WORDS;
+    while ((words > ENERGY_SEGMENT_MIN_WORDS) && (words > words_in_10_ms)) {
+        words /= 2U;
+    }
+    return words;
+}
+
 static uint32_t ring_written(void) {
     uint32_t const mask = ENERGY_DMA_MASK;
+    uint32_t const segment = integration()->segment_words;
     for (;;) {
         uint32_t const sequence = dap_shared.energy_dma_sequence;
         __DMB();
@@ -336,8 +356,9 @@ static uint32_t ring_written(void) {
         if ((pending == still_pending) && (counted == (dap_shared.energy_segments - integration()->segments_at_start)) &&
             (sequence == dap_shared.energy_dma_sequence)) {
             uint32_t const left = ((xfercfg >> DMA_XFERCOUNT_SHIFT) & DMA_XFERCOUNT_MASK) + 1U;
-            uint32_t const words = ((counted + (pending ? 1U : 0U)) * ENERGY_SEGMENT_WORDS) +
-                                   (ENERGY_SEGMENT_WORDS - left);
+            // A descriptor that has run out reads 1024 to go (src/dma_ring.h), which is the next
+            // segment's start at every size a capture uses.
+            uint32_t const words = ((counted + (pending ? 1U : 0U)) * segment) + ((segment - left) & (segment - 1U));
             return words * sizeof(uint32_t);
         }
     }
@@ -393,20 +414,22 @@ static void timer_start(uint32_t rate_hz) {
     CTIMER2->TCR = CTIMER_TCR_CEN_MASK;
 }
 
-__attribute__((noinline)) static void capture_ring_init(void) {
+/** Out of line, so tools/image.py can call it. */
+__attribute__((noinline)) static void capture_ring_init(uint32_t words) {
     struct energy_integration* const energy = integration();
     uint32_t const source = (uint32_t)ENERGY_DMA_SOURCE;
+    energy->segment_words = words;
     for (uint32_t i = 0U; i < ENERGY_SEGMENTS; i++) {
-        energy->descriptors[i].xfercfg = ENERGY_SEGMENT_XFERCFG;
+        energy->descriptors[i].xfercfg = ENERGY_SEGMENT_XFERCFG(words);
         energy->descriptors[i].source_end = source;
-        energy->descriptors[i].destination_end = (uint32_t)&energy->ring[((i + 1U) * ENERGY_SEGMENT_WORDS) - 1U];
+        energy->descriptors[i].destination_end = (uint32_t)&energy->ring[((i + 1U) * words) - 1U];
         energy->descriptors[i].link = (uint32_t)&energy->descriptors[(i + 1U) % ENERGY_SEGMENTS];
     }
 
     volatile dma_descriptor_t* const entry = &dap_shared.dma_table[ENERGY_DMA_CHANNEL];
     entry->xfercfg = 0U;
     entry->source_end = source;
-    entry->destination_end = (uint32_t)&energy->ring[ENERGY_SEGMENT_WORDS - 1U];
+    entry->destination_end = (uint32_t)&energy->ring[words - 1U];
     entry->link = energy->descriptors[0].link;
 }
 
@@ -434,7 +457,8 @@ static bool capture_quiet(bool quiet) {
 
 __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     struct energy_integration* const energy = integration();
-    capture_ring_init();
+    actual_rate_hz = timer_effective_rate(requested_rate_hz);
+    capture_ring_init(segment_words(actual_rate_hz));
     DMA0->COMMON[0].ENABLECLR = ENERGY_DMA_MASK;
     DMA0->COMMON[0].ABORT = ENERGY_DMA_MASK;
     DMA0->COMMON[0].INTENCLR = ENERGY_DMA_MASK;
@@ -450,7 +474,6 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     energy->decoder.phase = ENERGY_EXPECT_VOLTAGE;
     energy->consumed_bytes = 0U;
     LPADC_DoResetFIFO0(ADC0);
-    actual_rate_hz = timer_effective_rate(requested_rate_hz);
     energy->scale_q32 = (UINT64_C(1) << 32U) / actual_rate_hz;
     energy->low_range = low_range_calibration;
     energy->high_range = high_range_calibration;
@@ -481,7 +504,7 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     DMA0->COMMON[0].INTENSET = ENERGY_DMA_MASK;
     DMA0->COMMON[0].ENABLESET = ENERGY_DMA_MASK;
     DMA0->CHANNEL[ENERGY_DMA_CHANNEL].XFERCFG =
-        ENERGY_SEGMENT_XFERCFG | DMA_CHANNEL_XFERCFG_SWTRIG_MASK;
+        ENERGY_SEGMENT_XFERCFG(energy->segment_words) | DMA_CHANNEL_XFERCFG_SWTRIG_MASK;
     // An edge whatever P0_17 was left at: CPU 0's re-arm can raise it after a pause lowered it.
     energy_latch_clock();
     timer_start(requested_rate_hz);
@@ -653,6 +676,7 @@ energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {
     if (!energy->running) {
         return ENERGY_MONITOR_STOPPED;
     }
+    uint32_t const ring_words = energy_ring_words(energy);
     energy_sample_decoder_t decoder;
     for (;;) {
         uint32_t const before = dap_shared.energy_accumulator_sequence;
@@ -668,12 +692,12 @@ energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {
             continue;
         }
         uint32_t const bytes = written - consumed;
-        if (bytes > ENERGY_RING_BYTES) {
+        if (bytes > (ring_words * sizeof(uint32_t))) {
             dap_shared.energy_dma_error = 1U;
             return ENERGY_MONITOR_DMA_ERROR;
         }
         for (uint32_t position = consumed; position != written; position += sizeof(uint32_t)) {
-            uint32_t const index = (position / sizeof(uint32_t)) % ENERGY_RING_WORDS;
+            uint32_t const index = (position / sizeof(uint32_t)) & (ring_words - 1U);
             (void)energy_sample_feed(&decoder, energy->ring[index]);
         }
         uint32_t const after = ring_written();
@@ -681,7 +705,7 @@ energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {
         if (before != dap_shared.energy_accumulator_sequence) {
             continue;
         }
-        if (after - consumed > ENERGY_RING_BYTES) {
+        if (after - consumed > (ring_words * sizeof(uint32_t))) {
             dap_shared.energy_dma_error = 1U;
             return ENERGY_MONITOR_DMA_ERROR;
         }

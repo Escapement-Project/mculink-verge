@@ -6,7 +6,7 @@ from cycles import RETURN_MAGIC
 from unicorn.arm_const import UC_ARM_REG_PC
 
 
-def check_sequences(c, setup, result):
+def check_sequences(c, setup, result, rate):
     for seed in (19, 811):
         rng = random.Random(seed)
         probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
@@ -65,7 +65,7 @@ def check_sequences(c, setup, result):
                 c.check(probe.command(b"\x90\x00\x00\x00\x00\x00")[2] == 4,
                         f"{context}: bad-rate start accepted")
                 total(session_codes)
-                local("requested_rate_hz", 1024)
+                local("requested_rate_hz", rate)
                 c.check(probe.call("energy_capture_start", 1) == 1, f"{context}: recovery start failed")
                 session_codes = []
                 total(session_codes)
