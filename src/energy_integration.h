@@ -22,6 +22,7 @@
 
 #include "dap_shared.h"
 #include "energy_monitor.h"
+#include "energy_pairs.h"
 #include "energy_samples.h"
 
 
@@ -54,30 +55,6 @@ static inline void energy_accumulator_publish(const energy_total_t* total) {
     dap_shared.energy_accumulator_pj = total->pj;
     dap_shared.energy_accumulator_pairs = total->pairs;
     dap_shared.energy_accumulator_fraction_q32 = total->fraction_q32;
-}
-
-/** The voltage channel halves node T (R73 and R75) on its way to VREFP's full scale. */
-static inline uint32_t energy_voltage_mv(uint16_t code, uint32_t full_scale_mv) {
-    return ((uint32_t)code * 2U * full_scale_mv) >> 16U;
-}
-
-/** CTRL_HIGH_CURR, converted after each pair: U18's Q, high while the low range is in. */
-static inline bool energy_low_range(uint16_t range_code) {
-    return range_code >= 32768U;
-}
-
-static inline void energy_consume_result(struct energy_integration* energy, uint32_t result, energy_total_t* total) {
-    if (!energy_sample_feed(&energy->decoder, result) || !energy->calibrated) {
-        return;
-    }
-    bool const low = energy_low_range(energy->decoder.last_range);
-    uint32_t const shunt_na = energy_shunt_na(energy->decoder.last_current, low ? &energy->low_range : &energy->high_range);
-    energy->on_high_range = !low;
-    if (!low && (shunt_na >= energy->rearm_below_na)) {
-        energy->rearm_blocked = true;
-    }
-    uint32_t const mv = energy_voltage_mv(energy->decoder.last_voltage, energy->full_scale_mv);
-    energy_total_add(total, (uint64_t)mv * energy_target_na(shunt_na, mv), energy->scale_q32);
 }
 
 /** Integrates the ring up to `written`, a byte position. Only the core that owns the capture may

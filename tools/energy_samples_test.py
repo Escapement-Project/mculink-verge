@@ -30,7 +30,7 @@ def main() -> int:
             env = os.environ.copy()
             env["ASAN_OPTIONS"] = ":".join(filter(None, (env.get("ASAN_OPTIONS"), "detect_leaks=0")))
             run([executable], env)
-            print(f"  {compiler}: sample tuples, calibration, Q32 fractions and saturation")
+            print(f"  {compiler}: sample tuples, calibration, Q32 fractions and saturation, range switches")
     return 0
 
 

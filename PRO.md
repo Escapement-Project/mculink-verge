@@ -241,6 +241,15 @@ With 5 ms it read it right.
   350 mA setting's high range by up to about 0.3%, through R4.
 - The sheet gives no tolerance for the divider. It moves the current taken off each sample, which
   matters in the low ranges.
+- Each sample converts the voltage, then the current, averaged over up to 128 conversions, and
+  then the range. A range switch while the current converts mixes codes from both ranges, and
+  neither table reads the mix right. So when a sample's range differs from the one before it, the
+  energy total takes the next sample's current for it, unless that sample switched too. The sample
+  keeps its own voltage. A start counts the sample before it as on the low range, because it
+  clocks the latch to the low range. That includes each resume, and capture resumes after every
+  target-sense read a host asks for. When capture pauses after a switching sample, before the next
+  one arrives, that sample keeps its own current. The reply with the latest sample shows each
+  sample as it was converted.
 - The reply with the latest sample reports whole microamps. The energy total adds up nanoamps.
 - While the probe measures the target's read latency, it stops the conversions, and the energy
   total leaves that time out. It measures at a connection at fast clocks, again when a measurement

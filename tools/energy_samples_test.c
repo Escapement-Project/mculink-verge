@@ -1,13 +1,73 @@
 #include <assert.h>
 #include <stdint.h>
 
+#include "energy_pairs.h"
 #include "energy_samples.h"
 
 static uint32_t word(uint32_t command, uint16_t code) {
     return 0x80070000U | (command << 24U) | code;
 }
 
+/** 30 nA a code on the low range and 6000 on the high, so a blended code read high shows. */
+static uint32_t nanoamps(uint16_t code, bool low) {
+    return (uint32_t)code * (low ? 30U : 6000U);
+}
+
+static void feed_pair(struct energy_integration* energy, energy_total_t* total, uint16_t voltage, uint16_t current,
+                      bool low) {
+    energy_consume_result(energy, word(1U, voltage), total);
+    energy_consume_result(energy, word(2U, current), total);
+    energy_consume_result(energy, word(3U, low ? 65535U : 0U), total);
+}
+
+static void expect_pair(energy_total_t* total, uint16_t voltage, uint32_t shunt_na) {
+    uint32_t const mv = energy_voltage_mv(voltage, 3300U);
+    energy_total_add(total, (uint64_t)mv * energy_target_na(shunt_na, mv), 4194304U);
+}
+
+/** src/energy_pairs.h: a pair whose range differs from the one before takes the next pair's
+ *  current, unless that pair switched too; a pair still waiting at a pause keeps its own. */
+static void test_range_switches(void) {
+    static struct energy_integration energy;
+    energy.low_range = (energy_calibration_t){
+        .code = {0U, 65535U}, .current_na = {0U, 30U * 65535U}, .slope_na_per_code_q16 = {30U << 16U}, .count = 2U};
+    energy.high_range = (energy_calibration_t){
+        .code = {0U, 65535U}, .current_na = {0U, 6000U * 65535U}, .slope_na_per_code_q16 = {6000U << 16U}, .count = 2U};
+    energy.scale_q32 = 4194304U;
+    energy.full_scale_mv = 3300U;
+    energy.rearm_below_na = UINT32_MAX;
+    energy.calibrated = true;
+    energy.previous_low = true; // as a start leaves it
+    energy_total_t total = {0};
+    energy_total_t expected = {0};
+
+    feed_pair(&energy, &total, 30000U, 50000U, true);
+    expect_pair(&expected, 30000U, nanoamps(50000U, true));
+    // Up, with a blended code: it takes the next pair's current.
+    feed_pair(&energy, &total, 31000U, 59000U, false);
+    assert(total.pairs == 1U);
+    feed_pair(&energy, &total, 32000U, 300U, false);
+    expect_pair(&expected, 31000U, nanoamps(300U, false));
+    expect_pair(&expected, 32000U, nanoamps(300U, false));
+    // Down, then straight back up: the first keeps its own, the second takes the one after.
+    feed_pair(&energy, &total, 33000U, 40000U, true);
+    feed_pair(&energy, &total, 34000U, 59000U, false);
+    feed_pair(&energy, &total, 35000U, 300U, false);
+    expect_pair(&expected, 33000U, nanoamps(40000U, true));
+    expect_pair(&expected, 34000U, nanoamps(300U, false));
+    expect_pair(&expected, 35000U, nanoamps(300U, false));
+    // Down on the last pair before a pause: its own reading.
+    feed_pair(&energy, &total, 36000U, 20000U, true);
+    assert(total.pairs == 6U);
+    energy_flush_held(&energy, &total);
+    expect_pair(&expected, 36000U, nanoamps(20000U, true));
+    assert(total.pairs == 7U && total.pj == expected.pj && total.fraction_q32 == expected.fraction_q32);
+    energy_flush_held(&energy, &total);
+    assert(total.pairs == 7U);
+}
+
 int main(void) {
+    test_range_switches();
     energy_sample_decoder_t decoder = {0};
     for (uint32_t i = 0U; i < 4096U; i++) {
         assert(!energy_sample_feed(&decoder, 0U));

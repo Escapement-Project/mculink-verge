@@ -359,6 +359,7 @@ static bool capture_drain(void) {
         }
         energy_consume_result(energy, result, &total);
     }
+    energy_flush_held(energy, &total);
     // An incomplete tuple belongs to this capture, even when the next one uses the same rate.
     energy->decoder.phase = ENERGY_EXPECT_VOLTAGE;
     energy_accumulator_publish(&total);
@@ -444,6 +445,8 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     dap_shared.energy_range_retry_enabled = 1U;
     energy->on_high_range = false;
     energy->rearm_blocked = false;
+    energy->previous_low = true;
+    energy->held = false;
     energy->decoder.phase = ENERGY_EXPECT_VOLTAGE;
     energy->consumed_bytes = 0U;
     LPADC_DoResetFIFO0(ADC0);

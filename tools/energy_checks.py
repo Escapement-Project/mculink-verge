@@ -85,7 +85,7 @@ def machine(elf, symbols):
 # struct energy_integration's members (src/dap_shared.h), which image.py lays out.
 INTEGRATION_FIELDS = ("low_range", "high_range", "scale_q32", "full_scale_mv", "rearm_below_na", "segments_at_start",
                       "calibrated", "running", "consumed_bytes", "decoder", "on_high_range", "rearm_blocked",
-                      "descriptors", "ring")
+                      "previous_low", "held", "held_mv", "held_na", "descriptors", "ring")
 # Where a machine without CPU 0's image keeps the struct: SRAM0, which CPU 1's image leaves alone.
 INTEGRATION_AT = 0x20008000
 
@@ -582,8 +582,9 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
                             ("requested_rate_hz", 1024), ("current_range", 1), ("adc_ready", 1), ("inputmux_ready", 1)):
             local(name, value)
         # What a start publishes for CPU 0: the plain board's full scale, the 350 mA setting's limit.
+        # The capture is under way on the high range, which every sample here reads.
         for field, value, size in (("running", 1, 1), ("calibrated", 1, 1), ("scale_q32", 4194304, 8),
-                                   ("full_scale_mv", 3300, 4), ("rearm_below_na", 1500000, 4)):
+                                   ("full_scale_mv", 3300, 4), ("rearm_below_na", 1500000, 4), ("previous_low", 0, 1)):
             energy.put(field, value, size)
         calibration = struct.pack("<4H7IB3x", 0, 65535, 0, 0, SHUNT_NA, SHUNT_NA, 0, 0, 0, 0, 0, 2)
         for name in ("low_range_calibration", "high_range_calibration"):
@@ -895,6 +896,91 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         c.check(get("energy_range_retry_pending", 1) == expected, f"low-range re-arm, {label}")
     probe.uc.hook_del(hook)
     c.note("a high-range segment under the low range's limit re-arms it; one over or a low-range end does not")
+
+    # A pair whose range differs from the previous pair's takes the next pair's current, unless that
+    # pair switched too; one still waiting at a pause keeps its own; a start counts as the low range.
+    # Distinct tables (30 and 6000 nA a code) make the swap show: a blended code read on the high
+    # range is hundreds of milliamps.
+    probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+    per_code = {True: 30, False: 6000}
+    for field, name, low in (("low_range", "low_range_calibration", True), ("high_range", "high_range_calibration", False)):
+        k = per_code[low]
+        table = struct.pack("<4H7IB3x", 0, 65535, 0, 0, 0, k * 65535, 0, 0, k << 16, 0, 0, 2)
+        # CPU 1's own, which a start publishes again, and CPU 0's copy.
+        probe.uc.mem_write(probe.sym[name], table)
+        probe.energy.write(field, table)
+    probe.energy.put("previous_low", 1, 1)  # as a start leaves it
+
+    def expected(capture):
+        """The rule, for one capture's pairs of (voltage code, current code, low range)."""
+        q32 = 0
+        for i, (voltage, code, low) in enumerate(capture):
+            switched = low != (capture[i - 1][2] if i else True)
+            following = capture[i + 1] if i + 1 < len(capture) else None
+            if switched and following and following[2] == low:
+                code = following[1]
+            mv = voltage * 2 * 3300 >> 16
+            q32 += mv * max(code * per_code[low] - (mv * DIVIDER_NA_PER_MV_Q16 >> 16), 0) * 4194304
+        return q32
+
+    def words(capture):
+        return [w for voltage, code, low in capture for w in (result(1, voltage), result(2, code), result(3, 65535 if low else 0))]
+
+    def accumulated():
+        return (get("energy_accumulator_pairs", 8), get("energy_accumulator_pj", 8), get("energy_accumulator_fraction_q32"))
+
+    def resume(label):
+        c.check(probe.command(bytes([0x86, 1, 0]))[1] == 0 and probe.energy.get("running", 1) == 1, f"{label}: resume failed")
+
+    # One capture: up mid-segment (a blended code), down then straight back up, down on segment 0's
+    # last pair, and up on the ring's last pair, whose next pair is still in the ADC's FIFO at the
+    # pause. Segment 0 goes through CPU 0's interrupt, the rest through CPU 1's drain.
+    shape = ([(50000, True)] * 100 + [(59000, False)] + [(300, False)] * 99 + [(40000, True), (59000, False)] +
+             [(300, False)] * 138 + [(40000, True)] + [(20000, True)] * 60 + [(59000, False)])
+    first = [(30000 + i % 7 * 1000, code, low) for i, (code, low) in enumerate(shape)]
+    tail = (41000, 300, False)
+    feed(words(first))
+    probe.integrate()
+    written(3 * len(first))
+    adc.fifo = words([tail])
+    pause()
+    q32 = expected(first + [tail])
+    c.check(accumulated() == (len(first) + 1, q32 >> 32, q32 & 0xffffffff),
+            f"range switches: {accumulated()[:2]}, against {len(first) + 1} pairs and {q32 >> 32} pJ")
+
+    # A resume after a capture that ended high: the first low pair keeps its own, and a switch on the
+    # last pair keeps its own at the pause.
+    resume("resume")
+    second = [(36000, 1000, True), (37000, 2000, True), (38000, 59000, False)]
+    feed(words(second))
+    written(3 * len(second))
+    pause()
+    q32 += expected(second)
+    c.check(accumulated() == (len(first) + 1 + len(second), q32 >> 32, q32 & 0xffffffff),
+            f"range switch across a resume: {accumulated()[:2]}, against {q32 >> 32} pJ")
+
+    # A capture that fails while a pair waits drops it; the next session starts clean. CPU 0's
+    # interrupt takes a segment that ends on a switch, then the failure stops the drain.
+    resume("resume before a failure")
+    segment = words([(36000, 10000, True)] * 340 + [(37000, 59000, False)]) + [result(1, 36000)]
+    feed(segment)
+    probe.integrate()
+    c.check(probe.energy.get("held", 1) == 1, "the segment's last pair is not waiting")
+    put("energy_dma_error", 1, 1)
+    pause()
+    local("requested_rate_hz", 1024)
+    c.check(probe.call("energy_capture_start", 1) == 1, "new session after a failure did not start")
+    third = [(36000, 1000, True), (37000, 2000, True)]
+    feed(words(third))
+    written(3 * len(third))
+    pause()
+    q32 = expected(third)
+    c.check(accumulated() == (len(third), q32 >> 32, q32 & 0xffffffff),
+            f"new session after a failure with a pair waiting: {accumulated()[:2]}, against {len(third)} pairs")
+    probe.uc.hook_del(hook)
+    c.note("a pair across a range switch takes the next pair's current unless that one switched too, across"
+           " segments, the FIFO's tail and a pause; a start counts as the low range; a failed capture's"
+           " waiting pair stays out of the next session")
 
     probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
     adc.active_reads = -1

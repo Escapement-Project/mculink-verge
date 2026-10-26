@@ -75,6 +75,13 @@ struct energy_integration {
     /** What the samples since the last segment say about re-arming the low range. */
     bool on_high_range;
     bool rearm_blocked;
+    /** A pair whose range differs from the one before may have converted its current across the
+     *  switch, so it waits for the next pair's current (src/energy_pairs.h). A start sets the range
+     *  before to low, because it clocks the latch to the low range. */
+    bool previous_low;
+    bool held;
+    uint32_t held_mv;
+    uint32_t held_na; // its own reading, for a pause that comes before the next pair
 
     DAP_SHARED_DMA_DESCRIPTOR_ALIGN volatile dma_descriptor_t descriptors[ENERGY_SEGMENTS];
     volatile uint32_t ring[ENERGY_RING_WORDS];
