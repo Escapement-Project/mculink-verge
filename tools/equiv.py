@@ -22,7 +22,6 @@ import argparse
 import concurrent.futures
 import itertools
 import os
-import random
 import sys
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
@@ -453,11 +452,8 @@ def main() -> int:
     ap.add_argument("reference")
     ap.add_argument("candidate")
     ap.add_argument("--wire", choices=[*WIRES, "all"], default="swd",
-                    help="all: every command's matrix for every wire, the release run")
+                    help="all: every command's matrix for every wire")
     ap.add_argument("--command", choices=["block", "transfer", "sequence"], default="block")
-    ap.add_argument("--sample", type=int, metavar="N",
-                    help="N cases a wire, drawn from all of its commands' matrices, instead of one matrix whole")
-    ap.add_argument("--seed", default="0", help="what --sample draws from; the same seed draws the same cases")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--ignore-samples", action="store_true", help="compare without the SWDIO loads")
     ap.add_argument("--clock", type=float, default=10.0, help="SWD clock in MHz for the SWD cases")
@@ -465,17 +461,10 @@ def main() -> int:
     args = ap.parse_args()
     set_globals(args.ignore_samples, int(args.clock * 1e6))
 
-    wires = WIRES if args.wire == "all" else (args.wire,)
-    if args.sample or args.wire == "all":
-        cases = []
-        for wire in wires:
-            pool = [(f"{wire} {name}", *rest) for command in wire_commands(wire)
-                    for name, *rest in cases_for(wire, command)[0]]
-            if args.sample:
-                pool = random.Random(f"{args.seed}:{wire}").sample(pool, min(args.sample, len(pool)))
-            cases += pool
-        summary = (f"sampled cases ({args.sample} a wire from {', '.join(wires)}, seed {args.seed})" if args.sample
-                   else f"cases, every matrix of {', '.join(wires)}")
+    if args.wire == "all":
+        cases = [(f"{wire} {name}", *rest) for wire in WIRES for command in wire_commands(wire)
+                 for name, *rest in cases_for(wire, command)[0]]
+        summary = f"cases, every matrix of {', '.join(WIRES)}"
     else:
         cases, summary = cases_for(args.wire, args.command)
 

@@ -7,12 +7,13 @@
 in the default configuration and with SWD_CODEGEN and JTAG_CODEGEN off, because an optimisation
 that holds under one compiler has been seen not to under the other. A generated image also runs its
 two-pin and four-wire clocks against targets that answer by time, at every period up to 40 cycles
-and three longer ones, and a sample of tools/equiv.py's cases on every wire against the same
-compiler's ARM paths, drawn afresh for each commit. It runs the host checks and image builds
-together, then runs image checks, timing sweeps and the equivalence samples together. Each timing sweep simulates its independent clock points in parallel.
+and three longer ones, and every one of tools/equiv.py's matrices against the same compiler's ARM
+paths. It runs the host checks and image builds together, then runs image checks, timing sweeps
+and the equivalence matrices together. Each timing sweep simulates its independent clock points in
+parallel.
 
-The parallel stages share a CPU budget across host checks, builds, emulator wire checks and timed
-sweeps. Builds go to build-gate/.
+The parallel stages share a CPU budget across host checks, builds, emulator wire checks, timed
+sweeps and the equivalence matrices. Builds go to build-gate/.
 
 CI can run the host checks separately. For firmware, it can select one compiler or one image
 configuration.
@@ -58,8 +59,6 @@ HOST_CHECKS = (
 )
 IMAGES = [(toolchain, codegen) for toolchain in ("gcc", "clang") for codegen in (False, True)]
 TIMED_WIRES = ("cjtag", "cjtag2", "cjtag5", "cjtag6", "jtag")
-# tools/equiv.py cases a wire, for each compiler's generated image against its ARM paths.
-EQUIV_SAMPLE = 32
 
 
 def name(toolchain: str, codegen: bool) -> str:
@@ -196,16 +195,12 @@ def main() -> int:
         jobs_per_timed_check = max(10, jobs_per_timed_check)
     timed_checks = [(label, [*args, "--jobs", str(jobs_per_timed_check)])
                     for label, args in timed_checks]
-    # Each generated image against its compiler's ARM paths, on a sample that moves with the
-    # commit; `tools/equiv.py --wire all` runs every matrix before a release.
-    seed = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
-                          check=False).stdout.strip()
     directories = {(toolchain, codegen): directory for toolchain, codegen, directory in built}
     equiv_checks = [
-        (f"equivalence sample {toolchain}, seed {seed}",
+        (f"equivalence {toolchain}, every matrix",
          ["uv", "run", "tools/equiv.py", os.path.join(directories[(toolchain, False)], "mculink_cjtag_core1.elf"),
           os.path.join(directories[(toolchain, True)], "mculink_cjtag_core1.elf"),
-          "--wire", "all", "--sample", str(EQUIV_SAMPLE), "--seed", seed, "--ignore-samples"])
+          "--wire", "all", "--ignore-samples", "--jobs", str(max(1, cpu_count // 2))])
         for toolchain in ("gcc", "clang") if (toolchain, False) in directories and (toolchain, True) in directories
     ]
     tasks = image_checks + timed_checks + equiv_checks

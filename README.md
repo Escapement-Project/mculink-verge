@@ -168,8 +168,7 @@ builds over 536 SWD block cases, 188 four-wire JTAG cases, 128 two-pin cases in 
 turnaround length and chain layout, with and without the data phase and idle cycles, all sixteen
 address patterns, block sizes from one word to a full packet, and the match values, match masks and
 timestamps only `DAP_Transfer` reaches. It requires identical wire events and identical replies
-from both. `--wire all` runs every matrix for every wire; the gate runs 32 of each wire's cases,
-drawn from the commit.
+from both. `--wire all` runs every matrix for every wire, and the gate runs that for each compiler.
 
 Address-pattern and word-count coverage were added after the implementation. The original suite
 used two request values that left parity inputs fixed. It also sent two words in every block

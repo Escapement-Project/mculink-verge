@@ -24,8 +24,7 @@ Code that predates the rule and breaks it, which is the work list:
 **Gate on both compilers.** `uv run tools/gate.py` before committing firmware or tool changes. It
 runs the host checks, then builds gcc and clang, each in the default configuration and with
 `SWD_CODEGEN` and `JTAG_CODEGEN` off. It holds every image to its baselines in the emulator, and
-each generated image to its compiler's ARM paths on a sample of `tools/equiv.py`'s cases, drawn
-afresh for each commit. `tools/equiv.py --wire all` runs every matrix; run it before a release.
+each generated image to its compiler's ARM paths on every `tools/equiv.py` matrix.
 `ninja -C <build> check` checks one image only.
 
 **Keep README.md's "Limits" table current.** It is the record of the fastest each transport
