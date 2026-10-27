@@ -5,7 +5,8 @@
 """Reproducible stateful mutation fuzzing of the linked command dispatcher.
 
 Run directly for a longer campaign, or use the bounded seeds included in image.py. The corpus
-avoids target power, reboot and calibration commands; no USB device is opened.
+avoids target power, reboot and calibration commands, and takes only the Pro commands that read;
+no USB device is opened.
 """
 
 import argparse
@@ -13,6 +14,17 @@ import random
 
 from cycles import Model, RETURN_MAGIC, SCRATCH, build, u16, u32
 from unicorn.arm_const import UC_ARM_REG_PC
+
+
+# The read-only Pro commands, as the plain board answers them: DIO refused, energy unavailable with
+# every field zero, the SPI and I2C bridges unavailable.
+PRO_READS = ((b"\x8e\x00\x00\x00", bytes.fromhex("8eff0000000000")),
+             (b"\x90\x01", b"\x90\x00\x03" + bytes(18)),
+             (b"\x90\x03", b"\x90\x00\x03" + bytes(16)),
+             (b"\x90\x04\x00", b"\x90\x00\x03" + bytes(25)),
+             (b"\x90\x04\x01", b"\x90\x00\x03" + bytes(25)),
+             (b"\x91" + bytes(7), b"\x91\x02\x00\x00"),
+             (b"\x92" + bytes(9), b"\x92\x02\x00\x00"))
 
 
 def campaign(c, elf, symbols, *, seed, steps, capacity):
@@ -51,7 +63,7 @@ def campaign(c, elf, symbols, *, seed, steps, capacity):
     execute(b"\x04\x00" + u16(0) + u16(0), expected=b"\x04\x00")
     expected_port = 1
     for _ in range(steps):
-        choice = rng.randrange(7)
+        choice = rng.randrange(8)
         if choice == 0:
             expected_port = rng.randrange(3)
             if expected_port == 0:
@@ -83,12 +95,74 @@ def campaign(c, elf, symbols, *, seed, steps, capacity):
         elif choice == 5:
             execute(rng.choice((b"\x15\x01\x04", b"\x05\x00\x01\x02",
                                 b"\x06\x00\x02\x00\x02", b"\x13\x00")))
+        elif choice == 6:
+            # Alone, and in a batch whose next command has to be read from the right place.
+            payload, reply = rng.choice(PRO_READS)
+            if rng.random() < 0.5:
+                execute(payload, expected=reply)
+            else:
+                execute(bytes([0x7f, 2]) + payload + b"\x02\x01", expected=bytes([0x7f, 2]) + reply + b"\x02\x01")
+                expected_port = 1
         else:
             execute(bytes([rng.choice((0x20, 0x40, 0x7e, 0xa0, 0xfe))]) + rng.randbytes(rng.randrange(16)),
                     expected=b"\xff")
         assert bytes(probe.uc.mem_read(state, 1)) == bytes([expected_port]), f"port changed: seed={seed} history={history[-8:]}"
         execute(b"\x00\xff", expected=b"\x00\x02\x00\x02")
     c.note(f"dispatcher mutation sequence: seed={seed}, {steps} steps, {capacity}-byte transport, recovery after every step")
+
+
+VENDOR_MODES = (0, 1, 2, 3, 4, 5, 6, 7, 8, 0x10, 0x80, 0xE0, 0xFF)
+
+
+def check_vendor_plans(c, elf, symbols, boards):
+    """Every vendor id from 0x80 to 0x9F, with each mode byte above: the reply fits the size
+    checker's plan (src/dap_packet.h), and the handler reads as much of the request as the plan
+    says. A handler the checker lacks is planned as one byte each way, so it writes its reply past
+    a full transport, and in a batch the next command is read from the wrong place.
+
+    The plan's reply size is the smallest capacity the dispatcher accepts. `boards` maps a name to
+    a setup that takes the machine."""
+    length = 64
+    requests = 0
+    response = SCRATCH + 0x1000
+
+    def run(probe, entry, request, capacity):
+        probe.uc.mem_write(SCRATCH, request)
+        probe.uc.mem_write(response - 32, b"\xee" * (capacity + 64))
+        args = (SCRATCH, length, capacity, response) if entry == "DAP_ExecuteCommandSized" else (SCRATCH, response)
+        packed = probe.call(entry, *args)
+        returned = probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC
+        past = len(bytes(probe.uc.mem_read(response + capacity, 32)).rstrip(b"\xee"))
+        return returned, packed >> 16, packed & 0xffff, past
+
+    for name, setup in boards.items():
+        probe = build(elf, "swd", True, Model())
+        probe.sym.update({symbol: address for symbol, (address, _) in symbols.items()})
+        setup(probe)
+        for command in range(0x80, 0xA0):
+            for mode in VENDOR_MODES:
+                request = bytes([command, mode]) + bytes(length - 2)
+                label = f"{name} board, vendor {command:#04x} mode {mode:#04x}"
+                requests += 1
+                low, high = 1, 512
+                if run(probe, "DAP_ExecuteCommandSized", request, high)[1] == length:
+                    continue  # the plan refuses this request at any capacity
+                while low < high:
+                    middle = (low + high) // 2
+                    if run(probe, "DAP_ExecuteCommandSized", request, middle)[1] != length:
+                        high = middle
+                    else:
+                        low = middle + 1
+                returned, planned_in, produced, past = run(probe, "DAP_ExecuteCommandSized", request, low)
+                if not c.check(returned, f"{label}: did not return"):
+                    continue
+                c.check(produced <= low and not past,
+                        f"{label}: a {produced}-byte reply, {past} bytes written past the plan's {low}")
+                returned, handled_in, produced, past = run(probe, "DAP_ProcessCommand", request, low)
+                c.check(returned and handled_in == planned_in,
+                        f"{label}: the handler took {handled_in} request bytes, the plan {planned_in}")
+    c.note(f"vendor ids 0x80-0x9F: {requests} requests on {len(boards)} boards; each reply within the size"
+           f" checker's plan, each handler's request length the plan's")
 
 
 def main():

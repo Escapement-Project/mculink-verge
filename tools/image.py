@@ -1257,6 +1257,19 @@ class DioPins:
         self.fights.clear()
 
 
+def vendor_boards(elf: str, request_slots: int) -> dict:
+    """The plain board as a machine starts, and the Pro with its DIO pins set up."""
+    board = shared_offsets(request_slots, "board", small_enums=short_enums(elf))["board"]
+
+    def pro(probe) -> None:
+        probe.uc.mem_write(probe.sym["dap_shared"] + board, bytes([BOARD_PRO]))
+        probe.call("board_debug_pins_init")
+        if "dio_init" in probe.sym:
+            probe.call("dio_init")
+
+    return {"plain": lambda probe: None, "Pro": pro}
+
+
 def check_dio(c: Checker, elf: str, request_slots: int) -> None:
     """Vendor 0x8E drives the Pro's DIO pins and nothing else's: refused, and no pin stored to, on
     the other boards and with J15 fitted. On the Pro it turns a group round whole or not at all,
@@ -2177,10 +2190,11 @@ def main() -> int:
     check_response_bounds(c, args.core1, args.packet_size)
     check_request_bounds(c, args.core1, args.packet_size)
     check_bounded_commands(c, args.core1, slots)
-    from dispatch_fuzz import campaign
+    from dispatch_fuzz import campaign, check_vendor_plans
     for seed in (23, 24301):
         for capacity in (64, 512):
             campaign(c, args.core1, symbols_with_size(args.core1), seed=seed, steps=128, capacity=capacity)
+    check_vendor_plans(c, args.core1, symbols_with_size(args.core1), vendor_boards(args.core1, slots))
     check_jtag_chain(c, args.core1)
     check_energy_descriptors(c, args.core1, slots)
     check_energy_control(c, args.elf, args.core1, slots)
