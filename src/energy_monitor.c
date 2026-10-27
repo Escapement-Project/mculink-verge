@@ -29,7 +29,9 @@
 
 /** Ring words a pair takes: three results, and DMA0 reads the FIFO three times for each. The
  *  watermark request is still raised for two reads after the one that empties the FIFO, and
- *  those read an empty FIFO. */
+ *  those read an empty FIFO. UM11126 asks for a watermark of at least 2 with DMA, and the
+ *  watermark stays at 0 regardless: at 2 the request sometimes stops one result short, so a pair's
+ *  last results wait in the FIFO for the next pair's and the latest reply runs a pair behind. */
 #define ENERGY_WORDS_PER_PAIR 9U
 /** DMA0 has one completion flag a channel, so two segment ends must not come closer together than
  *  CPU 0's interrupt takes. Any 16 words span a gap between pairs. */
