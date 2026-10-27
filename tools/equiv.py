@@ -22,6 +22,7 @@ import argparse
 import concurrent.futures
 import itertools
 import os
+import random
 import sys
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
@@ -389,24 +390,20 @@ def jtag_command_cases(command: str) -> list[tuple]:
     return cases
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("reference")
-    ap.add_argument("candidate")
-    ap.add_argument("--wire", choices=["swd", "jtag", "cjtag", "cjtag2", "cjtag5", "cjtag6"], default="swd")
-    ap.add_argument("--command", choices=["block", "transfer", "sequence"], default="block")
-    ap.add_argument("--verbose", action="store_true")
-    ap.add_argument("--ignore-samples", action="store_true", help="compare without the SWDIO loads")
-    ap.add_argument("--clock", type=float, default=10.0, help="SWD clock in MHz for the SWD cases")
-    ap.add_argument("--jobs", type=int, default=available_cpus(), help="processes to run the cases in")
-    args = ap.parse_args()
-    set_globals(args.ignore_samples, int(args.clock * 1e6))
+WIRES = ("swd", "jtag", "cjtag", "cjtag2", "cjtag5", "cjtag6")
 
-    # Each case: (name, runner, args, kwargs); the runner takes the image first.
-    if args.wire in ("cjtag", "cjtag2", "cjtag5", "cjtag6", "jtag") and args.command != "block":
-        cases = [(name, run_jtag_commands, (args.wire, *case), {}) for name, case in jtag_command_cases(args.command)]
-        summary = f"{'two-pin' if args.wire in TWO_PIN else 'four-wire'} {args.command} cases"
-    elif args.command == "transfer":
+
+def wire_commands(wire: str) -> tuple[str, ...]:
+    """The commands a wire's matrices cover: SWD has no sequence cases of its own."""
+    return ("block", "transfer") if wire == "swd" else ("block", "transfer", "sequence")
+
+
+def cases_for(wire: str, command: str) -> tuple[list[tuple], str]:
+    """Each case: (name, runner, args, kwargs); the runner takes the image first."""
+    if wire in ("cjtag", "cjtag2", "cjtag5", "cjtag6", "jtag") and command != "block":
+        cases = [(name, run_jtag_commands, (wire, *case), {}) for name, case in jtag_command_cases(command)]
+        summary = f"{'two-pin' if wire in TWO_PIN else 'four-wire'} {command} cases"
+    elif command == "transfer":
         kinds = ("read", "write", "match-hit", "match-miss", "timestamped", "address-sweep")
         cases = [
             (f"ack={ack} {kind} turnaround={turnaround} idle={idle} word=0x{word:08x}", run_transfer,
@@ -415,16 +412,16 @@ def main() -> int:
                 ACKS, kinds, (1, 2), (0, 3), (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF))
         ]
         summary = "DAP_Transfer cases"
-    elif args.wire in TWO_PIN:
+    elif wire in TWO_PIN:
         cases = [
             (f"ack={ack} {'read' if read else 'write'} idle={idle} word=0x{word:08x} {'delay-free' if fast else 'paced'}",
-             run_cjtag, (ack, read, idle, word, fast), {"wire_name": args.wire})
+             run_cjtag, (ack, read, idle, word, fast), {"wire_name": wire})
             for ack, read, idle, word, fast in itertools.product(
                 (0, 1, 2, 4, 7), (True, False), (0, 3), (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF), (False, True))
         ]
-        cases += size_cases(run_cjtag, ack=2, idle=0, word=0xA5A5_5A5A, fast=False, wire_name=args.wire)
+        cases += size_cases(run_cjtag, ack=2, idle=0, word=0xA5A5_5A5A, fast=False, wire_name=wire)
         summary = "two-pin cases"
-    elif args.wire == "jtag":
+    elif wire == "jtag":
         # A chain of one never reaches the bypass branches, which is where a rewritten data phase
         # is least likely to be noticed. (2, 0) puts a bypass after the data, (2, 1) before it.
         chains = ((1, 0), (2, 0), (2, 1))
@@ -448,6 +445,39 @@ def main() -> int:
         cases += size_cases(run, ack="ok", turnaround=1, data_phase=False, idle=0, word=0xA5A5_5A5A,
                             bad_parity=False)
         summary = "cases"
+    return cases, summary
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("reference")
+    ap.add_argument("candidate")
+    ap.add_argument("--wire", choices=[*WIRES, "all"], default="swd",
+                    help="all: every command's matrix for every wire, the release run")
+    ap.add_argument("--command", choices=["block", "transfer", "sequence"], default="block")
+    ap.add_argument("--sample", type=int, metavar="N",
+                    help="N cases a wire, drawn from all of its commands' matrices, instead of one matrix whole")
+    ap.add_argument("--seed", default="0", help="what --sample draws from; the same seed draws the same cases")
+    ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--ignore-samples", action="store_true", help="compare without the SWDIO loads")
+    ap.add_argument("--clock", type=float, default=10.0, help="SWD clock in MHz for the SWD cases")
+    ap.add_argument("--jobs", type=int, default=available_cpus(), help="processes to run the cases in")
+    args = ap.parse_args()
+    set_globals(args.ignore_samples, int(args.clock * 1e6))
+
+    wires = WIRES if args.wire == "all" else (args.wire,)
+    if args.sample or args.wire == "all":
+        cases = []
+        for wire in wires:
+            pool = [(f"{wire} {name}", *rest) for command in wire_commands(wire)
+                    for name, *rest in cases_for(wire, command)[0]]
+            if args.sample:
+                pool = random.Random(f"{args.seed}:{wire}").sample(pool, min(args.sample, len(pool)))
+            cases += pool
+        summary = (f"sampled cases ({args.sample} a wire from {', '.join(wires)}, seed {args.seed})" if args.sample
+                   else f"cases, every matrix of {', '.join(wires)}")
+    else:
+        cases, summary = cases_for(args.wire, args.command)
 
     jobs = [(args.reference, args.candidate, case) for case in cases]
     with concurrent.futures.ProcessPoolExecutor(
