@@ -253,6 +253,12 @@ With 5 ms it read it right.
   target-sense read a host asks for. When capture pauses after a switching sample, before the next
   one arrives, that sample keeps its own current. The reply with the latest sample shows each
   sample as it was converted.
+- The voltage's acquisition time is 7.5 cycles of the 12 MHz ADC clock; the current's and the
+  range's are 3.5. With 3.5 cycles, an unaveraged voltage read 0.27% higher than one averaged 16
+  times, and the energy total carried that error. With 7.5, the voltage reads within 0.02% of 16
+  averages at 10,000 samples a second, at every averaging. A sample with N averages takes
+  27 + 52 N cycles, measured. The firmware uses the most averaging that finishes a sample before
+  the next is due (HOST-INTERFACE.md).
 - While the probe measures the target's read latency, it stops the conversions, and the energy
   total leaves that time out. It measures at a connection at fast clocks, again when a measurement
   contradicts itself, and when a host asks. With capture running, the measurement found later

@@ -115,26 +115,28 @@ target_sense_current_range_t target_sense_current_range(void) {
 }
 
 static lpadc_hardware_average_mode_t monitor_average_mode(uint32_t rate_hz) {
-    // Limits include the third, unaveraged range-state conversion chained to each sample.
-    if (rate_hz <= 1900U) {
+    // A pair at N averages takes 27 + 52 N ADCK cycles, the unaveraged range-state conversion
+    // included. Each limit is the fastest effective rate whose period holds one, which a longer
+    // sample time in configure_pair_commands moves.
+    if (rate_hz <= 1794U) {
         return kLPADC_HardwareAverageCount128;
     }
-    if (rate_hz <= 3800U) {
+    if (rate_hz <= 3575U) {
         return kLPADC_HardwareAverageCount64;
     }
-    if (rate_hz <= 7600U) {
+    if (rate_hz <= 7096U) {
         return kLPADC_HardwareAverageCount32;
     }
-    if (rate_hz <= 15200U) {
+    if (rate_hz <= 13969U) {
         return kLPADC_HardwareAverageCount16;
     }
-    if (rate_hz <= 29197U) {
+    if (rate_hz <= 27088U) {
         return kLPADC_HardwareAverageCount8;
     }
-    if (rate_hz <= 54794U) {
+    if (rate_hz <= 51063U) {
         return kLPADC_HardwareAverageCount4;
     }
-    if (rate_hz <= 97560U) {
+    if (rate_hz <= 91603U) {
         return kLPADC_HardwareAverageCount2;
     }
     return kLPADC_HardwareAverageCount1;
@@ -147,12 +149,15 @@ static void configure_pair_commands(lpadc_hardware_average_mode_t average, uint3
     command->sampleChannelMode = kLPADC_SampleChannelSingleEndSideA;
     command->conversionResolutionMode = kLPADC_ConversionResolutionHigh;
     command->hardwareAverageMode = average;
-    command->sampleTimeMode = kLPADC_SampleTimeADCK3;
+    // At ADCK3 the voltage read 0.27% higher unaveraged than averaged 16 times. At ADCK7 every
+    // averaging reads within 0.02% of 16 times at 10,000 pairs/s.
+    command->sampleTimeMode = kLPADC_SampleTimeADCK7;
     command->chainedNextCommandNumber = 2U;
     LPADC_SetConvCommandConfig(ADC0, 1U, command);
 
     // PIO0_16/ADC0_8 is CH0B, paired with voltage on PIO0_23/ADC0_0 (CH0A).
     command->sampleChannelMode = kLPADC_SampleChannelSingleEndSideB;
+    command->sampleTimeMode = kLPADC_SampleTimeADCK3;
     command->chainedNextCommandNumber = current_next;
     LPADC_SetConvCommandConfig(ADC0, 2U, command);
 }

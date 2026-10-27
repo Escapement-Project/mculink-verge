@@ -637,13 +637,15 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
 
         return probe, dma, adc, put, get, local, written, feed, pause, total, hook
 
-    limits = ((1900, 7), (3800, 6), (7600, 5), (15200, 4), (29197, 3), (54794, 2), (97560, 1), (100000, 0))
-    rates = (1, 10, 177, 178, 355, 356, 1000, 1900, 1901, 3800, 3801, 7600, 7601, 11377, 11378, 15200, 15201,
-             29197, 29198, 54794, 54795, 97560, 97561, 100000)
+    limits = ((1794, 7), (3575, 6), (7096, 5), (13969, 4), (27088, 3), (51063, 2), (91603, 1), (100000, 0))
+    # Each limit's last request and the next, and the segment sizes' boundaries.
+    rates = (1, 10, 177, 179, 355, 356, 1000, 1795, 1796, 3576, 3577, 7096, 7097, 11377, 11379, 13971, 13972,
+             27095, 27096, 51091, 51092, 91690, 91691, 100000)
 
     def check_commands(words, average, calibration):
         tail = 0 if calibration else 3
-        expected = (0x80, (2 << 24) | (average << 12), 0xA0, (tail << 24) | (average << 12))
+        # The voltage samples for ADCK7 (CMDH[STS] 2), the current for ADCK3.
+        expected = (0x80, (2 << 24) | (average << 12) | (2 << 8), 0xA0, (tail << 24) | (average << 12))
         c.check(words[:4] == expected, "ADC voltage/current channel, resolution, averaging, timing or chain changed")
         if not calibration:
             c.check(words[4:] == (0x82, 0), "ADC range command is not a fresh unaveraged side-A conversion")

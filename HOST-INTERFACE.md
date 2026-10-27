@@ -111,8 +111,8 @@ voltage/current/range tuple is discarded. Internal pauses preserve the latest-sa
 The total resets when the probe restarts.
 
 Voltage and current conversions use the highest ADC hardware averaging that sustains the effective
-timer rate. The selector uses 128x through 1,900 pairs/s, 64x through 3,800, 32x through 7,600,
-16x through 15,200, 8x through 29,197, 4x through 54,794, 2x through 97,560, then 1x through
+timer rate. The selector uses 128x through 1,794 pairs/s, 64x through 3,575, 32x through 7,096,
+16x through 13,969, 8x through 27,088, 4x through 51,063, 2x through 91,603, then 1x through
 100,000. The range-state conversion stays at 1x so gain changes appear in the next pair. The start
 reply reports the timer's effective pair rate.
 
