@@ -108,24 +108,22 @@ Sources.
 - **The path.** Current to the target enters J9 pin 1 and leaves at pin 3 (UM11673 section 4.4).
   Between them it passes two pairs of back-to-back P-channel switches and the sense resistors.
   The switches conduct while CTRL_CAL_DISC (PIO1_24) is low. Taking it high opens them and turns on
-  Q22 and Q2, which feed the sense resistors from the probe's own 3.3 V instead. That is the
+  two transistors that feed the sense resistors from the probe's own 3.3 V instead. That is the
   isolation UM11673 describes for calibration.
-- **The sense resistors.** In the low range one resistor carries the current: R68 (50 Ω) with J16
-  at 1-2, or R11 (200 Ω) at 2-3. In the high range, Q3 adds R69 (0.24 Ω) or R71 (2.0 Ω) in
-  parallel, chosen by J17. Q3's on-resistance is part of the high range's resistance, and so is
+- **The sense resistors.** In the low range one resistor carries the current: 50 Ω with J16 at
+  1-2, or 200 Ω at 2-3. In the high range, Q3 adds 0.24 Ω or 2.0 Ω in parallel, chosen by J17. Q3's on-resistance is part of the high range's resistance, and so is
   J17's contact. Q3's gate is at 0 V while it conducts, and its source is at the supply, so its
   on-resistance follows the supply: about 16.5 mΩ at 3.3 V (PMPB15XP, Figs. 8 and 9).
-- **The amplifier.** U20A, Q4, R78 and R83 turn the voltage across the sense resistor into
-  R83/R78 = 10 times itself at TP6. U20B adds a gain of 1 + R84/R80 = 3. Its output is 30 times the
-  voltage across the resistor, the sheet's own equation. It goes to ADC0_8 on PIO0_16 and to the
-  comparator's input D on PIO1_14.
-- **The voltage.** R73 and R75 (330 kΩ each) halve the voltage on the target side of the sense
-  resistors. U19 buffers it to ADC0_0 on PIO0_23. The divider draws its current through the sense
+- **The amplifier.** A first stage turns the voltage across the sense resistor into 10 times
+  itself, and a second adds a gain of 3. Its output is 30 times the voltage across the resistor,
+  the sheet's own equation. It goes to ADC0_8 on PIO0_16 and to the comparator's input D on
+  PIO1_14.
+- **The voltage.** Two 330 kΩ resistors halve the voltage on the target side of the sense
+  resistors, and a buffer takes it to ADC0_0 on PIO0_23. The divider draws its current through the sense
   resistor: 5.0 µA at 3.3 V and 2.7 µA at 1.8 V, as the sheet's note on bleeding resistors says.
-- **The reference.** U3, an LM4040 at 3.0 V, drives the VREF net (sheet 2). VREF is the ADC's
-  VREFP. It also reaches the comparator's ladder input, ACMPVREF on PIO1_19, through R9 (0 Ω,
-  sheet 3). And it feeds R63, R8 and R3, from which J18 picks two thirds of VREF at 1-2 or one third
-  at 2-3. That level, CURR_RANGE_SET on PIO1_8, is how the firmware reads the jumper setting.
+- **The reference.** An LM4040 at 3.0 V drives the VREF net (sheet 2). VREF is the ADC's VREFP.
+  It also reaches the comparator's ladder input, ACMPVREF on PIO1_19 (sheet 3). And it feeds a
+  divider from which J18 picks two thirds of VREF at 1-2 or one third at 2-3. That level, CURR_RANGE_SET on PIO1_8, is how the firmware reads the jumper setting.
 
 ### Ranges
 
@@ -144,7 +142,7 @@ the probe's target supply can give.
 
 ### Range switching
 
-- **The latch.** U18, a 74LVC1G175 D flip-flop, holds the range. Its output, CTRL_HIGH_CURR, drives
+- **The latch.** A 74LVC1G175 D flip-flop holds the range. Its output, CTRL_HIGH_CURR, drives
   Q3's gate, and its D input is tied high. A rising edge on its clock, CTRL_HIGH_CURR_EN (PIO0_17),
   sets the output and turns Q3 off: the low range. Its reset, CTRL_HIGH_CURR_DIS (PIO0_29), clears
   the output whatever the clock does and turns Q3 on: the high range (SN74LVC1G175 Table 1). The
@@ -190,16 +188,13 @@ Each step of a calibration waits 20 ms before it converts, so a calibration take
 With 5 ms it read it right.
 
 - **Isolation.** CTRL_CAL_DISC disconnects J9 and puts the probe's 3.3 V on the sense resistors.
-- **The loads.** Four switched resistors load the target side to ground: R97 (6.65 kΩ,
-  CTRL_CAL_R1 on PIO1_22), R98 (66.5 Ω, CTRL_CAL_R2 on PIO1_23), R62 (1.65 kΩ, CTRL_CAL_R3 on
-  PIO1_26) and R64 (16.5 Ω, CTRL_CAL_R4 on PIO1_29), all 0.5%. A load's current is the measured
-  target-side voltage over its resistance. Its switch, a PMF250XNE, adds about 0.25 Ω, and the
-  firmware counts it. The data sheet gives 212 mΩ typical with 4.5 V on the gate and 269 mΩ with
-  2.5 V. The probe drives the gate at 3.3 V.
-- **Which loads calibrate which range.** From 3.3 V, three of the loads put about 97 mV across one
-  sense resistor each: R1 in the 50 mA setting's low range, R3 in the 350 mA setting's low range and
-  R2 in the 50 mA setting's high range. R4 puts 49 mV across the 350 mA setting's high range. Each
-  range uses the loads that land inside its full scale.
+- **The loads.** Four switched resistors load the target side to ground: R1, 6.65 kΩ
+  (CTRL_CAL_R1 on PIO1_22); R2, 66.5 Ω (PIO1_23); R3, 1.65 kΩ (PIO1_26); and R4, 16.5 Ω (PIO1_29);
+  all 0.5%. A load's current is the measured
+  target-side voltage over its resistance. Its switch, a PMF250XNE, adds about 0.25 Ω at the
+  probe's 3.3 V gate drive, and the firmware counts it.
+- **Which loads calibrate which range.** Each range uses the loads that land inside its full
+  scale (the table below).
 - **The point with no load.** With no load on, only the divider's 5 µA flows. The low ranges take
   that as a point too. The high ranges cannot: their sense resistors turn 5 µA into microvolts, and
   the amplifier's output does not go that low. On one unit it stopped at about 57 ADC codes, which
@@ -221,9 +216,9 @@ With 5 ms it read it right.
   comparator.
 - **Saturation.** A load sized for 97 mV on a range that ends at 100 mV leaves 2.6% for tolerances
   before the firmware's limit, a point that reads above 99.8% of full scale, which it leaves out.
-  The sheet gives no tolerance for the amplifier's resistors. A range left with fewer than two points fails calibration, and the
-  capture does not start. The 50 mA setting's low range has only R1, so it is the range a unit
-  with too much gain would lose.
+  The sheet gives no tolerance for the amplifier's resistors. A range left with fewer than two
+  points fails calibration, and the capture does not start. The 50 mA setting's low range has only
+  R1, so it is the range a unit with too much gain would lose.
 - **The conversion.** Each range's points make a piecewise-linear table from ADC code to the
   current through the sense resistor. From every sample the firmware then takes the divider's
   current, the target-side voltage over 660 kΩ. Each calibration conversion is averaged 128 times,
@@ -236,7 +231,7 @@ With 5 ms it read it right.
   100 ppm/°C for the LM4040's C grade.
 - Q3's on-resistance follows the target's voltage, and calibration runs at 3.3 V. With a 1.8 V
   target, the 350 mA setting's high range reads 2.8% high: Q3 goes from 16.5 mΩ to 23.7 mΩ
-  (PMPB15XP Fig. 8) beside R69's 0.24 Ω. In the 50 mA setting the same target reads 0.35% high.
+  (PMPB15XP Fig. 8) beside the 0.24 Ω resistor. In the 50 mA setting the same target reads 0.35% high.
   UM11673 gives the 350 mA setting's high range 5% accuracy and the others 1%.
 - J17's contact is in the high range's resistance too. Calibration measures it, but moving the
   jumpers away and back leaves the setting as it was, so only a reset calibrates again.
