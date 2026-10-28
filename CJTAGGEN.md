@@ -112,7 +112,8 @@ domain on and halt-in-boot armed (inferred from the TRM, not measured on four-wi
   J-Link use OScan1.
 - TRM Table 6-3: OScan1 sends nTDI, TMS, TDO in every state; OScan2 sends only TMS outside
   Shift and nTDI, TMS, TDO in Shift; OScan5 sends nTDI, TMS, TDO outside Shift and nTDI, TDO in
-  Shift. How OScan5 leaves Shift is in IEEE 1149.7 (next section). For a DPACC/APACC (4
+  Shift. Its OScan6 row has a TMS between nTDI and TDO in the first Shift packet only: 1149.7's
+  PAD bit. How OScan5 leaves Shift is in IEEE 1149.7 (next section). For a DPACC/APACC (4
   non-shift and 36 shift clocks) OScan2 sends 7% fewer packets than OScan1, OScan5 30% fewer
   before its exit escape.
 - The XDS110 activates in its own firmware: the host sends one `CJTAG_CONNECT` (command 0x2b in
@@ -141,8 +142,9 @@ Clause 25 covers the OScan formats, 10.4 the escapes, and 9.10 the configuration
 - **STFMT's operand is the format number**, with OScan formats from 8. Our STFMT 9 is OScan1, so
   OScan2 is STFMT 10 and OScan5 STFMT 13 in the same activation.
 - **Which bits a format sends** (Table 25-1): OScan1 sends nTDI, TMS and TDO for every JTAG
-  clock; OScan2 drops nTDI and TDO outside Shift; OScan5 drops TMS in Shift; OScan6 is OScan5
-  with one PAD bit on entering Shift. A missing nTDI means TDI 1.
+  clock; OScan2 drops nTDI and TDO outside Shift; OScan5 drops TMS in Shift; OScan6 is OScan2
+  outside Shift and OScan5 in it, plus one PAD bit in the first Shift packet after one outside it
+  (rule 25.4.2 g). A missing nTDI means TDI 1.
 - **OScan5 and 6 leave Shift with an EOT escape on an nTDI bit** (Figure 25-11): the probe holds TCKC high
   through that bit and toggles TMSC twice in it, and the bit's TMS becomes 1.
 - **Escapes** (10.4.1) are counted in TMSC edges while TCKC is high: 2-3 for EOT, 8 or more for a
