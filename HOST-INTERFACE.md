@@ -129,8 +129,8 @@ effective rate as a u32 after the result. Latest replies with voltage code (u16)
 (u16), and sample sequence (u32) after the result. When extended-capability bit 5 is set, the reply
 appends voltage in mV (u32), current in nA (i32), range ID (u8), and calibrated-valid (u8). The
 full reply is 21 bytes including the command byte. If the result is not `OK`, every sample field is
-zero. The sequence counts complete pairs since capture started, beginning at 1. Stop replies with
-only the result.
+zero. The sequence counts complete pairs since capture started, beginning at 1, and never goes back
+within a capture. Stop replies with only the result.
 
 Mode 3 returns `[0x90, DAP_OK, result, energy_nJ:u64LE, pairs:u64LE]` in 19 bytes. It reports
 `STOPPED` before the first successful start and `NO_SAMPLE` until it integrates a calibrated pair.

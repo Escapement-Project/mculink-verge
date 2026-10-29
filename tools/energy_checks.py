@@ -893,6 +893,11 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
                     int.from_bytes(reply[7:11], "little") == whole,
                     f"{size}-word segments, {counted} through CPU 0, run out{' and pending' if pending else ''}:"
                     f" latest {reply.hex()}")
+        # The same ring read a segment short after that: latest keeps the pair it already gave.
+        written(counted * size, pending=False, run_out=True)
+        again = probe.command(bytes([0x90, 1]))
+        c.check(again == reply, f"{size}-word segments, {counted} through CPU 0: latest went back from "
+                                f"{reply.hex()} to {again.hex()}")
         written(len(stream), pending=True)
         reply = probe.command(bytes([0x90, 1]))
         c.check(reply[2] == 0 and int.from_bytes(reply[3:5], "little") == codes[-1] and
@@ -963,6 +968,20 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
             "failed new-session release was accepted")
     total([32768])
     c.check(not any(offset == 0x20 for offset, _ in dma.writes), "failed start enabled DMA")
+
+    # A new start forgets the pair latest gave in the capture before, whose sequence was higher.
+    probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+    feed([result(1, 32768), result(2, 1), result(3, 0)] * 2)
+    written(6)
+    before = probe.command(bytes([0x90, 1]))
+    c.check(probe.call("energy_capture_start", 1) == 1, "the second start failed")
+    feed([result(1, 16384), result(2, 1), result(3, 0)])
+    written(3)
+    after = probe.command(bytes([0x90, 1]))
+    c.check(int.from_bytes(before[7:11], "little") == 2 and int.from_bytes(after[7:11], "little") == 1 and
+            int.from_bytes(after[3:5], "little") == 16384,
+            f"latest after a new start answered {after.hex()}, before it {before.hex()}")
+    probe.uc.hook_del(hook)
 
     # A segment that stays on the high range under the 350 mA setting's 1.5 mA asks for the low
     # range back; one sample over, or a segment that ends on the low range, does not. The cases run

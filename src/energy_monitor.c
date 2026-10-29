@@ -50,6 +50,17 @@ static energy_calibration_t high_range_calibration;
 static bool current_calibrated;
 static bool accumulator_started;
 
+/** The pair latest last answered with in this capture. A read can find the ring a segment short
+ *  (ring_written), which would answer an older pair than one already given: a host reads a sequence
+ *  going back as a new start. */
+typedef struct {
+    uint32_t sequence;
+    uint16_t voltage;
+    uint16_t current;
+    uint16_t range;
+} latest_answer_t;
+static latest_answer_t latest_answer;
+
 static_assert(ADC_RESFIFO_VALID_MASK == 0x80000000U && ADC_RESFIFO_TSRC_SHIFT == 16U,
               "energy_samples.h must match the ADC result layout");
 
@@ -70,6 +81,7 @@ static void accumulator_reset(void) {
     energy_accumulator_write_end();
     integration()->decoder = (energy_sample_decoder_t){0};
     integration()->consumed_bytes = 0U;
+    latest_answer = (latest_answer_t){0};
 }
 
 static void controls_init(void) {
@@ -719,10 +731,14 @@ energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {
     if (!decoder.have_sample) {
         return ENERGY_MONITOR_NO_SAMPLE;
     }
-    sample->voltage_code = decoder.last_voltage;
-    sample->current_code = decoder.last_current;
-    sample->range_code = decoder.last_range;
-    sample->sequence = decoder.sequence;
+    // Sequences wrap after 2^32 pairs, and a short read is at most a segment behind.
+    if ((int32_t)(decoder.sequence - latest_answer.sequence) >= 0) {
+        latest_answer = (latest_answer_t){decoder.sequence, decoder.last_voltage, decoder.last_current, decoder.last_range};
+    }
+    sample->voltage_code = latest_answer.voltage;
+    sample->current_code = latest_answer.current;
+    sample->range_code = latest_answer.range;
+    sample->sequence = latest_answer.sequence;
     sample->voltage_mv = energy_voltage_mv(sample->voltage_code, target_sense_full_scale_mv());
     sample->range_id = 0U;
     sample->current_na = 0;
