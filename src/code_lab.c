@@ -21,6 +21,11 @@
  *     LAB_WRITE  [1] arena, [2..3] offset, [4..5] length, [6..] bytes; reply: status
  *     LAB_READ   [1] arena, [2..3] offset, [4..5] length; reply: status, bytes
  *     LAB_RUN    [1] arena, [2..3] entry offset, [4..19] r0..r3; reply: status, r0, r1
+ *     LAB_EDGES  [1..4] half period in FRO_HF counts, 0 to stop; reply: status
+ *
+ * LAB_EDGES toggles DIO2 (PIO1_2) from CTimer 0's match 3, so the DIO edges an energy stream
+ * reports come at intervals known to the count, with no analyser. The pin's translator has to face
+ * the header first (`verge dio --low 0,1,2`), and nothing on J19 may drive DIO2.
  *
  * Every offset and length is checked against the arena and the packet. A function that faults
  * resets the probe, which comes back on USB without hands; one that never returns hangs it with
@@ -33,11 +38,15 @@
 
 #include "DAP.h"
 #include "code_lab.h"
+#include "fsl_clock.h"
+#include "fsl_iocon.h"
+#include "fsl_reset.h"
 
 #define LAB_INFO 0U
 #define LAB_WRITE 1U
 #define LAB_READ 2U
 #define LAB_RUN 3U
+#define LAB_EDGES 4U
 
 #define LAB_SRAM_SIZE 4096U
 #define LAB_SRAMX_BASE 0x04004000U
@@ -91,6 +100,25 @@ __attribute__((naked)) void HardFault_Handler(void) {
 }
 
 typedef uint64_t (*lab_fn)(uint32_t, uint32_t, uint32_t, uint32_t);
+
+/** DIO2 toggling every `half` counts of FRO_HF, the clock the stream stamps with; 0 gives the pin
+ *  back to GPIO. */
+static void lab_edges(uint32_t half) {
+    CTIMER0->TCR = 0U;
+    if (half == 0U) {
+        IOCON_PinMuxSet(IOCON, 1U, 2U, IOCON_FUNC0 | IOCON_MODE_INACT | IOCON_DIGITAL_EN);
+        return;
+    }
+    CLOCK_AttachClk(kFRO_HF_to_CTIMER0);
+    CLOCK_EnableClock(kCLOCK_Timer0);
+    RESET_PeripheralReset(kCTIMER0_RST_SHIFT_RSTn);
+    CTIMER0->PR = 0U;
+    CTIMER0->MR[3] = half - 1U;
+    CTIMER0->MCR = CTIMER_MCR_MR3R_MASK;
+    CTIMER0->EMR = CTIMER_EMR_EMC3(3U);
+    IOCON_PinMuxSet(IOCON, 1U, 2U, IOCON_FUNC3 | IOCON_MODE_INACT | IOCON_DIGITAL_EN);
+    CTIMER0->TCR = CTIMER_TCR_CEN_MASK;
+}
 
 uint32_t code_lab_command(const uint8_t* request, uint8_t* response) {
     const uint32_t op = request[1];
@@ -151,6 +179,12 @@ uint32_t code_lab_command(const uint8_t* request, uint8_t* response) {
         put32(response + 2, (uint32_t)result);
         put32(response + 6, (uint32_t)(result >> 32));
         return (LAB_RUN_REQUEST << 16) | 10U;
+    }
+
+    if (op == LAB_EDGES) {
+        lab_edges(get32(request + 2));
+        response[1] = DAP_OK;
+        return (6U << 16) | 2U;
     }
 
     return (2U << 16) | 2U;
