@@ -151,9 +151,15 @@ __attribute__((section(".ramfunc"), noinline)) void dio_edges_task(void) {
     // A start counts after it writes the mask, so one counted has its mask.
     uint32_t const begins = stream->edge_begins;
     __DMB();
-    bool const began = begins != begins_seen;
-    begins_seen = begins;
-    uint8_t const reported = stream->active ? stream->edge_mask : 0U;
+    // A new stream's edges wait until CPU 0 owns its state: until then nothing sends them, and a
+    // fast pin would fill the record while CPU 1 finishes the start.
+    bool const ready = owned(stream);
+    bool const waiting = (begins != begins_seen) && !ready;
+    bool const began = (begins != begins_seen) && ready;
+    if (began) {
+        begins_seen = begins;
+    }
+    uint8_t const reported = (stream->active && !waiting) ? stream->edge_mask : 0U;
     if (reported == 0U) {
         set_dropped(false);
     } else if (began) {
