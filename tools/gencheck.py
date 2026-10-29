@@ -11,9 +11,9 @@ read the bit it was placed for, and that the replies carry what the target sent.
 smallest sample margin, and the cycles a transfer takes in a running block against its floor: 46
 clocks, those the probe drives at the write period and the rest at the read period.
 
-`--stall` builds for another master holding a load that many cycles (src/swd_gen.h,
-swd_gen_stall), as energy capture's DMA does, and takes it off the late margin of every sample
-placed after the edge that ends its window.
+`--stall` builds for another master holding a load that many cycles (src/gen.h, gen_stall), as
+energy capture's DMA does, and takes it off the late margin of every sample placed after the edge
+that ends its window.
 Clock points run in parallel across up to four workers by default; pass `--jobs 1` to run them
 serially.
 
@@ -57,8 +57,10 @@ def run(elf: str, hz: int, read: bool, words: int, latency: int, target_latency:
     if "DAP_Setup" in probe.sym:
         probe.call("DAP_Setup")
     # An image from before the stall only has its margins taken.
-    if stall and "swd_gen_stall" in probe.sym:
-        probe.uc.mem_write(probe.sym["swd_gen_stall"], stall.to_bytes(4, "little"))
+    # e5f19bd named it swd_gen_stall.
+    name = next((n for n in ("gen_stall", "swd_gen_stall") if n in probe.sym), None)
+    if stall and name is not None:
+        probe.uc.mem_write(probe.sym[name], stall.to_bytes(4, "little"))
     probe.command(bytes([cy.ID_CONNECT, 1]))
     probe.command(bytes([cy.ID_SWJ_CLOCK]) + cy.u32(hz))
     probe.command(bytes([cy.ID_TRANSFER_CONFIG, 0]) + cy.u16(100) + cy.u16(0))
@@ -104,6 +106,8 @@ def run(elf: str, hz: int, read: bool, words: int, latency: int, target_latency:
     held = [r for r in counts.reads if r.margin is not None and held_margin(r, stall) < 0]
     if stall and held:
         problems.append(f"{len(held)} of {len(counts.reads)} samples read a neighbouring bit when held {stall}")
+    elif stall and margins and min(margins) < 1:
+        problems.append(f"no cycle to spare when held {stall}")
     # A transfer is 46 rising edges at turnaround 1, read or write: the median distance between
     # edges that far apart is the transfer period in a running block, overheads between commands
     # left out.

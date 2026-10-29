@@ -19,6 +19,9 @@
 #include "dma_ring.h"
 #include "energy_integration.h"
 #include "target_sense.h"
+#if defined(SWD_CODEGEN) || defined(JTAG_CODEGEN)
+#include "gen.h"
+#endif
 #ifdef SWD_CODEGEN
 #include "swd_gen.h"
 #endif
@@ -736,11 +739,14 @@ __attribute__((noinline)) void energy_monitor_calibrate(void) {
 /** While a capture is asked for, paused or not, the generated bit paths keep a stall's margin. */
 static void request_rate(uint32_t rate_hz) {
     requested_rate_hz = rate_hz;
-#ifdef SWD_CODEGEN
+#if defined(SWD_CODEGEN) || defined(JTAG_CODEGEN)
     uint32_t const stall = (rate_hz != 0U) ? ADC0_LOAD_STALL : 0U;
-    if (swd_gen_stall != stall) {
-        swd_gen_stall = stall;
+    if (gen_stall != stall) {
+        gen_stall = stall;
+#ifdef SWD_CODEGEN
+        // The JTAG generator compares its inputs on every call; SWD's waits to be told.
         swd_gen_changed();
+#endif
     }
 #endif
 }

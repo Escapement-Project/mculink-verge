@@ -203,15 +203,17 @@ static bool try_four_wire(struct block* b, uint32_t cycles, uint32_t at) {
 /** A four-wire clock. The shortest clock that fits wins. Within one, a sample before the next
  * fall, which no interrupt can overtake, as late as possible; failing that, a masked one after
  * it, as near the middle of the window as fits. The window is [fall + latency, next fall +
- * FOUR_WIRE_HOLD], less MARGIN at each end. With `earliest`, the sample goes as early in it as fits. */
-static bool layout_four_wire(struct block* b, uint32_t period, uint32_t latency, bool earliest) {
+ * FOUR_WIRE_HOLD], less MARGIN at each end and `stall` more at its end: a sample after the next
+ * fall that another master holds reads the next bit past it. With `earliest`, the sample goes as
+ * early in it as fits. */
+static bool layout_four_wire(struct block* b, uint32_t period, uint32_t latency, uint32_t stall, bool earliest) {
     const uint32_t first = latency + MARGIN;
     b->blocks = BLOCKS;
     // Only the first clock length's unmasked search, from the latest cycle down, is the same at a
     // lower latency.
     b->bound = true;
     for (uint32_t cycles = later(period, 5U); earliest && (cycles <= later(period, 5U) + first); cycles++) {
-        for (uint32_t at = first; at <= cycles + FOUR_WIRE_HOLD - MARGIN; at++) {
+        for (uint32_t at = first; at <= cycles + FOUR_WIRE_HOLD - MARGIN - stall; at++) {
             if (try_four_wire(b, cycles, at)) {
                 return true;
             }
@@ -225,7 +227,7 @@ static bool layout_four_wire(struct block* b, uint32_t period, uint32_t latency,
             }
         }
         const uint32_t lo = later(first, cycles);
-        const uint32_t hi = cycles + FOUR_WIRE_HOLD - MARGIN;
+        const uint32_t hi = cycles + FOUR_WIRE_HOLD - MARGIN - stall;
         for (uint32_t d = 0U; lo + d <= hi; d++) {
             const uint32_t mid = (lo + hi) / 2U;
             if ((mid + d <= hi) && try_four_wire(b, cycles, mid + d)) {
@@ -571,6 +573,7 @@ struct xfer {
     bool masked;
     uint32_t p, low, high; // a four-wire clock, or a two-pin packet the probe drives
     uint32_t latency;
+    uint32_t stall;
     uint32_t t;      // the earliest cycle the next clock or frame may start on
     uint32_t ready;  // the earliest cycle the next clock's data is in its register
     uint32_t fall;   // four-wire: the last clock's falling edge
@@ -691,9 +694,9 @@ static void fx_sample(struct xfer* x, uint32_t next) {
             return;
         }
     }
-    // After it, in the middle of what is left of the window, off the clocks still to come. Only a
-    // masked function may sample there.
-    const uint32_t last = next + FOUR_WIRE_HOLD - MARGIN;
+    // After it, in the middle of what is left of the window, off the clocks still to come, and the
+    // stall short of its end. Only a masked function may sample there.
+    const uint32_t last = next + FOUR_WIRE_HOLD - MARGIN - x->stall;
     uint32_t best = 0U;
     uint32_t best_margin = 0U;
     bool found = false;
@@ -1138,7 +1141,7 @@ struct xfer_cfg {
     bool oscan2;
     bool oscan5;
     bool oscan6;
-    uint32_t period, latency, before, after, idle;
+    uint32_t period, latency, stall, before, after, idle;
     bool loop; // the data bits as a loop, which is smaller and takes the same cycles
 };
 
@@ -1206,6 +1209,7 @@ static bool lay_xfer(const struct xfer_cfg* c, bool read, uint32_t p) {
                        .oscan5 = c->oscan5,
                        .oscan6 = c->oscan6,
                        .latency = c->latency,
+                       .stall = c->stall,
                        .first = UINT32_MAX,
                        .uniform = c->loop,
                        .offset = UINT32_MAX};
@@ -1393,7 +1397,7 @@ bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan
         return false;
     }
     if (!(two_pin ? layout_two_pin(&b, config->period, config->latency, earliest, SHAPE_THREE)
-                  : layout_four_wire(&b, config->period, config->latency, earliest))) {
+                  : layout_four_wire(&b, config->period, config->latency, config->stall, earliest))) {
         return false;
     }
     struct gen_emitter e = {
@@ -1448,6 +1452,7 @@ bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan
         .oscan6 = oscan6,
         .period = config->period,
         .latency = config->latency,
+        .stall = config->stall,
         .before = config->before,
         .after = config->after,
         .idle = config->idle,
@@ -1458,6 +1463,7 @@ bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan
     bool transfers = false;
     uint32_t read_offset = 0U;
     bool read_bound = false;
+    bool read_masked = false;
     // Unrolled where that fits in JTAG_GEN_UNROLLED_MAX, which leaves the fastest clocks the fewest
     // instructions; the data bits in a loop otherwise; unrolled into the whole region where the
     // loop does not fit either.
@@ -1470,6 +1476,7 @@ bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan
         transfers = emit_xfer(&e, &xc, true);
         read_offset = xs.offset;
         read_bound = xs.bound;
+        read_masked = xs.masked;
         write_at = e.pos;
         transfers = transfers && emit_xfer(&e, &xc, false);
     }
@@ -1487,6 +1494,7 @@ bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan
         .ok = true,
         .transfers = transfers,
         .looped = transfers && xc.loop,
+        .stall_moves = !two_pin && (b.masked || (transfers && (read_masked || xs.masked))),
         // Without transfers, ARM's run as scans.
         .scan_last = scan_last,
         .read_last = transfers ? (int32_t)read_offset : scan_last,
@@ -1595,6 +1603,7 @@ static struct jtag_gen_config host_config(uint32_t wire) {
                      ? DAP_Data.jtag_dev.count - DAP_Data.jtag_dev.index - 1U
                      : 0U,
         .idle = DAP_Data.transfer.idle_cycles,
+        .stall = wire == JTAG_GEN_FOUR_WIRE ? gen_stall : 0U,
     };
 }
 
@@ -1609,13 +1618,17 @@ struct jtag_gen_config jtag_gen_inputs(uint32_t wire) {
 /** Out of line, so the check every transfer command makes does not pay its frame or its divide. */
 static __attribute__((noinline)) bool regenerate(uint32_t wire, bool transfers) {
     struct jtag_gen_config want = host_config(wire);
+    // What WAITs taught belongs to the target and the configuration, so a capture starting or
+    // stopping keeps it.
+    struct jtag_gen_config key = want;
+    key.stall = 0U;
     const bool recorded = learning;
     if (learning) {
-        learned_for[wire] = want;
+        learned_for[wire] = key;
         learned[wire] = jtag_gen_paced;
         learning = false;
     }
-    jtag_gen_paced = (jtag_gen_pacing && (memcmp(&want, &learned_for[wire], sizeof want) == 0)) ? learned[wire] : 0U;
+    jtag_gen_paced = (jtag_gen_pacing && (memcmp(&key, &learned_for[wire], sizeof key) == 0)) ? learned[wire] : 0U;
     want.idle = paced_idle(want.idle);
     if (built_once && (gen_owner == GEN_OWNER_JTAG) && (memcmp(&want, &built, sizeof want) == 0) &&
         (built_transfers || !transfers)) {
@@ -1723,6 +1736,7 @@ struct jtag_gen_inputs {
     uint32_t count;
     uint32_t idle;
     uint32_t paced;
+    uint32_t stall;
     bool pacing;
 };
 
@@ -1732,7 +1746,8 @@ static bool seen_transfers;
 
 static inline bool same_inputs(const struct jtag_gen_inputs* a, const struct jtag_gen_inputs* b) {
     return (a->wire == b->wire) && (a->hz == b->hz) && (a->latency == b->latency) && (a->index == b->index) &&
-           (a->count == b->count) && (a->idle == b->idle) && (a->paced == b->paced) && (a->pacing == b->pacing);
+           (a->count == b->count) && (a->idle == b->idle) && (a->paced == b->paced) && (a->stall == b->stall) &&
+           (a->pacing == b->pacing);
 }
 
 __attribute__((always_inline)) static inline bool ready(uint32_t wire, bool transfers) {
@@ -1744,6 +1759,7 @@ __attribute__((always_inline)) static inline bool ready(uint32_t wire, bool tran
         .count = DAP_Data.jtag_dev.count,
         .idle = DAP_Data.transfer.idle_cycles,
         .paced = jtag_gen_paced,
+        .stall = gen_stall,
         .pacing = jtag_gen_pacing,
     };
     if (seen_once && (gen_owner == GEN_OWNER_JTAG) && same_inputs(&now, &seen) && (seen_transfers || !transfers)) {

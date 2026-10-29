@@ -5,6 +5,7 @@
 #include "thumb.h"
 
 uint32_t gen_owner = GEN_OWNER_NONE;
+uint32_t gen_stall;
 
 void gen_schedule_reset(struct gen_schedule* s, struct gen_event* ev, uint32_t cap) {
     s->ev = ev;

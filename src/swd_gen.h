@@ -38,7 +38,7 @@ struct swd_gen_config {
     uint32_t turnaround;  // 1 to 4 clocks
     uint32_t data_phase;  // clock a data phase after WAIT and FAULT
     uint32_t idle_cycles; // clocks after each transfer, with SWDIO low
-    uint32_t stall;       // see swd_gen_stall
+    uint32_t stall;       // see gen_stall
 };
 
 /** The read period a build with `stall` runs at no less than: a sample after the next rising edge
@@ -66,11 +66,6 @@ bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_ge
 extern uint32_t swd_gen_clock_hz;
 /** The latency transfers are generated for. */
 extern uint32_t swd_gen_latency;
-/** Cycles another master can hold a sample's load on the bit paths' AHB port (BUSES.md). A load
- * placed after the rising edge that ends its bit's window reads the next bit if held past the
- * window, so the generator keeps this many cycles clear at the window's end. src/energy_monitor.c
- * sets it while capture runs. */
-extern uint32_t swd_gen_stall;
 
 extern swd_gen_fn swd_gen_read;
 extern swd_gen_fn swd_gen_write;

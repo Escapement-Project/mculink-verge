@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "DAP_config.h"
 #include "DAP.h"
+#include "gen.h"
 #include "jtag_gen.h"
 #include "swd_gen.h"
 
@@ -37,7 +38,7 @@ void sweep(void) {
         DAP_Data.swd_conf.data_phase = (uint8_t)d;
         DAP_Data.transfer.idle_cycles = (uint8_t)idle;
         swd_gen_latency = lat;
-        swd_gen_stall = stall;
+        gen_stall = stall;
         swd_gen_clock_hz = hz[i];
         swd_gen_changed();
         const bool ok = swd_gen_ready();
@@ -63,6 +64,7 @@ void sweep(void) {
     // The DAP's place in the chain (count, index) and the idle cycles after each transfer change
     // only the transfers: every latency at the first, the default latency at the rest.
     static const uint8_t chains[][3] = {{1, 0, 0}, {2, 1, 3}, {3, 0, 5}, {5, 3, 40}};
+    for (unsigned stall = 0; stall <= 2; stall += 2)
     for (unsigned c = 0; c < sizeof chains / sizeof chains[0]; c++)
     for (unsigned wire = 0; wire < JTAG_GEN_WIRES; wire++)
     for (unsigned lat = c == 0 ? 1 : JTAG_GEN_LATENCY_DEFAULT; lat <= (c == 0 ? 24 : JTAG_GEN_LATENCY_DEFAULT); lat++)
@@ -73,11 +75,12 @@ void sweep(void) {
         DAP_Data.jtag_dev.index = chains[c][1];
         DAP_Data.transfer.idle_cycles = chains[c][2];
         jtag_gen_latency[JTAG_GEN_PINS(wire)] = lat;
+        gen_stall = stall;
         jtag_gen_clock_hz = (CPU_CLOCK + period - 1U) / period;
         const bool ok = jtag_gen_ready_transfers(wire);
         const uint32_t h = ok ? fnv((const uint8_t*)JTAG_GEN_BASE, jtag_gen_info.code_bytes) : 2166136261U;
         char* q = line;
-        q = hex(q, 0x4A000000U | (c << 16) | (wire << 12) | (lat << 4));
+        q = hex(q, 0x4A000000U | (c << 16) | (wire << 12) | (lat << 4) | stall);
         *q++ = ' ';
         q = hex(q, jtag_gen_clock_hz);
         *q++ = ' ';

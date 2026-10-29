@@ -24,6 +24,12 @@
 #define GEN_OWNER_JTAG 2U
 extern uint32_t gen_owner;
 
+/** Cycles another master can hold a load on the bit paths' AHB port (BUSES.md). A sample placed
+ * after the edge that ends its bit's window reads the next bit if held past the window, so both
+ * generators keep this many cycles clear at such a window's end. src/energy_monitor.c sets it while
+ * a capture is asked for. */
+extern uint32_t gen_stall;
+
 #define GEN_LABELS 8U
 #define GEN_FIXUPS 16U
 

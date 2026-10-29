@@ -600,7 +600,8 @@ class TimedCjtagTarget:
             return self.held
         late = None if self.drive_until is None else self.drive_until - cycle
         on_wire = self.held if cycle < self.drive_from else self.wanted
-        r = Read(cycle, self.frames - 1, cycle - self.drive_from, late, got=on_wire, wanted=self.wanted)
+        r = Read(cycle, self.frames - 1, cycle - self.drive_from, late, got=on_wire, wanted=self.wanted,
+                 after_next=late is not None)
         if late is None:
             self._open.append(r)
         self.reads.append(r)
@@ -658,7 +659,7 @@ class TimedJtagTarget:
         late = None
         if k + 1 < len(self.launches):
             late = self.launches[k + 1][0] + self.hold - cycle
-        r = Read(cycle, k, cycle - (at + self.latency), late, got=bit, wanted=bit)
+        r = Read(cycle, k, cycle - (at + self.latency), late, got=bit, wanted=bit, after_next=late is not None)
         if late is None:
             self._open.append((r, k))
         self.reads.append(r)

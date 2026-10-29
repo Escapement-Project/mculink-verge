@@ -97,11 +97,13 @@ for the whole update before using the DMA position. Pause drains the settled rin
   read of ADC0 already under way holds a secure GPIO access up to 2 cycles. A held store holds
   every edge after it, which only stretches a phase. A held sample placed after the next rising
   edge reads the next bit: SWD reads at P = 4 failed about once in 100 transfers at 100k pairs/s,
-  scaling with DMA0's reads. With capture asked for, the generated SWD paths keep 2 cycles at the
-  late end of such a sample's window and read at P = 5 or more (`swd_gen_stall`, CODEGEN.md).
-  Holding the conversion trigger for a measurement (`energy_monitor_hold`) stops the ADC reads,
-  the ring writes and CPU 0's segment interrupts together, so latency measurements run without
-  the stall. The generated JTAG paths keep no such margin yet. Capture is disabled by default.
+  scaling with DMA0's reads, and four-wire JTAG reads a target that answers 10 to 13 cycles after
+  a fall failed in the emulator. With capture asked for, the generated SWD and four-wire paths keep
+  2 cycles at the late end of such a sample's window, and their clocks lengthen where that leaves
+  no room (`gen_stall`, CODEGEN.md); two-pin samples come before that edge. Holding the
+  conversion trigger for a measurement (`energy_monitor_hold`) stops the ADC reads, the ring
+  writes and CPU 0's segment interrupts together, so latency measurements run without the stall.
+  Capture is disabled by default.
   CPU 0's segment interrupt reads ADC0's status once a segment, on port 10 too.
   No other master accesses SRAMX, SRAM1 or SRAM2. During capture, DMA0 writes SRAM0 and CPU 1 reads
   it, between windows.

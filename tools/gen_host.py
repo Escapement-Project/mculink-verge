@@ -5,8 +5,8 @@
 
 The generators are ordinary C whose output is code, so a compiler that miscompiles one, or
 undefined behaviour that one compiler exploits and another does not, changes the wire without
-failing to build. Four builds sweep the same 5,760 SWD configurations, half of them built for a
-stall, and 4,536 JTAG ones, and print a hash of each result:
+failing to build. Four builds sweep the same SWD and JTAG configurations, each without a stall and
+with one, and print a hash of each result:
 
 - the host, under gcc and clang, with AddressSanitizer and UndefinedBehaviorSanitizer, so any
   undefined behaviour stops the run where it happens;

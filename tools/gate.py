@@ -7,10 +7,10 @@
 in the default configuration and with SWD_CODEGEN and JTAG_CODEGEN off, because an optimisation
 that holds under one compiler has been seen not to under the other. A generated image also runs its
 two-pin and four-wire clocks against targets that answer by time, at every period up to 40 cycles
-and three longer ones, its SWD clocks the same way built for energy capture's stall, and every one
-of tools/equiv.py's matrices against the same compiler's ARM paths. It runs the host checks and
-image builds together, then runs image checks, timing sweeps and the equivalence matrices
-together. Each timing sweep simulates its independent clock points in parallel.
+and three longer ones, all of its clocks the same way built for energy capture's stall, and every
+one of tools/equiv.py's matrices against the same compiler's ARM paths. It runs the host
+checks and image builds together, then runs image checks, timing sweeps and the equivalence
+matrices together. Each timing sweep simulates its independent clock points in parallel.
 
 The parallel stages share a CPU budget across host checks, builds, emulator wire checks, timed
 sweeps and the equivalence matrices. Builds go to build-gate/.
@@ -188,11 +188,18 @@ def main() -> int:
             for toolchain, directory in timed_images
             for wire in TIMED_WIRES
         )
-    # Built for a stall, as energy capture runs them; nothing else here does.
+    # Built for a stall, as energy capture runs them; nothing else here does. Two-pin builds ignore
+    # the stall, so their check is that no sample comes after the fall that ends its window.
     timed_checks.extend(
-        (f"timed SWD clocks with a stall {name(toolchain, True)}",
-         ["uv", "run", "tools/gencheck.py", os.path.join(directory, "mculink_cjtag_core1.elf"), "--stall", "2"])
+        check
         for toolchain, directory in timed_images
+        for check in (
+            (f"timed SWD clocks with a stall {name(toolchain, True)}",
+             ["uv", "run", "tools/gencheck.py", os.path.join(directory, "mculink_cjtag_core1.elf"), "--stall", "2"]),
+            (f"timed JTAG clocks with a stall {name(toolchain, True)}",
+             ["uv", "run", "tools/jtagcheck.py", os.path.join(directory, "mculink_cjtag_core1.elf"), "--wire",
+              *TIMED_WIRES, "--stall", "2"]),
+        )
     )
     image_jobs = sum(cycles_jobs if codegen else min(2, cycles_jobs) for _, codegen, _ in built)
     jobs_per_timed_check = max(

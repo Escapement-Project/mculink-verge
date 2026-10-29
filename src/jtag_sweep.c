@@ -63,7 +63,9 @@ void jtag_sweep_watch(const uint8_t* request) {
 }
 
 /** Whether the code generated for the latency in use samples less than CONNECT_MARGIN cycles after
- * it anywhere. */
+ * it anywhere. At the default latency every build a stall moves does, so a capture starting or
+ * stopping never changes code a connection's read checked without measuring
+ * (tools/jtag_latency_test.c). */
 static bool short_margin(uint32_t wire) {
     if (!jtag_gen_ready_transfers(wire)) {
         return false;
@@ -120,6 +122,8 @@ void jtag_sweep(void) {
     // Through the code generated for the latency in use: an IR scan reads nothing.
     JTAG_IR(JTAG_IDCODE);
     struct jtag_gen_config config = jtag_gen_inputs(wire);
+    // The hold below keeps DMA0 off the port.
+    config.stall = 0U;
     static const struct latency_wire search = {.safe_period = JTAG_GEN_SAFE_PERIOD, .open_below = true};
     const uint32_t pins = JTAG_GEN_PINS(wire);
     const bool held = energy_monitor_hold();

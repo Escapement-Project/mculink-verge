@@ -16,6 +16,10 @@ entered Test-Logic-Reset.
 Reports, per clock: the cycles a JTAG clock takes in the DR scan, the least TDO margin, and what
 went wrong.
 
+`--stall` builds for another master holding a load that many cycles (src/gen.h, gen_stall), as
+energy capture's DMA does, and takes it off the late margin of every sample placed after the edge
+that ends its window.
+
     uv run tools/jtagcheck.py build-gen/mculink_cjtag_core1.elf
     uv run tools/jtagcheck.py build/mculink_cjtag_core1.elf --wire jtag --mhz 1 10 25 37.5
 """
@@ -90,12 +94,21 @@ def unpack(reply: bytes, lengths: list[int]) -> int:
     return value
 
 
-def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire: str = "cjtag") -> dict:
+def held_late(r: cy.Read, stall: int) -> int | None:
+    """A sample's late margin once a load held `stall` cycles has taken its share."""
+    return None if r.late is None else r.late - (stall if r.after_next else 0)
+
+
+def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire: str = "cjtag",
+        stall: int = 0) -> dict:
     dr = cy.JTAG_DR_OK | (WORD << 3)
     model = cy.Model(engine=True)
     probe = cy.Machine(elf, cy.Target([]), restart_at=set(), model=model, record_trace=False, record_stats=False)
     if "DAP_Setup" in probe.sym:
         probe.call("DAP_Setup")
+    # An image from before the stall only has its margins taken.
+    if stall and "gen_stall" in probe.sym:
+        probe.uc.mem_write(probe.sym["gen_stall"], stall.to_bytes(4, "little"))
     probe.command(bytes([cy.ID_CONNECT, 2]))
     probe.command(bytes([cy.ID_SWJ_CLOCK]) + cy.u32(hz))
     probe.command(bytes([cy.ID_TRANSFER_CONFIG, 0]) + cy.u16(100) + cy.u16(0))
@@ -160,6 +173,11 @@ def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire
     if outside:
         r = outside[0]
         problems.append(f"{len(outside)} of {len(target.reads)} TDO samples outside the window (first: early {r.early}, late {r.late})")
+    held = [r for r in target.reads if (late := held_late(r, stall)) is not None and late < 0]
+    if stall and held:
+        problems.append(f"{len(held)} of {len(target.reads)} TDO samples outside the window when held {stall}")
+    elif stall and any(late is not None and late < 1 for late in (held_late(r, stall) for r in target.reads)):
+        problems.append(f"no cycle to spare when held {stall}")
 
     # No packet shorter than the clock asked for, and neither phase shorter than the generator's
     # own split of it.
@@ -179,7 +197,7 @@ def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire
 
     per = 3 if two_pin else 1
     frames = sorted(b - a for a, b in zip(scan_rises, scan_rises[per:]))
-    margins = [m for r in target.reads for m in (r.early, r.late) if m is not None]
+    margins = [m for r in target.reads for m in (r.early, held_late(r, stall)) if m is not None]
     return {
         "period": period,
         "frame": frames[len(frames) // 2] if frames else 0,
@@ -188,7 +206,7 @@ def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire
     }
 
 
-def run_point(args: tuple[str, int, int, int, int, str]) -> dict:
+def run_point(args: tuple[str, int, int, int, int, str, int]) -> dict:
     return run(*args)
 
 
@@ -201,6 +219,7 @@ def main() -> int:
     ap.add_argument("--latency", type=int, default=8, help="cycles from the TDO packet's fall to valid TDO")
     ap.add_argument("--gen-latency", type=int, default=0, help="the latency to generate for, with vendor 0x8A; 0 leaves the image's")
     ap.add_argument("--cpu", type=int, default=150)
+    ap.add_argument("--stall", type=int, default=0, help="cycles another master can hold a TDO sample's load")
     ap.add_argument("--jobs", type=int, default=min(4, available_cpus()),
                     help="independent clock simulations to run at once")
     args = ap.parse_args()
@@ -210,7 +229,7 @@ def main() -> int:
     mhz = args.mhz or [-(-cpu_hz // p) / 1e6 for p in list(range(3, 41)) + [75, 150, 1500]]
 
     points = [
-        (elf, int(m * 1e6 + 0.5), args.latency, cpu_hz, args.gen_latency, wire)
+        (elf, int(m * 1e6 + 0.5), args.latency, cpu_hz, args.gen_latency, wire, args.stall)
         for elf in args.elf
         for wire in args.wire
         for m in mhz
@@ -224,7 +243,7 @@ def main() -> int:
     failures = 0
     print(f"{'image':>16} {'wire':>7} {'MHz':>8} {'P':>5} {'frame':>6} {'margin':>7}  problems")
     for point, r in zip(points, results):
-        elf, hz, _, _, _, wire = point
+        elf, hz, _, _, _, wire, _ = point
         failures += bool(r["problems"])
         margin = "-" if r["margin"] is None else str(r["margin"])
         print(f"{os.path.basename(os.path.dirname(elf)):>16} {wire:>7} {hz / 1e6:8.3f} {r['period']:5d} "

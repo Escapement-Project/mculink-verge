@@ -59,6 +59,7 @@ struct jtag_gen_config {
     uint32_t after;    // and after it
     uint32_t idle;     // Run-Test/Idle clocks after each transfer
     uint32_t earliest; // 1: every sample as early as the latency allows, to measure it; scans only
+    uint32_t stall;    // see gen_stall; four-wire only, since two-pin samples precede their window's end
 };
 
 /** Clocks `count` JTAG clocks, 1 to JTAG_GEN_FRAMES_MAX, with TMS held at `tms` (0 or 1) and TDI
@@ -191,6 +192,9 @@ struct jtag_gen_info {
     bool ok;             // the last configuration generated
     bool transfers;      // and its transfers too
     bool looped;         // with their data bits in a loop, where unrolled they did not fit
+    // Four-wire: a sample may come after the fall that ends its bit's window, so a stall (gen_stall)
+    // changes the code. Two-pin samples always come before it.
+    bool stall_moves;
     // The real latencies the scans, the read transfers and the write transfers read right for:
     // every one up to these, the fewest cycles any of their samples comes after the fall that
     // launched its bit. The other end of the window is taken as fixed: on four wires TDO holds at

@@ -16,7 +16,7 @@
  *   middles, which can be after the next rising edge. Those transfers run masked: an interrupt
  *   between that edge and the sample would make it read the next bit. Longer periods sample just
  *   before the next rising edge, where an interrupt only stretches the clock.
- * - Another master on the GPIO's port can hold a load a few cycles (swd_gen_stall), which no mask
+ * - Another master on the GPIO's port can hold a load a few cycles (gen_stall), which no mask
  *   stops. A sample after the next rising edge then keeps that many cycles from its window's end,
  *   and the read period grows until the latency still has a cycle to spare either side.
  * - No clock is ever shorter than the period. Where an instruction needs a cycle a clock would
@@ -759,7 +759,6 @@ bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_ge
 uint32_t swd_gen_clock_hz = DAP_DEFAULT_SWJ_CLOCK;
 struct swd_gen_info swd_gen_info;
 uint32_t swd_gen_latency = SWD_GEN_LATENCY_DEFAULT;
-uint32_t swd_gen_stall;
 swd_gen_fn swd_gen_read;
 swd_gen_fn swd_gen_write;
 
@@ -786,7 +785,7 @@ struct swd_gen_config swd_gen_inputs(void) {
         .turnaround = DAP_Data.swd_conf.turnaround,
         .data_phase = DAP_Data.swd_conf.data_phase,
         .idle_cycles = DAP_Data.transfer.idle_cycles,
-        .stall = swd_gen_stall,
+        .stall = gen_stall,
     };
 }
 

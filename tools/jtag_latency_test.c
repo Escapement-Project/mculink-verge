@@ -111,6 +111,75 @@ static void test_same_below(void) {
     printf("  same-code claims checked: %u\n", claimed);
 }
 
+/** A stall changes only the builds that say it moves them, all four-wire, and a build with one still
+ * samples past the latency it was built for. Two-pin samples come before their window's end. */
+static void test_stall(void) {
+    static const uint32_t periods[] = {3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 12U, 15U, 20U, 30U, 72U};
+    uint32_t moved = 0U;
+    uint32_t same = 0U;
+    for (uint32_t w = 0U; w < JTAG_GEN_WIRES; w++) {
+        for (uint32_t p = 0U; p < sizeof periods / sizeof periods[0]; p++) {
+            for (uint32_t latency = 1U; latency <= LATENCY_MAX; latency++) {
+                struct jtag_gen_config config = config_for(w, periods[p], latency);
+                jtag_gen_scan_fn scan;
+                jtag_gen_xfer_fn read;
+                jtag_gen_xfer_fn write;
+                if (!jtag_gen_build(&config, &scan, &read, &write)) {
+                    continue;
+                }
+                const uint32_t calm = code_hash();
+                const bool moves = jtag_gen_info.stall_moves;
+                const bool transfers = jtag_gen_info.transfers;
+                assert((w == JTAG_GEN_FOUR_WIRE) || !moves);
+                config.stall = 2U;
+                assert(jtag_gen_build(&config, &scan, &read, &write));
+                assert(jtag_gen_info.transfers == transfers);
+                assert(jtag_gen_info.scan_last > (int32_t)latency);
+                assert(!transfers || (fewest() > (int32_t)latency));
+                if (moves) {
+                    moved++;
+                } else {
+                    assert(code_hash() == calm);
+                    same++;
+                }
+            }
+        }
+    }
+    printf("  stall: %u builds it may move, %u it leaves the same\n", moved, same);
+}
+
+/** A connection starts from the default latency and measures where the code built for it samples
+ * less than two cycles past it (src/jtag_sweep.c, CONNECT_MARGIN). Every four-wire build a stall
+ * may move is one of those, with the stall or without, so a capture starting or stopping never
+ * changes code a connection read through without measuring. */
+static void test_stall_connect(void) {
+    uint32_t moving = 0U;
+    for (uint32_t stall = 0U; stall <= 2U; stall += 2U) {
+        for (uint32_t before = 0U; before <= 2U; before++) {
+            for (uint32_t idle = 0U; idle <= 8U; idle += 4U) {
+                for (uint32_t period = 3U; period <= 45U; period++) {
+                    const struct jtag_gen_config config = {.wire = JTAG_GEN_FOUR_WIRE,
+                                                           .period = period,
+                                                           .latency = JTAG_GEN_FOUR_WIRE_LATENCY_DEFAULT,
+                                                           .before = before,
+                                                           .after = 1U,
+                                                           .idle = idle,
+                                                           .stall = stall};
+                    jtag_gen_scan_fn scan;
+                    jtag_gen_xfer_fn read;
+                    jtag_gen_xfer_fn write;
+                    if (!jtag_gen_build(&config, &scan, &read, &write) || !jtag_gen_info.stall_moves) {
+                        continue;
+                    }
+                    moving++;
+                    assert(fewest() - (int32_t)config.latency < 2);
+                }
+            }
+        }
+    }
+    printf("  stall at connection: %u builds it may move, every one measured\n", moving);
+}
+
 int main(void) {
     if (mmap((void*)JTAG_GEN_BASE, 0x8000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
              -1, 0) != (void*)JTAG_GEN_BASE) {
@@ -122,6 +191,8 @@ int main(void) {
     }
     test_safe_period();
     test_same_below();
+    test_stall();
+    test_stall_connect();
 
     static const uint32_t periods[] = {3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 12U, 15U, 20U, 40U};
     static const char* const names[] = {"four-wire", "two-pin"};

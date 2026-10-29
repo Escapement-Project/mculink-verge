@@ -413,7 +413,8 @@ DEMCR_TRCENA, DWT_CYCCNTENA, DWT_NOCYCCNT = 1 << 24, 1 << 0, 1 << 25
 def check_connect_on_capture_board(c: Checker, elf: str, slots: int) -> None:
     """A host connecting at 25 MHz to a target that answers at 9, which the default latency's build
     reads right. Elsewhere nothing is measured. On a board that can capture, a capture starting
-    later rebuilds for its stall a build that does not serve 9, so the connection has to measure."""
+    later rebuilds for its stall a build that does not serve 9, so the connection has to measure.
+    Four-wire connections measure there anyway (tools/jtag_latency_test.c, test_stall_connect)."""
     if "swd_sweep_last" not in symbols(elf):
         return
     from cycles import ID_SWJ_SEQUENCE, ID_TRANSFER, ID_VENDOR_SWD_GEN, timed_dpidr_target

@@ -36,7 +36,7 @@ static inline bool swd_sweep_pending(void) { return swd_sweep_line.reset; }
  * probe measures on its own: first uses what it measured for the same target since the host's
  * DAP_Connect, or measures where the generated reads leave less than two cycles of margin either
  * side for the latency in use, or, on a board that can capture energy, wherever a capture changes
- * the generated reads (swd_gen_stall). Then, if the DPIDR read failed and nothing measured yet,
+ * the generated reads (gen_stall). Then, if the DPIDR read failed and nothing measured yet,
  * measures and runs the command again when that changed the latency. ARM's transfer loop stops at
  * the first transfer that does not answer OK, so the command ran nothing but that read. */
 uint32_t swd_sweep_connect(const uint8_t* request, uint8_t* response);

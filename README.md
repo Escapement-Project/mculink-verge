@@ -22,7 +22,7 @@ record the builds and methods.
 | --- | --- | --- | --- | --- |
 | SWD writes | 50 MHz | Bench, normal path, 2026-10-20 | Nothing | 10.7 MHz |
 | SWD reads | 37.5 MHz | Bench, normal path, 2026-10-20 | The Pro's energy capture: 30 MHz while it runs (bench, 2026-10-29) | 9.6 MHz |
-| JTAG, four wires (reads and writes) | 30 MHz | Bench and firmware timing report | The target's TDO delay | Not measured yet |
+| JTAG, four wires (reads and writes) | 30 MHz | Bench and firmware timing report | The target's TDO delay; the Pro's energy capture (emulator, 2026-10-29) | Not measured yet |
 | cJTAG, two pins (reads and writes) | 50 MHz per wire packet; per JTAG clock in Shift, 7.9 MHz in OScan1 and OScan2, 9.4 MHz in OScan5 and OScan6 | Firmware timing report; target-dependent | The target's TDO delay | Not supported |
 | Console (VCOM) | 19.2 Mbaud | Bench loopback | Nothing | 3 Mbaud or more; its limit not measured yet |
 | SWO | 30 Mbaud, UART encoding only | Bench capture | Nothing | Not measured yet |
@@ -41,7 +41,9 @@ A request above the maximum gets the maximum.
   lengthens the clock. The probe measures that delay when a host connects. Up to 8 core cycles
   (53 ns) the clock runs at 30 MHz, at 9 or 10 cycles at 25 MHz, and past that each cycle of delay
   adds one to the clock: 18.75 MHz at 12, 12.5 at 16. A CC1312R1 measures 7 after a pin reset
-  and 11 after a system reset.
+  and 11 after a system reset. On the Pro, energy capture can make these clocks up to two cycles
+  longer while it runs, because its DMA can delay the probe's read of TDO by two cycles. Scans run
+  at 25 MHz at 6 or 7 cycles of delay, 21.4 MHz at 8 and 18.75 MHz at 9 or 10.
 - **cJTAG, two pins.** The wire carries packets at up to 50 MHz, and three packets make one JTAG
   clock. The probe samples TDO a cycle past the delay it measures, and each cycle adds one to the
   frame. A CC1312R1 measures 8 in OScan1, so that frame takes 19 core cycles, or 7.9 MHz (the
