@@ -44,6 +44,8 @@ HOST_CHECKS = (
     ("JTAG command loop: sanitizers, both compilers", ["uv", "run", "tools/jtag_transfer_test.py"]),
     ("Console line coding: sanitizers, both compilers", ["uv", "run", "tools/vcom_line_test.py"]),
     ("Energy samples and accumulation: sanitizers, both compilers", ["uv", "run", "tools/energy_samples_test.py"]),
+    ("Energy stream messages and timeline: sanitizers, both compilers", ["uv", "run", "tools/energy_stream_test.py"]),
+    ("Energy converter vectors as committed: sanitizers, both compilers", ["uv", "run", "tools/energy_vectors.py"]),
     ("Unsigned byte decoding: sanitizers, both compilers", ["uv", "run", "tools/byte_io_test.py"]),
     ("DAP packet framing: sanitizers, both compilers", ["uv", "run", "tools/dap_packet_test.py"]),
     ("MS OS 2.0 descriptor sets: sanitizers, both compilers", ["uv", "run", "tools/ms_os_20_test.py"]),

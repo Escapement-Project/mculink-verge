@@ -313,3 +313,163 @@ def check_aux(c, elf0, elf1, symbols0, symbols1, fields):
     c.check(usb.dispatch() == 0, "a request reached CPU 1 through an absent aux interface")
     c.note("Verge Aux: CMSIS-DAP-identical replies, [0xff] for the rest, OUT armed only with the slot free, ahead "
            "of the queue, in order, retry, gone hosts (new configuration, unconfigured, reply in flight), instance 0")
+
+
+def check_aux_stream(c, elf0, elf1, symbols0, symbols1, fields, layout):
+    """The stream on Verge Aux, CPU 0's side: 0x90 modes 6 and 7, which CPU 0 answers itself once CPU 1
+    holds none of the capture state, and the messages it sends after replies."""
+    instance = 1
+
+    def fresh():
+        usb = Usb(elf0, elf1, symbols0, symbols1, fields)
+        usb.call0("aux_init", 1, instance)
+        usb.aux_index = instance
+        usb.aux_configured = True
+        energy = usb.cpu0.sym["energy_integration"]
+        usb.put("energy_integration", energy)
+        usb.energy = energy
+        return usb
+
+    def field(usb, name, value=None, size=4, offset=0):
+        at = usb.energy + layout[name] + offset
+        if value is None:
+            return int.from_bytes(usb.cpu0.uc.mem_read(at, size), "little")
+        usb.cpu0.uc.mem_write(at, value.to_bytes(size, "little"))
+        return value
+
+    def capture(usb):
+        """A capture CPU 1 started at 1,000 pairs a second, 41 pairs integrated."""
+        usb.put("energy_available", 1, 1)
+        field(usb, "running", 1, 1)
+        field(usb, "setting", 2, 1)
+        field(usb, "full_scale_mv", 3000)
+        field(usb, "previous_low", 0, 1)
+        field(usb, "stream.clock_hz", 96_000_000)
+        field(usb, "stream.period", 96_000)
+        field(usb, "stream.next_sequence", 42)
+        field(usb, "decoder", 41, 4, 12)
+
+    def publish(usb, message):
+        """A message as the capture's owner publishes one."""
+        written = field(usb, "stream.written")
+        at = written % 16
+        usb.cpu0.uc.mem_write(usb.energy + layout["stream.slot"] + 512 * at, message)
+        field(usb, "stream.length", len(message), 2, 2 * at)
+        field(usb, "stream.written", written + 1)
+
+    def arrive(usb, payload):
+        buffer = usb.cpu0.sym["aux_out"]
+        usb.cpu0.uc.mem_write(buffer, payload)
+        usb.call0("tud_vendor_rx_cb", instance, buffer, len(payload))
+
+    def drain(usb):
+        """Everything aux_task sends, each transfer completing before the next. A completion's
+        callback sends the next one itself."""
+        start = done = len(usb.aux_sent)
+        usb.call0("aux_task")
+        while done < len(usb.aux_sent) and done - start < 32:
+            usb.call0("tud_vendor_tx_cb", instance, len(usb.aux_sent[done]))
+            done += 1
+            usb.call0("aux_task")
+        return usb.aux_sent[start:]
+
+    for available, running, error, payload, want in (
+            (0, 1, 0, b"\x90\x06\x00", b"\x90\x00\x03"), (1, 0, 0, b"\x90\x06\x00", b"\x90\x00\x01"),
+            (1, 1, 1, b"\x90\x06\x00", b"\x90\x00\x07"), (1, 1, 0, b"\x90\x06", b"\xff"),
+            (1, 1, 0, b"\x90\x07", b"\x90\x00\x00")):
+        usb = fresh()
+        capture(usb)
+        usb.put("energy_available", available, 1)
+        field(usb, "running", running, 1)
+        usb.put("energy_dma_error", error, 1)
+        arrive(usb, payload)
+        c.check(usb.dispatch() == 0, f"aux {payload.hex()} went to CPU 1")
+        sent = drain(usb)
+        c.check(sent == [want], f"aux {payload.hex()} with available {available}, running {running}, error {error}: {[m.hex() for m in sent]}")
+
+    # Mode 6 on a running capture: the reply, then the header from the next pair, then pairs.
+    usb = fresh()
+    capture(usb)
+    arrive(usb, b"\x90\x06\x00")
+    sent = drain(usb)
+    c.check(len(sent) == 2 and sent[0] == b"\x90\x00\x00" and len(sent[1]) == 68 and sent[1][:2] == b"\xa1\x01",
+            f"mode 6 sent {[m[:8].hex() for m in sent]}")
+    if len(sent) == 2 and len(sent[1]) == 68:
+        h = sent[1]
+        c.check(int.from_bytes(h[2:6], "little") == 1000 and h[6] == 2 and int.from_bytes(h[7:9], "little") == 3000
+                and int.from_bytes(h[9:13], "little") == 42 and h[13] == 0, f"mode 6 header {h[:14].hex()}")
+    publish(usb, b"\xa0\x00" + bytes(14))
+    c.check(drain(usb) == [b"\xa0\x00" + bytes(14)], "pairs after the header were not sent")
+    # Mode 7: the reply, then the end, with the last pair integrated.
+    arrive(usb, b"\x90\x07")
+    sent = drain(usb)
+    c.check(sent == [b"\x90\x00\x00", b"\xa2\x01" + (41).to_bytes(4, "little")], f"mode 7 sent {[m.hex() for m in sent]}")
+
+    # CPU 1 holds the capture state for good when nothing runs, from boot and after a stop: modes 6 and
+    # 7 answer without it. Inside a command, around a supply read, the capture runs and they wait,
+    # without CPU 0 spinning; so they do while a start has not yet given its timeline.
+    for mode, want in ((b"\x90\x06\x00", b"\x90\x00\x01"), (b"\x90\x07", b"\x90\x00\x00")):
+        usb = fresh()
+        capture(usb)
+        field(usb, "running", 0, 1)
+        usb.put("energy_control_ack", 1)
+        arrive(usb, mode)
+        c.check(drain(usb) == [want], f"{mode.hex()} with the capture stopped and CPU 1 holding its state")
+    for quiet, pending in ((1, 0), (0, 1)):
+        usb = fresh()
+        capture(usb)
+        usb.put("energy_control_ack", quiet)
+        field(usb, "stream.timeline_pending", pending, 1)
+        arrive(usb, b"\x90\x06\x00")
+        c.check(drain(usb) == [] and usb.call0("aux_has_work") == 0,
+                f"mode 6 ran while CPU 1 held the running capture's state (quiet {quiet}, pending {pending})")
+        usb.put("energy_control_ack", 2)
+        field(usb, "stream.timeline_pending", 0, 1)
+        c.check(drain(usb)[:1] == [b"\x90\x00\x00"], "mode 6 did not run once CPU 1 let go")
+
+    # A failure that left CPU 0 owning the state: its loop ends the stream.
+    usb = fresh()
+    capture(usb)
+    arrive(usb, b"\x90\x06\x00")
+    drain(usb)
+    usb.put("energy_dma_error", 1, 1)
+    c.check(usb.call0("aux_has_work") == 1, "a failed capture's stream left no work for CPU 0's loop")
+    sent = drain(usb)
+    c.check(sent == [b"\xa2\x04" + (41).to_bytes(4, "little")], f"a failed capture's stream ended with {[m.hex() for m in sent]}")
+
+    # After a configuration, messages are a gone host's until a header this configuration asked for:
+    # one it did not, from a request that ran across the reset, is dropped too. Unconfigured, all are.
+    usb = fresh()
+    capture(usb)
+    arrive(usb, b"\x90\x06\x00")
+    c.check(len(drain(usb)) == 2, "mode 6 did not send its reply and header")
+    usb.call0("tud_mount_cb")
+    publish(usb, b"\xa0\x00" + bytes(14))
+    publish(usb, b"\xa1" + bytes(67))
+    publish(usb, b"\xa0\x01" + bytes(14))
+    c.check(drain(usb) == [], "after a configuration, a header nobody asked for was sent")
+    # The gone host's stream, its pairs and the end mode 6 gives it, go too; the new header passes.
+    arrive(usb, b"\x90\x06\x00")
+    publish(usb, b"\xa0\x02" + bytes(14))
+    sent = drain(usb)
+    c.check([m[:2] for m in sent] == [b"\x90\x00", b"\xa1\x01"],
+            f"after a configuration, mode 6 sent {[m[:2].hex() for m in sent]}")
+    publish(usb, b"\xa0\x03" + bytes(14))
+    c.check([m[:2] for m in drain(usb)] == [b"\xa0\x03"], "pairs after the new header were not sent")
+    usb.aux_configured = False
+    publish(usb, b"\xa0\x02" + bytes(14))
+    c.check(drain(usb) == [] and field(usb, "stream.sent") == field(usb, "stream.written"),
+            "messages kept while the interface was unconfigured")
+
+    # A mode 5 request out: messages wait until its reply has gone.
+    usb = fresh()
+    usb.call0("tud_mount_cb")
+    publish(usb, b"\xa1" + bytes(67))
+    arrive(usb, b"\x90\x05" + (1000).to_bytes(4, "little") + b"\x00")
+    c.check(drain(usb) == [], "a stream message went before the mode 5 reply")
+    usb.dispatch()
+    sent = drain(usb)
+    c.check(len(sent) == 2 and sent[0][:2] == b"\x90\x00" and sent[1][0] == 0xA1,
+            f"mode 5 then its header sent {[m[:4].hex() for m in sent]}")
+    c.note("stream on Verge Aux: modes 6 and 7 on CPU 0 with each result, waiting for CPU 1, reply before header,"
+           " end after mode 7, gone hosts' and unconfigured messages dropped, mode 5's reply first")

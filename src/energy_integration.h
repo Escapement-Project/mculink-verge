@@ -72,6 +72,7 @@ static inline bool energy_consume_until(struct energy_integration* energy, uint3
         dap_shared.energy_dma_error = 1U;
         return false;
     }
+    energy_stream_batch_begin(&energy->stream);
     energy_accumulator_write_begin();
     energy_total_t total = energy_accumulator_values();
     uint32_t index = (energy->consumed_bytes / sizeof(uint32_t)) & (ring_words - 1U);
@@ -91,6 +92,7 @@ static inline bool energy_consume_until(struct energy_integration* energy, uint3
     energy->consumed_bytes = written;
     energy_accumulator_publish(&total);
     energy_accumulator_write_end();
+    energy_stream_batch_end(&energy->stream);
     return true;
 }
 
@@ -98,7 +100,11 @@ static inline bool energy_consume_until(struct energy_integration* energy, uint3
  *  and asks for the low range back when every sample in it stayed on the high range under the
  *  setting's limit. A segment that completed no pair says nothing either way. */
 static inline void energy_integrate(struct energy_integration* energy) {
-    if (!energy->running || energy_capture_failed(energy)) {
+    if (!energy->running) {
+        return;
+    }
+    if (energy_capture_failed(energy)) {
+        energy_stream_end(&energy->stream, ENERGY_STREAM_END_FAULT, energy->decoder.sequence);
         return;
     }
     uint32_t const completed = dap_shared.energy_segments - energy->segments_at_start + 1U;

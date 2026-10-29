@@ -21,6 +21,7 @@
 #include "dap_usb_slots.h"
 #include "dma_ring.h"
 #include "energy_samples.h"
+#include "energy_stream.h"
 #include "reboot.h"
 #include "swo_ring.h"
 
@@ -65,6 +66,7 @@ struct energy_integration {
     uint32_t rearm_below_na; // UM11673 Table 4's low-range limit for the setting
     uint32_t segments_at_start; // dap_shared.energy_segments when the ring started
     uint32_t segment_words; // a power of two, for the rate (src/energy_integration.h)
+    uint8_t setting;        // the current range jumper, as a stream's header gives it: 1 350 mA, 2 50 mA
     bool calibrated;
     /** From a start to the end of the pause that follows: set and cleared by CPU 1 while CPU 0
      *  cannot take an energy completion. */
@@ -83,6 +85,9 @@ struct energy_integration {
     bool held;
     uint32_t held_mv;
     uint32_t held_na; // its own reading, for a pause that comes before the next pair
+
+    /** Verge Aux's stream of the pairs integrated here (src/energy_stream.h). */
+    struct energy_stream stream;
 
     DAP_SHARED_DMA_DESCRIPTOR_ALIGN volatile dma_descriptor_t descriptors[ENERGY_SEGMENTS];
     volatile uint32_t ring[ENERGY_RING_WORDS];

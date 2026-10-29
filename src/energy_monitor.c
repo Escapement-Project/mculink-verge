@@ -39,6 +39,15 @@
 
 static uint32_t requested_rate_hz;
 static uint32_t actual_rate_hz;
+/** Set by energy_monitor_start_stream for the start it makes: Verge Aux's stream begins with it. */
+static bool stream_on_start;
+static bool stamp_ready;
+/** The conversion timer's count from one toggle of its output to the next: a pair every two. */
+static uint32_t trigger_ticks;
+/** A read-latency hold: when its first trigger was due by CTIMER4, and how far that was from the
+ *  stop in the conversion timer's own count. */
+static uint32_t hold_due;
+static uint32_t hold_to_next;
 
 #define ENERGY_CONTROL_POLLS 1000000U
 static bool pins_ready;
@@ -405,16 +414,34 @@ static bool capture_drain(void) {
     return empty;
 }
 
+/** CTIMER4 runs free from FRO_HF, the conversion timer's clock, so a stream's times count the clock
+ *  its pairs are paced by (src/energy_stream.h). */
+static void stamp_init(void) {
+    if (stamp_ready) {
+        return;
+    }
+    CLOCK_AttachClk(kFRO_HF_to_CTIMER4);
+    CLOCK_EnableClock(kCLOCK_Timer4);
+    RESET_PeripheralReset(kCTIMER4_RST_SHIFT_RSTn);
+    CTIMER4->PR = 0U;
+    CTIMER4->MCR = 0U;
+    CTIMER4->TCR = CTIMER_TCR_CEN_MASK;
+    stamp_ready = true;
+}
+
 static uint32_t timer_effective_rate(uint32_t rate_hz) {
     uint32_t const clock_hz = CLOCK_GetFroHfFreq();
     uint32_t const ticks = (clock_hz + rate_hz) / (2U * rate_hz);
     return clock_hz / (2U * ticks);
 }
 
-static void timer_start(uint32_t rate_hz) {
+/** Returns CTIMER4 as the timer starts; the first conversion comes `*ticks` later. */
+static uint32_t timer_start(uint32_t rate_hz, uint32_t* ticks_out) {
     uint32_t const clock_hz = CLOCK_GetFroHfFreq();
     uint32_t const ticks = (clock_hz + rate_hz) / (2U * rate_hz);
     actual_rate_hz = clock_hz / (2U * ticks);
+    trigger_ticks = ticks;
+    *ticks_out = ticks;
 
     CLOCK_AttachClk(kFRO_HF_to_CTIMER2);
     CLOCK_EnableClock(kCLOCK_Timer2);
@@ -425,7 +452,9 @@ static void timer_start(uint32_t rate_hz) {
     CTIMER2->MCR = CTIMER_MCR_MR3R_MASK;
     CTIMER2->EMR = CTIMER_EMR_EMC3(3U);
     CTIMER2->IR = 0x0FU;
+    uint32_t const started = CTIMER4->TC;
     CTIMER2->TCR = CTIMER_TCR_CEN_MASK;
+    return started;
 }
 
 /** Out of line, so tools/image.py can call it. */
@@ -494,6 +523,28 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     energy->calibrated = current_calibrated;
     energy->full_scale_mv = target_sense_full_scale_mv();
     energy->rearm_below_na = rearm_below_na();
+    energy->setting = (current_range == TARGET_SENSE_CURRENT_RANGE_350_MA) ? 1U
+                      : (current_range == TARGET_SENSE_CURRENT_RANGE_50_MA) ? 2U : 0U;
+    stamp_init();
+    struct energy_stream* const stream = &energy->stream;
+    if (new_session) {
+        energy_stream_end(stream, ENERGY_STREAM_END_RESTARTED, energy->decoder.sequence);
+        energy_stream_timeline_prepare(stream, 1U);
+        if (stream_on_start) {
+            energy_stream_header_t const header = {
+                .rate_hz = actual_rate_hz,
+                .setting = energy->setting,
+                .full_scale_mv = (uint16_t)energy->full_scale_mv,
+                .first_sequence = 1U,
+                .previous_low = true,
+                .low = &low_range_calibration,
+                .high = &high_range_calibration,
+            };
+            (void)energy_stream_begin(stream, &header);
+        }
+    } else {
+        energy_stream_timeline_prepare(stream, energy->decoder.sequence + 1U);
+    }
     target_sense_configure_monitor(actual_rate_hz);
     CLOCK_EnableClock(kCLOCK_InputMux);
     if (!inputmux_ready) {
@@ -504,6 +555,12 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     LPADC_EnableFIFO0WatermarkDMA(ADC0, true);
 
     if (!capture_quiet(false)) {
+        // The release stays asked for, so CPU 0 may take the state at any moment: take it back
+        // first. If that fails too, CPU 0 has it, and its loop ends the stream (src/aux.c).
+        if (capture_quiet(true)) {
+            stream->timeline_pending = false;
+            energy_stream_end(stream, ENERGY_STREAM_END_FAULT, energy->decoder.sequence);
+        }
         return false;
     }
     if (new_session) {
@@ -521,7 +578,9 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
         ENERGY_SEGMENT_XFERCFG(energy->segment_words) | DMA_CHANNEL_XFERCFG_SWTRIG_MASK;
     // An edge whatever P0_17 was left at: CPU 0's re-arm can raise it after a pause lowered it.
     energy_latch_clock();
-    timer_start(requested_rate_hz);
+    uint32_t ticks = 0U;
+    uint32_t const started = timer_start(requested_rate_hz, &ticks);
+    energy_stream_timeline_run(stream, new_session, CLOCK_GetFroHfFreq(), ticks, started);
     return true;
 }
 
@@ -560,8 +619,14 @@ __attribute__((noinline)) bool energy_monitor_pause(void) {
     if (!integration()->running) {
         return true;
     }
-    if (!capture_failed() && !capture_drain()) {
+    struct energy_stream* const stream = &integration()->stream;
+    if (capture_failed()) {
+        energy_stream_end(stream, ENERGY_STREAM_END_FAULT, integration()->decoder.sequence);
+    } else if (!capture_drain()) {
+        energy_stream_end(stream, ENERGY_STREAM_END_FAULT, integration()->decoder.sequence);
         return false;
+    } else {
+        energy_stream_pause(stream);
     }
     integration()->decoder.phase = ENERGY_EXPECT_VOLTAGE;
     DMA0->COMMON[0].ABORT = ENERGY_DMA_MASK;
@@ -581,6 +646,13 @@ __attribute__((noinline)) bool energy_monitor_hold(void) {
         return false;
     }
     CTIMER2->TCR = 0U;
+    uint32_t const stopped = CTIMER4->TC;
+    // Its output rises for each pair. Stopped with it high, a fall comes first; either way the count
+    // runs to the match before the next toggle.
+    uint32_t const count = CTIMER2->TC;
+    uint32_t const to_toggle = (count < trigger_ticks) ? (trigger_ticks - 1U - count) : 0U;
+    hold_to_next = to_toggle + (((CTIMER2->EMR & CTIMER_EMR_EM3_MASK) != 0U) ? trigger_ticks : 0U);
+    hold_due = stopped + hold_to_next;
     __DSB();
     // The conversion under way, and DMA0's reads of what it leaves at the FIFO's watermark.
     for (uint32_t polls = 0U; polls < ENERGY_CONTROL_POLLS; polls++) {
@@ -593,6 +665,12 @@ __attribute__((noinline)) bool energy_monitor_hold(void) {
 
 __attribute__((noinline)) void energy_monitor_release(bool held) {
     if (held) {
+        energy_stream_hold_t* const hold = energy_stream_hold(&integration()->stream, hold_due);
+        uint32_t const resumed = CTIMER4->TC;
+        if (hold != NULL) {
+            hold->came = resumed + hold_to_next;
+            __DMB();
+        }
         CTIMER2->TCR = CTIMER_TCR_CEN_MASK;
     }
 }
@@ -652,6 +730,7 @@ energy_monitor_status_t energy_monitor_start(uint32_t rate_hz) {
     actual_rate_hz = 0U;
     pins_init();
     if ((target_sense_adc_init() != TARGET_SENSE_OK) || !calibrate_for_setting()) {
+        energy_stream_end(&integration()->stream, ENERGY_STREAM_END_STOPPED, integration()->decoder.sequence);
         return ENERGY_MONITOR_ADC_ERROR;
     }
     requested_rate_hz = rate_hz;
@@ -665,10 +744,18 @@ energy_monitor_status_t energy_monitor_start(uint32_t rate_hz) {
 
 uint32_t energy_monitor_rate(void) { return actual_rate_hz; }
 
+energy_monitor_status_t energy_monitor_start_stream(uint32_t rate_hz) {
+    stream_on_start = true;
+    energy_monitor_status_t const status = energy_monitor_start(rate_hz);
+    stream_on_start = false;
+    return status;
+}
+
 energy_monitor_status_t energy_monitor_stop(void) {
     if (!energy_monitor_pause()) {
         return ENERGY_MONITOR_DMA_ERROR;
     }
+    energy_stream_end(&integration()->stream, ENERGY_STREAM_END_STOPPED, integration()->decoder.sequence);
     requested_rate_hz = 0U;
     actual_rate_hz = 0U;
     CLOCK_DisableClock(kCLOCK_Timer2);

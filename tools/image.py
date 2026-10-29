@@ -821,7 +821,7 @@ def check_hid_padding(c: Checker, elf: str, slots: int) -> None:
 
 
 def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int) -> None:
-    from usb_checks import check_aux, check_transport
+    from usb_checks import check_aux, check_aux_stream, check_transport
     from usb_lifecycle import check_sequences
 
     fields = ("transfer_abort", "request", "request_tail", "rx_armed_slot", "next_request_seq", "first_live_seq",
@@ -830,6 +830,15 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int) -> None:
     check_transport(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_sequences(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_aux(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
+    stream_shared = shared_offsets(slots, "energy_integration", "energy_available", "energy_dma_error",
+                                   "energy_control_ack", small_enums=short_enums(elf0))
+    stream_layout = shared_offsets(slots, "running", "setting", "full_scale_mv", "previous_low", "low_range",
+                                   "high_range", "decoder", "stream.written", "stream.sent", "stream.length",
+                                   "stream.slot", "stream.active", "stream.next_sequence", "stream.period",
+                                   "stream.clock_hz", "stream.timeline_pending", small_enums=short_enums(elf0),
+                                   struct_type="struct energy_integration")
+    check_aux_stream(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets | stream_shared,
+                     stream_layout)
 
 
 def check_stacks(c: Checker, elf0: str, elf1: str) -> None:
@@ -1591,6 +1600,8 @@ def check_sram_code(c: Checker, elf: str, what: str, names: tuple[str, ...], all
     command or per wait, matched without the suffix LTO adds to a local symbol's name. A call
     through a register has no static target and is not checked here."""
     sym = symbols_with_size(elf)
+    # A veneer's target can be a symbol with no size, as the C library's assembly helpers are.
+    every = symbols(elf)
     sram = range(0x2000_0000, 0x3000_0000)
     before = len(c.problems)
     for name in names:
@@ -1612,8 +1623,8 @@ def check_sram_code(c: Checker, elf: str, what: str, names: tuple[str, ...], all
             # A call out of range gets a linker veneer, placed next to the caller in SRAM. What
             # matters is where the veneer goes, so take the function it is named for.
             veneer = re.fullmatch(r"__(.+)_veneer", m.group(4) or "")
-            if veneer and veneer.group(1) in sym:
-                target = sym[veneer.group(1)][0]
+            if veneer and veneer.group(1) in every:
+                target = every[veneer.group(1)] & ~1
             callee = veneer.group(1) if veneer else (m.group(4) or "")
             if callee.split(".")[0] in allow:
                 continue
@@ -2220,7 +2231,7 @@ def main() -> int:
     check_sram_code(c, args.elf, "CPU 0 integrates energy", ("DMA0_IRQHandler", "energy_integrate_segment"))
     check_sram_code(c, args.elf, "CPU 0 runs a command's USB work",
                     ("serve", "tud_vendor_rx_cb", "tud_vendor_tx_cb", "tud_hid_set_report_cb",
-                     "tud_hid_report_complete_cb", "memcpy"),
+                     "tud_hid_report_complete_cb", "memcpy", "aux_task", "aux_has_work"),
                     # The end of a reboot, which clang calls out of line, and a console taking a new line
                     # coding, which a host sends when it opens the port.
                     allow=("__NVIC_SystemReset", "vcom_configure"))

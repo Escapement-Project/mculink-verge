@@ -9,6 +9,7 @@
 
 #include "dap_shared.h"
 #include "energy_samples.h"
+#include "energy_stream.h"
 
 /** The voltage channel halves node T (R73 and R75) on its way to VREFP's full scale. */
 static inline uint32_t energy_voltage_mv(uint16_t code, uint32_t full_scale_mv) {
@@ -31,7 +32,12 @@ static inline void energy_add_pair(const struct energy_integration* energy, ener
  *  range's table. So a pair whose range differs from the previous pair's takes the next pair's
  *  current, unless that pair switched too and may be a blend itself; then it keeps its own. */
 static inline void energy_consume_result(struct energy_integration* energy, uint32_t result, energy_total_t* total) {
-    if (!energy_sample_feed(&energy->decoder, result) || !energy->calibrated) {
+    if (!energy_sample_feed(&energy->decoder, result)) {
+        return;
+    }
+    energy_stream_pair(&energy->stream, energy->decoder.sequence, energy->decoder.last_voltage,
+                       energy->decoder.last_current, energy_low_range(energy->decoder.last_range));
+    if (!energy->calibrated) {
         return;
     }
     bool const low = energy_low_range(energy->decoder.last_range);

@@ -7,6 +7,12 @@
 
 #include "dap_core.h"
 #include "dap_shared.h"
+#include "energy_stream.h"
+
+// DAP_config.h first: DAP.h reads the settings it defines.
+#include "DAP_config.h"
+
+#include "DAP.h"
 
 /** USB1 reaches no memory but USB SRAM. Every message fits one packet, so one buffer each way. */
 CFG_TUD_MEM_SECTION CFG_TUSB_MEM_ALIGN static uint8_t aux_out[512];
@@ -16,11 +22,18 @@ static bool present;
 static uint8_t instance;
 /** OUT is armed into aux_out. */
 static volatile bool out_armed;
-/** aux_in holds a reply of this length, to send or on its way while in_busy. */
-static volatile uint8_t in_length;
+/** aux_in holds a reply or a stream message of this length, to send or on its way while in_busy. */
+static volatile uint16_t in_length;
 static volatile bool in_busy;
 /** Counts USB configurations, for the slot's `generation`. */
 static uint32_t generation;
+/** A stream command (0x90 mode 6 or 7) CPU 0 answers itself, waiting for the capture state. */
+static uint8_t local_request[3];
+static uint8_t local_length;
+/** A header has gone since this configuration began: stream messages before it are a gone host's.
+ *  Only a header this configuration asked for, by mode 5 or 6, counts. */
+static bool stream_synced;
+static bool stream_expected;
 
 /** Out of line, as aux_task is, so tools/usb_checks.py can call it. */
 __attribute__((noinline)) void aux_init(bool has_aux, uint8_t vendor_index) {
@@ -38,6 +51,13 @@ __attribute__((section(".ramfunc"))) void aux_received(const uint8_t* buffer, ui
     // aux_task arms OUT only while the slot is free; the state check keeps anything else from
     // overwriting a request CPU 1 holds. It arms OUT again either way.
     if ((buffer != aux_out) || (length == 0U) || (slot->state != AUX_SLOT_FREE)) {
+        return;
+    }
+    // Modes 6 and 7 start and stop a stream without stopping the capture. CPU 0 owns the capture
+    // state whenever CPU 1 has not asked for quiet (src/energy_integration.h), so it serves them.
+    if ((buffer[0] == 0x90U) && (length >= 2U) && ((buffer[1] == 6U) || (buffer[1] == 7U))) {
+        local_length = (uint8_t)(length < sizeof(local_request) ? length : sizeof(local_request));
+        memcpy(local_request, buffer, local_length);
         return;
     }
     uint32_t const kept = length < AUX_REQUEST_MAX ? length : AUX_REQUEST_MAX;
@@ -65,6 +85,126 @@ __attribute__((section(".ramfunc"))) void aux_mount(void) {
     out_armed = false;
     in_busy = false;
     in_length = 0U;
+    local_length = 0U;
+    stream_synced = false;
+    stream_expected = false;
+}
+
+/** Whether CPU 1 holds the capture state: it asked for quiet, or a start has not yet given its
+ *  timeline. */
+__attribute__((section(".ramfunc"))) static bool stream_owned_by_cpu1(struct energy_stream const* stream) {
+    return ((dap_shared.energy_control_ack & DAP_ENERGY_QUIET_FLAG) != 0U) || stream->timeline_pending;
+}
+
+/** Whether a mode 6 or 7 has to wait for the capture state. CPU 1 holds it from boot to the first
+ *  start and after every stop, with nothing running and no stream, and then the answer needs no
+ *  write. It also holds it for a moment inside a command, around a supply read, with the capture
+ *  running: then the answer waits. */
+__attribute__((section(".ramfunc"))) static bool stream_waits(void) {
+    struct energy_integration const* const energy = dap_shared.energy_integration;
+    bool const failed = (local_request[1] == 6U) && (dap_shared.energy_dma_error != 0U);
+    return (energy != nullptr) && (dap_shared.energy_available != 0U) && !failed &&
+           stream_owned_by_cpu1(&energy->stream) && (energy->running || energy->stream.active);
+}
+
+/** 0x90 mode 6 or 7 into aux_in; false while it has to wait (stream_waits). Replies as
+ *  HOST-INTERFACE.md "The energy stream" gives them. */
+__attribute__((section(".ramfunc"))) static bool stream_command(void) {
+    if (stream_waits()) {
+        return false;
+    }
+    __DMB();
+    bool const start = local_request[1] == 6U;
+    aux_in[0] = 0x90U;
+    aux_in[1] = DAP_OK;
+    if (start && (local_length < 3U)) {
+        aux_in[0] = ID_DAP_Invalid;
+        in_length = 1U;
+        return true;
+    }
+    uint8_t result = 0U;
+    // The DMA interrupt is the only other owner on this core.
+    uint32_t const primask = __get_PRIMASK();
+    __disable_irq();
+    struct energy_integration* const energy = dap_shared.energy_integration;
+    struct energy_stream* const stream = (energy != nullptr) ? &energy->stream : nullptr;
+    if ((stream == nullptr) || (dap_shared.energy_available == 0U)) {
+        result = 3U;
+    } else if (!start) {
+        // Owned by CPU 1 means nothing streams (stream_waits).
+        if (!stream_owned_by_cpu1(stream)) {
+            energy_stream_end(stream, ENERGY_STREAM_END_ASKED, energy->decoder.sequence);
+        }
+    } else if (dap_shared.energy_dma_error != 0U) {
+        result = 7U;
+    } else if (stream_owned_by_cpu1(stream) || !energy->running) {
+        result = 1U;
+    } else {
+        energy_stream_end(stream, ENERGY_STREAM_END_ASKED, energy->decoder.sequence);
+        energy_stream_header_t const header = {
+            .rate_hz = stream->clock_hz / stream->period,
+            .setting = energy->setting,
+            .full_scale_mv = (uint16_t)energy->full_scale_mv,
+            .first_sequence = stream->next_sequence,
+            .previous_low = energy->previous_low,
+            .low = &energy->low_range,
+            .high = &energy->high_range,
+        };
+        // A full ring: the host is not reading, and the header would be lost too.
+        result = energy_stream_begin(stream, &header) ? 0U : 7U;
+        stream_expected = stream_expected || (result == 0U);
+    }
+    __set_PRIMASK(primask);
+    aux_in[2] = result;
+    in_length = 3U;
+    return true;
+}
+
+/** A capture failure ends its stream wherever the failure is found, but some leave no owner to
+ *  write the end: a DMA error with no completion behind it, a pause that timed out with CPU 0
+ *  still owning the state. CPU 0's loop ends it then. */
+__attribute__((section(".ramfunc"))) static void stream_fault(void) {
+    struct energy_integration* const energy = dap_shared.energy_integration;
+    if ((energy == nullptr) || !energy->stream.active || (dap_shared.energy_dma_error == 0U) ||
+        ((dap_shared.energy_control_ack & DAP_ENERGY_QUIET_FLAG) != 0U)) {
+        return;
+    }
+    uint32_t const primask = __get_PRIMASK();
+    __disable_irq();
+    energy_stream_end(&energy->stream, ENERGY_STREAM_END_FAULT, energy->decoder.sequence);
+    __set_PRIMASK(primask);
+}
+
+/** Stream messages wait while a mode 5 request is out, so its reply comes before its header. */
+__attribute__((section(".ramfunc"))) static bool stream_held(void) {
+    aux_slot_t const* const slot = &dap_stage.aux;
+    return (slot->state != AUX_SLOT_FREE) && (slot->request[0] == 0x90U) && (slot->request[1] == 5U);
+}
+
+/** The next stream message into aux_in. Before a header since the configuration began, messages
+ *  are a gone host's and dropped; aux_task drops any taken while unconfigured. */
+__attribute__((section(".ramfunc"))) static void stream_take(void) {
+    struct energy_integration* const energy = dap_shared.energy_integration;
+    if ((energy == nullptr) || stream_held()) {
+        return;
+    }
+    struct energy_stream* const stream = &energy->stream;
+    while (stream->sent != stream->written) {
+        __DMB();
+        uint32_t const at = stream->sent & (ENERGY_STREAM_SLOTS - 1U);
+        uint8_t const* const message = stream->slot[at];
+        if (stream_synced || ((message[0] == ENERGY_STREAM_HEADER) && stream_expected)) {
+            stream_synced = true;
+            stream_expected = false;
+            memcpy(aux_in, message, stream->length[at]);
+            in_length = stream->length[at];
+        }
+        __DMB();
+        stream->sent++;
+        if (in_length != 0U) {
+            return;
+        }
+    }
 }
 
 __attribute__((section(".ramfunc"), noinline)) void aux_task(void) {
@@ -75,16 +215,27 @@ __attribute__((section(".ramfunc"), noinline)) void aux_task(void) {
     // Requests arrive only while the host has the interface configured, and a configuration moves
     // `generation`, so a reply while it is not configured is a gone host's.
     bool const configured = tud_vendor_n_mounted(instance);
+    if ((in_length == 0U) && (local_length != 0U) && stream_command()) {
+        local_length = 0U;
+    }
     if ((in_length == 0U) && (slot->state == AUX_SLOT_REPLY)) {
         __DMB();
         uint8_t const length = slot->reply_len;
         bool const live = slot->generation == generation;
+        // Mode 5's header is in the ring already, held back until this reply has gone.
+        if (live && (slot->request[0] == 0x90U) && (slot->request[1] == 5U)) {
+            stream_expected = true;
+        }
         if (live) {
             memcpy(aux_in, slot->reply, length);
         }
         __DMB();
         slot->state = AUX_SLOT_FREE;
         in_length = live ? length : 0U;
+    }
+    stream_fault();
+    if (in_length == 0U) {
+        stream_take();
     }
     if ((in_length != 0U) && !in_busy) {
         if (!configured) {
@@ -96,7 +247,7 @@ __attribute__((section(".ramfunc"), noinline)) void aux_task(void) {
             }
         }
     }
-    if (!out_armed && (slot->state == AUX_SLOT_FREE) && configured) {
+    if (!out_armed && (slot->state == AUX_SLOT_FREE) && (local_length == 0U) && configured) {
         out_armed = true;
         if (!tud_vendor_n_read_xfer_buf(instance, aux_out)) {
             out_armed = false;
@@ -106,6 +257,15 @@ __attribute__((section(".ramfunc"), noinline)) void aux_task(void) {
 
 /** Out of line, so tools/usb_checks.py can call it. */
 __attribute__((section(".ramfunc"), noinline)) bool aux_has_work(void) {
-    return present && (((in_length == 0U) && (dap_stage.aux.state == AUX_SLOT_REPLY)) ||
-                       ((in_length != 0U) && !in_busy));
+    if (!present) {
+        return false;
+    }
+    if (in_length != 0U) {
+        return !in_busy;
+    }
+    struct energy_integration const* const energy = dap_shared.energy_integration;
+    bool const messages = (energy != nullptr) && (energy->stream.sent != energy->stream.written) && !stream_held();
+    bool const fault = (energy != nullptr) && energy->stream.active && (dap_shared.energy_dma_error != 0U) &&
+                       ((dap_shared.energy_control_ack & DAP_ENERGY_QUIET_FLAG) == 0U);
+    return (dap_stage.aux.state == AUX_SLOT_REPLY) || messages || fault || ((local_length != 0U) && !stream_waits());
 }

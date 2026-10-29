@@ -14,6 +14,7 @@
 #include "DAP.h"
 #include "board_pins.h"
 #include "cjtag.h"
+#include "dap_dispatch.h"
 #include "dap_shared.h"
 #include "dio.h"
 #include "marker.h"
@@ -298,6 +299,8 @@ static uint8_t* put_u32s(uint8_t* out, const uint32_t* fields, uint32_t n) {
 }
 #endif
 
+bool dap_vendor_on_aux;
+
 uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
     const uint8_t id = request[0];
 
@@ -509,17 +512,24 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
     case ID_VENDOR_ENERGY: {
         uint8_t const mode = request[1];
         response[1] = DAP_OK;
-        if (mode == 0U) {
+        if ((mode == 0U) || (mode == 5U)) {
             uint32_t const rate = (uint32_t)request[2] | ((uint32_t)request[3] << 8U) |
                                   ((uint32_t)request[4] << 16U) | ((uint32_t)request[5] << 24U);
-            energy_monitor_status_t const status = energy_monitor_start(rate);
+            // Mode 5 starts a stream with the capture, and only Verge Aux carries a stream. Its last
+            // byte, the DIO pins whose edges the stream reports, asks for nothing this firmware has.
+            if ((mode == 5U) && !dap_vendor_on_aux) {
+                response[1] = DAP_ERROR;
+                return (7U << 16) | 2U;
+            }
+            energy_monitor_status_t const status = (mode == 5U) ? energy_monitor_start_stream(rate)
+                                                                : energy_monitor_start(rate);
             uint32_t const actual_rate = energy_monitor_rate();
             response[2] = (uint8_t)status;
             response[3] = (uint8_t)actual_rate;
             response[4] = (uint8_t)(actual_rate >> 8U);
             response[5] = (uint8_t)(actual_rate >> 16U);
             response[6] = (uint8_t)(actual_rate >> 24U);
-            return (6U << 16) | 7U;
+            return ((mode == 5U) ? (7U << 16) : (6U << 16)) | 7U;
         }
         if (mode == 1U) {
             energy_monitor_sample_t sample = {0};

@@ -86,7 +86,9 @@ def machine(elf, symbols):
 # struct energy_integration's members (src/dap_shared.h), which image.py lays out.
 INTEGRATION_FIELDS = ("low_range", "high_range", "scale_q32", "full_scale_mv", "rearm_below_na", "segments_at_start",
                       "segment_words", "calibrated", "running", "consumed_bytes", "decoder", "on_high_range", "rearm_blocked",
-                      "previous_low", "held", "held_mv", "held_na", "descriptors", "ring")
+                      "previous_low", "held", "held_mv", "held_na", "descriptors", "ring", "setting",
+                      "stream.written", "stream.sent", "stream.length", "stream.slot", "stream.active", "stream.holds",
+                      "stream.holds_written", "stream.next_sequence", "stream.timeline_pending")
 # Where a machine without CPU 0's image keeps the struct: SRAM0, which CPU 1's image leaves alone.
 INTEGRATION_AT = 0x20008000
 
@@ -1134,6 +1136,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
                 f"{fault}: successful start did not clear failure")
         probe.uc.hook_del(hook)
     c.note("energy partial/full/pending segments, FIFO tail, split tuples, Q32 carry and session resume/reset")
+    check_stream(c, setup, result, local_symbols=symbols)
     from energy_lifecycle import check_sequences
     check_sequences(c, setup, result, FIXTURE_RATE)
 
@@ -1231,3 +1234,121 @@ def check_calibration(c, elf, symbols, offsets, model_syscon):
             f"mode 4 after a failed calibration: result {result}, {count} points, {codes}, {currents}")
     c.note("calibration drops a saturated point and fails when a range keeps fewer than two; mode 4 reports"
            " the kept points")
+
+
+CTIMER4_TC = 0x4002A008
+
+
+def check_stream(c, setup, result, local_symbols):
+    """Verge Aux's stream (src/energy_stream.h) through both cores' integration and CPU 1's starts,
+    pauses, holds and stops: the messages each produces, and each pair's time from the stamps."""
+
+    def messages(probe):
+        energy = probe.energy
+        written, sent = energy.get("stream.written", 4), energy.get("stream.sent", 4)
+        out = []
+        for i in range(sent, written):
+            at = i % 16
+            length = energy.get("stream.length", 2, 2 * at)
+            out.append(energy.read("stream.slot", length, 512 * at))
+        energy.put("stream.sent", written, 4)
+        return out
+
+    def u16_at(m, at):
+        return int.from_bytes(m[at:at + 2], "little")
+
+    def u32_at(m, at):
+        return int.from_bytes(m[at:at + 4], "little")
+
+    clock = 96_000_000
+    ticks = (clock + FIXTURE_RATE) // (2 * FIXTURE_RATE)
+    period = 2 * ticks
+
+    def ns(counts):
+        return counts * 1_000_000_000 // clock
+
+    def start(probe, local, stamp, streaming=True):
+        probe.uc.mem_write(CTIMER4_TC, u32(stamp))
+        local("requested_rate_hz", FIXTURE_RATE)
+        local("stream_on_start", int(streaming))
+        ok = probe.call("energy_capture_start", 1) == 1
+        local("stream_on_start", 0)
+        return ok
+
+    def pairs(n, first=0):
+        words = []
+        for i in range(n):
+            words += [result(1, 1000 + first + i), result(2, 2000 + first + i), result(3, 65535 if i % 2 else 0)]
+        return words
+
+    probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+    stamp = 0xFFFF0000
+    c.check(start(probe, local, stamp), "stream: an armed start failed")
+    header = messages(probe)
+    c.check(len(header) == 1 and len(header[0]) == 68 and header[0][:2] == b"\xa1\x01", f"stream: start sent {header}")
+    if header and len(header[0]) == 68:
+        h = header[0]
+        c.check(u32_at(h, 2) == clock // period and h[6] == 1 and u16_at(h, 7) == probe.energy.get("full_scale_mv", 4)
+                and u32_at(h, 9) == 1 and h[13] == 1, f"stream: header fields {h[:14].hex()}")
+        c.check(h[14] == 2 and u16_at(h, 15) == 0 and u16_at(h, 21) == 65535 and h[39] == 2 and h[64] == 0,
+                f"stream: header tables {h[14:66].hex()}")
+    # CPU 1 drains ten pairs at a pause: one message, timed from the start's stamp.
+    feed(pairs(10))
+    written(30)
+    pause()
+    got = messages(probe)
+    c.check(len(got) == 1 and got[0][0] == 0xA0 and got[0][1] == 0 and u32_at(got[0], 2) == 1 and
+            u16_at(got[0], 14) == 10 and int.from_bytes(got[0][6:14], "little") == ns(ticks),
+            f"stream: drained pairs {[m[:16].hex() for m in got]}")
+    if got and len(got[0]) == 16 + 50:
+        c.check(all(u16_at(got[0], 16 + 5 * i) == 1000 + i and u16_at(got[0], 18 + 5 * i) == 2000 + i and
+                    got[0][20 + 5 * i] == i % 2 for i in range(10)), "stream: drained pair codes or ranges")
+    # The resume restarts the timer 5 ms of counts after the start's stamp; CPU 0's interrupt
+    # integrates a whole segment: the first message after it says time jumped.
+    probe.uc.mem_write(CTIMER4_TC, u32((stamp + 480_000) & 0xFFFFFFFF))
+    c.check(probe.call("energy_capture_start", 0) == 1, "stream: resume failed")
+    segment = probe.energy.get("segment_words", 4)
+    whole = segment // 3
+    feed(pairs(whole, 10) + [0] * (segment - 3 * whole))
+    probe.integrate()
+    put("energy_segments", get("energy_segments") + 1)
+    got = messages(probe)
+    c.check(len(got) >= 1 and got[0][1] == 1 and u32_at(got[0], 2) == 11 and
+            int.from_bytes(got[0][6:14], "little") == ns(ticks + 480_000),
+            f"stream: first message after a resume {[m[:16].hex() for m in got]}")
+    # A hold: CPU 1 records when the first trigger after the stop was due and when it came, from the
+    # conversion timer's frozen count and output (here 0 and low: the next toggle rises). Only the
+    # generated paths measure a read latency, so a build without them holds nothing.
+    if "energy_monitor_hold" in probe.sym:
+        probe.uc.mem_write(CTIMER4_TC, u32(0x1234))
+        held = probe.call("energy_monitor_hold")
+        probe.uc.mem_write(CTIMER4_TC, u32(0x1234 + 777))
+        probe.call("energy_monitor_release", held)
+        due = 0x1234 + ticks - 1
+        c.check(held == 1 and probe.energy.get("stream.holds_written", 4) == 1 and
+                probe.energy.read("stream.holds", 8) == u32(due) + u32(due + 777),
+                f"stream: hold recorded as {probe.energy.read('stream.holds', 8).hex()}")
+    # A new start ends the stream with reason 3 before its own header; a stop ends it with 2.
+    last = probe.energy.get("decoder", 4, 12)
+    c.check(start(probe, local, 0), "stream: a second armed start failed")
+    got = messages(probe)
+    c.check(len(got) >= 2 and got[-2][:2] == b"\xa2\x03" and u32_at(got[-2], 2) == last and got[-1][0] == 0xA1,
+            f"stream: restart sent {[m[:6].hex() for m in got]}")
+    c.check(probe.command(bytes([0x90, 2])) == b"\x90\x00\x00", "stream: stop failed")
+    got = messages(probe)
+    c.check(got == [bytes([0xA2, 2]) + u32(0)], f"stream: stop sent {[m.hex() for m in got]}")
+    # A fault CPU 0's interrupt finds ends it with reason 4.
+    c.check(start(probe, local, 0), "stream: a third armed start failed")
+    messages(probe)
+    put("energy_dma_error", 1, 1)
+    probe.integrate()
+    got = messages(probe)
+    c.check(got == [bytes([0xA2, 4]) + u32(0)], f"stream: fault sent {[m.hex() for m in got]}")
+    put("energy_dma_error", 0, 1)
+    # Mode 5 belongs to Verge Aux: on CMSIS-DAP it is refused and starts nothing.
+    local("dap_vendor_on_aux", 0)
+    reply = probe.command(bytes([0x90, 5]) + u32(FIXTURE_RATE) + b"\x00")
+    c.check(reply == b"\x90\xff" and not messages(probe), f"stream: CMSIS-DAP mode 5 answered {reply.hex()}")
+    probe.uc.hook_del(hook)
+    c.note("energy stream: header, pairs drained by CPU 1 and integrated by CPU 0, times across a resume, a hold's"
+           " record, ends at a restart, a stop and a fault, mode 5 refused on CMSIS-DAP")

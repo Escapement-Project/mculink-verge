@@ -101,7 +101,7 @@ the target.
 ## Pro energy capture: `0x90`
 
 Energy capture is available when `0x82` format 6 sets extended-capability bit 0. It is off at
-startup. The host polls snapshots; the firmware does not stream samples.
+startup. On CMSIS-DAP the host polls snapshots; Verge Aux also streams every pair ("The energy stream").
 
 When bit 2 is set, the firmware integrates every calibrated sample pair independently of host
 polling. A successful start clears the accumulator. A failed start leaves the previous total intact.
@@ -238,11 +238,132 @@ one transfer on EP5 IN, in the format of that command's reply on CMSIS-DAP. The 
 command.
 
 The probe takes one request at a time. The next one waits on USB until the probe has answered the
-one before, so replies come in request order. The probe answers an aux request before its next
+one before, so replies come in request order. A program that opens the interface reads and drops
+whatever is waiting first: a reply or a stream message meant for the program before it. The probe answers an aux request before its next
 CMSIS-DAP command, so a request waits for at most the command running on CMSIS-DAP.
 
 The two interfaces share one target supply and one energy capture. A start on either restarts the
 capture and clears the total, and reads on either see the same capture.
+
+## The energy stream
+
+Through Verge Aux, a host can receive every pair the probe measures, with its time, so it can record
+a power profile. Three `0x90` modes control the stream. They exist only on Verge Aux; on CMSIS-DAP
+they answer `DAP_ERROR`.
+
+| Request | Action |
+| --- | --- |
+| `[0x90, 5, rate:u32, dio_mask]` | Start a capture at `rate` pairs a second, as mode 0, and stream it from its first pair. |
+| `[0x90, 6, dio_mask]` | Stream the capture that is running, from its next pair. The capture and its total carry on. |
+| `[0x90, 7]` | Stop streaming. The capture carries on. |
+
+Mode 5 replies as mode 0: `[0x90, DAP_OK, result, effective_rate:u32]`. Modes 6 and 7 reply
+`[0x90, DAP_OK, result]`. Mode 6 returns 1 when no capture runs, and 7 when the capture has
+failed or the probe has no room for the stream's first message. The reply always comes before the
+stream's first message.
+
+`dio_mask` picks the DIO pins whose edges the stream reports. This firmware reports none yet, so
+the header says 0 whatever the mask asked.
+
+A stream message starts with a byte from `0xa0` to `0xa3`, outside the vendor command range, so a
+host tells it from a reply by its first byte. Messages come between replies, never inside one.
+
+A stream ends when a host sends mode 7, and when the capture stops, restarts or fails. Its last
+message says which. After a restart, a host that wants the new capture sends mode 6.
+
+### Header: `0xa1`
+
+The first message of every stream. Everything a host needs to convert the pairs that follow is in
+it. 68 bytes.
+
+| Offset | Field |
+| --- | --- |
+| 0 | `0xa1` |
+| 1 | Stream format version, 1 |
+| 2–5 | Effective rate, pairs a second, u32 |
+| 6 | Jumper setting: 1 for 350 mA, 2 for 50 mA, 0 unknown |
+| 7–8 | Voltage full scale in mV, u16 |
+| 9–12 | Sequence number of the first pair the stream sends, u32 |
+| 13 | Range of the pair before that one: 1 low, 0 high; 1 at the start of a capture |
+| 14 | Low range: point count `n`, up to 4 |
+| 15–38 | Low range: four points of code (u16) then current through the sense resistor in nA (u32), lowest first; points past `n` are zero |
+| 39 | High range: point count |
+| 40–63 | High range: four points, as for the low range |
+| 64 | DIO pins reporting edges: 0 |
+| 65 | DIO levels when the stream started: 0 |
+| 66–67 | Edge time resolution in ns, u16: 0 |
+
+The points are the ones `0x90` mode 4 reports.
+
+### Pairs: `0xa0`
+
+| Offset | Field |
+| --- | --- |
+| 0 | `0xa0` |
+| 1 | Flags: bit 0, the capture paused before this message's first pair; bit 1, its conversions were held; other bits zero |
+| 2–5 | Sequence number of this message's first pair, u32 |
+| 6–13 | Time of this message's first pair, in ns since the capture started, u64 |
+| 14–15 | Pair count `k`, u16, 1 to 99 |
+| 16 onward | `k` pairs of 5 bytes each: voltage code (u16), current code (u16), then a byte with bit 0 set on the low range |
+
+Pair `i` of a message (from 0) has sequence number `first + i` and was taken at
+`time + i × 1,000,000,000 / rate` ns. A message never spans a pause or a hold, so its pairs are
+evenly spaced. The probe pauses the capture for a moment when it reads the target's supply voltage,
+and the next message sets flag bit 0. It holds the conversions while it measures a read latency, as a
+debugger connects at a fast clock, and the next message sets bit 1. Either way the message's time
+shows how long it took. Only a pause ends the pairs' run for step 5 below.
+
+A message holds at most 99 pairs and less than 10 ms of them, so it fits one 512-byte packet. The
+probe sends it once it is full, or once the pairs it has taken in reach 10 ms. It takes pairs in a
+batch every 10 ms or so; below about 100 pairs a second a batch takes longer, up to 1.8 s at one
+pair a second, and so does a message.
+
+### End: `0xa2`
+
+| Offset | Field |
+| --- | --- |
+| 0 | `0xa2` |
+| 1 | Why: 1 mode 7; 2 the capture stopped; 3 a new start restarted the capture; 4 the capture failed (result 7) |
+| 2–5 | Sequence number of the last pair the capture took, u32 |
+
+### When the host falls behind
+
+The probe keeps 16 messages a host has not read yet. When they fill, it drops new pairs messages
+until there is room again, and keeps the last two places for a header and an end. The capture and its
+total carry on regardless. A host sees lost pairs as a jump in sequence numbers.
+
+### Converting a pair
+
+All arithmetic is on integers. Shifts and divisions round toward zero. The firmware's converter in
+`src/energy_pairs.h` and `src/energy_samples.h` is the reference for this text. It writes
+`tools/energy_vectors.json`, which a host converter can check itself against: samples and whole-range
+digests of the conversion, and pair sequences with the totals they give.
+
+1. **Voltage.** `mv = (voltage_code × 2 × full_scale_mv) >> 16`. The 2 undoes the divider that halves
+   the target-side voltage on its way to the converter.
+2. **Range.** The pair's bit 0 says which range's table converts the current.
+3. **Current through the sense resistor.** The range's points make a piecewise-linear table.
+   - Each segment's slope is `((I[j+1] − I[j]) << 16) / (code[j+1] − code[j])`, with `I` in nA.
+   - The segment is the last `j` with `code ≥ code[j]`, among the first `n − 1` segments; a code
+     below `code[0]` uses segment 0.
+   - The current is `I[j] + (code − code[j]) × slope[j] / 65536`, in 64-bit signed arithmetic, then
+     clamped to 0 to 2^32 − 1.
+4. **The target's current.** The voltage divider draws current through the sense resistor too.
+   `divider_na = (mv × 99,297) >> 16`. The target's current is the sense current less `divider_na`,
+   or 0 if that would be negative.
+5. **Range switches.** A pair converted while the range switched can mix readings from both ranges.
+   So a pair whose range differs from the one before it uses the next pair's current from step 3
+   in place of its own. Step 4 still uses its own voltage.
+   - If the next pair switched too, the first keeps its own current.
+   - A pair still waiting for the next one when the capture pauses keeps its own current: when the
+     message after it sets flag bit 0, or when the stream ends. A hold, bit 1, does not end the run.
+   - The header gives the range before the first pair a stream sends. After a pause the range
+     before is the low range again, as at a start: the probe sets the range to low as it resumes.
+
+A host that wants the probe's total adds `mv × target_na` picowatts for each pair, scaled by
+`floor(2^32 / rate)` in 32-bit fixed point, carrying the fraction from pair to pair. For a stream
+started with mode 5, once the capture stops, that sum equals the total `0x90` mode 3 reports,
+provided no pairs were lost.
 
 ## Other commands
 

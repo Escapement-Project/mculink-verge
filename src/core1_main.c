@@ -78,7 +78,9 @@ __attribute__((noinline)) static void aux_serve(void) {
     __DMB();
     uint32_t produced = 0U;
     if (aux_command_carried(slot->request[0])) {
+        dap_vendor_on_aux = true;
         produced = DAP_ExecuteCommandSized(slot->request, slot->request_len, AUX_REPLY_MAX, slot->reply) & 0xFFFFU;
+        dap_vendor_on_aux = false;
     }
     if ((produced == 0U) || (produced > AUX_REPLY_MAX)) {
         slot->reply[0] = ID_DAP_Invalid;
