@@ -239,8 +239,11 @@ command.
 
 The probe takes one request at a time. The next one waits on USB until the probe has answered the
 one before, so replies come in request order. A program that opens the interface reads and drops
-whatever is waiting first: a reply or a stream message meant for the program before it. The probe answers an aux request before its next
-CMSIS-DAP command, so a request waits for at most the command running on CMSIS-DAP.
+whatever is waiting first: a reply or a stream message meant for the program before it. If a stream
+is still running, the program ends it with mode 7. No other program can hold the interface, so
+nothing else would read that stream, and the probe keeps sending it. The probe answers an aux
+request before its next CMSIS-DAP command, so a request waits for at most the command running on
+CMSIS-DAP.
 
 The two interfaces share one target supply and one energy capture. A start on either restarts the
 capture and clears the total, and reads on either see the same capture.
