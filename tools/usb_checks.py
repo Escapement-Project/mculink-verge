@@ -12,8 +12,10 @@ class Usb:
         self.cpu1 = machine(elf1, symbols1)
         self.fields = fields
         self.sent = []
+        self.configured = True
+        self.tx_attempts = 0
         # Replies on the aux interface's vendor instance, apart from CMSIS-DAP's, and the buffers its
-        # OUT endpoint was armed into. Only the aux instance reads as configured.
+        # OUT endpoint was armed into.
         self.aux_index = None
         self.aux_configured = False
         self.aux_sent = []
@@ -26,21 +28,26 @@ class Usb:
 
         def endpoints(uc, at, size, data):
             if at == self.cpu0.sym["tud_vendor_n_mounted"]:
-                # CMSIS-DAP's instance reads as unconfigured: arming another OUT transfer belongs to TinyUSB.
-                result = int(self.aux_configured and uc.reg_read(UC_ARM_REG_R0) == self.aux_index)
+                index = uc.reg_read(UC_ARM_REG_R0)
+                result = int(self.aux_configured if index == self.aux_index else self.configured)
+            elif at == self.cpu0.sym["tud_mounted"]:
+                result = int(self.configured)
             elif at == self.cpu0.sym["tud_vendor_n_read_xfer_buf"]:
                 self.aux_arms.append((uc.reg_read(UC_ARM_REG_R0), uc.reg_read(UC_ARM_REG_R1)))
                 result = 1
             elif at == self.cpu0.sym["tud_vendor_n_write_xfer"]:
                 index, address, length = (uc.reg_read(r) for r in (UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2))
-                if self.accept_tx:
+                self.tx_attempts += 1
+                accepted = self.accept_tx and (self.aux_configured if index == self.aux_index else self.configured)
+                if accepted:
                     (self.aux_sent if index == self.aux_index else self.sent).append(bytes(uc.mem_read(address, length)))
-                result = length if self.accept_tx else 0
+                result = length if accepted else 0
             elif at == self.cpu0.sym["tud_hid_n_report"]:
                 address, length = uc.reg_read(UC_ARM_REG_R2), uc.reg_read(UC_ARM_REG_R3)
-                if self.accept_tx:
+                self.tx_attempts += 1
+                if self.accept_tx and self.configured:
                     self.sent.append(bytes(uc.mem_read(address, length)))
-                result = int(self.accept_tx)
+                result = int(self.accept_tx and self.configured)
             else:
                 return
             uc.reg_write(UC_ARM_REG_R0, result)
@@ -173,6 +180,50 @@ def check_transport(c, elf0, elf1, symbols0, symbols1, fields, slots):
         c.check(counts == [8, 1], f"abort did not terminate SWD retries: {counts}")
     c.note("linked USB callbacks: full-queue abort, pointer guard, host-generation wrap, transport ordering and reply retry")
     c.note("HID/bulk callback abort stops a running SWD WAIT loop; the next transfer recovers")
+
+
+def check_unconfigured(c, elf0, elf1, symbols0, symbols1, fields, slots):
+    for hid in (False, True):
+        usb = Usb(elf0, elf1, symbols0, symbols1, fields)
+        for _ in range(slots):
+            usb.receive(b"\x00\xff", hid)
+        usb.configured = False
+        # CPU 1 finishes commands while USB has lost its configuration, before the next mount.
+        for _ in range(slots):
+            usb.dispatch()
+        for _ in range(slots * 2):
+            usb.call0("send_head")
+        name = "HID" if hid else "bulk"
+        c.check(usb.get("response_head", 1) == usb.get("response_tail", 1) and
+                all(usb.cpu0.uc.mem_read(usb.shared[0] + fields["response_len"] + slot * 2, 2) == b"\x00\x00"
+                    for slot in range(slots)), f"unconfigured {name}: CPU 0 retained completed replies")
+        c.check(usb.tx_attempts == 0, f"unconfigured {name}: CPU 0 retried a closed endpoint {usb.tx_attempts} times")
+        c.check(usb.cpu0.uc.mem_read(usb.cpu0.sym["response_in_flight"], 1) == b"\x00",
+                f"unconfigured {name}: reply ownership stayed busy")
+        usb.configured = True
+        usb.call0("tud_mount_cb")
+        for _ in range(slots):
+            usb.call0("send_head")
+        usb.receive(b"\x00\xff", hid)
+        usb.dispatch()
+        usb.call0("send_head")
+        expected = b"\x00\x02" + (b"\x40\x00" + bytes(60) if hid else b"\x00\x02")
+        c.check(usb.sent == [expected], f"unconfigured {name}: new host's first reply changed")
+        # A bus reset also abandons accepted IN transfers without a completion callback.
+        abandoned = usb.get("response_head", 1)
+        usb.configured = False
+        usb.call0("send_head")
+        c.check(usb.cpu0.uc.mem_read(usb.cpu0.sym["response_in_flight"], 1) == b"\x00" and
+                usb.get("response_head", 1) == (abandoned + 1) % slots and
+                usb.cpu0.uc.mem_read(usb.shared[0] + fields["response_len"] + abandoned * 2, 2) == b"\x00\x00",
+                f"unconfigured {name}: abandoned IN transfer retained its slot")
+        usb.configured = True
+        usb.call0("tud_mount_cb")
+        usb.receive(b"\x00\xff", hid)
+        usb.dispatch()
+        usb.call0("send_head")
+        c.check(usb.sent == [expected, expected], f"unconfigured {name}: abandoned IN transfer blocked the next host")
+    c.note("unconfigured HID/bulk replies: late CPU 1 publication releases every slot without endpoint retries; mount recovers")
 
 
 def check_aux(c, elf0, elf1, symbols0, symbols1, fields):

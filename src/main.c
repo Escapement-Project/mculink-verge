@@ -325,7 +325,8 @@ __attribute__((section(".ramfunc"))) static void send_head(void) {
         return;
     }
     __DMB();
-    if (dap_usb_stale(dap_shared.response_seq[head], dap_shared.first_live_seq)) {
+    // An unconfigured device has no host to take this reply, including one CPU 1 just finished.
+    if (!tud_mounted() || dap_usb_stale(dap_shared.response_seq[head], dap_shared.first_live_seq)) {
         response_sent();
         return;
     }
@@ -384,6 +385,13 @@ __attribute__((section(".ramfunc"))) static bool lab_hammer(void) {
 }
 #endif
 
+__attribute__((section(".ramfunc"))) static bool queued_work(void) {
+    bool const reply_waiting =
+        !response_in_flight && !dap_usb_slot_free(dap_shared.response_len, dap_shared.response_head);
+    return reply_waiting || disconnect_requested || tud_task_event_ready() || aux_has_work() ||
+           dap_shared.energy_control_request != dap_shared.energy_control_ack;
+}
+
 /** Everything that gives the loop work wakes it: USB and the LED tick by interrupt, CPU 1 through
  *  the mailbox when it frees a request slot, publishes a reply or asks for a reboot, the console
  *  through vcom_ready, and DIO edges half filling their record. The mailbox is cleared before the
@@ -391,20 +399,17 @@ __attribute__((section(".ramfunc"))) static bool lab_hammer(void) {
 __attribute__((section(".ramfunc"))) static void idle(void) {
     MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQCLR = DAP_CORE_MAILBOX_WAKE_MASK;
     __DSB();
-    bool const reply_waiting =
-        !response_in_flight && !dap_usb_slot_free(dap_shared.response_len, dap_shared.response_head);
-    if (reply_waiting || disconnect_requested || tud_task_event_ready() || aux_has_work() ||
-        dap_shared.energy_control_request != dap_shared.energy_control_ack) {
-        return;
-    }
 #ifdef CODE_LAB
-    if (lab_hammer()) {
+    if (queued_work() || lab_hammer()) {
         return;
     }
 #endif
+    // Check queued work under the mask: an IRQ taken earlier may have left no pending bit.
     // The pin interrupts still run, so edges are timed while the loop waits.
     uint32_t const basepri = cpu0_mask_all_but_edges();
-    wait_for_work();
+    if (!queued_work()) {
+        wait_for_work();
+    }
     cpu0_unmask(basepri);
 }
 

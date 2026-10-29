@@ -851,13 +851,16 @@ def check_hid_padding(c: Checker, elf: str, slots: int) -> None:
     c.note("HID long/short/malformed Info replies, zero padding and packet size across both staging modes and all slots")
 
 
-def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int) -> None:
-    from usb_checks import check_aux, check_aux_stream, check_transport
+def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: bool = False) -> None:
+    from usb_checks import check_aux, check_aux_stream, check_transport, check_unconfigured
+    from usb_idle_checks import check_idle
     from usb_lifecycle import check_sequences
 
     fields = ("transfer_abort", "request", "request_tail", "rx_armed_slot", "next_request_seq", "first_live_seq",
-              "response_len", "response_tail", "response_seq", "response_transport", "response_head")
+              "response_len", "response_tail", "response_seq", "response_transport", "response_head", "reboot_mode")
     offsets = shared_offsets(slots, *fields, small_enums=short_enums(elf0))
+    check_idle(c, elf0, symbols_with_size(elf0), offsets["reboot_mode"], code_lab)
+    check_unconfigured(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_transport(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_sequences(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_aux(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
@@ -2297,7 +2300,7 @@ def main() -> int:
     check_energy_control(c, args.elf, args.core1, slots)
     check_console_recovery(c, args.elf, slots)
     check_hid_padding(c, args.core1, slots)
-    check_usb_transport(c, args.elf, args.core1, slots)
+    check_usb_transport(c, args.elf, args.core1, slots, args.code_lab)
     check_identity(c, args.core1, args.code_lab)
     check_board(c, args.core1, slots)
     check_dio(c, args.core1, slots)
