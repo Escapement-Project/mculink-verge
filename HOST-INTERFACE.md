@@ -311,7 +311,9 @@ The points are the ones `0x90` mode 4 reports.
 | 16 onward | `k` pairs of 5 bytes each: voltage code (u16), current code (u16), then a byte with bit 0 set on the low range |
 
 Pair `i` of a message (from 0) has sequence number `first + i` and was taken at
-`time + i × 1,000,000,000 / rate` ns. A message never spans a pause or a hold, so its pairs are
+`time + i × 1,000,000,000 / rate` ns. That is when its voltage was converted. Its current was
+converted half a period later, so a host lining currents up with DIO edges adds
+`500,000,000 / rate` ns. A message never spans a pause or a hold, so its pairs are
 evenly spaced. The probe pauses the capture for a moment when it reads the target's supply voltage,
 and the next message sets flag bit 0. It holds the conversions while it measures a read latency, as a
 debugger connects at a fast clock, and the next message sets bit 1. Either way the message's time
