@@ -327,7 +327,9 @@ class Read:
     cycles after that edge's store until `latency` cycles after the next one's. `early` is how far
     into that window the read landed and `late` how far before its end, both in cycles; either
     one negative means the read saw a neighbouring bit. `late` stays None while no later edge has
-    happened, which leaves the window open on that side.
+    happened, which leaves the window open on that side. `after_next` says the edge that ends the
+    window came before the read, so a load another master holds for more than `late` cycles reads
+    the next bit; held before that edge, it holds the edge back with it.
     """
 
     cycle: int
@@ -336,6 +338,7 @@ class Read:
     late: int | None = None
     got: int = 0
     wanted: int = 0
+    after_next: bool = False
 
     @property
     def margin(self) -> int | None:
@@ -404,6 +407,7 @@ class TimedSwdTarget:
             r.early = cycle - (self.launches[want][0] + self.latency)
         if want + 1 < len(self.launches):
             r.late = self.launches[want + 1][0] + self.latency - 1 - cycle
+            r.after_next = True
         self.transfer_reads.append(r)
         self.reads.append(r)
         return on_wire if self.serve == "wire" else wanted

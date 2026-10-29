@@ -17,13 +17,25 @@ Everything here was measured on the bench 2026-10-16 unless marked otherwise. BE
   only OK). DAP_Transfer reuses the generated `swd_transfer.h` macro with `SWD_Transfer` = one
   generated transfer. `arm_SWD_Transfer` (SW_DP.c's, renamed) runs when generation fails
   (`arm_words` wraps it in the same contract).
-- When: `swd_gen_ready()` compares (period, latency, turnaround, data_phase, idle) with the last
-  build; `dap_dispatch.c` captures DAP_SWJ_Clock's Hz (ARM keeps only a delay) and calls it after
-  SWJ_Clock / SWD_Configure / TransferConfigure, so generation never lands inside a transfer.
+- When: `swd_gen_ready()` compares (period, latency, turnaround, data_phase, idle, stall) with the
+  last build; `dap_dispatch.c` captures DAP_SWJ_Clock's Hz (ARM keeps only a delay) and calls it
+  after SWJ_Clock / SWD_Configure / TransferConfigure, so generation never lands inside a transfer.
+  `energy_monitor.c` sets the stall when a capture is asked for or stopped, on CPU 1 between
+  commands, so the next transfer regenerates before it runs.
   `swd_gen_builds` / `swd_gen_failures` count outcomes (read them in the emulator).
 - Periods: requested P = ceil(CPU/Hz). Probe-driven clocks (packet, write data) at max(P, 3), low
   = 2 at P = 3 else P/2; target-driven, turnaround and idle clocks at max(P, 4), low = P/2. No
   clock is ever shorter than asked; stretches only lengthen. P <= 2^24 else ARM's path.
+- Stall (`swd_gen_stall`, 2 while energy capture runs): DMA0's reads of ADC0 share AHB port 10
+  with the secure GPIO and hold a sample load up to 2 cycles (BUSES.md). A load before the next
+  rising edge holds that edge back with it; one after it reads the next bit if held past its
+  window. So a sample after the next rising edge keeps `stall` cycles from its window's end, and
+  the served latencies count it. The read period starts at stall + 3 and grows (up to 3 more,
+  either split of an odd period) until the latency keeps a cycle inside what the build serves:
+  A = 7 reads at P = 5 (30 MHz), 244 cycles a transfer at a 37.5 MHz request against 210 without.
+  The latency measurement builds without a stall: it holds the conversions. On a board that can
+  capture, a connection measures an unmeasured target at every masked period: a capture starting
+  or stopping changes which latencies the build serves, and only a measured one is served by both.
 - Clock = fall store + rise store `str r5, [r9, #SET]`. Probe-driven falls are MPIN stores
   carrying SWDIO (MASK0 = ~(SWCLK|SWDIO), set at build; nothing else uses MPIN), so data changes
   with the fall: trace order W-then-v matches ARM's, and setup = low, hold = high. Target-driven

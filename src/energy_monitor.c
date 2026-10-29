@@ -19,6 +19,9 @@
 #include "dma_ring.h"
 #include "energy_integration.h"
 #include "target_sense.h"
+#ifdef SWD_CODEGEN
+#include "swd_gen.h"
+#endif
 
 #define ENERGY_DMA_SOURCE (&ADC0->RESFIFO[0])
 
@@ -37,6 +40,10 @@
 /** DMA0 has one completion flag a channel, so two segment ends must not come closer together than
  *  CPU 0's interrupt takes. Any 16 words span a gap between pairs. */
 #define ENERGY_SEGMENT_MIN_WORDS 16U
+
+/** Cycles a DMA0 read of ADC0 can hold a load from the secure GPIO, which shares its AHB port
+ *  (BUSES.md). Measured; no longer hold was seen. */
+#define ADC0_LOAD_STALL 2U
 
 static uint32_t requested_rate_hz;
 static uint32_t actual_rate_hz;
@@ -726,6 +733,18 @@ __attribute__((noinline)) void energy_monitor_calibrate(void) {
     }
 }
 
+/** While a capture is asked for, paused or not, the generated bit paths keep a stall's margin. */
+static void request_rate(uint32_t rate_hz) {
+    requested_rate_hz = rate_hz;
+#ifdef SWD_CODEGEN
+    uint32_t const stall = (rate_hz != 0U) ? ADC0_LOAD_STALL : 0U;
+    if (swd_gen_stall != stall) {
+        swd_gen_stall = stall;
+        swd_gen_changed();
+    }
+#endif
+}
+
 energy_monitor_status_t energy_monitor_start(uint32_t rate_hz) {
     if (!dap_shared.energy_available) {
         return ENERGY_MONITOR_UNAVAILABLE;
@@ -736,16 +755,16 @@ energy_monitor_status_t energy_monitor_start(uint32_t rate_hz) {
     if (!energy_monitor_pause()) {
         return ENERGY_MONITOR_DMA_ERROR;
     }
-    requested_rate_hz = 0U;
+    request_rate(0U);
     actual_rate_hz = 0U;
     pins_init();
     if ((target_sense_adc_init() != TARGET_SENSE_OK) || !calibrate_for_setting()) {
         energy_stream_end(&integration()->stream, ENERGY_STREAM_END_STOPPED, integration()->decoder.sequence);
         return ENERGY_MONITOR_ADC_ERROR;
     }
-    requested_rate_hz = rate_hz;
+    request_rate(rate_hz);
     if (!energy_capture_start(true)) {
-        requested_rate_hz = 0U;
+        request_rate(0U);
         actual_rate_hz = 0U;
         return ENERGY_MONITOR_DMA_ERROR;
     }
@@ -767,7 +786,7 @@ energy_monitor_status_t energy_monitor_stop(void) {
         return ENERGY_MONITOR_DMA_ERROR;
     }
     energy_stream_end(&integration()->stream, ENERGY_STREAM_END_STOPPED, integration()->decoder.sequence);
-    requested_rate_hz = 0U;
+    request_rate(0U);
     actual_rate_hz = 0U;
     CLOCK_DisableClock(kCLOCK_Timer2);
     CLOCK_AttachClk(kNONE_to_CTIMER2);

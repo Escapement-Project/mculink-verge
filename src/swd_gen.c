@@ -16,6 +16,9 @@
  *   middles, which can be after the next rising edge. Those transfers run masked: an interrupt
  *   between that edge and the sample would make it read the next bit. Longer periods sample just
  *   before the next rising edge, where an interrupt only stretches the clock.
+ * - Another master on the GPIO's port can hold a load a few cycles (swd_gen_stall), which no mask
+ *   stops. A sample after the next rising edge then keeps that many cycles from its window's end,
+ *   and the read period grows until the latency still has a cycle to spare either side.
  * - No clock is ever shorter than the period. Where an instruction needs a cycle a clock would
  *   have used, the clock waits.
  *
@@ -73,6 +76,11 @@ static_assert(SWDIO < 256U, "R_FOUR is loaded as an 8-bit immediate");
  * run unmasked, in cycles. Below it the window's middle, after that edge, is worth the mask. */
 #define SAFE_MARGIN 5U
 
+/** Cycles a build with a stall keeps the latency inside what it serves, as the shortest read period
+ * does without one, and how many read periods past its floor it may take to. */
+#define STALL_MARGIN 1U
+#define STALL_PERIODS 3U
+
 /** Idle clocks scheduled inline. More go in a loop after the transfer. */
 #define IDLE_INLINE 4U
 
@@ -90,6 +98,7 @@ struct gen_cfg {
     uint32_t turnaround;
     uint32_t data_phase;
     uint32_t idle;
+    uint32_t stall;
     bool masked;
 };
 
@@ -202,6 +211,12 @@ static uint32_t extract(uint32_t rd, uint32_t rm, uint32_t bit) {
     return t_and(rd, R_FOUR, rm, T_LSL, SWDIO_PIN - bit);
 }
 
+/** The cycles a load on `cycle` can be held with the edge at `end` already out: a held load
+ * before that edge holds the edge back with it. */
+static uint32_t after_edge(const struct gen_cfg* c, uint32_t cycle, uint32_t end) {
+    return cycle > end ? c->stall : 0U;
+}
+
 /** The load that samples the bit launched by the rising edge at `launch`, whose window the rising
  * edge at `end` closes, into `reg`, no earlier than `not_before`. */
 static uint32_t sample(struct sched* s, uint32_t launch, uint32_t end, uint32_t reg, uint32_t not_before) {
@@ -216,11 +231,12 @@ static uint32_t sample(struct sched* s, uint32_t launch, uint32_t end, uint32_t 
         const uint32_t last = end + c->latency - 1U;
         uint32_t best_margin = 0U;
         for (uint32_t cycle = first; cycle <= last; cycle++) {
-            if ((cycle < not_before) || taken(s, cycle) || on_grid(s, cycle)) {
+            const uint32_t held = after_edge(c, cycle, end);
+            if ((cycle < not_before) || (cycle + held > last) || taken(s, cycle) || on_grid(s, cycle)) {
                 continue;
             }
             const uint32_t early = cycle - first;
-            const uint32_t late = last - cycle;
+            const uint32_t late = last - held - cycle;
             const uint32_t margin = early < late ? early : late;
             if (!found || (margin >= best_margin)) {
                 best = cycle;
@@ -247,7 +263,7 @@ static uint32_t sample(struct sched* s, uint32_t launch, uint32_t end, uint32_t 
         s->last_load = best;
     }
     const int32_t after = (int32_t)(best - launch);
-    const int32_t before = (int32_t)(end - best);
+    const int32_t before = (int32_t)end - (int32_t)(best + after_edge(c, best, end));
     s->after_launch = after < s->after_launch ? after : s->after_launch;
     s->before_next = before < s->before_next ? before : s->before_next;
     return best;
@@ -633,16 +649,13 @@ static bool emit_function(struct gen_emitter* e, const struct gen_cfg* c, bool r
     return !e->failed;
 }
 
-bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_gen_fn* write) {
-    if ((config->period < SWD_GEN_PERIOD_MIN) || (config->period > SWD_GEN_PERIOD_MAX) || (config->latency == 0U) ||
-        (config->latency > 64U) || (config->turnaround < 1U) || (config->turnaround > 4U) ||
-        (config->idle_cycles > 255U)) {
-        return false;
-    }
-    const uint32_t period = config->period < SWD_GEN_READ_PERIOD_MIN ? SWD_GEN_READ_PERIOD_MIN : config->period;
+/** Both functions for `config` at a read period of `period` with a low phase of `low`, into
+ * SRAMX, with where each starts, and the build into `info`. */
+static bool emit_both(const struct swd_gen_config* config, uint32_t period, uint32_t low, struct swd_gen_info* info,
+                      uint32_t* read_at, uint32_t* write_at) {
     const struct gen_cfg c = {
         .period = period,
-        .low = period / 2U,
+        .low = low,
         .wperiod = config->period,
         // At three cycles the edge rises two after the fall: the data has two cycles to settle
         // and holds for one, the shape the bench measured writes landing with.
@@ -651,29 +664,85 @@ bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_ge
         .turnaround = config->turnaround,
         .data_phase = config->data_phase != 0U,
         .idle = config->idle_cycles,
+        .stall = config->stall,
         .masked = period < config->latency + 1U + SAFE_MARGIN,
     };
-    struct gen_emitter e = {
-        .code = (uint32_t*)SWD_GEN_BASE, .cap = SWD_GEN_SIZE / 4U, .delay_reg = R_DELAY, .filler = FILLER};
-
-    struct swd_gen_info info = {
+    *info = (struct swd_gen_info){
         .write_period = c.wperiod,
         .read_period = c.period,
         .masked_from = period > SAFE_MARGIN ? period - SAFE_MARGIN : 1U,
         .masked = c.masked,
         .ok = true,
     };
-    const uint32_t read_at = e.pos;
+    struct gen_emitter e = {
+        .code = (uint32_t*)SWD_GEN_BASE, .cap = SWD_GEN_SIZE / 4U, .delay_reg = R_DELAY, .filler = FILLER};
+    *read_at = e.pos;
     if (!emit_function(&e, &c, true)) {
         return false;
     }
-    latencies_served(&sched, &info.read_first, &info.read_last);
-    const uint32_t write_at = e.pos;
+    latencies_served(&sched, &info->read_first, &info->read_last);
+    *write_at = e.pos;
     if (!emit_function(&e, &c, false)) {
         return false;
     }
-    latencies_served(&sched, &info.write_first, &info.write_last);
-    info.code_bytes = 4U * e.pos;
+    latencies_served(&sched, &info->write_first, &info->write_last);
+    info->code_bytes = 4U * e.pos;
+    return true;
+}
+
+/** The fewest cycles `latency` has from either end of the latencies `info` serves. */
+static int32_t served_margin(const struct swd_gen_info* info, uint32_t latency) {
+    const int32_t l = (int32_t)latency;
+    const int32_t sides[] = {l - info->read_first, info->read_last - l, l - info->write_first, info->write_last - l};
+    int32_t fewest = sides[0];
+    for (uint32_t i = 1U; i < sizeof sides / sizeof sides[0]; i++) {
+        fewest = sides[i] < fewest ? sides[i] : fewest;
+    }
+    return fewest;
+}
+
+bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_gen_fn* write) {
+    if ((config->period < SWD_GEN_PERIOD_MIN) || (config->period > SWD_GEN_PERIOD_MAX) || (config->latency == 0U) ||
+        (config->latency > 64U) || (config->turnaround < 1U) || (config->turnaround > 4U) ||
+        (config->idle_cycles > 255U)) {
+        return false;
+    }
+    uint32_t period = config->period < SWD_GEN_READ_PERIOD_MIN ? SWD_GEN_READ_PERIOD_MIN : config->period;
+    uint32_t low = period / 2U;
+    struct swd_gen_info info;
+    uint32_t read_at;
+    uint32_t write_at;
+    if (config->stall != 0U) {
+        // A sample after the next rising edge has its window's end taken by the stall, and the
+        // cycle that leaves it margin on both sides can be one a clock edge needs. From the floor,
+        // the first read period that keeps the latency STALL_MARGIN inside what it serves, either
+        // split of an odd one; failing that, the one that keeps it furthest in.
+        period = period < SWD_GEN_STALL_READ_PERIOD_MIN(config->stall) ? SWD_GEN_STALL_READ_PERIOD_MIN(config->stall)
+                                                                       : period;
+        int32_t best = INT32_MIN;
+        uint32_t best_period = period;
+        uint32_t best_low = low;
+        for (uint32_t p = period; (best < (int32_t)STALL_MARGIN) && (p <= period + STALL_PERIODS); p++) {
+            for (uint32_t split = 0U; (best < (int32_t)STALL_MARGIN) && (split < 1U + (p & 1U)); split++) {
+                const uint32_t l = split == 0U ? p / 2U : p - (p / 2U);
+                if (emit_both(config, p, l, &info, &read_at, &write_at) &&
+                    (served_margin(&info, config->latency) > best)) {
+                    best = served_margin(&info, config->latency);
+                    best_period = p;
+                    best_low = l;
+                }
+            }
+        }
+        if (best == INT32_MIN) {
+            return false;
+        }
+        period = best_period;
+        low = best_low;
+    }
+    // SRAMX holds the last build tried, which need not be the one chosen.
+    if (!emit_both(config, period, low, &info, &read_at, &write_at)) {
+        return false;
+    }
     swd_gen_info = info;
     // Only SWCLK and SWDIO answer a masked-port store. Nothing else in the image uses MPIN.
     DBGIF_GPIO->MASK[0] = ~(SWCLK | SWDIO);
@@ -690,6 +759,7 @@ bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_ge
 uint32_t swd_gen_clock_hz = DAP_DEFAULT_SWJ_CLOCK;
 struct swd_gen_info swd_gen_info;
 uint32_t swd_gen_latency = SWD_GEN_LATENCY_DEFAULT;
+uint32_t swd_gen_stall;
 swd_gen_fn swd_gen_read;
 swd_gen_fn swd_gen_write;
 
@@ -716,6 +786,7 @@ struct swd_gen_config swd_gen_inputs(void) {
         .turnaround = DAP_Data.swd_conf.turnaround,
         .data_phase = DAP_Data.swd_conf.data_phase,
         .idle_cycles = DAP_Data.transfer.idle_cycles,
+        .stall = swd_gen_stall,
     };
 }
 

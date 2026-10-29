@@ -410,6 +410,36 @@ DCB_DEMCR, DWT_CTRL, DWT_CYCCNT = 0xE000EDFC, 0xE0001000, 0xE0001004
 DEMCR_TRCENA, DWT_CYCCNTENA, DWT_NOCYCCNT = 1 << 24, 1 << 0, 1 << 25
 
 
+def check_connect_on_capture_board(c: Checker, elf: str, slots: int) -> None:
+    """A host connecting at 25 MHz to a target that answers at 9, which the default latency's build
+    reads right. Elsewhere nothing is measured. On a board that can capture, a capture starting
+    later rebuilds for its stall a build that does not serve 9, so the connection has to measure."""
+    if "swd_sweep_last" not in symbols(elf):
+        return
+    from cycles import ID_SWJ_SEQUENCE, ID_TRANSFER, ID_VENDOR_SWD_GEN, timed_dpidr_target
+    from energy_checks import INTEGRATION_FIELDS, attach_integration
+
+    offsets = shared_offsets(slots, "energy_available", "energy_integration", small_enums=short_enums(elf))
+    layout = shared_offsets(slots, *INTEGRATION_FIELDS, small_enums=short_enums(elf),
+                            struct_type="struct energy_integration")
+    for available in (0, 1):
+        probe = timed_dpidr_target(elf, Model(), 9, 25_000_000)
+        probe.uc.mem_write(probe.sym["dap_shared"] + offsets["energy_available"], bytes([available]))
+        # A capture that is not running, so the measurement's hold has nothing to stop.
+        attach_integration(probe, offsets, layout)
+        probe.begin()
+        probe.command(bytes([ID_SWJ_SEQUENCE, 54]) + bytes([0xFF] * 6 + [0x07]))  # 51 high, 3 low
+        reply = probe.command(bytes([ID_TRANSFER, 0, 1, 0x02]))
+        probe.end()
+        state = probe.command(bytes([ID_VENDOR_SWD_GEN, 0, 0]))
+        measurements = int.from_bytes(state[42:46], "little")
+        board = "a board that can capture" if available else "a board without capture"
+        c.check(reply[1:3] == bytes([1, 1]) and measurements == available and state[2] == (9 if available else 7),
+                f"connecting at 25 MHz to latency 9 on {board}: DPIDR read answered {reply[1:7].hex()}, "
+                f"latency {state[2]} after {measurements} measurements")
+    c.note("a connection on a board that can capture measures a target the default latency reads right")
+
+
 def check_timestamp(c: Checker, elf: str) -> None:
     """DWT is powered down until TRCENA, and the counter does not run until CYCCNTENA.
 
@@ -2276,6 +2306,7 @@ def main() -> int:
     check_image_boards(c, args.elf)
     check_sample_probe(c, args.core1)
     check_timestamp(c, args.core1)
+    check_connect_on_capture_board(c, args.core1, slots)
     if swo:
         check_swo_baudrate(c, args.config, 96_000_000, args.core_clock_mhz * 1_000_000)
         from swo_checks import check_copy

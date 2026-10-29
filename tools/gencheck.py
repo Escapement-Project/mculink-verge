@@ -10,11 +10,16 @@ the pin). Check that no clock and no clock phase is shorter than the period, tha
 read the bit it was placed for, and that the replies carry what the target sent. Report the
 smallest sample margin, and the cycles a transfer takes in a running block against its floor: 46
 clocks, those the probe drives at the write period and the rest at the read period.
+
+`--stall` builds for another master holding a load that many cycles (src/swd_gen.h,
+swd_gen_stall), as energy capture's DMA does, and takes it off the late margin of every sample
+placed after the edge that ends its window.
 Clock points run in parallel across up to four workers by default; pass `--jobs 1` to run them
 serially.
 
     uv run tools/gencheck.py build-gen/mculink_cjtag_core1.elf
     uv run tools/gencheck.py build-gen/mculink_cjtag_core1.elf --mhz 37.5 30 25 --latency 7
+    uv run tools/gencheck.py build-gen/mculink_cjtag_core1.elf --stall 2
 """
 
 import argparse
@@ -38,13 +43,22 @@ def pattern() -> list[int]:
     return [1, 0, 0] + data + [sum(data) & 1]
 
 
-def run(elf: str, hz: int, read: bool, words: int, latency: int, target_latency: int, cpu_hz: int):
+def held_margin(r: cy.Read, stall: int) -> int:
+    """A sample's margin once a load held `stall` cycles has taken its share."""
+    late = None if r.late is None else r.late - (stall if r.after_next else 0)
+    return min(m for m in (r.early, late) if m is not None)
+
+
+def run(elf: str, hz: int, read: bool, words: int, latency: int, target_latency: int, cpu_hz: int, stall: int):
     model = cy.Model(engine=True, latency=latency)
     target = cy.TimedSwdTarget(pattern(), target_latency, serve="wire", idle=1)
     probe = cy.Machine(elf, target, restart_at=set(), model=model, record_trace=False, record_stats=False)
     probe.resync_on_release = True
     if "DAP_Setup" in probe.sym:
         probe.call("DAP_Setup")
+    # An image from before the stall only has its margins taken.
+    if stall and "swd_gen_stall" in probe.sym:
+        probe.uc.mem_write(probe.sym["swd_gen_stall"], stall.to_bytes(4, "little"))
     probe.command(bytes([cy.ID_CONNECT, 1]))
     probe.command(bytes([cy.ID_SWJ_CLOCK]) + cy.u32(hz))
     probe.command(bytes([cy.ID_TRANSFER_CONFIG, 0]) + cy.u16(100) + cy.u16(0))
@@ -66,9 +80,11 @@ def run(elf: str, hz: int, read: bool, words: int, latency: int, target_latency:
     # The clock asked for is a ceiling on every period; the probe's own clocks run at it down to
     # three cycles and the target's down to four.
     period = max(-(-cpu_hz // hz), 3)
-    read_period = max(period, 4)
+    read_period = max(period, 4, stall + 3 if stall else 0)
+    # A stall build may split an odd read period the other way, high phase the shorter.
+    read_high = read_period // 2 if stall else read_period - read_period // 2
     low = min(read_period // 2, 2 if period == 3 else period // 2)
-    high = min(read_period - read_period // 2, period - (2 if period == 3 else period // 2))
+    high = min(read_high, period - (2 if period == 3 else period // 2))
     rises, falls = counts.edge_cycles, counts.fall_cycles
     shortest = {}
     for name, seq in (("rise-to-rise", rises), ("fall-to-fall", falls)):
@@ -81,10 +97,13 @@ def run(elf: str, hz: int, read: bool, words: int, latency: int, target_latency:
         problems.append(f"low phase {min_low} cycles, wanted {low}")
     if min_high is not None and min_high < high:
         problems.append(f"high phase {min_high} cycles, wanted {high}")
-    margins = [r.margin for r in counts.reads if r.margin is not None]
+    margins = [held_margin(r, stall) for r in counts.reads if r.margin is not None]
     wrong = [r for r in counts.reads if r.got != r.wanted]
     if wrong:
         problems.append(f"{len(wrong)} of {len(counts.reads)} samples read a neighbouring bit")
+    held = [r for r in counts.reads if r.margin is not None and held_margin(r, stall) < 0]
+    if stall and held:
+        problems.append(f"{len(held)} of {len(counts.reads)} samples read a neighbouring bit when held {stall}")
     # A transfer is 46 rising edges at turnaround 1, read or write: the median distance between
     # edges that far apart is the transfer period in a running block, overheads between commands
     # left out.
@@ -100,10 +119,10 @@ def run(elf: str, hz: int, read: bool, words: int, latency: int, target_latency:
     }
 
 
-def run_point(args: tuple[str, int, int, int, int, int]) -> tuple[dict, dict]:
-    elf, hz, words, latency, target_latency, cpu_hz = args
-    read = run(elf, hz, True, words, latency, target_latency, cpu_hz)
-    write = run(elf, hz, False, words, latency, target_latency, cpu_hz)
+def run_point(args: tuple[str, int, int, int, int, int, int]) -> tuple[dict, dict]:
+    elf, hz, words, latency, target_latency, cpu_hz, stall = args
+    read = run(elf, hz, True, words, latency, target_latency, cpu_hz, stall)
+    write = run(elf, hz, False, words, latency, target_latency, cpu_hz, stall)
     return read, write
 
 
@@ -115,6 +134,7 @@ def main() -> int:
     ap.add_argument("--latency", type=int, default=7, help="the latency the image generates for")
     ap.add_argument("--target-latency", type=int, help="the latency the modelled target has (default: --latency)")
     ap.add_argument("--cpu", type=int, default=150)
+    ap.add_argument("--stall", type=int, default=0, help="cycles another master can hold a sample's load")
     ap.add_argument("--jobs", type=int, default=min(4, available_cpus()),
                     help="independent clock points to simulate in parallel")
     args = ap.parse_args()
@@ -125,7 +145,7 @@ def main() -> int:
     mhz = args.mhz or [-(-cpu_hz // p) / 1e6 for p in list(range(3, 41)) + [75, 150, 1500]]
     target_latency = args.target_latency if args.target_latency is not None else args.latency
     points = [
-        (args.elf, int(m * 1e6 + 0.5), args.words, args.latency, target_latency, cpu_hz)
+        (args.elf, int(m * 1e6 + 0.5), args.words, args.latency, target_latency, cpu_hz, args.stall)
         for m in mhz
     ]
     if args.jobs == 1 or len(points) == 1:

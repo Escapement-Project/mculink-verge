@@ -27,6 +27,7 @@ void sweep(void) {
     static const uint32_t hz[] = {100000, 1000000, 3750000, 10000000, 11538462, 12500000, 13636364, 15000000,
                                   16666667, 18750000, 21428572, 25000000, 30000000, 37500000, 50000000};
     char line[64];
+    for (unsigned stall = 0; stall <= 2; stall += 2)
     for (unsigned t = 1; t <= 4; t++)
     for (unsigned d = 0; d <= 1; d++)
     for (unsigned idle = 0; idle <= 8; idle += 4)
@@ -36,6 +37,7 @@ void sweep(void) {
         DAP_Data.swd_conf.data_phase = (uint8_t)d;
         DAP_Data.transfer.idle_cycles = (uint8_t)idle;
         swd_gen_latency = lat;
+        swd_gen_stall = stall;
         swd_gen_clock_hz = hz[i];
         swd_gen_changed();
         const bool ok = swd_gen_ready();
@@ -45,7 +47,7 @@ void sweep(void) {
             h = (h ^ code[k]) * 16777619U;
         }
         char* p = line;
-        p = hex(p, (t << 24) | (d << 20) | (idle << 12) | (lat << 4));
+        p = hex(p, (t << 24) | (d << 20) | (idle << 12) | (lat << 4) | stall);
         *p++ = ' ';
         p = hex(p, hz[i]);
         *p++ = ' ';

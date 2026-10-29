@@ -102,6 +102,46 @@ static void test_same_below(void) {
     }
 }
 
+/** The fewest cycles `latency` has from either end of what the last build serves. */
+static int32_t served_margin(uint32_t latency) {
+    const int32_t l = (int32_t)latency;
+    const int32_t sides[] = {l - swd_gen_info.read_first, swd_gen_info.read_last - l, l - swd_gen_info.write_first,
+                             swd_gen_info.write_last - l};
+    int32_t fewest = sides[0];
+    for (uint32_t i = 1U; i < sizeof sides / sizeof sides[0]; i++) {
+        fewest = sides[i] < fewest ? sides[i] : fewest;
+    }
+    return fewest;
+}
+
+/** With a stall the latency built for stays a cycle inside what the build serves once a sample is
+ * held, wherever it does without one, and reads run no faster than the stall's floor. */
+static uint32_t test_stall(void) {
+    uint32_t failures = 0U;
+    for (uint32_t period = 3U; period <= 24U; period++) {
+        for (uint32_t latency = 1U; latency <= 40U; latency++) {
+            for (uint32_t turnaround = 1U; turnaround <= 4U; turnaround++) {
+                struct swd_gen_config config = {
+                    .period = period, .latency = latency, .turnaround = turnaround, .data_phase = 1U};
+                swd_gen_fn read;
+                swd_gen_fn write;
+                assert(swd_gen_build(&config, &read, &write));
+                const int32_t calm = served_margin(latency);
+                config.stall = 2U;
+                assert(swd_gen_build(&config, &read, &write));
+                assert(swd_gen_info.read_period >= SWD_GEN_STALL_READ_PERIOD_MIN(2U));
+                const int32_t held = served_margin(latency);
+                if ((calm >= 1) && (held < 1)) {
+                    printf("  period %u, latency %u, turnaround %u: margin %d without a stall, %d with\n", period,
+                           latency, turnaround, calm, held);
+                    failures++;
+                }
+            }
+        }
+    }
+    return failures;
+}
+
 /** `count` bits of `data`, fed in pieces of `piece` bits as separate sequences would be. */
 static void feed(struct swd_connect* c, uint64_t data, uint32_t count, uint32_t piece) {
     for (uint32_t at = 0U; at < count; at += piece) {
@@ -195,6 +235,7 @@ int main(void) {
     test_range();
     test_same_below();
     test_safe_period();
+    const uint32_t stall_failures = test_stall();
     test_connect();
 
     static const uint32_t periods[][2] = {{3, 4},   {4, 4},   {5, 5},   {6, 6},   {7, 7},   {8, 8},  {9, 9},
@@ -202,7 +243,7 @@ int main(void) {
     static const uint32_t starts[] = {7U, 1U, 30U};
     uint32_t outcomes[6] = {0};
     uint32_t most_tries[sizeof periods / sizeof periods[0]] = {0};
-    uint32_t failures = 0U;
+    uint32_t failures = stall_failures;
     for (uint32_t p = 0U; p < sizeof periods / sizeof periods[0]; p++) {
         for (uint32_t latency = 2U; latency <= 40U; latency++) {
             for (uint32_t s = 0U; s < sizeof starts / sizeof starts[0]; s++) {

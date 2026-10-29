@@ -38,7 +38,12 @@ struct swd_gen_config {
     uint32_t turnaround;  // 1 to 4 clocks
     uint32_t data_phase;  // clock a data phase after WAIT and FAULT
     uint32_t idle_cycles; // clocks after each transfer, with SWDIO low
+    uint32_t stall;       // see swd_gen_stall
 };
+
+/** The read period a build with `stall` runs at no less than: a sample after the next rising edge
+ * keeps a cycle from either end of what the stall leaves of its window. */
+#define SWD_GEN_STALL_READ_PERIOD_MIN(stall) ((stall) + 3U)
 
 /** Runs `count` transfers of one request back to back, and stops at the first that does not
  * acknowledge OK. `words` is read into or written from, four bytes a transfer, unaligned allowed.
@@ -61,6 +66,11 @@ bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_ge
 extern uint32_t swd_gen_clock_hz;
 /** The latency transfers are generated for. */
 extern uint32_t swd_gen_latency;
+/** Cycles another master can hold a sample's load on the bit paths' AHB port (BUSES.md). A load
+ * placed after the rising edge that ends its bit's window reads the next bit if held past the
+ * window, so the generator keeps this many cycles clear at the window's end. src/energy_monitor.c
+ * sets it while capture runs. */
+extern uint32_t swd_gen_stall;
 
 extern swd_gen_fn swd_gen_read;
 extern swd_gen_fn swd_gen_write;
@@ -74,12 +84,13 @@ extern uint32_t swd_gen_failures;
  * cannot be generated: the caller runs ARM's transfer instead. */
 bool swd_gen_ready(void);
 
-/** What swd_gen_ready generates for now: the clock, the latency and DAP_Data's settings. */
+/** What swd_gen_ready generates for now: the clock, the latency, the stall and DAP_Data's
+ * settings. */
 struct swd_gen_config swd_gen_inputs(void);
 
-/** Whatever writes an input of swd_gen_ready calls this afterwards: the clock, the latency, or
- * DAP_Data's turnaround, data phase or idle cycles. Until it does, transfers keep the code
- * generated for the old values. */
+/** Whatever writes an input of swd_gen_ready calls this afterwards: the clock, the latency, the
+ * stall, or DAP_Data's turnaround, data phase or idle cycles. Until it does, transfers keep the
+ * code generated for the old values. */
 void swd_gen_changed(void);
 
 /** What the last build produced, for a host to read back. */

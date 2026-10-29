@@ -21,7 +21,7 @@ record the builds and methods.
 | Transport | Ours | Evidence | Ours depends on | NXP's stock V3.172 |
 | --- | --- | --- | --- | --- |
 | SWD writes | 50 MHz | Bench, normal path, 2026-10-20 | Nothing | 10.7 MHz |
-| SWD reads | 37.5 MHz | Bench, normal path, 2026-10-20 | Nothing | 9.6 MHz |
+| SWD reads | 37.5 MHz | Bench, normal path, 2026-10-20 | The Pro's energy capture: 30 MHz while it runs (bench, 2026-10-29) | 9.6 MHz |
 | JTAG, four wires (reads and writes) | 30 MHz | Bench and firmware timing report | The target's TDO delay | Not measured yet |
 | cJTAG, two pins (reads and writes) | 50 MHz per wire packet; per JTAG clock in Shift, 7.9 MHz in OScan1 and OScan2, 9.4 MHz in OScan5 and OScan6 | Firmware timing report; target-dependent | The target's TDO delay | Not supported |
 | Console (VCOM) | 19.2 Mbaud | Bench loopback | Nothing | 3 Mbaud or more; its limit not measured yet |
@@ -34,7 +34,9 @@ A request above the maximum gets the maximum.
 
 - **SWD.** A write clock takes 3 core cycles and a read clock 4. At a requested 50 MHz, a transfer's
   request and write data run at 50 MHz and its read data at 37.5 MHz. The target's reply delay does
-  not slow either.
+  not slow either. On the Pro, energy capture slows reads. While it runs, a read clock takes at
+  least 5 cycles (30 MHz), or 6 for some reply delays. The capture's DMA can delay the probe's
+  read of SWDIO by two cycles, and a 4-cycle clock leaves no room for that.
 - **JTAG, four wires.** The probe has to sample TDO after the target drives it, so a slow target
   lengthens the clock. The probe measures that delay when a host connects. Up to 8 core cycles
   (53 ns) the clock runs at 30 MHz, at 9 or 10 cycles at 25 MHz, and past that each cycle of delay

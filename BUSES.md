@@ -93,11 +93,15 @@ for the whole update before using the DMA position. Pause drains the settled rin
 - **Bit paths, all wires** (port 10 secure GPIO; code from port 1, or ports 3 and 4 for the
   `.ramfunc` paths). The ordinary GPIO on port 8 shares with Flexcomm 0 to 4 and the mailbox, which
   CPU 0 polls; that is why the bit paths moved to the secure alias. During energy capture, DMA0
-  reads ADC0 on port 10 and writes the ring on port 2. ADC access can stall secure GPIO accesses.
-  With capture running, clock phases stretched and read-latency measurements found later latencies
-  or none. Holding the conversion trigger for a measurement (`energy_monitor_hold`) stops the ADC
-  reads, the ring writes and CPU 0's segment interrupts together, and the measurements came back
-  right; transfers run with capture. Capture is disabled by default.
+  reads ADC0 on port 10 and writes the ring on port 2. CPU 1's data bus wins every tie, but a DMA0
+  read of ADC0 already under way holds a secure GPIO access up to 2 cycles. A held store holds
+  every edge after it, which only stretches a phase. A held sample placed after the next rising
+  edge reads the next bit: SWD reads at P = 4 failed about once in 100 transfers at 100k pairs/s,
+  scaling with DMA0's reads. With capture asked for, the generated SWD paths keep 2 cycles at the
+  late end of such a sample's window and read at P = 5 or more (`swd_gen_stall`, CODEGEN.md).
+  Holding the conversion trigger for a measurement (`energy_monitor_hold`) stops the ADC reads,
+  the ring writes and CPU 0's segment interrupts together, so latency measurements run without
+  the stall. The generated JTAG paths keep no such margin yet. Capture is disabled by default.
   CPU 0's segment interrupt reads ADC0's status once a segment, on port 10 too.
   No other master accesses SRAMX, SRAM1 or SRAM2. During capture, DMA0 writes SRAM0 and CPU 1 reads
   it, between windows.

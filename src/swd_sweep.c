@@ -4,6 +4,7 @@
 #include "DAP_config.h"
 
 #include "DAP.h"
+#include "dap_shared.h"
 #include "energy_monitor.h"
 #include "gen.h"
 #include "swd_connect.h"
@@ -85,10 +86,16 @@ void swd_sweep_watch(const uint8_t* request) {
     }
 }
 
-/** Whether the generated code for the latency in use leaves under CONNECT_MARGIN cycles on a side. */
-static bool short_margin(void) {
+/** Whether a connection should measure the latency in use: the generated code leaves it under
+ * CONNECT_MARGIN cycles on a side, or a capture could start or stop under it. Either rebuilds a
+ * masked build with or without a stall, which serves other latencies than this connection's read
+ * checks; a measured one both serve. */
+static bool unsure_latency(void) {
     if (!swd_gen_ready()) {
         return false;
+    }
+    if (dap_shared.energy_available && swd_gen_info.masked) {
+        return true;
     }
     const int32_t latency = (int32_t)swd_gen_latency;
     const int32_t margins[] = {swd_gen_info.read_last - latency, latency - swd_gen_info.read_first,
@@ -164,7 +171,7 @@ __attribute__((noinline)) uint32_t swd_sweep_connect(const uint8_t* request, uin
             swd_gen_latency = target->latency;
             swd_gen_changed();
         }
-    } else if (short_margin()) {
+    } else if (unsure_latency()) {
         measure_target();
         measured = true;
     }
@@ -191,6 +198,8 @@ void swd_sweep(void) {
     const uint32_t start = DWT->CYCCNT;
     struct sweep_context context = {.config = swd_gen_inputs()};
     context.config.data_phase = 1U;
+    // The hold below keeps DMA0 off the port.
+    context.config.stall = 0U;
     context.read_period =
         context.config.period < SWD_GEN_READ_PERIOD_MIN ? SWD_GEN_READ_PERIOD_MIN : context.config.period;
     static const struct latency_wire wire = {.safe_period = SWD_GEN_SAFE_PERIOD, .open_below = false};
