@@ -14,6 +14,7 @@
 #include "fsl_reset.h"
 #include "tusb.h"
 
+#include "aux.h"
 #include "board_pins.h"
 #include "board_straps.h"
 #include "core_clock.h"
@@ -75,6 +76,9 @@ __attribute__((section(".ramfunc"))) static uint8_t stage_request(uint8_t (*buff
 static bool disconnect_requested;
 static bool disconnect_complete;
 
+/** Whether the configuration has CMSIS-DAP, whose bulk interface is then vendor instance 0. */
+static bool debug_present;
+
 /** The reply at response_head is on its way to the host. At most one is: both transports send
  *  from the head of the one ring, so replies leave in the order their commands ran. */
 static volatile bool response_in_flight;
@@ -106,7 +110,10 @@ __attribute__((section(".ramfunc"))) static void transfer_abort(void) {
 
 /** One received packet, which is one command. This callback runs on CPU 0. */
 __attribute__((section(".ramfunc"))) void tud_vendor_rx_cb(uint8_t index, const uint8_t* buffer, uint32_t length) {
-    (void)index;
+    if (aux_owns(index)) {
+        aux_received(buffer, length);
+        return;
+    }
     if ((length == 0U) || (length > DAP_PACKET_SIZE)) {
         return;
     }
@@ -166,6 +173,7 @@ __attribute__((section(".ramfunc"))) void tud_vendor_rx_cb(uint8_t index, const 
 void tud_mount_cb(void) {
     dap_shared.first_live_seq = dap_shared.next_request_seq;
     response_in_flight = false;
+    aux_mount();
     __DMB();
     transfer_abort();
 }
@@ -191,8 +199,11 @@ __attribute__((section(".ramfunc"))) static bool head_in_flight_on(uint8_t trans
 }
 
 __attribute__((section(".ramfunc"))) void tud_vendor_tx_cb(uint8_t index, uint32_t sent_bytes) {
-    (void)index;
     (void)sent_bytes;
+    if (aux_owns(index)) {
+        aux_sent();
+        return;
+    }
     if (head_in_flight_on(DAP_TRANSPORT_BULK)) {
         response_sent();
         send_head();
@@ -299,7 +310,7 @@ __attribute__((section(".ramfunc"), noinline)) static void energy_control_task(v
  *  so a call while it is armed changes nothing. The receive callback calls it as well, so the
  *  next request can arrive without the loop coming round. */
 __attribute__((section(".ramfunc"))) static void arm_rx(void) {
-    if (tud_vendor_mounted()) {
+    if (debug_present && tud_vendor_mounted()) {
         (void)dap_usb_arm_rx(dap_usb_slot_free(dap_shared.request_len, dap_shared.request_tail),
                              dap_shared.request_tail, &dap_shared.rx_armed_slot, start_rx, dap_shared.request);
     }
@@ -379,7 +390,7 @@ __attribute__((section(".ramfunc"))) static void idle(void) {
     __DSB();
     bool const reply_waiting =
         !response_in_flight && !dap_usb_slot_free(dap_shared.response_len, dap_shared.response_head);
-    if (reply_waiting || disconnect_requested || tud_task_event_ready() ||
+    if (reply_waiting || disconnect_requested || tud_task_event_ready() || aux_has_work() ||
         dap_shared.energy_control_request != dap_shared.energy_control_ack) {
         return;
     }
@@ -568,6 +579,7 @@ __attribute__((noinline, used)) void dap_core_security_init(void) {
         energy_range_retry_task();
         tud_task();
         usb_transport_task();
+        aux_task();
         if (vcom_ready()) {
             vcom_task();
         }
@@ -581,11 +593,15 @@ int main(void) {
     reboot_clear_boot_mode();
     board_core_clock_init();
     board_clocks_init();
-    dap_shared_init(&dap_shared, &energy_integration);
+    dap_shared_init(&dap_shared, &dap_stage, &energy_integration);
 #ifdef DAP_TIMING_DIAGNOSTICS
     dap_timing_init();
 #endif
     board_read_straps();
+    // TinyUSB numbers vendor instances in the order the configuration declares the interfaces, and
+    // src/usb_descriptors.c declares CMSIS-DAP v2 first and Verge Aux last.
+    debug_present = board_has_debug(dap_shared.board, dap_shared.jumpers);
+    aux_init(board_has_aux(dap_shared.board, dap_shared.jumpers), debug_present ? 1U : 0U);
     led_init();
     CLOCK_EnableClock(kCLOCK_Mailbox);
     RESET_PeripheralReset(kMAILBOX_RST_SHIFT_RSTn);

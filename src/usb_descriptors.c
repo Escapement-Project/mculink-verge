@@ -3,11 +3,10 @@
  * CMSIS-DAP v2 is a vendor-class interface with one bulk OUT and one bulk IN endpoint, which the
  * host finds through a WinUSB descriptor rather than by class. The interface string must begin
  * with "CMSIS-DAP": that prefix is how host tools, probe-rs included, tell a DAP interface from
- * any other vendor interface on the same device.
+ * any other vendor interface on the same device. Verge Aux, on the Pro, is another such interface,
+ * named so that nothing looking for CMSIS-DAP takes it.
  *
- * The MS OS 2.0 descriptor below is generated rather than hand-written, because its three nested
- * length fields have to agree with the bytes that follow them and nothing at run time reports a
- * mismatch -- the device simply fails to bind. Its request handling follows TinyUSB's
+ * The MS OS 2.0 descriptor set comes from src/ms_os_20.h. Its request handling follows TinyUSB's
  * webusb_serial example (MIT, THIRD-PARTY-NOTICES.md).
  */
 // DAP_config.h first: DAP.h reads the DAP_SWD and DAP_JTAG settings it defines, so a sorted
@@ -18,6 +17,7 @@
 #include "board_straps.h"
 #include "dap_core.h"
 #include "dap_shared.h"
+#include "ms_os_20.h"
 #include "usb_descriptors.h"
 #include "usb_transport.h"
 #include "ser_num.h"
@@ -29,8 +29,8 @@
 #define USB_PID 0x0143 // MCU-Link CMSIS-DAP
 
 /** 2.1 makes the host ask for the BOS, which carries the MS OS 2.0 descriptor that binds WinUSB to
- *  the CMSIS-DAP interface. Without that interface there is no BOS, and a device of 2.1 or later
- *  must have one, so it is 2.0. */
+ *  the vendor interfaces. Without either there is no BOS, and a device of 2.1 or later must have
+ *  one, so it is 2.0. */
 #define USB_BCD_BOS 0x0210
 #define USB_BCD_NO_BOS 0x0200
 
@@ -54,20 +54,23 @@ static tusb_desc_device_t desc_device = {
 #define FUNCTION_DEBUG (1U << 0)
 #define FUNCTION_VCOM (1U << 1)
 #define FUNCTION_VCOM2 (1U << 2)
+#define FUNCTION_AUX (1U << 3)
+#define FUNCTIONS_WINUSB (FUNCTION_DEBUG | FUNCTION_AUX)
 
 static uint32_t functions(void) {
     uint8_t const board = dap_shared.board;
     uint8_t const jumpers = dap_shared.jumpers;
     return (board_has_debug(board, jumpers) ? FUNCTION_DEBUG : 0U) |
            (board_has_vcom(board, jumpers) ? FUNCTION_VCOM : 0U) |
-           (board_has_vcom2(board, jumpers) ? FUNCTION_VCOM2 : 0U);
+           (board_has_vcom2(board, jumpers) ? FUNCTION_VCOM2 : 0U) |
+           (board_has_aux(board, jumpers) ? FUNCTION_AUX : 0U);
 }
 
 /** Windows keeps what it learnt about a device by VID, PID and bcdDevice, so each set of
  *  functions gets a bcdDevice of its own, as stock's does for each jumper state. */
 uint8_t const* tud_descriptor_device_cb(void) {
     uint32_t const present = functions();
-    desc_device.bcdUSB = ((present & FUNCTION_DEBUG) != 0U) ? USB_BCD_BOS : USB_BCD_NO_BOS;
+    desc_device.bcdUSB = ((present & FUNCTIONS_WINUSB) != 0U) ? USB_BCD_BOS : USB_BCD_NO_BOS;
     desc_device.bcdDevice = (uint16_t)(0x0100U | present);
     return (uint8_t const*)&desc_device;
 }
@@ -76,8 +79,8 @@ uint8_t const* tud_descriptor_device_cb(void) {
  *  functions removed. A function a board lacks, or a jumper turns off, is left out of the
  *  configuration, never declared as an interface that does nothing, as stock leaves it out. Each
  *  function keeps its endpoint numbers when another is omitted, and the interfaces after it
- *  renumber. CMSIS-DAP v2 is interface 0 on EP1 whenever it is there: the MS OS 2.0 descriptor
- *  names interface 0. */
+ *  renumber. CMSIS-DAP v2 is interface 0 on EP1 whenever it is there. Verge Aux comes last, so
+ *  the interfaces stock also has keep stock's numbers. */
 #define ITF_NUM_VENDOR 0
 #define EPNUM_VENDOR_OUT 0x01
 #define EPNUM_VENDOR_IN 0x81
@@ -87,6 +90,8 @@ uint8_t const* tud_descriptor_device_cb(void) {
 #define EPNUM_HID_IN 0x83
 #define EPNUM_VCOM2_OUT 0x04
 #define EPNUM_VCOM2_IN 0x84
+#define EPNUM_AUX_OUT 0x05
+#define EPNUM_AUX_IN 0x85
 /** The notification endpoints are numbers USB1 does not have (it has EP0 to EP5), declared as
  *  NXP's stock firmware declares them on the Pro and never opened: this firmware sends no
  *  notification, and the boards wire no modem lines. */
@@ -94,6 +99,9 @@ uint8_t const* tud_descriptor_device_cb(void) {
 #define EPNUM_VCOM2_NOTIF 0x87
 
 TU_VERIFY_STATIC(CFG_TUD_EDPT_PLACEHOLDER, "the notification endpoints are placeholders");
+TU_VERIFY_STATIC(CFG_TUD_VENDOR == 2, "CMSIS-DAP v2 and Verge Aux are the vendor instances");
+
+__attribute__((noinline)) static void ms_os_20_init(void);
 
 void usb_descriptors_init(void) {
     tud_configure_edpt_placeholder_t const placeholders = {
@@ -101,12 +109,14 @@ void usb_descriptors_init(void) {
         .bm_out = 0U,
     };
     (void)tud_configure(BOARD_TUD_RHPORT, TUD_CFGID_EDPT_PLACEHOLDER, &placeholders);
+    ms_os_20_init();
 }
 
 #define STRID_VENDOR_ITF 4
 #define STRID_VCOM 5
 #define STRID_HID 6
 #define STRID_VCOM2 7
+#define STRID_AUX 8
 
 /** TUD_CDC_DESCRIPTOR, with the notification endpoint as stock declares it: room for a whole
  *  SERIAL_STATE notification, polled every 2^15 microframes rather than every one. */
@@ -146,7 +156,7 @@ uint8_t const* tud_hid_descriptor_report_cb(uint8_t instance) {
     return desc_hid_report;
 }
 
-#define CONFIG_MAX_LEN (TUD_CONFIG_DESC_LEN + TUD_VENDOR_DESC_LEN + TUD_HID_INOUT_DESC_LEN + 2U * TUD_CDC_DESC_LEN)
+#define CONFIG_MAX_LEN (TUD_CONFIG_DESC_LEN + 2U * TUD_VENDOR_DESC_LEN + TUD_HID_INOUT_DESC_LEN + 2U * TUD_CDC_DESC_LEN)
 
 static uint8_t desc_configuration[CONFIG_MAX_LEN];
 
@@ -155,8 +165,11 @@ static uint8_t* append(uint8_t* out, uint8_t const* descriptor, size_t length) {
     return out + length;
 }
 
+/** Verge Aux's interface number, for the MS OS 2.0 set: whatever the interfaces before it leave. */
+static uint8_t aux_interface;
+
 /** Built on each request from the functions present, in PRO.md's interface order: CMSIS-DAP v2,
- *  VCOM, CMSIS-DAP v1, VCOM2. src/vcom.c numbers its CDC instances by the same rule. */
+ *  VCOM, CMSIS-DAP v1, VCOM2, then Verge Aux. src/vcom.c numbers its CDC instances by the same rule. */
 uint8_t const* tud_descriptor_configuration_cb(uint8_t index) {
     (void)index;
     uint32_t const present = functions();
@@ -184,6 +197,12 @@ uint8_t const* tud_descriptor_configuration_cb(uint8_t index) {
         out = append(out, vcom2, sizeof(vcom2));
         itf += 2U;
     }
+    if ((present & FUNCTION_AUX) != 0U) {
+        uint8_t const aux[] = {TUD_VENDOR_DESCRIPTOR(itf, STRID_AUX, EPNUM_AUX_OUT, EPNUM_AUX_IN, 512)};
+        out = append(out, aux, sizeof(aux));
+        aux_interface = itf;
+        itf++;
+    }
     uint8_t const header[] = {TUD_CONFIG_DESCRIPTOR(1, itf, 0, (uint16_t)(out - desc_configuration), 0x00, 100)};
     (void)append(desc_configuration, header, sizeof(header));
     return desc_configuration;
@@ -200,6 +219,7 @@ static char const* string_desc[] = {
     [STRID_VCOM] = "Verge VCOM",
     [STRID_HID] = "CMSIS-DAP v1", // the same prefix, on the HID interface
     [STRID_VCOM2] = "Verge VCOM2",
+    [STRID_AUX] = "Verge Aux", // no "CMSIS-DAP" in it, so debuggers pass it by
 };
 
 static uint16_t string_buffer[32];
@@ -233,59 +253,43 @@ uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
 
 // ---- WinUSB, so the interface binds with no vendor driver ---------------------------------------
 
-#define MS_OS_20_DESC_LEN 178u
 #define VENDOR_REQUEST_MICROSOFT 2
 
 #define BOS_TOTAL_LEN (TUD_BOS_DESC_LEN + TUD_BOS_MICROSOFT_OS_DESC_LEN)
 
-static uint8_t const desc_bos[] = {
-    TUD_BOS_DESCRIPTOR(BOS_TOTAL_LEN, 1),
-    TUD_BOS_MS_OS_20_DESCRIPTOR(MS_OS_20_DESC_LEN, VENDOR_REQUEST_MICROSOFT),
-};
+/** Each vendor interface's DeviceInterfaceGUID, which Windows programs open it by. */
+static char const guid_cmsis_dap[] = "{CDB3B5AD-293B-4663-AA36-1AAE46463776}";
+static char const guid_aux[] = "{A297EA18-39D8-41BE-B2E8-884CEC8FE819}";
+static_assert(sizeof(guid_cmsis_dap) - 1U == MS_OS_20_GUID_CHARS && sizeof(guid_aux) - 1U == MS_OS_20_GUID_CHARS,
+              "a GUID is 38 characters with its braces");
 
-uint8_t const* tud_descriptor_bos_cb(void) { return ((functions() & FUNCTION_DEBUG) != 0U) ? desc_bos : nullptr; }
+static uint8_t desc_ms_os_20[MS_OS_20_SET_HEADER_LEN + MS_OS_20_CONFIGURATION_LEN + 2U * MS_OS_20_FUNCTION_LEN];
+static uint8_t desc_bos[BOS_TOTAL_LEN];
 
-// clang-format off: the layout mirrors the descriptor structure, which is the only thing that
-// makes these bytes readable.
-static uint8_t const desc_ms_os_20[] = {
-    // Set header
-    U16_TO_U8S_LE(0x000A), U16_TO_U8S_LE(MS_OS_20_SET_HEADER_DESCRIPTOR),
-    U32_TO_U8S_LE(0x06030000), U16_TO_U8S_LE(MS_OS_20_DESC_LEN),
+/** The functions are the straps' and never change while the probe runs, so both are built once. The
+ *  configuration callback sets aux_interface, so it runs first here. Out of line, so tools/image.py
+ *  can run it with each board's straps. */
+__attribute__((noinline)) static void ms_os_20_init(void) {
+    uint32_t const present = functions();
+    (void)tud_descriptor_configuration_cb(0U);
+    ms_os_20_binding_t bindings[2];
+    size_t count = 0U;
+    if ((present & FUNCTION_DEBUG) != 0U) {
+        bindings[count++] = (ms_os_20_binding_t){ITF_NUM_VENDOR, guid_cmsis_dap};
+    }
+    if ((present & FUNCTION_AUX) != 0U) {
+        bindings[count++] = (ms_os_20_binding_t){aux_interface, guid_aux};
+    }
+    uint16_t const length = ms_os_20_set(desc_ms_os_20, bindings, count);
+    uint8_t const bos[] = {
+        TUD_BOS_DESCRIPTOR(BOS_TOTAL_LEN, 1),
+        TUD_BOS_MS_OS_20_DESCRIPTOR(length, VENDOR_REQUEST_MICROSOFT),
+    };
+    static_assert(sizeof(bos) == sizeof(desc_bos), "the BOS holds the MS OS 2.0 capability alone");
+    (void)append(desc_bos, bos, sizeof(bos));
+}
 
-    // Configuration subset header
-    U16_TO_U8S_LE(0x0008), U16_TO_U8S_LE(MS_OS_20_SUBSET_HEADER_CONFIGURATION),
-    0, 0, U16_TO_U8S_LE(MS_OS_20_DESC_LEN - 0x0A),
-
-    // Function subset header
-    U16_TO_U8S_LE(0x0008), U16_TO_U8S_LE(MS_OS_20_SUBSET_HEADER_FUNCTION),
-    ITF_NUM_VENDOR, 0, U16_TO_U8S_LE(MS_OS_20_DESC_LEN - 0x0A - 0x08),
-
-    // Compatible id: WINUSB
-    U16_TO_U8S_LE(0x0014), U16_TO_U8S_LE(MS_OS_20_FEATURE_COMPATBLE_ID),
-    'W', 'I', 'N', 'U', 'S', 'B', 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-
-    // Registry property: DeviceInterfaceGUIDs = {CDB3B5AD-293B-4663-AA36-1AAE46463776}
-    U16_TO_U8S_LE(0x0084), U16_TO_U8S_LE(MS_OS_20_FEATURE_REG_PROPERTY),
-    U16_TO_U8S_LE(0x0007), U16_TO_U8S_LE(0x002a),
-    0x44, 0x00, 0x65, 0x00, 0x76, 0x00, 0x69, 0x00, 0x63, 0x00,
-    0x65, 0x00, 0x49, 0x00, 0x6E, 0x00, 0x74, 0x00, 0x65, 0x00,
-    0x72, 0x00, 0x66, 0x00, 0x61, 0x00, 0x63, 0x00, 0x65, 0x00,
-    0x47, 0x00, 0x55, 0x00, 0x49, 0x00, 0x44, 0x00, 0x73, 0x00,
-    0x00, 0x00,
-    U16_TO_U8S_LE(0x0050),
-    0x7B, 0x00, 0x43, 0x00, 0x44, 0x00, 0x42, 0x00, 0x33, 0x00,
-    0x42, 0x00, 0x35, 0x00, 0x41, 0x00, 0x44, 0x00, 0x2D, 0x00,
-    0x32, 0x00, 0x39, 0x00, 0x33, 0x00, 0x42, 0x00, 0x2D, 0x00,
-    0x34, 0x00, 0x36, 0x00, 0x36, 0x00, 0x33, 0x00, 0x2D, 0x00,
-    0x41, 0x00, 0x41, 0x00, 0x33, 0x00, 0x36, 0x00, 0x2D, 0x00,
-    0x31, 0x00, 0x41, 0x00, 0x41, 0x00, 0x45, 0x00, 0x34, 0x00,
-    0x36, 0x00, 0x34, 0x00, 0x36, 0x00, 0x33, 0x00, 0x37, 0x00,
-    0x37, 0x00, 0x36, 0x00, 0x7D, 0x00, 0x00, 0x00, 0x00, 0x00,
-};
-// clang-format on
-
-TU_VERIFY_STATIC(sizeof(desc_ms_os_20) == MS_OS_20_DESC_LEN, "MS OS 2.0 descriptor length mismatch");
+uint8_t const* tud_descriptor_bos_cb(void) { return ((functions() & FUNCTIONS_WINUSB) != 0U) ? desc_bos : nullptr; }
 
 bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_request_t const* request) {
     if (request->bRequest == DAP_SHARED_CORE1_STATUS_REQUEST) {
@@ -400,9 +404,8 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
     }
     if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_VENDOR && request->bRequest == VENDOR_REQUEST_MICROSOFT &&
         request->wIndex == 7) {
-        uint16_t total_len;
-        memcpy(&total_len, desc_ms_os_20 + 8, 2);
-        return tud_control_xfer(rhport, request, (void*)(uintptr_t)desc_ms_os_20, total_len);
+        uint16_t const total_len = (uint16_t)(desc_ms_os_20[8] | (desc_ms_os_20[9] << 8U));
+        return tud_control_xfer(rhport, request, desc_ms_os_20, total_len);
     }
     return false;
 }

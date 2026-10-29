@@ -255,8 +255,11 @@ static void test_shared_state_initialization(void) {
         bytes[i] = 0xA5U;
     }
 
+    static dap_stage_t stage;
+    stage.aux.state = 0xA5U;
     static struct energy_integration energy;
-    dap_shared_init(&state, &energy);
+    dap_shared_init(&state, &stage, &energy);
+    assert(stage.aux.state == AUX_SLOT_FREE);
 
     size_t const pointer = offsetof(dap_shared_t, energy_integration);
     for (size_t i = 0U; i < offsetof(dap_shared_t, request); i++) {

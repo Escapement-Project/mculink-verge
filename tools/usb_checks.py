@@ -12,6 +12,12 @@ class Usb:
         self.cpu1 = machine(elf1, symbols1)
         self.fields = fields
         self.sent = []
+        # Replies on the aux interface's vendor instance, apart from CMSIS-DAP's, and the buffers its
+        # OUT endpoint was armed into. Only the aux instance reads as configured.
+        self.aux_index = None
+        self.aux_configured = False
+        self.aux_sent = []
+        self.aux_arms = []
         self.accept_tx = True
         self.shared = symbols0["dap_shared"]
         self.staging = symbols0["dap_stage"]
@@ -20,11 +26,15 @@ class Usb:
 
         def endpoints(uc, at, size, data):
             if at == self.cpu0.sym["tud_vendor_n_mounted"]:
-                result = 0  # Arming another OUT transfer belongs to TinyUSB.
+                # CMSIS-DAP's instance reads as unconfigured: arming another OUT transfer belongs to TinyUSB.
+                result = int(self.aux_configured and uc.reg_read(UC_ARM_REG_R0) == self.aux_index)
+            elif at == self.cpu0.sym["tud_vendor_n_read_xfer_buf"]:
+                self.aux_arms.append((uc.reg_read(UC_ARM_REG_R0), uc.reg_read(UC_ARM_REG_R1)))
+                result = 1
             elif at == self.cpu0.sym["tud_vendor_n_write_xfer"]:
-                address, length = uc.reg_read(UC_ARM_REG_R1), uc.reg_read(UC_ARM_REG_R2)
+                index, address, length = (uc.reg_read(r) for r in (UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2))
                 if self.accept_tx:
-                    self.sent.append(bytes(uc.mem_read(address, length)))
+                    (self.aux_sent if index == self.aux_index else self.sent).append(bytes(uc.mem_read(address, length)))
                 result = length if self.accept_tx else 0
             elif at == self.cpu0.sym["tud_hid_n_report"]:
                 address, length = uc.reg_read(UC_ARM_REG_R2), uc.reg_read(UC_ARM_REG_R3)
@@ -163,3 +173,143 @@ def check_transport(c, elf0, elf1, symbols0, symbols1, fields, slots):
         c.check(counts == [8, 1], f"abort did not terminate SWD retries: {counts}")
     c.note("linked USB callbacks: full-queue abort, pointer guard, host-generation wrap, transport ordering and reply retry")
     c.note("HID/bulk callback abort stops a running SWD WAIT loop; the next transfer recovers")
+
+
+def check_aux(c, elf0, elf1, symbols0, symbols1, fields):
+    """Verge Aux beside CMSIS-DAP: CPU 0 hands each aux request to CPU 1 in dap_stage.aux, CPU 1 runs
+    it ahead of the queue with CMSIS-DAP's own dispatch, and CPU 0 sends the reply on the aux
+    instance. Instance 1 is the Pro with CMSIS-DAP; instance 0 the Pro with its SWD jumper."""
+    connect = symbols1["DAP_Data"][0]
+
+    def fresh(present=True, instance=1):
+        usb = Usb(elf0, elf1, symbols0, symbols1, fields)
+        usb.call0("aux_init", int(present), instance)
+        usb.aux_index = instance
+        usb.aux_configured = True
+        return usb
+
+    def arrive(usb, payload):
+        buffer = usb.cpu0.sym["aux_out"]
+        usb.cpu0.uc.mem_write(buffer, payload)
+        usb.call0("tud_vendor_rx_cb", usb.aux_index, buffer, len(payload))
+
+    def ask(usb, payload):
+        before = len(usb.aux_sent)
+        arrive(usb, payload)
+        c.check(usb.dispatch() == 1, f"aux request {payload.hex()} was not run")
+        usb.call0("aux_task")
+        replies = usb.aux_sent[before:]
+        c.check(len(replies) == 1, f"aux request {payload.hex()} sent {len(replies)} replies")
+        if replies:
+            usb.call0("tud_vendor_tx_cb", usb.aux_index, len(replies[0]))
+        return replies[0] if replies else b""
+
+    def bulk(usb, payload):
+        before = len(usb.sent)
+        usb.receive(payload)
+        usb.dispatch()
+        usb.call0("send_head")
+        reply = usb.sent[before] if len(usb.sent) > before else b""
+        usb.call0("tud_vendor_tx_cb", 0, len(reply))
+        return reply
+
+    # The commands it carries answer as on CMSIS-DAP, size checks included.
+    usb = fresh()
+    for payload in (b"\x82", b"\x8f\x02", b"\x8f\x01", b"\x8f", b"\x90\x01", b"\x90\x03", b"\x90\x04\x00",
+                    b"\x90\x04\x02", b"\x90\x02", b"\x90", b"\x90\x00\x01"):
+        c.check(ask(usb, payload) == bulk(usb, payload), f"aux reply to {payload.hex()} differs from CMSIS-DAP's")
+    # Anything else gets [0xff] and does not run.
+    for payload in (b"\x00\x01", b"\x02\x02", b"\x07", b"\x83\x00", b"\x85\x01"):
+        c.check(ask(usb, payload) == b"\xff", f"aux ran {payload.hex()}")
+    c.check(bytes(usb.cpu1.uc.mem_read(connect, 1)) == b"\x00", "an aux DAP_Connect connected")
+
+    # OUT is armed into aux_out once, and again only once the reply has left the slot.
+    usb = fresh()
+    usb.call0("aux_task")
+    usb.call0("aux_task")
+    c.check(usb.aux_arms == [(1, usb.cpu0.sym["aux_out"])], f"aux OUT armed {usb.aux_arms}, wanted once into aux_out")
+    arrive(usb, b"\x8f\x02")
+    usb.call0("aux_task")
+    c.check(len(usb.aux_arms) == 1, "aux OUT armed while CPU 1 held a request")
+    usb.dispatch()
+    usb.call0("aux_task")
+    c.check(len(usb.aux_sent) == 1 and len(usb.aux_arms) == 2, "aux OUT not armed again once the reply left the slot")
+
+    # Ahead of the queue: one dispatch runs the aux request and leaves the queued command.
+    usb = fresh()
+    usb.receive(b"\x02\x02")
+    arrive(usb, b"\x8f\x02")
+    c.check(usb.dispatch() == 1 and usb.get("response_len", 2) == 0, "aux request waited behind the queue")
+    usb.call0("aux_task")
+    c.check(len(usb.aux_sent) == 1, "aux reply not sent")
+    c.check(usb.dispatch() == 1 and usb.get("response_len", 2) != 0, "queued command lost behind an aux request")
+
+    # A packet into a full slot is dropped rather than overwriting the request CPU 1 holds.
+    usb = fresh()
+    arrive(usb, b"\x8f\x02")
+    arrive(usb, b"\x82")
+    usb.dispatch()
+    usb.call0("aux_task")
+    c.check(len(usb.aux_sent) == 1 and usb.aux_sent[0][:1] == b"\x8f", "a request arriving into a full slot was run")
+    c.check(usb.dispatch() == 0, "a dropped aux request left work for CPU 1")
+
+    # A reply waits for the one on its way, and the two leave in request order.
+    usb = fresh()
+    arrive(usb, b"\x8f\x02")
+    usb.dispatch()
+    usb.call0("aux_task")
+    arrive(usb, b"\x82")
+    usb.dispatch()
+    usb.call0("aux_task")
+    c.check(len(usb.aux_sent) == 1, "a second reply went while the first was on its way")
+    usb.call0("tud_vendor_tx_cb", 1, len(usb.aux_sent[0]))
+    c.check([r[:1] for r in usb.aux_sent] == [b"\x8f", b"\x82"], "aux replies left out of order")
+
+    # A refused submission is tried again.
+    usb = fresh()
+    usb.accept_tx = False
+    arrive(usb, b"\x8f\x02")
+    usb.dispatch()
+    usb.call0("aux_task")
+    usb.accept_tx = True
+    c.check(not usb.aux_sent, "refused aux submission recorded as sent")
+    usb.call0("aux_task")
+    c.check(len(usb.aux_sent) == 1, "refused aux reply was not sent again")
+
+    # Gone hosts: a reply to a request from before a new configuration, one that arrives while the
+    # interface is unconfigured, and a new configuration while a reply is on its way.
+    usb = fresh()
+    arrive(usb, b"\x8f\x02")
+    usb.call0("tud_mount_cb")
+    usb.dispatch()
+    usb.call0("aux_task")
+    c.check(not usb.aux_sent, "aux reply to a gone host was sent")
+    c.check(ask(usb, b"\x82")[:1] == b"\x82", "aux did not answer after a new configuration")
+    usb = fresh()
+    arrive(usb, b"\x8f\x02")
+    usb.aux_configured = False
+    usb.dispatch()
+    usb.call0("aux_task")
+    c.check(not usb.aux_sent, "aux reply submitted while the interface was unconfigured")
+    c.check(usb.call0("aux_has_work") == 0, "CPU 0 kept aux work while unconfigured, so it would not sleep")
+    usb.aux_configured = True
+    usb.call0("tud_mount_cb")
+    c.check(ask(usb, b"\x82")[:1] == b"\x82", "aux did not answer once configured again")
+    usb = fresh()
+    arrive(usb, b"\x8f\x02")
+    usb.dispatch()
+    usb.call0("aux_task")
+    usb.call0("tud_mount_cb")
+    c.check(ask(usb, b"\x82")[:1] == b"\x82", "a reply on its way at a new configuration stopped aux for good")
+
+    # The Pro with its SWD jumper: Verge Aux is vendor instance 0, and its callbacks are aux's.
+    usb = fresh(instance=0)
+    c.check(ask(usb, b"\x8f\x02") == bytes([0x8f]) + bulk(fresh(instance=1), b"\x8f\x02")[1:],
+            "aux at vendor instance 0 did not answer")
+
+    # Without the interface, nothing reaches the slot through its instance number.
+    usb = fresh(present=False)
+    arrive(usb, b"\x8f\x02")
+    c.check(usb.dispatch() == 0, "a request reached CPU 1 through an absent aux interface")
+    c.note("Verge Aux: CMSIS-DAP-identical replies, [0xff] for the rest, OUT armed only with the slot free, ahead "
+           "of the queue, in order, retry, gone hosts (new configuration, unconfigured, reply in flight), instance 0")

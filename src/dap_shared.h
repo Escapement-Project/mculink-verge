@@ -17,6 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "aux_slot.h"
 #include "dap_usb_slots.h"
 #include "dma_ring.h"
 #include "energy_samples.h"
@@ -259,6 +260,8 @@ typedef struct {
     DAP_SHARED_ALIGN uint8_t request[DAP_STAGE_REQUESTS][DAP_SHARED_PACKET_SIZE];
     DAP_SHARED_ALIGN uint8_t hid_request[DAP_STAGE_REQUESTS][DAP_SHARED_PACKET_SIZE];
     DAP_SHARED_ALIGN uint8_t response[REQUEST_SLOTS][DAP_SHARED_PACKET_SIZE];
+    /** Verge Aux's one request and its reply (src/aux_slot.h). */
+    aux_slot_t aux;
 #ifdef DAP_TIMING_DIAGNOSTICS
     volatile uint32_t request_tick[REQUEST_SLOTS];
     volatile uint32_t response_tx_tick[REQUEST_SLOTS];
@@ -269,10 +272,10 @@ typedef struct {
 
 extern dap_stage_t dap_stage;
 
-/** Clear the hand-off state, which neither startup does in USB SRAM. CPU 0 calls it before it starts
- *  CPU 1. `energy` is CPU 0's integration state, which CPU 1 reaches only through the pointer set
- *  here. */
-static inline void dap_shared_init(volatile dap_shared_t* state, struct energy_integration* energy) {
+/** Clear the hand-off state, which neither startup does in USB SRAM or in dap_stage. CPU 0 calls it
+ *  before it starts CPU 1. `energy` is CPU 0's integration state, which CPU 1 reaches only through
+ *  the pointer set here. */
+static inline void dap_shared_init(volatile dap_shared_t* state, dap_stage_t* stage, struct energy_integration* energy) {
     volatile uint8_t* bytes = (volatile uint8_t*)state;
     for (size_t i = 0U; i < offsetof(dap_shared_t, request); i++) {
         bytes[i] = 0U;
@@ -280,6 +283,7 @@ static inline void dap_shared_init(volatile dap_shared_t* state, struct energy_i
     state->reboot_mode = REBOOT_NONE;
     state->stage_commands = 1U;
     state->energy_integration = energy;
+    stage->aux.state = AUX_SLOT_FREE;
 }
 
 #endif

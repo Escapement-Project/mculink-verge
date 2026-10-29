@@ -24,7 +24,7 @@ Source: UM11126 rev 2.8 tables 4, 5 and 6.
 | 2 | 0x2000_0000 SRAM0, 64 KB | CPU 0's data, stack (top 4 KB, see [STACK.md](STACK.md)) and `.ramfunc` (`vcom_task` and the energy integration among them); the consoles' receive rings, send buffers and ring descriptors, and the energy ring, its reload descriptors and its integration state (`energy_integration`), which DMA0 reaches |
 | 3 | 0x2001_0000 SRAM1, 64 KB | CPU 1's `.data` and `.ramfunc` (cJTAG blocks and command loops); Clang's command buffers also fit here |
 | 4 | 0x2002_0000 SRAM2, 64 KB | The rest of CPU 1's `.ramfunc` (JTAG blocks and transfer command loops), then `.bss`, including GCC's `response_copy` and `request_copy`. Placement varies by compiler |
-| 5 | 0x2003_0000 SRAM3, 64 KB | `dap_stage` in the top 8 KB from 0x2003_E000: packet-sized commands and replies CPU 0 stages for CPU 1. Below it, CPU 1's `.data` and `.bss` where they outgrow SRAM2 (the builds without generated SWD), and the tail of `.cold_bss` (the JTAG generator's two saved builds, 32 KB, touched only on a wire or configuration switch), which comes after every other `.bss` so that the statics each command reads stay in SRAM2 |
+| 5 | 0x2003_0000 SRAM3, 64 KB | `dap_stage` in the top 8 KB from 0x2003_E000: packet-sized commands and replies CPU 0 stages for CPU 1, and Verge Aux's request slot. Below it, CPU 1's `.data` and `.bss` where they outgrow SRAM2 (the builds without generated SWD), and the tail of `.cold_bss` (the JTAG generator's two saved builds, 32 KB, touched only on a wire or configuration switch), which comes after every other `.bss` so that the statics each command reads stay in SRAM2 |
 | 6 | 0x2004_0000 SRAM4, 16 KB | CPU 1's stack (top at 0x2004_4000), the whole bank |
 | 7 | 0x4000_0000 APB bridge 0 **and** 0x4002_0000 APB bridge 1 | Every APB peripheral, both bridges on one port (below) |
 | 8 | 0x4008_0000 | DMA0 regs, SCTimer, Flexcomm 0 to 4, mailbox, ordinary GPIO |
@@ -45,6 +45,7 @@ contends with any other.
 | CPU 1 | 10 | Secure GPIO (`DBGIF_GPIO`): every SWDIO, SWCLK, TMS, TDI, TDO access | Inside every timed window |
 | CPU 1 | 3, 4 | The `.ramfunc` bit paths: ARM's SWD, the JTAG and two-pin blocks, where nothing is generated | Inside their timed windows |
 | CPU 1 | 5 | A staged command's request and reply in `dap_stage`: the generated transfers load write data and store read data there | Inside timed windows |
+| CPU 1 | 5 | Verge Aux's slot in `dap_stage`: its state before each command, and an aux request and its reply | Between commands |
 | CPU 1 | 0, 3, 4, 6 | C code, `.ramfunc`, data and stack between transfers | Between timed windows |
 | CPU 1 | 11 | `dap_shared`: unstaged requests and replies, the queues, the LED inputs | Between timed windows |
 | CPU 1 | 10 | ADC0 (target sense, `dap_vendor`, the Pro's energy calibration) and settled energy FIFO results | Own core, never during a window: at boot on the Pro, a host's sense reads, a start that calibrates; FIFO drain at capture pause/stop |
@@ -63,6 +64,7 @@ contends with any other.
 | CPU 0 | 0, 2 | Code and data | Always |
 | CPU 0 | 9, 11 | USB device regs and buffers (TinyUSB) | Every USB transfer |
 | CPU 0 | 11 then 5 | Each staged command, from its USB slot into `dap_stage`, and each staged reply back | As each arrives and as each starts to send, so during CPU 1's windows when commands are queued |
+| CPU 0 | 11 then 5 | Each Verge Aux request, from its USB buffer into `dap_stage`, and each reply back | On the Pro, as each arrives and as each reply is taken, so during CPU 1's windows |
 | CPU 0 | 8 | USART0/1 (VCOM), mailbox, DMA0 regs: its setup, the console channels, the interrupt for both rings | Continuously; the consoles' ring positions while it waits |
 | CPU 0 | 2, 8, 10, 11 | Integrates each completed energy segment in the DMA interrupt, running from SRAM0: checks DMA0's error and ADC0's overflow bits, reads the samples and its state in SRAM0, and updates the accumulator in `dap_shared` | Each completed energy segment, except while CPU 1 owns capture state |
 | CPU 0 | 8 | GPIO0: reads P0_29 and P0_30, pulses P0_17, to re-arm the energy capture's low range | At most once per completed energy-ring segment, after one that stayed on the high range under the low range's limit |

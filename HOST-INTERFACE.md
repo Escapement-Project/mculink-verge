@@ -216,6 +216,34 @@ For both commands, result values are `OK` (0), `UNAVAILABLE` (1), `INVALID` (2),
 `TRANSFER_ERROR` (4), and `NACK` (5; I2C only). `UNAVAILABLE` means this is not a Pro or J15 disabled
 USB-SIO at startup. These commands may be included in `DAP_ExecuteCommands` batches.
 
+## The auxiliary interface: Verge Aux
+
+On the MCU-Link Pro, the supply and energy commands are also on a second USB interface, Verge Aux.
+A host can use it while a debugger holds the CMSIS-DAP interface.
+
+| Field | Value |
+| --- | --- |
+| Interface class | `0xff`, subclass `0x00`, protocol `0x00` |
+| Interface string | `Verge Aux` |
+| Endpoints | EP5 OUT and EP5 IN, bulk, 512 bytes |
+| Windows | WinUSB, DeviceInterfaceGUID `{A297EA18-39D8-41BE-B2E8-884CEC8FE819}` |
+
+Every Pro has it, whatever its jumpers, and no other board does. Its interface number depends on
+which other interfaces the jumpers leave, so find it by class and string, or on Windows by the GUID.
+The string doesn't contain `CMSIS-DAP`, so debuggers pass it by.
+
+A request is one transfer on EP5 OUT, in the format of the CMSIS-DAP command it names. The reply is
+one transfer on EP5 IN, in the format of that command's reply on CMSIS-DAP. The interface carries
+`0x82`, `0x8F` and `0x90`. Any other command gets `[0xff]`, and so does a request too short for its
+command.
+
+The probe takes one request at a time. The next one waits on USB until the probe has answered the
+one before, so replies come in request order. The probe answers an aux request before its next
+CMSIS-DAP command, so a request waits for at most the command running on CMSIS-DAP.
+
+The two interfaces share one target supply and one energy capture. A start on either restarts the
+capture and clears the total, and reads on either see the same capture.
+
 ## Other commands
 
 Commands `0x84` through `0x8D` are implemented for board control, target measurements and

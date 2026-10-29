@@ -182,7 +182,7 @@ reads them once when it starts, so fit or remove one with the probe unplugged.
 | function | plain MCU-Link | MCU-Link Pro | with the jumper fitted |
 | --- | --- | --- | --- |
 | VCOM | J4 | J14 | no target serial port. The Pro's second one, on J26, stays |
-| SWD | J5 | J13 | no CMSIS-DAP interface, so no debugger can use the probe |
+| SWD | J5 | J13 | no CMSIS-DAP interface, so no debugger can use the probe. The Pro keeps Verge Aux |
 | USB-SIO | | J15 | disables the DIO, SPI and I2C bridges; the DIO pins on J19 stay inputs |
 
 A function that is off is left out of the USB configuration, not shown as an interface that does
@@ -226,6 +226,12 @@ during startup.
 
 From a checkout, `uv run tools/dap.py target-power on`, `off` or `read` controls the supply. The
 command is available only on MCU-Link Pro.
+
+## Verge Aux
+
+The Pro has a second vendor interface, Verge Aux, which carries the supply and energy commands. A
+host can switch the supply and record energy through it while a debugger holds CMSIS-DAP. It is the
+Pro's last interface. [The host interface](HOST-INTERFACE.md) describes it.
 
 ## Releases
 

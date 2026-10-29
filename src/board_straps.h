@@ -45,6 +45,13 @@ static inline bool board_has_vcom2(uint8_t board, uint8_t jumpers) {
     return board == BOARD_KIND_PRO;
 }
 
+/** Verge Aux carries the Pro's supply and energy commands beside a debugger, so no jumper removes
+ *  it: the SWD jumper leaves another debugger on the target, which is when it is wanted most. */
+static inline bool board_has_aux(uint8_t board, uint8_t jumpers) {
+    (void)jumpers;
+    return board == BOARD_KIND_PRO;
+}
+
 /** CPU 0: read the straps into dap_shared's board and jumpers. Call after dap_shared_init and
  *  board_init, which muxes HW_VER_2 to a USB host signal, and before anything that depends on
  *  the board: the descriptors, the VCOMs and CPU 1. Out of line, so tools/image.py can run it with

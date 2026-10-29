@@ -821,7 +821,7 @@ def check_hid_padding(c: Checker, elf: str, slots: int) -> None:
 
 
 def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int) -> None:
-    from usb_checks import check_transport
+    from usb_checks import check_aux, check_transport
     from usb_lifecycle import check_sequences
 
     fields = ("transfer_abort", "request", "request_tail", "rx_armed_slot", "next_request_seq", "first_live_seq",
@@ -829,6 +829,7 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int) -> None:
     offsets = shared_offsets(slots, *fields, small_enums=short_enums(elf0))
     check_transport(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_sequences(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
+    check_aux(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
 
 
 def check_stacks(c: Checker, elf0: str, elf1: str) -> None:
@@ -993,9 +994,10 @@ def usb_string(probe: Machine, index: int) -> str:
 
 def expected_layout(board: int, jumpers: int) -> tuple[int, set[int], int]:
     """Interfaces, endpoints and functions of PRO.md's one layout: CMSIS-DAP v2 on EP1 and v1 on EP3,
-    VCOM on EP2 with its notification at 0x86, VCOM2 on EP4 with its notification at 0x87. A
-    function the board lacks or a jumper turns off is left out: the SWD jumper takes both CMSIS-DAP
-    interfaces, as stock's does. The functions are bcdDevice's low byte: 1 debug, 2 VCOM, 4 VCOM2."""
+    VCOM on EP2 with its notification at 0x86, VCOM2 on EP4 with its notification at 0x87, and Verge
+    Aux on EP5, last. A function the board lacks or a jumper turns off is left out: the SWD jumper
+    takes both CMSIS-DAP interfaces, as stock's does, and leaves Verge Aux. The functions are
+    bcdDevice's low byte: 1 debug, 2 VCOM, 4 VCOM2, 8 Verge Aux."""
     interfaces, endpoints, functions = 0, set(), 0
     if not jumpers & 2:
         interfaces += 2
@@ -1006,10 +1008,51 @@ def expected_layout(board: int, jumpers: int) -> tuple[int, set[int], int]:
         endpoints |= {0x02, 0x82, 0x86}
         functions |= 2
     if board == BOARD_PRO:
-        interfaces += 2
-        endpoints |= {0x04, 0x84, 0x87}
-        functions |= 4
+        interfaces += 3
+        endpoints |= {0x04, 0x84, 0x87, 0x05, 0x85}
+        functions |= 4 | 8
     return interfaces, endpoints, functions
+
+
+# The vendor interfaces Windows binds WinUSB to: bcdDevice's function bit, the interface string, the GUID.
+WINUSB_FUNCTIONS = ((1, "CMSIS-DAP v2", "{CDB3B5AD-293B-4663-AA36-1AAE46463776}"),
+                    (8, "Verge Aux", "{A297EA18-39D8-41BE-B2E8-884CEC8FE819}"))
+
+
+def ms_os_bindings(c: Checker, d: bytes) -> list[tuple[int, str]]:
+    """The MS OS 2.0 set's function subsets as (first interface, DeviceInterfaceGUID), with every
+    nested length checked against where its bytes end."""
+    if not c.check(len(d) >= 18 and d[2] == 0 and struct.unpack_from("<H", d, 8)[0] == len(d),
+                   f"MS OS 2.0 set header does not give its own {len(d)}-byte length"):
+        return []
+    c.check(d[12] == 1 and struct.unpack_from("<H", d, 16)[0] == len(d) - 10,
+            "MS OS 2.0 configuration subset does not cover the rest of the set")
+    found, i = [], 18
+    while i + 8 <= len(d):
+        length, kind, first, subset = d[i], d[i + 2], d[i + 4], struct.unpack_from("<H", d, i + 6)[0]
+        if not c.check(length == 8 and kind == 2 and 8 <= subset <= len(d) - i,
+                       f"MS OS 2.0 function subset at {i} is malformed"):
+            return found
+        guid, j = None, i + 8
+        while j + 4 <= i + subset:
+            (feature, ftype) = struct.unpack_from("<HH", d, j)
+            if not c.check(feature >= 4, f"MS OS 2.0 feature at {j} claims {feature} bytes"):
+                return found
+            if ftype == 3:
+                c.check(d[j + 4 : j + 12] == b"WINUSB\0\0", "MS OS 2.0 compatible id is not WINUSB")
+            if ftype == 4:
+                name_len = struct.unpack_from("<H", d, j + 6)[0]
+                data_len = struct.unpack_from("<H", d, j + 8 + name_len)[0]
+                c.check(feature == 10 + name_len + data_len, "MS OS 2.0 registry property length disagrees")
+                name = d[j + 8 : j + 8 + name_len].decode("utf-16-le").rstrip("\0")
+                if name == "DeviceInterfaceGUIDs":
+                    guid = d[j + 10 + name_len : j + 10 + name_len + data_len].decode("utf-16-le").rstrip("\0")
+            j += feature
+        c.check(j == i + subset, f"MS OS 2.0 function subset at {i} says {subset} bytes, its features take {j - i}")
+        found.append((first, guid))
+        i += subset
+    c.check(i == len(d), f"MS OS 2.0 set has {len(d) - i} bytes after its last function subset")
+    return found
 
 
 def check_straps(c: Checker, elf: str, core1: str, request_slots: int) -> None:
@@ -1021,6 +1064,7 @@ def check_straps(c: Checker, elf: str, core1: str, request_slots: int) -> None:
     numbers the controller does not have, declared and never opened, polled every 2^15 microframes.
     """
     probe = Machine(elf, Target([]), restart_at=set(), model=Model())
+    ms_os_size = next((size for name, (_, size) in symbols_with_size(elf).items() if name.split(".")[0] == "desc_ms_os_20"), 0)
     for name in ("board_read_straps", "tud_descriptor_configuration_cb", "tud_descriptor_string_cb"):
         if name not in probe.sym:
             c.problems.append(f"no {name} symbol, so the board's USB cannot be run")
@@ -1040,12 +1084,24 @@ def check_straps(c: Checker, elf: str, core1: str, request_slots: int) -> None:
         interfaces, endpoints, functions = expected_layout(board, jumpers)
         device = bytes(probe.uc.mem_read(probe.call("tud_descriptor_device_cb"), 18))
         inner = Checker()
-        check_device(inner, device, bos=bool(functions & 1))
+        winusb = [f for f in WINUSB_FUNCTIONS if functions & f[0]]
+        check_device(inner, device, bos=bool(winusb))
         c.problems += [f"{state}: {p}" for p in inner.problems]
         (bcd_device,) = struct.unpack_from("<H", device, 12)
         c.check(bcd_device == 0x0100 | functions, f"{state}: bcdDevice {bcd_device:#06x}, wanted {0x0100 | functions:#06x}")
+        probe.call("ms_os_20_init")
         bos = probe.call("tud_descriptor_bos_cb")
-        c.check((bos != 0) == bool(functions & 1), f"{state}: the BOS is {'there' if bos else 'missing'}")
+        c.check((bos != 0) == bool(winusb), f"{state}: the BOS is {'there' if bos else 'missing'}")
+        # The whole buffer, so a set whose header claims more than it holds shows.
+        ms_os = bytes(probe.uc.mem_read(probe.sym["desc_ms_os_20"], ms_os_size))
+        ms_os = ms_os[: min(len(ms_os), struct.unpack_from("<H", ms_os, 8)[0])]
+        if bos:
+            inner = Checker()
+            check_bos(inner, bytes(probe.uc.mem_read(bos, struct.unpack("<H", probe.uc.mem_read(bos + 2, 2))[0])), len(ms_os))
+            c.problems += [f"{state}: {p}" for p in inner.problems]
+        inner = Checker()
+        bindings = ms_os_bindings(inner, ms_os)
+        c.problems += [f"{state}: {p}" for p in inner.problems]
 
         config = probe.call("tud_descriptor_configuration_cb", 0)
         (total,) = struct.unpack("<H", probe.uc.mem_read(config + 2, 2))
@@ -1065,9 +1121,19 @@ def check_straps(c: Checker, elf: str, core1: str, request_slots: int) -> None:
         c.check(found == endpoints, f"{state}: endpoints {sorted(map(hex, found))}, the layout has {sorted(map(hex, endpoints))}")
         real = {e & 0x7F for e in found} - {e & 0x7F for e in notifications if e in (0x86, 0x87)}
         c.check(max(real, default=0) <= 5, f"{state}: endpoint {max(real, default=0)} carries data, and USB1 stops at EP5")
+        # Each MS OS 2.0 binding names a vendor interface by number, and that number has to be the one
+        # carrying the function's string, whatever the jumpers left before it.
+        vendor, i = {}, 0
+        while i + 1 < len(d) and d[i] >= 2:
+            if d[i + 1] == 0x04 and d[i + 5] == 0xFF and d[i + 8]:
+                vendor[d[i + 2]] = usb_string(probe, d[i + 8])
+            i += d[i]
+        c.check(len(bindings) == len(winusb), f"{state}: MS OS 2.0 binds {len(bindings)} interfaces, wanted {len(winusb)}")
+        for (first, guid), (_, name, want) in zip(bindings, winusb):
+            c.check(vendor.get(first) == name and guid == want,
+                    f"{state}: MS OS 2.0 binds {guid} to interface {first} ({vendor.get(first)!r}), wanted {want} on {name!r}")
         if functions & 1:
-            c.check(len(d) > 9 + 5 and d[9 + 2] == 0 and d[9 + 5] == 0xFF,
-                    f"{state}: interface 0 is not CMSIS-DAP v2, which MS OS 2.0 names")
+            c.check(vendor.get(0) == "CMSIS-DAP v2", f"{state}: interface 0 is not CMSIS-DAP v2")
         for address, interval in notifications.items():
             if address in (0x86, 0x87):
                 c.check(interval == 16, f"{state}: notification {address:#04x} is polled at interval {interval}")
@@ -2143,18 +2209,7 @@ def main() -> int:
         observer = StackObserver()
         observer.install()
 
-    sym = symbols_with_size(args.elf)
-    missing = [n for n in ("desc_bos",) if n not in sym]
-    if missing:
-        print(f"  cannot check: {', '.join(missing)} not in the image")
-        return 1
-
     c = Checker()
-    ms_os = next((v for k, v in sym.items() if k.startswith("desc_ms_os_20")), None)
-    if ms_os:
-        check_bos(c, _read_at(args.elf, *sym["desc_bos"]), ms_os[1])
-    else:
-        c.note("the MS OS 2.0 descriptor was folded away; its length not cross-checked")
     # REQUEST_SLOTS is what the host is told as the packet count, and it sizes dap_shared.
     slots = args.packet_count
     swo = bool(config_value(args.config, "SWO_UART"))

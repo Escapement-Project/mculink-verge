@@ -71,7 +71,31 @@ static void wake_core0(void) {
     MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQSET = DAP_CORE_MAILBOX_WAKE_MASK;
 }
 
+/** Answer the Verge Aux request in dap_stage.aux (src/aux_slot.h), with the dispatch and size checks
+ *  a CMSIS-DAP command gets. Out of the command path: it runs once a request, between commands. */
+__attribute__((noinline)) static void aux_serve(void) {
+    aux_slot_t* const slot = &dap_stage.aux;
+    __DMB();
+    uint32_t produced = 0U;
+    if (aux_command_carried(slot->request[0])) {
+        produced = DAP_ExecuteCommandSized(slot->request, slot->request_len, AUX_REPLY_MAX, slot->reply) & 0xFFFFU;
+    }
+    if ((produced == 0U) || (produced > AUX_REPLY_MAX)) {
+        slot->reply[0] = ID_DAP_Invalid;
+        produced = 1U;
+    }
+    slot->reply_len = (uint8_t)produced;
+    __DMB();
+    slot->state = AUX_SLOT_REPLY;
+    wake_core0();
+}
+
 COMMAND_PATH static bool dap_task(void) {
+    // Ahead of the queue, so an aux request waits for the command running and no other.
+    if (dap_stage.aux.state == AUX_SLOT_REQUEST) {
+        aux_serve();
+        return true;
+    }
 #ifdef DAP_TIMING_DIAGNOSTICS
     uint32_t const dispatch_start = dap_timing_now();
 #endif
