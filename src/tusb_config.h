@@ -55,5 +55,7 @@
 // The firmware arms the receive endpoint itself, which is how it refuses a command it has no
 // slot for. src/main.c holds the slots.
 #define CFG_TUD_VENDOR_RX_MANUAL_XFER 1
+// Every transfer goes to or from the firmware's own buffers, so the class reserves none in USB SRAM.
+#define CFG_TUD_VENDOR_CALLER_BUFFERS 1
 
 #endif
