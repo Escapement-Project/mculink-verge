@@ -354,8 +354,9 @@ end. A host that holds back the pairs of one message until the next arrives know
 them. The probe sends edges with each pairs message, and on their own once they have waited 10 ms.
 
 Each run of the interrupt costs the probe time it needs for USB. Past an average of 100,000 runs a
-second, or 32 runs back to back, the probe stops taking edges for 1 ms and the next edges message
-sets bit 0.
+second, or 32 runs back to back, the probe stops taking edges for 1 to 2 ms and the next edges
+message sets bit 0. A pin toggling faster than that keeps about 20,000 to 35,000 of its edges a
+second.
 
 ### End: `0xa2`
 
