@@ -1,16 +1,17 @@
 /** Verge Aux's energy stream (HOST-INTERFACE.md, "The energy stream"): the messages, the timeline
- *  that gives each pair its time, and the ring CPU 0 sends from. Free of hardware, so
- *  tools/energy_stream_test.c runs it on the host.
+ *  that gives each pair its time, the DIO edges, and the ring CPU 0 sends from. Free of hardware,
+ *  so tools/energy_stream_test.c runs it on the host.
  *
  * The core that owns the capture state under the quiet handshake (src/energy_integration.h) writes
- * all of it, with two exceptions. CPU 1 records holds (`holds_written`) and a start's first trigger
- * (`timeline_pending`) while CPU 0 may own the rest. CPU 0's loop reads published messages and
- * moves `sent`.
+ * all of it, with three exceptions. CPU 1 records holds (`holds_written`) and a start's first
+ * trigger (`timeline_pending`) while CPU 0 may own the rest. CPU 0's pin interrupt records edges
+ * (`edge_entries_written`, src/dio_edges.c) whichever core owns it. CPU 0's loop reads published
+ * messages and moves `sent`.
  *
  * Times are counts of the clock the conversion timer runs from. The timer that stamps them is 32
  * bits and wraps in under a minute at that clock, so every comparison here is between nearby
- * values: the next pair's trigger against a hold that has just happened, or a resume against the
- * pair before its pause.
+ * values: the next pair's trigger against a hold or an edge that has just happened, or a resume
+ * against the pair before its pause.
  */
 #ifndef ENERGY_STREAM_H
 #define ENERGY_STREAM_H
@@ -35,10 +36,21 @@
 #define ENERGY_STREAM_CONTROL_SLOTS 2U
 /** How long a start may take to publish its first trigger once its pairs can arrive. */
 #define ENERGY_STREAM_PENDING_POLLS 100000U
+#define ENERGY_STREAM_EDGES_MAX 99U
+#define ENERGY_STREAM_EDGE_BYTES 5U
+#define ENERGY_STREAM_EDGES_FIXED 12U
+/** What CPU 0's pin interrupt can record before the owner sends it. */
+#define ENERGY_STREAM_EDGE_ENTRIES 256U
+/** The most counts one edges message spans, so that its offsets fit 32 bits of nanoseconds and
+ *  converting them fits 64 bits. */
+#define ENERGY_STREAM_EDGE_SPAN (UINT32_C(1) << 26U)
 
 static_assert((ENERGY_STREAM_SLOTS & (ENERGY_STREAM_SLOTS - 1U)) == 0U, "slots index by a mask");
+static_assert((ENERGY_STREAM_EDGE_ENTRIES & (ENERGY_STREAM_EDGE_ENTRIES - 1U)) == 0U, "entries index by a mask");
 static_assert(ENERGY_STREAM_PAIRS_FIXED + ENERGY_STREAM_PAIRS_MAX * ENERGY_STREAM_PAIR_BYTES < ENERGY_STREAM_MESSAGE_MAX,
               "a pairs message fits a packet with no zero-length packet after it");
+static_assert(ENERGY_STREAM_EDGES_FIXED + ENERGY_STREAM_EDGES_MAX * ENERGY_STREAM_EDGE_BYTES < ENERGY_STREAM_MESSAGE_MAX,
+              "an edges message fits a packet with no zero-length packet after it");
 
 /** CPU 0 runs these from SRAM, in its DMA interrupt and its loop; a copy a compiler kept out of
  *  line would land in flash. */
@@ -65,6 +77,26 @@ enum : uint8_t {
 #define ENERGY_STREAM_FLAG_PAUSED 1U
 #define ENERGY_STREAM_FLAG_HELD 2U
 
+/** An edges message's flag: edges were lost before its first one. */
+#define ENERGY_STREAM_EDGES_LOST 1U
+
+/** An entry's flags: the interrupt dropped edges before this run; CPU 0's loop asked for this run
+ *  to record the levels; and, from bit 4, the pins whose detectors the loop cleared since the last
+ *  run. */
+#define ENERGY_STREAM_ENTRY_LOST 1U
+#define ENERGY_STREAM_ENTRY_SYNC 2U
+#define ENERGY_STREAM_ENTRY_CLEARED_SHIFT 4U
+
+/** What one run of CPU 0's pin interrupt found: when it ran, which pins' detectors had latched a
+ *  rise and a fall since the last run, and the levels it read after clearing them. */
+typedef struct {
+    uint32_t stamp;
+    uint8_t rise;
+    uint8_t fall;
+    uint8_t levels;
+    uint8_t flags;
+} energy_stream_edge_entry_t;
+
 /** A read-latency hold, as stamping-timer values of the first trigger due after the conversion
  *  timer stopped: when it was due, give or take the few counts the stop's stamp lags, and when the
  *  restarted timer brings it. */
@@ -90,6 +122,31 @@ struct energy_stream {
      *  timer runs again, so every hold a batch's pairs come after is recorded by then. */
     uint32_t holds_seen;
     energy_stream_hold_t holds[ENERGY_STREAM_HOLDS];
+    /** Nanoseconds a count, Q32, rounded down. */
+    uint64_t ns_q32;
+
+    /** DIO edges. CPU 0's pin interrupt records entries whichever core owns the rest, and the
+     *  owner sends them as edges messages. */
+    volatile uint32_t edge_entries_written;
+    volatile uint32_t edge_entries_read;
+    energy_stream_edge_entry_t edge_entries[ENERGY_STREAM_EDGE_ENTRIES];
+    /** The pins the stream reports, zero without a stream: CPU 0's loop turns their pin interrupts
+     *  on and off to match. */
+    volatile uint8_t edge_mask;
+    /** Counted by each start of a stream, so CPU 0's loop asks the interrupt for a run that records
+     *  the levels with every detector cleared since the header. */
+    volatile uint32_t edge_begins;
+    /** Entries are skipped until that run's, the first sync stamped after `edge_header_raw`. */
+    bool edge_waiting;
+    uint32_t edge_header_raw;
+    /** The levels after the last edge the stream reported. */
+    uint8_t edge_levels;
+    /** Pins whose last edge reported came between a run's clear and its level read: its latch is
+     *  in the next run, already accounted for. */
+    uint8_t edge_credit_rise;
+    uint8_t edge_credit_fall;
+    /** ENERGY_STREAM_EDGES_* for the next edges message. */
+    uint8_t edge_flags;
 
     bool active;
     /** ENERGY_STREAM_FLAG_* since the last pairs message: the next one starts afresh and says so. */
@@ -117,6 +174,8 @@ typedef struct {
     energy_calibration_t const* high;
     uint8_t dio_mask;
     uint8_t dio_levels;
+    /** The stamping timer just after `dio_levels` was read. */
+    uint32_t dio_stamp;
     uint16_t edge_resolution_ns;
 } energy_stream_header_t;
 
@@ -188,6 +247,42 @@ ENERGY_STREAM_INLINE void energy_stream_publish(struct energy_stream* stream, ui
     stream->written++;
 }
 
+/** Counts since the capture started at stamping-timer value `raw`, which must be within 2^31
+ *  counts of the timeline's next pair; 0 for a stamp before the capture started. */
+ENERGY_STREAM_INLINE uint64_t energy_stream_counts_at(struct energy_stream const* stream, uint32_t raw) {
+    int64_t const counts = (int64_t)stream->next_counts + (int32_t)(raw - stream->next_raw);
+    return (counts < 0) ? 0U : (uint64_t)counts;
+}
+
+/** `counts`, under ENERGY_STREAM_EDGE_SPAN, in nanoseconds, rounded down. */
+ENERGY_STREAM_INLINE uint32_t energy_stream_edge_offset(struct energy_stream const* stream, uint32_t counts) {
+    uint32_t ns = (uint32_t)(((uint64_t)counts * stream->ns_q32) >> 32U);
+    // ns_q32 is rounded down, so the product can come out one short.
+    if ((uint64_t)(ns + 1U) * stream->clock_hz <= (uint64_t)counts * 1000000000U) {
+        ns++;
+    }
+    return ns;
+}
+
+/** The resolution a header gives for edges stamped at `clock_hz`. */
+ENERGY_STREAM_INLINE uint16_t energy_stream_edge_resolution(uint32_t clock_hz) {
+    return (uint16_t)((1000000000U + clock_hz - 1U) / clock_hz);
+}
+
+/** Sends what the pin interrupt has recorded, after the pairs message just closed, so every edge
+ *  up to a pairs message's last pair leaves before the next pairs message. A stream's edges start
+ *  at the run CPU 0's loop asks for once it begins, which records the levels with the detectors
+ *  cleared after the header; a pin that moved before then shows the move at that run.
+ *
+ * A run reads each pin's rise and fall detectors, clears what it read, then reads the levels. An
+ * edge between the clear and the level read is in the levels but latched for the next run, so it
+ * is reported now and its latch, when it comes, is not counted again (`edge_credit_*`). Otherwise
+ * each latch is an edge, both together a pulse there and back, and the levels decide the rest. A
+ * detector holds one edge of each kind, so pulses closer together than the interrupt takes merge,
+ * but the levels always end where the pins are. */
+void energy_stream_edges_flush(struct energy_stream* stream);
+
+/** Sends the pairs message being built, then the edges recorded since the last. */
 ENERGY_STREAM_INLINE void energy_stream_close(struct energy_stream* stream) {
     if ((stream->open_pairs != 0U) && !stream->open_dropped) {
         uint8_t* const message = energy_stream_slot(stream);
@@ -197,6 +292,7 @@ ENERGY_STREAM_INLINE void energy_stream_close(struct energy_stream* stream) {
     }
     stream->open_pairs = 0U;
     stream->open_dropped = false;
+    energy_stream_edges_flush(stream);
 }
 
 /** The first message of a stream. Starts the stream only if the ring had room for it. */
@@ -206,6 +302,7 @@ ENERGY_STREAM_INLINE bool energy_stream_begin(struct energy_stream* stream, ener
     stream->gap = 0U;
     if (energy_stream_free(stream) == 0U) {
         stream->active = false;
+        stream->edge_mask = 0U;
         return false;
     }
     uint8_t* out = energy_stream_slot(stream);
@@ -229,7 +326,16 @@ ENERGY_STREAM_INLINE bool energy_stream_begin(struct energy_stream* stream, ener
     *out++ = header->dio_levels;
     (void)energy_stream_u16(out, header->edge_resolution_ns);
     energy_stream_publish(stream, ENERGY_STREAM_HEADER_BYTES);
+    // Whatever the pin interrupt recorded before is an earlier stream's.
+    stream->edge_entries_read = stream->edge_entries_written;
+    stream->edge_waiting = true;
+    stream->edge_header_raw = header->dio_stamp;
+    stream->edge_levels = header->dio_levels & header->dio_mask;
+    stream->edge_flags = 0U;
+    stream->edge_mask = header->dio_mask;
     stream->active = true;
+    energy_stream_barrier();
+    stream->edge_begins++;
     return true;
 }
 
@@ -240,6 +346,7 @@ ENERGY_STREAM_INLINE void energy_stream_end(struct energy_stream* stream, uint8_
     }
     energy_stream_close(stream);
     stream->active = false;
+    stream->edge_mask = 0U;
     if (energy_stream_free(stream) == 0U) {
         return;
     }
@@ -279,6 +386,10 @@ static inline void energy_stream_timeline_run(struct energy_stream* stream, bool
     stream->next_raw = first_raw;
     stream->period = 2U * ticks;
     stream->clock_hz = clock_hz;
+    uint32_t left = 0U;
+    uint32_t const whole = energy_stream_divide(1000000000U, clock_hz, &left);
+    uint32_t unused = 0U;
+    stream->ns_q32 = ((uint64_t)whole << 32U) | energy_stream_divide((uint64_t)left << 32U, clock_hz, &unused);
     energy_stream_barrier();
     stream->timeline_pending = false;
 }

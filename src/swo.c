@@ -57,9 +57,9 @@ static_assert(SWO_STREAM == 0, "no streaming endpoint yet");
 /** Bounds on the two waits for hardware, in polls. Either finishes in well under a microsecond. */
 #define SWO_DRAIN_POLLS 1000U
 
-/** How long CPU 0's DMA interrupt can take between reading a completion and counting it. Its
- *  priority is the highest on CPU 0, so nothing preempts it in between. The poll bound is for the
- *  image checker, whose cycle counter does not move. */
+/** How long CPU 0's DMA interrupt can take between reading a completion and counting it. It masks
+ *  every interrupt in between, so nothing preempts it there. The poll bound is for the image
+ *  checker, whose cycle counter does not move. */
 #define SWO_COUNT_SETTLE_US 2U
 #define SWO_COUNT_SETTLE_POLLS 10000U
 

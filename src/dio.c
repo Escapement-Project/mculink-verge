@@ -5,7 +5,9 @@
 #include "fsl_iocon.h"
 
 #include "board_pins.h"
+#include "dap_core.h"
 #include "dap_shared.h"
+#include "dio_pins.h"
 #include "led.h"
 
 typedef struct {
@@ -13,9 +15,8 @@ typedef struct {
     uint8_t pin;
 } dio_pin_t;
 
-/** DIO0 to DIO3: the HS SPI's SSEL0, MOSI, SCK and MISO pins, each a GPIO on function 0. */
+/** DIO0 to DIO3 (src/dio_pins.h), each a GPIO on function 0. */
 static const dio_pin_t dio_pins[] = {{0U, 20U}, {0U, 26U}, {1U, 2U}, {1U, 3U}};
-#define DIO_PINS 0x0FU
 
 /** IO_DIR1 and IO_DIR2, high to drive the header, and the pins each turns. */
 static const dio_pin_t dio_dir[DIO_GROUPS_MAX] = {{1U, 1U}, {1U, 25U}};
@@ -120,25 +121,33 @@ void dio_get(dio_state_t* state) {
     if (dio_on == 0U) {
         return;
     }
-    const uint32_t port[2] = {GPIO->PIN[0], GPIO->PIN[1]};
-    uint8_t read = 0U;
-    for (uint32_t n = 0U; n < 4U; n++) {
-        read |= (uint8_t)(((port[dio_pins[n].port] >> dio_pins[n].pin) & 1U) << n);
-    }
     state->pins = dio_on;
     state->outputs = dio_outputs;
     state->levels = dio_levels;
-    state->read = read;
+    state->read = dio_pins_levels(GPIO->PIN[0], GPIO->PIN[1]);
     state->groups = DIO_GROUPS_MAX;
     for (uint32_t group = 0U; group < DIO_GROUPS_MAX; group++) {
         state->group[group] = dio_group[group];
     }
 }
 
+uint8_t dio_stream_pins(uint8_t requested, uint8_t* levels) {
+    uint8_t const pins = dio_spi_owned ? 0U : (uint8_t)(requested & dio_on);
+    *levels = (uint8_t)(dio_pins_levels(GPIO->PIN[0], GPIO->PIN[1]) & pins);
+    return pins;
+}
+
 bool dio_spi_begin(void) {
     if ((dio_on == 0U) || (dio_outputs != 0U) || dio_spi_owned) {
         return false;
     }
+
+    // A stream reports no edges while SPI has the pins: stop the pin interrupts before SPI moves
+    // them. CPU 0 turns them back on afterwards (src/dio_edges.c).
+    dap_shared.dio_spi_turns++;
+    __DMB();
+    PINT->CIENR = DIO_PINS;
+    PINT->CIENF = DIO_PINS;
 
     // Keep the probe isolated while the peripheral takes control of its output pins.
     IOCON_PinMuxSet(IOCON, 0U, 20U, DIO_PIN_MODE);
@@ -166,4 +175,7 @@ void dio_spi_end(void) {
     dio_store(GPIO->DIRCLR, DIO_PINS);
     dio_spi_owned = false;
     led_sio(dio_outputs != 0U);
+    __DMB();
+    dap_shared.dio_spi_turns++;
+    MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQSET = DAP_CORE_MAILBOX_WAKE_MASK;
 }

@@ -287,6 +287,250 @@ static void test_idle(void) {
     assert(stream.next_counts == TICKS + 300U * (uint64_t)PERIOD);
 }
 
+#define LOST ENERGY_STREAM_ENTRY_LOST
+#define SYNC ENERGY_STREAM_ENTRY_SYNC
+#define CLEARED(pins) ((uint8_t)((pins) << ENERGY_STREAM_ENTRY_CLEARED_SHIFT))
+
+/** An entry as CPU 0's pin interrupt records it. */
+static void edge_entry(struct energy_stream* stream, uint32_t stamp, uint8_t rise, uint8_t fall, uint8_t levels,
+                       uint8_t flags) {
+    uint32_t const at = stream->edge_entries_written;
+    stream->edge_entries[at & (ENERGY_STREAM_EDGE_ENTRIES - 1U)] =
+        (energy_stream_edge_entry_t){.stamp = stamp, .rise = rise, .fall = fall, .levels = levels, .flags = flags};
+    stream->edge_entries_written = at + 1U;
+}
+
+/** A stream whose header read `levels` at `header_raw`, then the run CPU 0's loop asks for at
+ *  `sync_raw` reading the same levels with the pins cleared; the capture starts at `started_raw`. */
+static void start_edges(struct energy_stream* stream, uint32_t started_raw, uint8_t mask, uint8_t levels,
+                        uint32_t header_raw, uint32_t sync_raw) {
+    memset(stream, 0, sizeof(*stream));
+    energy_stream_timeline_prepare(stream, 1U);
+    energy_stream_header_t const header = {
+        .rate_hz = CLOCK_HZ / PERIOD, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = 1U,
+        .previous_low = true, .low = &low, .high = &high, .dio_mask = mask, .dio_levels = levels,
+        .dio_stamp = header_raw, .edge_resolution_ns = energy_stream_edge_resolution(CLOCK_HZ)};
+    assert(energy_stream_begin(stream, &header));
+    energy_stream_timeline_run(stream, true, CLOCK_HZ, TICKS, started_raw);
+    edge_entry(stream, sync_raw, 0U, 0U, levels, SYNC | CLEARED(mask));
+}
+
+/** An edges message's edges as absolute times in ns, and their levels. */
+static uint32_t edges_of(uint8_t const* m, uint16_t length, uint64_t* times, uint8_t* levels) {
+    assert(m[0] == 0xA3U);
+    uint32_t const count = u16(m + 10);
+    assert(count >= 1U && count <= 99U && length == 12U + 5U * count);
+    for (uint32_t i = 0U; i < count; i++) {
+        times[i] = u64(m + 2) + u32(m + 12 + 5U * i);
+        levels[i] = m[12 + 5U * i + 4U];
+    }
+    return count;
+}
+
+/** The header gives the stamping clock's resolution; each run's edges follow the rule in
+ *  energy_stream_edges_flush; pins the stream did not ask for are left out, and read 0. */
+static void test_edges(void) {
+    static struct energy_stream stream;
+    start_edges(&stream, 1000U, 0x09U, 0x0FU, 900U, 1000U + 100U);
+    uint16_t length = 0U;
+    uint8_t const* m = take(&stream, &length);
+    assert(m != NULL && m[64] == 0x09U && m[65] == 0x0FU && u16(m + 66) == 11U);
+    assert(stream.edge_levels == 0x09U);
+    // DIO0 falls; DIO1 moves too, but nobody asked for it.
+    edge_entry(&stream, 1000U + 500U, 0x00U, 0x03U, 0x0CU, 0U);
+    // A pulse on DIO3 and back, both latched, level unchanged.
+    edge_entry(&stream, 1000U + 960U, 0x08U, 0x08U, 0x0CU, 0U);
+    // DIO0 rises, falls and rises again before the interrupt ran: it reads high with both latched.
+    edge_entry(&stream, 1000U + 1920U, 0x01U, 0x01U, 0x0DU, 0U);
+    // A latch with no change: its edge was the run before's, which read the level after it.
+    edge_entry(&stream, 1000U + 2880U, 0x01U, 0x00U, 0x0DU, 0U);
+    // A changed level with no latch: the edge came between the clear and the read.
+    edge_entry(&stream, 1000U + 3840U, 0x00U, 0x00U, 0x05U, 0U);
+    energy_stream_pause(&stream);
+    m = take(&stream, &length);
+    assert(m != NULL && m[1] == 0U);
+    uint64_t times[99];
+    uint8_t levels[99];
+    uint32_t const count = edges_of(m, length, times, levels);
+    // The message's first edge in ns, then each offset from it, rounded down.
+    uint64_t const expected_counts[] = {500U, 960U, 960U, 1920U, 1920U, 1920U, 3840U};
+    uint8_t const expected_levels[] = {0x08U, 0x00U, 0x08U, 0x09U, 0x08U, 0x09U, 0x01U};
+    assert(count == sizeof(expected_levels));
+    for (uint32_t i = 0U; i < count; i++) {
+        uint64_t const expected = ns(500U) + ((expected_counts[i] - 500U) * 1000000000U) / CLOCK_HZ;
+        assert(times[i] == expected && levels[i] == expected_levels[i]);
+    }
+    assert(take(&stream, &length) == NULL && stream.edge_entries_read == stream.edge_entries_written);
+    energy_stream_end(&stream, 2U, 0U);
+    assert(stream.edge_mask == 0U);
+}
+
+/** Edges leave after the pairs message that closes before them, 99 to a message; a message never
+ *  spans ENERGY_STREAM_EDGE_SPAN, and offsets are the exact floor of their counts. */
+static void test_edges_messages(void) {
+    static struct energy_stream stream;
+    start_edges(&stream, 0xFFFFF000U, 0x01U, 0x00U, 0xFFFFF000U - 100U, 0xFFFFF000U - 50U);
+    uint16_t length = 0U;
+    (void)take(&stream, &length);
+    energy_stream_pair(&stream, 1U, 1U, 1U, true);
+    // 150 edges a run apart, stamps wrapping, then one a whole span after the 150th.
+    uint32_t stamp = 0xFFFFF000U + 7U;
+    uint8_t level = 0U;
+    for (uint32_t i = 0U; i < 150U; i++, stamp += 1237U) {
+        level ^= 1U;
+        edge_entry(&stream, stamp, level ? 1U : 0U, level ? 0U : 1U, level, 0U);
+    }
+    uint32_t const last = stamp - 1237U;
+    level ^= 1U;
+    edge_entry(&stream, last + ENERGY_STREAM_EDGE_SPAN - 5U, level, level ^ 1U, level, 0U);
+    level ^= 1U;
+    edge_entry(&stream, last + ENERGY_STREAM_EDGE_SPAN + 9U, level, level ^ 1U, level, 0U);
+    energy_stream_batch_end(&stream);
+    assert(take(&stream, &length) == NULL);
+    energy_stream_end(&stream, 2U, 1U);
+    uint8_t const* m = take(&stream, &length);
+    assert(m != NULL && m[0] == 0xA0U && u16(m + 14) == 1U);
+    uint64_t times[99];
+    uint8_t levels[99];
+    // The 151st edge is a span past the 100th, the first of the second message.
+    uint32_t const counts[] = {99U, 51U, 2U};
+    uint32_t edge = 0U;
+    for (uint32_t i = 0U; i < 3U; i++) {
+        m = take(&stream, &length);
+        assert(m != NULL && edges_of(m, length, times, levels) == counts[i]);
+        uint64_t first = 0U;
+        for (uint32_t k = 0U; k < counts[i]; k++, edge++) {
+            uint64_t const at = (edge < 150U) ? 7U + edge * UINT64_C(1237)
+                                              : 7U + 149U * UINT64_C(1237) + ENERGY_STREAM_EDGE_SPAN + (edge == 150U ? 0U : 14U) - 5U;
+            first = (k == 0U) ? at : first;
+            assert(times[k] == ns(first) + ((at - first) * 1000000000U) / CLOCK_HZ);
+            assert(levels[k] == ((edge + 1U) & 1U));
+        }
+    }
+    m = take(&stream, &length);
+    assert(m != NULL && m[0] == 0xA2U);
+    // Offsets: the exact floor, across the span.
+    for (uint32_t c = 0U; c < ENERGY_STREAM_EDGE_SPAN; c += 4099U) {
+        assert(energy_stream_edge_offset(&stream, c) == (uint32_t)(((uint64_t)c * 1000000000U) / CLOCK_HZ));
+    }
+    assert(energy_stream_edge_offset(&stream, ENERGY_STREAM_EDGE_SPAN - 1U) ==
+           (uint32_t)(((uint64_t)(ENERGY_STREAM_EDGE_SPAN - 1U) * 1000000000U) / CLOCK_HZ));
+}
+
+/** A run after dropped edges ends the message before it and flags the next; so does an edges
+ *  message the full ring dropped. A stamp before the capture started reads 0; a new stream
+ *  forgets what was recorded before it. */
+static void test_edges_lost(void) {
+    static struct energy_stream stream;
+    start_edges(&stream, 5000U, 0x02U, 0x00U, 3000U, 3500U);
+    uint16_t length = 0U;
+    (void)take(&stream, &length);
+    edge_entry(&stream, 4000U, 0x02U, 0x00U, 0x02U, 0U);
+    edge_entry(&stream, 6000U, 0x00U, 0x02U, 0x00U, 0U);
+    edge_entry(&stream, 9000U, 0x02U, 0x00U, 0x02U, LOST);
+    energy_stream_pause(&stream);
+    uint64_t times[99];
+    uint8_t levels[99];
+    uint8_t const* m = take(&stream, &length);
+    assert(m != NULL && m[1] == 0U && edges_of(m, length, times, levels) == 2U);
+    assert(times[0] == 0U && times[1] == ns(1000U) && levels[0] == 0x02U && levels[1] == 0x00U);
+    m = take(&stream, &length);
+    assert(m != NULL && m[1] == ENERGY_STREAM_EDGES_LOST && edges_of(m, length, times, levels) == 1U);
+    assert(times[0] == ns(4000U) && levels[0] == 0x02U);
+    // Fill the ring to its control slots: the edges message after is dropped, and the next one that
+    // leaves says so.
+    stream.period = 960U;
+    uint32_t s = 1U;
+    while (energy_stream_free(&stream) > ENERGY_STREAM_CONTROL_SLOTS) {
+        energy_stream_pair(&stream, s++, 1U, 1U, true);
+    }
+    edge_entry(&stream, 20000U, 0x00U, 0x02U, 0x00U, 0U);
+    energy_stream_pause(&stream);
+    assert(stream.edge_entries_read == stream.edge_entries_written && (stream.edge_flags & ENERGY_STREAM_EDGES_LOST));
+    while (take(&stream, &length) != NULL) {
+    }
+    edge_entry(&stream, 30000U, 0x02U, 0x00U, 0x02U, 0U);
+    energy_stream_pause(&stream);
+    m = take(&stream, &length);
+    assert(m != NULL && m[1] == ENERGY_STREAM_EDGES_LOST && edges_of(m, length, times, levels) == 1U);
+    // Recorded before a new stream began: not the new stream's.
+    edge_entry(&stream, 31000U, 0x00U, 0x02U, 0x00U, 0U);
+    energy_stream_end(&stream, 3U, s);
+    while (take(&stream, &length) != NULL) {
+    }
+    edge_entry(&stream, 32000U, 0x02U, 0x00U, 0x02U, 0U);
+    energy_stream_header_t const header = {.rate_hz = 1000U, .low = &low, .high = &high, .dio_mask = 0x02U};
+    assert(energy_stream_begin(&stream, &header));
+    energy_stream_pause(&stream);
+    m = take(&stream, &length);
+    assert(m != NULL && m[0] == 0xA1U && take(&stream, &length) == NULL);
+    // Without pins to report, entries are dropped unsent.
+    energy_stream_end(&stream, 3U, s);
+    while (take(&stream, &length) != NULL) {
+    }
+    energy_stream_header_t const none = {.rate_hz = 1000U, .low = &low, .high = &high, .dio_mask = 0U};
+    assert(energy_stream_begin(&stream, &none));
+    (void)take(&stream, &length);
+    edge_entry(&stream, 33000U, 0x02U, 0x00U, 0x02U, 0U);
+    energy_stream_pause(&stream);
+    assert(take(&stream, &length) == NULL && stream.edge_entries_read == stream.edge_entries_written);
+}
+
+/** The edges of one stream's messages, as counts since the capture started and the levels after. */
+static uint32_t all_edges(struct energy_stream* stream, uint64_t* times, uint8_t* levels) {
+    uint32_t count = 0U;
+    uint16_t length = 0U;
+    uint8_t const* m = NULL;
+    while ((m = take(stream, &length)) != NULL) {
+        if (m[0] == 0xA3U) {
+            count += edges_of(m, length, times + count, levels + count);
+        }
+    }
+    return count;
+}
+
+/** The cases a run's read order makes: an edge between its clear and its level read is reported
+ *  with it, and its latch in the next run is not counted again, unless the loop cleared the pin's
+ *  detectors in between. */
+static void test_edges_rule(void) {
+    static struct energy_stream stream;
+    start_edges(&stream, 0U, 0x03U, 0x00U, 0U, 10U);
+    uint16_t length = 0U;
+    (void)take(&stream, &length);
+    // A short pulse on DIO0: its rise latched, its fall after the clear.
+    edge_entry(&stream, 100U, 0x01U, 0x00U, 0x00U, 0U);
+    edge_entry(&stream, 200U, 0x00U, 0x01U, 0x00U, 0U);
+    // DIO1 rises after one run's clear and falls before the next run's read.
+    edge_entry(&stream, 300U, 0x00U, 0x00U, 0x02U, 0U);
+    edge_entry(&stream, 310U, 0x02U, 0x02U, 0x00U, 0U);
+    // DIO1 rises after a clear; the loop then clears it, and a pulse low comes and goes.
+    edge_entry(&stream, 400U, 0x00U, 0x00U, 0x02U, 0U);
+    edge_entry(&stream, 500U, 0x02U, 0x00U, 0x02U, CLEARED(0x02U));
+    // A lone rise on a pin already high: its fall merged into a latch already cleared.
+    edge_entry(&stream, 600U, 0x02U, 0x00U, 0x02U, 0U);
+    energy_stream_pause(&stream);
+    uint64_t times[99];
+    uint8_t levels[99];
+    uint32_t const count = all_edges(&stream, times, levels);
+    uint64_t const expected_counts[] = {100U, 100U, 300U, 310U, 400U, 500U, 500U, 600U, 600U};
+    uint8_t const expected_levels[] = {0x01U, 0x00U, 0x02U, 0x00U, 0x02U, 0x00U, 0x02U, 0x00U, 0x02U};
+    assert(count == sizeof(expected_levels));
+    for (uint32_t i = 0U; i < count; i++) {
+        assert(times[i] == ns(100U) + ((expected_counts[i] - 100U) * 1000000000U) / CLOCK_HZ);
+        assert(levels[i] == expected_levels[i]);
+    }
+
+    // Before the first sync stamped after the header, nothing counts: an older sync, and a run with
+    // a latch the header's read may already show. A pin that moved since shows at the sync.
+    start_edges(&stream, 0U, 0x01U, 0x00U, 1000U, 900U);
+    (void)take(&stream, &length);
+    edge_entry(&stream, 1100U, 0x01U, 0x00U, 0x01U, 0U);
+    edge_entry(&stream, 1200U, 0x00U, 0x00U, 0x01U, SYNC | CLEARED(0x01U));
+    edge_entry(&stream, 1300U, 0x01U, 0x00U, 0x01U, 0U);
+    energy_stream_pause(&stream);
+    assert(all_edges(&stream, times, levels) == 1U && times[0] == ns(1200U) && levels[0] == 0x01U);
+}
+
 static void test_ns(void) {
     uint64_t const counts[] = {0U, 1U, CLOCK_HZ - 1U, CLOCK_HZ, UINT64_C(1) << 40U, UINT64_C(0xFFFFFFFFFFFF)};
     for (uint32_t i = 0U; i < sizeof(counts) / sizeof(counts[0]); i++) {
@@ -303,6 +547,10 @@ int main(void) {
     test_resume();
     test_full();
     test_idle();
+    test_edges();
+    test_edges_messages();
+    test_edges_lost();
+    test_edges_rule();
     test_ns();
     return 0;
 }

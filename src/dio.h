@@ -45,6 +45,10 @@ bool dio_set(uint8_t mask, uint8_t outputs, uint8_t levels);
 
 void dio_get(dio_state_t* state);
 
+/** The pins of `requested` an energy stream can report edges on, none while SPI has them, and in
+ *  `levels` their levels now. */
+uint8_t dio_stream_pins(uint8_t requested, uint8_t* levels);
+
 /** Temporarily assigns the DIO pins to the Pro's hardware SPI. Requires all DIO pins to be inputs. */
 bool dio_spi_begin(void);
 

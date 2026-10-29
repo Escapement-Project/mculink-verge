@@ -201,6 +201,10 @@ typedef struct {
     volatile uint8_t led_swo;   // SWO bytes have gone to the host
     volatile uint8_t led_sio;   // the host drives a DIO pin (dio.h)
 
+    /** Counted by CPU 1 as SPI takes the DIO pins and again as it gives them back, so odd while
+     *  SPI has them. CPU 0 stops their edges meanwhile and marks the gap (src/dio_edges.c). */
+    volatile uint32_t dio_spi_turns;
+
     /** BOARD_KIND_* and BOARD_JUMPER_* (board_straps.h), written by CPU 0 before CPU 1 starts. */
     volatile uint8_t board;
     volatile uint8_t jumpers;

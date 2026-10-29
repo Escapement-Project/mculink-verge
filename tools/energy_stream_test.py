@@ -26,11 +26,11 @@ def main() -> int:
                 raise SystemExit(f"{compiler} is not installed")
             executable = os.path.join(directory, compiler)
             run([compiler, "-std=gnu23", "-Wall", "-Wextra", "-Werror", "-fsanitize=address,undefined",
-                 "-fno-sanitize-recover=all", "-Isrc", str(SOURCE), "-o", executable], os.environ.copy())
+                 "-fno-sanitize-recover=all", "-Isrc", str(SOURCE), "src/energy_stream.c", "-o", executable], os.environ.copy())
             env = os.environ.copy()
             env["ASAN_OPTIONS"] = ":".join(filter(None, (env.get("ASAN_OPTIONS"), "detect_leaks=0")))
             run([executable], env)
-            print(f"  {compiler}: stream header, pairs, 10 ms rule, holds, resumes, a full ring")
+            print(f"  {compiler}: stream header, pairs, 10 ms rule, holds, resumes, a full ring, DIO edges")
     return 0
 
 

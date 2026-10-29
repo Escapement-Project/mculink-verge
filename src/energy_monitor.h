@@ -54,8 +54,9 @@ void energy_monitor_calibrate(void);
 
 /** Start timer-triggered ADC capture at `rate_hz` paired samples per second. */
 [[nodiscard]] energy_monitor_status_t energy_monitor_start(uint32_t rate_hz);
-/** The same, with Verge Aux's stream beginning at its first pair (src/energy_stream.h). */
-[[nodiscard]] energy_monitor_status_t energy_monitor_start_stream(uint32_t rate_hz);
+/** The same, with Verge Aux's stream beginning at its first pair (src/energy_stream.h) and reporting
+ *  the edges of the DIO pins in `dio_mask` it can. */
+[[nodiscard]] energy_monitor_status_t energy_monitor_start_stream(uint32_t rate_hz, uint8_t dio_mask);
 uint32_t energy_monitor_rate(void);
 
 /** Stop acquisition and leave the ADC ready for on-demand target-sense reads. */

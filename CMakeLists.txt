@@ -108,6 +108,8 @@ set(DAP_SRC ${CMAKE_CURRENT_SOURCE_DIR}/external/CMSIS-DAP/Firmware/Source)
 target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/main.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/aux.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/dio_edges.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/energy_stream.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/core1_image.S
   ${CMAKE_CURRENT_SOURCE_DIR}/src/mem.S
   ${CMAKE_CURRENT_SOURCE_DIR}/src/usb_descriptors.c
@@ -147,6 +149,7 @@ target_sources(${CORE1} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/ser_num.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/target_sense.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/energy_monitor.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/energy_stream.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/target_power.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dio.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/pro_bus.c

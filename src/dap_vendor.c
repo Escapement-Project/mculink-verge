@@ -516,12 +516,12 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             uint32_t const rate = (uint32_t)request[2] | ((uint32_t)request[3] << 8U) |
                                   ((uint32_t)request[4] << 16U) | ((uint32_t)request[5] << 24U);
             // Mode 5 starts a stream with the capture, and only Verge Aux carries a stream. Its last
-            // byte, the DIO pins whose edges the stream reports, asks for nothing this firmware has.
+            // byte is the DIO pins whose edges the stream reports.
             if ((mode == 5U) && !dap_vendor_on_aux) {
                 response[1] = DAP_ERROR;
                 return (7U << 16) | 2U;
             }
-            energy_monitor_status_t const status = (mode == 5U) ? energy_monitor_start_stream(rate)
+            energy_monitor_status_t const status = (mode == 5U) ? energy_monitor_start_stream(rate, request[6])
                                                                 : energy_monitor_start(rate);
             uint32_t const actual_rate = energy_monitor_rate();
             response[2] = (uint8_t)status;

@@ -21,6 +21,7 @@
 #include "dap_core.h"
 #include "dap_core_security.h"
 #include "dap_shared.h"
+#include "dio_edges.h"
 #ifdef DAP_TIMING_DIAGNOSTICS
 #include "dap_timing.h"
 #endif
@@ -297,12 +298,11 @@ __attribute__((section(".ramfunc"), noinline)) static void energy_range_retry_ta
 __attribute__((section(".ramfunc"), noinline)) static void energy_control_task(void) {
     uint32_t const requested = dap_shared.energy_control_request;
     if (requested != dap_shared.energy_control_ack) {
-        uint32_t const primask = __get_PRIMASK();
-        __disable_irq();
+        uint32_t const basepri = cpu0_mask_all_but_edges();
         __DMB();
         dap_shared.energy_control_ack = requested;
         __DMB();
-        __set_PRIMASK(primask);
+        cpu0_unmask(basepri);
     }
 }
 
@@ -350,6 +350,9 @@ __attribute__((section(".ramfunc"), noinline)) static void wait_for_work(void) {
                 return;
             }
         }
+        if (dio_edges_waiting()) {
+            return;
+        }
     }
 }
 
@@ -382,9 +385,9 @@ __attribute__((section(".ramfunc"))) static bool lab_hammer(void) {
 #endif
 
 /** Everything that gives the loop work wakes it: USB and the LED tick by interrupt, CPU 1 through
- *  the mailbox when it frees a request slot, publishes a reply or asks for a reboot, and the
- *  console through vcom_ready. The mailbox is cleared before the checks, so a write CPU 1 makes
- *  after them still ends the wait. */
+ *  the mailbox when it frees a request slot, publishes a reply or asks for a reboot, the console
+ *  through vcom_ready, and DIO edges half filling their record. The mailbox is cleared before the
+ *  checks, so a write CPU 1 makes after them still ends the wait. */
 __attribute__((section(".ramfunc"))) static void idle(void) {
     MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQCLR = DAP_CORE_MAILBOX_WAKE_MASK;
     __DSB();
@@ -399,9 +402,10 @@ __attribute__((section(".ramfunc"))) static void idle(void) {
         return;
     }
 #endif
-    __disable_irq();
+    // The pin interrupts still run, so edges are timed while the loop waits.
+    uint32_t const basepri = cpu0_mask_all_but_edges();
     wait_for_work();
-    __enable_irq();
+    cpu0_unmask(basepri);
 }
 
 /** One completed energy segment, integrated from SRAM. Out of line, so tools/energy_checks.py can
@@ -432,8 +436,13 @@ __attribute__((section(".ramfunc"))) void DMA0_IRQHandler(void) {
         }
         vcom_dma_error(failed);
     }
+    // Nothing may come between reading a completion and counting it: src/swo.c's capture start
+    // waits that out, SWO_COUNT_SETTLE_US. Only the pin interrupts are above this one.
+    uint32_t const primask = __get_PRIMASK();
+    __disable_irq();
     uint32_t const done = DMA0->COMMON[0].INTA & (SWO_DMA_MASK | VCOM_DMA_MASK | energy_mask);
     if (done == 0U) {
+        __set_PRIMASK(primask);
         return;
     }
     if ((done & ENERGY_DMA_MASK) != 0U) {
@@ -445,6 +454,7 @@ __attribute__((section(".ramfunc"))) void DMA0_IRQHandler(void) {
     if ((done & SWO_DMA_MASK) != 0U) {
         dap_shared.swo_segments++;
     }
+    __set_PRIMASK(primask);
     if ((done & ENERGY_DMA_MASK) != 0U) {
         energy_integrate_segment();
         dap_shared.energy_segments++;
@@ -579,6 +589,7 @@ __attribute__((noinline, used)) void dap_core_security_init(void) {
         energy_range_retry_task();
         tud_task();
         usb_transport_task();
+        dio_edges_task();
         aux_task();
         if (vcom_ready()) {
             vcom_task();
@@ -609,10 +620,9 @@ int main(void) {
     dap_core_security_init();
     dma0_init();
     vcom_init();
-    // The highest priority, so nothing comes between DMA0_IRQHandler reading a completion and
-    // counting it, which src/swo.c's capture start waits out.
-    NVIC_SetPriority(DMA0_IRQn, 0U);
+    NVIC_SetPriority(DMA0_IRQn, CPU0_PRIORITY);
     NVIC_EnableIRQ(DMA0_IRQn);
+    dio_edges_init(&energy_integration.stream, dap_shared.board, dap_shared.jumpers);
     start_core1();
 
     board_init_after_tusb();
@@ -621,6 +631,7 @@ int main(void) {
         .role = TUSB_ROLE_DEVICE,
         .speed = TUSB_SPEED_AUTO,
     };
+    NVIC_SetPriority(USB1_IRQn, CPU0_PRIORITY);
     tusb_init(BOARD_TUD_RHPORT, &init);
     __DMB();
     __enable_irq();

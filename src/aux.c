@@ -7,6 +7,7 @@
 
 #include "dap_core.h"
 #include "dap_shared.h"
+#include "dio_edges.h"
 #include "energy_stream.h"
 
 // DAP_config.h first: DAP.h reads the settings it defines.
@@ -124,8 +125,7 @@ __attribute__((section(".ramfunc"))) static bool stream_command(void) {
     }
     uint8_t result = 0U;
     // The DMA interrupt is the only other owner on this core.
-    uint32_t const primask = __get_PRIMASK();
-    __disable_irq();
+    uint32_t const basepri = cpu0_mask_all_but_edges();
     struct energy_integration* const energy = dap_shared.energy_integration;
     struct energy_stream* const stream = (energy != nullptr) ? &energy->stream : nullptr;
     if ((stream == nullptr) || (dap_shared.energy_available == 0U)) {
@@ -141,6 +141,9 @@ __attribute__((section(".ramfunc"))) static bool stream_command(void) {
         result = 1U;
     } else {
         energy_stream_end(stream, ENERGY_STREAM_END_ASKED, energy->decoder.sequence);
+        uint8_t levels = 0U;
+        uint32_t stamp = 0U;
+        uint8_t const pins = dio_edges_pins(local_request[2], &levels, &stamp);
         energy_stream_header_t const header = {
             .rate_hz = stream->clock_hz / stream->period,
             .setting = energy->setting,
@@ -149,12 +152,16 @@ __attribute__((section(".ramfunc"))) static bool stream_command(void) {
             .previous_low = energy->previous_low,
             .low = &energy->low_range,
             .high = &energy->high_range,
+            .dio_mask = pins,
+            .dio_levels = levels,
+            .dio_stamp = stamp,
+            .edge_resolution_ns = (pins != 0U) ? energy_stream_edge_resolution(stream->clock_hz) : 0U,
         };
         // A full ring: the host is not reading, and the header would be lost too.
         result = energy_stream_begin(stream, &header) ? 0U : 7U;
         stream_expected = stream_expected || (result == 0U);
     }
-    __set_PRIMASK(primask);
+    cpu0_unmask(basepri);
     aux_in[2] = result;
     in_length = 3U;
     return true;
@@ -169,10 +176,13 @@ __attribute__((section(".ramfunc"))) static void stream_fault(void) {
         ((dap_shared.energy_control_ack & DAP_ENERGY_QUIET_FLAG) != 0U)) {
         return;
     }
-    uint32_t const primask = __get_PRIMASK();
-    __disable_irq();
+    uint32_t const basepri = cpu0_mask_all_but_edges();
+    // A start that never gave its timeline gives its edges no times either.
+    if (energy->stream.timeline_pending) {
+        energy->stream.edge_mask = 0U;
+    }
     energy_stream_end(&energy->stream, ENERGY_STREAM_END_FAULT, energy->decoder.sequence);
-    __set_PRIMASK(primask);
+    cpu0_unmask(basepri);
 }
 
 /** Stream messages wait while a mode 5 request is out, so its reply comes before its header. */

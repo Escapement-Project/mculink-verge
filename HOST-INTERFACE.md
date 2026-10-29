@@ -265,8 +265,9 @@ Mode 5 replies as mode 0: `[0x90, DAP_OK, result, effective_rate:u32]`. Modes 6 
 failed or the probe has no room for the stream's first message. The reply always comes before the
 stream's first message.
 
-`dio_mask` picks the DIO pins whose edges the stream reports. This firmware reports none yet, so
-the header says 0 whatever the mask asked.
+`dio_mask` picks the DIO pins whose edges the stream reports, bit `k` for DIO`k`. Zero reports
+none. The header says which pins the stream reports: none when J15 turns the DIO pins off, or when
+SPI has them at the start.
 
 A stream message starts with a byte from `0xa0` to `0xa3`, outside the vendor command range, so a
 host tells it from a reply by its first byte. Messages come between replies, never inside one.
@@ -292,9 +293,9 @@ it. 68 bytes.
 | 15–38 | Low range: four points of code (u16) then current through the sense resistor in nA (u32), lowest first; points past `n` are zero |
 | 39 | High range: point count |
 | 40–63 | High range: four points, as for the low range |
-| 64 | DIO pins reporting edges: 0 |
-| 65 | DIO levels when the stream started: 0 |
-| 66–67 | Edge time resolution in ns, u16: 0 |
+| 64 | DIO pins reporting edges, bit `k` for DIO`k` |
+| 65 | Their levels when the stream started; pins not reporting read 0 |
+| 66–67 | Edge time resolution in ns, u16; 0 when no pin reports |
 
 The points are the ones `0x90` mode 4 reports.
 
@@ -321,6 +322,41 @@ probe sends it once it is full, or once the pairs it has taken in reach 10 ms. I
 batch every 10 ms or so; below about 100 pairs a second a batch takes longer, up to 1.8 s at one
 pair a second, and so does a message.
 
+### DIO edges: `0xa3`
+
+| Offset | Field |
+| --- | --- |
+| 0 | `0xa3` |
+| 1 | Flags: bit 0, edges were lost before this message's first edge; other bits zero |
+| 2–9 | Time of this message's first edge, in ns since the capture started, u64 |
+| 10–11 | Edge count `e`, u16, 1 to 99 |
+| 12 onward | `e` edges of 5 bytes each: time after the first edge in ns (u32), then the levels after the edge, bit `k` for DIO`k` |
+
+Edges come in time order. Each one carries the levels of every reporting pin, so a host knows them
+all from any edge on. Pins not reporting read 0. Edge times share the pairs' clock, so edges and
+pairs lie on one timeline. The probe times an edge when its interrupt takes it, a little after the
+edge itself, to the resolution the header gives.
+
+A pin reports its level whatever drives it: the target as an input, or the host's own drive as an
+output (`0x8E`). While SPI has the pins (`0x91`), the probe reports no edges, and the next edges
+message sets bit 0.
+
+The interrupt takes every edge since it last ran, on every pin. A pulse shorter than that shows as
+two edges at one time. Two pulses on one pin before the interrupt runs show as one. The levels
+always end where the pins are.
+
+The probe starts timing a stream's edges a moment after its header: as the request is answered for
+mode 6, and within a few milliseconds for mode 5. A pin that moves in that moment shows the move
+when timing starts.
+
+All the edges up to a pairs message's last pair arrive before the next pairs message, or before the
+end. A host that holds back the pairs of one message until the next arrives knows the levels across
+them. The probe sends edges with each pairs message, and on their own once they have waited 10 ms.
+
+Each run of the interrupt costs the probe time it needs for USB. Past an average of 100,000 runs a
+second, or 32 runs back to back, the probe stops taking edges for 1 ms and the next edges message
+sets bit 0.
+
 ### End: `0xa2`
 
 | Offset | Field |
@@ -331,9 +367,10 @@ pair a second, and so does a message.
 
 ### When the host falls behind
 
-The probe keeps 16 messages a host has not read yet. When they fill, it drops new pairs messages
-until there is room again, and keeps the last two places for a header and an end. The capture and its
-total carry on regardless. A host sees lost pairs as a jump in sequence numbers.
+The probe keeps 16 messages a host has not read yet. When they fill, it drops new pairs and edges
+messages until there is room again, and keeps the last two places for a header and an end. The
+capture and its total carry on regardless. A host sees lost pairs as a jump in sequence numbers,
+and lost edges as bit 0 on the next edges message.
 
 ### Converting a pair
 

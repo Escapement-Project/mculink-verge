@@ -12,6 +12,7 @@
 
 #include "dap_shared.h"
 #include "dap_core.h"
+#include "dio.h"
 #include "DAP_config.h"
 #include "board_pins.h"
 #include "core_clock.h"
@@ -41,6 +42,7 @@ static uint32_t requested_rate_hz;
 static uint32_t actual_rate_hz;
 /** Set by energy_monitor_start_stream for the start it makes: Verge Aux's stream begins with it. */
 static bool stream_on_start;
+static uint8_t stream_dio_mask;
 static bool stamp_ready;
 /** The conversion timer's count from one toggle of its output to the next: a pair every two. */
 static uint32_t trigger_ticks;
@@ -531,6 +533,8 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
         energy_stream_end(stream, ENERGY_STREAM_END_RESTARTED, energy->decoder.sequence);
         energy_stream_timeline_prepare(stream, 1U);
         if (stream_on_start) {
+            uint8_t levels = 0U;
+            uint8_t const pins = dio_stream_pins(stream_dio_mask, &levels);
             energy_stream_header_t const header = {
                 .rate_hz = actual_rate_hz,
                 .setting = energy->setting,
@@ -539,6 +543,10 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
                 .previous_low = true,
                 .low = &low_range_calibration,
                 .high = &high_range_calibration,
+                .dio_mask = pins,
+                .dio_levels = levels,
+                .dio_stamp = CTIMER4->TC,
+                .edge_resolution_ns = (pins != 0U) ? energy_stream_edge_resolution(CLOCK_GetFroHfFreq()) : 0U,
             };
             (void)energy_stream_begin(stream, &header);
         }
@@ -559,6 +567,8 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
         // first. If that fails too, CPU 0 has it, and its loop ends the stream (src/aux.c).
         if (capture_quiet(true)) {
             stream->timeline_pending = false;
+            // The capture never ran, so its edges have no times.
+            stream->edge_mask = 0U;
             energy_stream_end(stream, ENERGY_STREAM_END_FAULT, energy->decoder.sequence);
         }
         return false;
@@ -744,8 +754,9 @@ energy_monitor_status_t energy_monitor_start(uint32_t rate_hz) {
 
 uint32_t energy_monitor_rate(void) { return actual_rate_hz; }
 
-energy_monitor_status_t energy_monitor_start_stream(uint32_t rate_hz) {
+energy_monitor_status_t energy_monitor_start_stream(uint32_t rate_hz, uint8_t dio_mask) {
     stream_on_start = true;
+    stream_dio_mask = dio_mask;
     energy_monitor_status_t const status = energy_monitor_start(rate_hz);
     stream_on_start = false;
     return status;

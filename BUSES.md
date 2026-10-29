@@ -50,11 +50,12 @@ contends with any other.
 | CPU 1 | 0, 3, 4, 6 | C code, `.ramfunc`, data and stack between transfers | Between timed windows |
 | CPU 1 | 11 | `dap_shared`: unstaged requests and replies, the queues, the LED inputs | Between timed windows |
 | CPU 1 | 10 | ADC0 (target sense, `dap_vendor`, the Pro's energy calibration) and settled energy FIFO results | Own core, never during a window: at boot on the Pro, a host's sense reads, a start that calibrates; FIFO drain at capture pause/stop |
-| CPU 1 | 2 | CPU 0's `energy_integration` in SRAM0: ring reads for latest-pair replies and the unconsumed capture tail; each start's tables, constants, descriptors and position; the running flag; the segment count a capture started at; the energy stream's timeline, and its messages at a start, pause or stop; a hold's record after each read-latency measurement | Host polls while capture runs; tail drain and capture setup around the quiet handshake; the running flag before each read-latency measurement and around each sense conversion. Never during a window |
+| CPU 1 | 2 | CPU 0's `energy_integration` in SRAM0: ring reads for latest-pair replies and the unconsumed capture tail; each start's tables, constants, descriptors and position; the running flag; the segment count a capture started at; the energy stream's timeline, and its messages at a start, pause or stop; a hold's record after each read-latency measurement | Host polls while capture runs; tail drain and capture setup around the quiet handshake; the running flag before each read-latency measurement and around each sense conversion; the DIO edges recorded since the last message, at a pause or stop | Never during a window |
 | CPU 1 | 8 | Ordinary GPIO ports 0 and 1: the Pro's DIO pins and their translators' directions (`dio.c`), port 0 pin 8 for the target regulator (`target_power.c`), and the energy circuit's latch and calibration pins (`energy_monitor.c`) | Vendor 0x8E, 0x8F and 0x90, and the energy calibration at boot; own core, never during a window |
 | CPU 1 | 7 | CTimer 2 for the Pro's energy-capture trigger; SYSCON, IOCON and INPUTMUX for setup | Energy capture start/stop, and IOCON at boot on the Pro; CTimer 2 stopped and started around each read-latency measurement |
 | CPU 1 | 8, 10 | DMA0's busy bit and ADC0's status, polled until the held capture is idle | Before each read-latency measurement, while capture runs |
 | CPU 1 | 7 | SYSCON clocks and IOCON for the DIO pins (`dio_init`) | Boot only, on the Pro |
+| CPU 1 | 7 | PINT's enables for the DIO pins, turned off as SPI takes them (`dio_spi_begin`) | Each `0x91` SPI command, on the Pro; own core, never during a window |
 | CPU 1 | 7, 8 | SWO setup: SYSCON resets and clocks, Flexcomm 3, DMA0 channel 8's regs and its bit in the shared ones, each written one bit per channel | SWO commands only |
 | DMA0 | 8 then 11 | Flexcomm 3 FIFO to the SWO ring | Whenever SWO bytes arrive |
 | DMA0 | 8 then 2 | Flexcomm 0 and 1 FIFOs to the consoles' receive rings | Whenever console bytes arrive |
@@ -72,6 +73,9 @@ contends with any other.
 | CPU 0 | 8 | GPIO0: reads P0_29 and P0_30, pulses P0_17, to re-arm the energy capture's low range | At most once per completed energy-ring segment, after one that stayed on the high range under the low range's limit |
 | CPU 0 | 11 | The consoles' channel entries in DMA0's table | Each send |
 | CPU 0 | 7 | CTimer 3 (the status LED), and on the Pro CTimer 1 (FUNC) | 488 times a second |
+| CPU 0 | 7, 8, 2 | The DIO edge interrupt (`dio_edges.c`): CTimer 4's counter and PINT's latches on port 7, both GPIO ports' PIN registers on port 8, an entry in the edge record in SRAM0 | Each run, while a stream reports edges: at most 100,000 a second on average |
+| CPU 0 | 7 | PINT's enables and latches, CTimer 4's counter for the 10 ms check | CPU 0's loop, while a stream reports edges |
+| CPU 0 | 7 | INPUTMUX's pin interrupt selects, PINT's reset and mode | Boot only, on the Pro |
 | CPU 0 | 8 | Ordinary GPIO port 1 (the Pro's switched LEDs) | 488 times a second, on the Pro |
 | CPU 0 | 7 | SYSCON and IOCON through `vcom_start` (`USART_Init`, `CLOCK_*`) | Console initialization; line-coding changes touch only port 8 |
 | CPU 0 | 7 | SYSCON and IOCON reads for the SWO status request; SYSCON NMISRC for the CPU 1 wake | Those vendor control requests |
@@ -102,8 +106,8 @@ for the whole update before using the DMA position. Pause drains the settled rin
   (SYSCON AHBMATPRIO, set in `start_core1`), so CPU 1 wins every tie there and on every other
   port. The lab measurement below found no cycle lost to CPU 0 at that priority.
 
-No timed window uses port 7, so CPU 0's APB accesses (the LED, the console initialization, the SWO
-status request) cannot move an edge. A timed path that touches an APB peripheral would bring all
+No timed window uses port 7, so CPU 0's APB accesses (the LED, the DIO edge interrupt, the console
+initialization, the SWO status request) cannot move an edge. A timed path that touches an APB peripheral would bring all
 of them back as exposures.
 
 ## Measured costs on port 7
