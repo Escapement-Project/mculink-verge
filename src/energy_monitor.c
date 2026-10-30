@@ -891,6 +891,19 @@ energy_monitor_status_t energy_monitor_calibration(bool high_range, energy_calib
     return current_calibrated ? ENERGY_MONITOR_OK : ENERGY_MONITOR_ADC_ERROR;
 }
 
+uint8_t energy_monitor_mark(uint32_t number, uint8_t const* label, uint8_t length, bool* available) {
+    struct energy_integration* const energy = integration();
+    *available = (dap_shared.energy_available != 0U) && (energy != nullptr);
+    if (!*available) {
+        return ENERGY_STREAM_MARK_NO_CAPTURE;
+    }
+    if (!energy->running || capture_failed()) {
+        return ENERGY_STREAM_MARK_NO_CAPTURE;
+    }
+    // CTimer 4 runs once a capture has started, and only a running capture can have a stream.
+    return energy_stream_mark(&energy->stream, &CTIMER4->TC, number, label, length);
+}
+
 energy_monitor_status_t energy_monitor_accumulated(uint64_t* energy_nj, uint64_t* pairs) {
     if ((energy_nj == nullptr) || (pairs == nullptr)) {
         return ENERGY_MONITOR_BAD_ARGUMENT;

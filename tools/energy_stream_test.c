@@ -531,6 +531,222 @@ static void test_edges_rule(void) {
     assert(all_edges(&stream, times, levels) == 1U && times[0] == ns(1200U) && levels[0] == 0x01U);
 }
 
+/** One marker of a markers message from `at`: its time, number and label; returns what follows. */
+static uint8_t const* mark_of(uint8_t const* at, uint64_t* time, uint32_t* number, char* label) {
+    *time = u64(at);
+    *number = u32(at + 8);
+    uint8_t const length = at[12];
+    memcpy(label, at + 13, length);
+    label[length] = '\0';
+    return at + 13 + length;
+}
+
+/** 0x94 as CPU 1 runs it, with the stamping timer reading `stamp`. */
+static uint8_t mark(struct energy_stream* stream, uint32_t stamp, uint32_t number, char const* label) {
+    volatile uint32_t timer = stamp;
+    uint8_t const result = energy_stream_mark(stream, &timer, number, (uint8_t const*)label, (uint8_t)strlen(label));
+    assert(!stream->mark_busy);
+    return result;
+}
+
+static bool due(struct energy_stream const* stream, uint32_t now) {
+    volatile uint32_t timer = now;
+    return energy_stream_marks_due(stream, &timer);
+}
+
+static char const label32[] = "0123456789abcdef0123456789ABCDEF";
+
+/** Markers go with the next pairs message, timed on the pairs' clock, in the order they ran. */
+static void test_marks(void) {
+    static struct energy_stream stream;
+    start(&stream, 0U, false);
+    assert(mark(&stream, 1000U, 1U, "nobody") == ENERGY_STREAM_MARK_NO_STREAM);
+    assert(stream.marks_written == 0U);
+
+    start(&stream, 0U, true);
+    uint16_t length = 0U;
+    (void)take(&stream, &length);
+    // The stamping timer started with the capture's timer, so a stamp is its count since the start.
+    uint32_t const stamps[] = {TICKS + 3U * PERIOD + 7U, TICKS + 5U * PERIOD, TICKS + 9U * PERIOD + 1U};
+    assert(mark(&stream, stamps[0], 0xDEADBEEFU, "") == ENERGY_STREAM_MARK_SENT);
+    assert(mark(&stream, stamps[1], 2U, "a") == ENERGY_STREAM_MARK_SENT);
+    assert(mark(&stream, stamps[2], 3U, label32) == ENERGY_STREAM_MARK_SENT);
+    // Nothing leaves before a pairs message closes or the owner finds them due.
+    assert(take(&stream, &length) == NULL);
+    assert(!due(&stream, stamps[0] + CLOCK_HZ / 100U - 1U));
+    assert(due(&stream, stamps[0] + CLOCK_HZ / 100U));
+    for (uint32_t s = 1U; s <= 10U; s++) {
+        energy_stream_pair(&stream, s, 1U, 1U, true);
+    }
+    energy_stream_batch_end(&stream);
+    uint8_t const* m = take(&stream, &length);
+    assert(m != NULL && m[0] == 0xA0U && u16(m + 14) == 10U);
+    m = take(&stream, &length);
+    assert(m != NULL && m[0] == 0xA4U && m[1] == 0U && m[2] == 3U);
+    assert(length == 3U + 3U * 13U + 0U + 1U + 32U);
+    uint64_t time = 0U;
+    uint32_t number = 0U;
+    char label[33];
+    uint8_t const* at = mark_of(m + 3, &time, &number, label);
+    assert(time == ns(stamps[0]) && number == 0xDEADBEEFU && label[0] == '\0');
+    at = mark_of(at, &time, &number, label);
+    assert(time == ns(stamps[1]) && number == 2U && strcmp(label, "a") == 0);
+    at = mark_of(at, &time, &number, label);
+    assert(time == ns(stamps[2]) && number == 3U && strcmp(label, label32) == 0);
+    assert(at == m + length);
+    assert(take(&stream, &length) == NULL && !due(&stream, stamps[2] + CLOCK_HZ));
+
+    // The owner sends due markers on their own, without a pairs message.
+    assert(mark(&stream, TICKS + 11U * PERIOD, 4U, "alone") == ENERGY_STREAM_MARK_SENT);
+    energy_stream_close(&stream);
+    m = take(&stream, &length);
+    assert(m != NULL && m[0] == 0xA4U && m[2] == 1U);
+    (void)mark_of(m + 3, &time, &number, label);
+    assert(time == ns(TICKS + 11U * PERIOD) && number == 4U && strcmp(label, "alone") == 0);
+
+    // At the end, markers leave before the end message, and none is taken after it.
+    assert(mark(&stream, TICKS + 12U * PERIOD, 5U, "last") == ENERGY_STREAM_MARK_SENT);
+    energy_stream_end(&stream, 1U, 10U);
+    m = take(&stream, &length);
+    assert(m != NULL && m[0] == 0xA4U && m[2] == 1U);
+    m = take(&stream, &length);
+    assert(m != NULL && m[0] == 0xA2U);
+    assert(mark(&stream, TICKS + 13U * PERIOD, 6U, "late") == ENERGY_STREAM_MARK_NO_STREAM);
+    assert(stream.marks_written == stream.marks_read);
+}
+
+/** Sixteen wait at most: the next is refused and flagged on the next message. Eleven fill one. */
+static void test_marks_full(void) {
+    static struct energy_stream stream;
+    start(&stream, 0U, true);
+    uint16_t length = 0U;
+    (void)take(&stream, &length);
+    for (uint32_t i = 0U; i < ENERGY_STREAM_MARKS; i++) {
+        assert(mark(&stream, TICKS + i, i, label32) == ENERGY_STREAM_MARK_SENT);
+    }
+    assert(mark(&stream, TICKS + 100U, 99U, "dropped") == ENERGY_STREAM_MARK_FULL);
+    energy_stream_close(&stream);
+    uint32_t seen = 0U;
+    for (uint32_t message = 0U; message < 2U; message++) {
+        uint8_t const* m = take(&stream, &length);
+        uint8_t const count = message == 0U ? ENERGY_STREAM_MARKS_MAX : ENERGY_STREAM_MARKS - ENERGY_STREAM_MARKS_MAX;
+        assert(m != NULL && m[0] == 0xA4U && m[1] == 0U && m[2] == count);
+        assert(length == 3U + count * (13U + 32U) && length < ENERGY_STREAM_MESSAGE_MAX);
+        uint8_t const* at = m + 3;
+        for (uint32_t i = 0U; i < count; i++, seen++) {
+            uint64_t time = 0U;
+            uint32_t number = 0U;
+            char label[33];
+            at = mark_of(at, &time, &number, label);
+            assert(number == seen && time == ns(TICKS + seen));
+        }
+    }
+    assert(take(&stream, &length) == NULL);
+    assert(mark(&stream, TICKS + 200U, 100U, "after") == ENERGY_STREAM_MARK_SENT);
+    energy_stream_close(&stream);
+    uint8_t const* m = take(&stream, &length);
+    assert(m != NULL && m[0] == 0xA4U && m[1] == ENERGY_STREAM_MARKS_LOST && m[2] == 1U);
+    energy_stream_close(&stream);
+    assert(take(&stream, &length) == NULL);
+}
+
+/** Due markers sent while a pairs message is being built: it leaves first, whole, as CPU 0's loop
+ *  sends them, and the next one starts afresh. */
+static void test_marks_open_pairs(void) {
+    static struct energy_stream stream;
+    start(&stream, 0U, true);
+    uint16_t length = 0U;
+    (void)take(&stream, &length);
+    for (uint32_t s = 1U; s <= 7U; s++) {
+        energy_stream_pair(&stream, s, (uint16_t)(100U + s), 1U, true);
+    }
+    energy_stream_batch_end(&stream);
+    assert(take(&stream, &length) == NULL && stream.open_pairs == 7U);
+    assert(mark(&stream, TICKS + 7U * PERIOD, 1U, "due") == ENERGY_STREAM_MARK_SENT);
+    assert(due(&stream, TICKS + 7U * PERIOD + CLOCK_HZ / 100U));
+    energy_stream_close(&stream);
+    uint8_t const* m = take(&stream, &length);
+    assert(m != NULL && m[0] == 0xA0U && u32(m + 2) == 1U && u16(m + 14) == 7U && length == 16U + 7U * 5U);
+    for (uint32_t i = 0U; i < 7U; i++) {
+        assert(u16(m + 16U + i * 5U) == 101U + i);
+    }
+    m = take(&stream, &length);
+    assert(m != NULL && m[0] == 0xA4U && m[2] == 1U);
+    for (uint32_t s = 8U; s <= 14U; s++) {
+        energy_stream_pair(&stream, s, (uint16_t)(100U + s), 1U, true);
+    }
+    energy_stream_close(&stream);
+    m = take(&stream, &length);
+    assert(m != NULL && m[0] == 0xA0U && u32(m + 2) == 8U && u16(m + 14) == 7U && u16(m + 16) == 108U);
+}
+
+/** A marker refused in one stream says nothing about the next stream's first. */
+static void test_marks_lost_per_stream(void) {
+    static struct energy_stream stream;
+    start(&stream, 0U, true);
+    uint16_t length = 0U;
+    (void)take(&stream, &length);
+    for (uint32_t i = 0U; i <= ENERGY_STREAM_MARKS; i++) {
+        (void)mark(&stream, TICKS + i, i, "x");
+    }
+    energy_stream_end(&stream, 1U, 0U);
+    while (take(&stream, &length) != NULL) {
+    }
+    energy_stream_header_t const header = {.rate_hz = 1000U, .low = &low, .high = &high};
+    assert(energy_stream_begin(&stream, &header));
+    (void)take(&stream, &length);
+    assert(mark(&stream, TICKS + 100U, 100U, "fresh") == ENERGY_STREAM_MARK_SENT);
+    energy_stream_close(&stream);
+    uint8_t const* const m = take(&stream, &length);
+    assert(m != NULL && m[0] == 0xA4U && m[1] == 0U && m[2] == 1U);
+}
+
+/** A host that falls behind loses markers messages too, and the next one that leaves says so. */
+static void test_marks_behind(void) {
+    static struct energy_stream stream;
+    start(&stream, 0U, true);
+    uint16_t length = 0U;
+    (void)take(&stream, &length);
+    stream.period = 960U;
+    for (uint32_t s = 1U; s <= 99U * 14U; s++) {
+        energy_stream_pair(&stream, s, 1U, 1U, true);
+    }
+    assert(energy_stream_free(&stream) == ENERGY_STREAM_CONTROL_SLOTS);
+    assert(mark(&stream, TICKS + 5U, 1U, "lost") == ENERGY_STREAM_MARK_SENT);
+    energy_stream_close(&stream);
+    assert(energy_stream_free(&stream) == ENERGY_STREAM_CONTROL_SLOTS);
+    while (take(&stream, &length) != NULL) {
+    }
+    assert(mark(&stream, TICKS + 6U, 2U, "kept") == ENERGY_STREAM_MARK_SENT);
+    energy_stream_close(&stream);
+    uint8_t const* m = take(&stream, &length);
+    assert(m != NULL && m[0] == 0xA4U && m[1] == ENERGY_STREAM_MARKS_LOST && m[2] == 1U && u32(m + 3 + 8) == 2U);
+}
+
+/** A marker stamped before the first pair is at time 0; one recorded while a start has no timeline
+ *  yet is not sent if the stream ends first. */
+static void test_marks_early(void) {
+    static struct energy_stream stream;
+    start(&stream, 1000U, true);
+    uint16_t length = 0U;
+    (void)take(&stream, &length);
+    assert(mark(&stream, 500U, 1U, "early") == ENERGY_STREAM_MARK_SENT);
+    energy_stream_close(&stream);
+    uint8_t const* m = take(&stream, &length);
+    assert(m != NULL && m[0] == 0xA4U && u64(m + 3) == 0U);
+
+    memset(&stream, 0, sizeof(stream));
+    energy_stream_timeline_prepare(&stream, 1U);
+    energy_stream_header_t const header = {.rate_hz = 1000U, .low = &low, .high = &high};
+    assert(energy_stream_begin(&stream, &header));
+    (void)take(&stream, &length);
+    assert(mark(&stream, 123U, 1U, "pending") == ENERGY_STREAM_MARK_SENT);
+    energy_stream_end(&stream, 4U, 0U);
+    m = take(&stream, &length);
+    assert(m != NULL && m[0] == 0xA2U);
+    assert(take(&stream, &length) == NULL);
+}
+
 static void test_ns(void) {
     uint64_t const counts[] = {0U, 1U, CLOCK_HZ - 1U, CLOCK_HZ, UINT64_C(1) << 40U, UINT64_C(0xFFFFFFFFFFFF)};
     for (uint32_t i = 0U; i < sizeof(counts) / sizeof(counts[0]); i++) {
@@ -551,6 +767,12 @@ int main(void) {
     test_edges_messages();
     test_edges_lost();
     test_edges_rule();
+    test_marks();
+    test_marks_full();
+    test_marks_open_pairs();
+    test_marks_lost_per_stream();
+    test_marks_behind();
+    test_marks_early();
     test_ns();
     return 0;
 }

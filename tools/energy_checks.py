@@ -834,9 +834,10 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     probe.uc.mem_write(probe.sym["high_range_calibration"], table)
     c.check(got == 2**31 - 1, f"latest's current past i32 read {got} nA")
     # Calibrated fields on bit 5, in nA; bit 1 meant uA, and a host that knows only it reads none.
+    # Markers, bit 7, come with the capture.
     info = probe.command(bytes([0x82]))
     extended = int.from_bytes(info[14 + info[8]:18 + info[8]], "little")
-    c.check(extended & 0b100111 == 0b100101, f"energy's extended capabilities {extended:#x}")
+    c.check(extended & 0b10100111 == 0b10100101, f"energy's extended capabilities {extended:#x}")
     total(codes)  # Reading latest must not integrate the same tail twice.
     pause()
     codes.append(49152)

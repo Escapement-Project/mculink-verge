@@ -3,10 +3,11 @@
  *  so tools/energy_stream_test.c runs it on the host.
  *
  * The core that owns the capture state under the quiet handshake (src/energy_integration.h) writes
- * all of it, with three exceptions. CPU 1 records holds (`holds_written`) and a start's first
+ * all of it, with four exceptions. CPU 1 records holds (`holds_written`) and a start's first
  * trigger (`timeline_pending`) while CPU 0 may own the rest. CPU 0's pin interrupt records edges
- * (`edge_entries_written`, src/dio_edges.c) whichever core owns it. CPU 0's loop reads published
- * messages and moves `sent`.
+ * (`edge_entries_written`, src/dio_edges.c) whichever core owns it. CPU 1 records markers
+ * (`marks_written`, 0x94) whichever core owns it. CPU 0's loop reads published messages and moves
+ * `sent`.
  *
  * Times are counts of the clock the conversion timer runs from. The timer that stamps them is 32
  * bits and wraps in under a minute at that clock, so every comparison here is between nearby
@@ -44,6 +45,15 @@
 /** The most counts one edges message spans, so that its offsets fit 32 bits of nanoseconds and
  *  converting them fits 64 bits. */
 #define ENERGY_STREAM_EDGE_SPAN (UINT32_C(1) << 26U)
+/** Markers waiting to be sent, and the most one markers message holds. */
+#define ENERGY_STREAM_MARKS 16U
+#define ENERGY_STREAM_MARKS_MAX 11U
+#define ENERGY_STREAM_MARKS_FIXED 3U
+/** A marker's time, number and label length, before its label. */
+#define ENERGY_STREAM_MARK_BYTES 13U
+#define ENERGY_STREAM_LABEL_MAX 32U
+/** How long the polls at a stream's end wait for CPU 1 to finish a marker it began. */
+#define ENERGY_STREAM_MARK_POLLS 100000U
 
 static_assert((ENERGY_STREAM_SLOTS & (ENERGY_STREAM_SLOTS - 1U)) == 0U, "slots index by a mask");
 static_assert((ENERGY_STREAM_EDGE_ENTRIES & (ENERGY_STREAM_EDGE_ENTRIES - 1U)) == 0U, "entries index by a mask");
@@ -51,6 +61,11 @@ static_assert(ENERGY_STREAM_PAIRS_FIXED + ENERGY_STREAM_PAIRS_MAX * ENERGY_STREA
               "a pairs message fits a packet with no zero-length packet after it");
 static_assert(ENERGY_STREAM_EDGES_FIXED + ENERGY_STREAM_EDGES_MAX * ENERGY_STREAM_EDGE_BYTES < ENERGY_STREAM_MESSAGE_MAX,
               "an edges message fits a packet with no zero-length packet after it");
+static_assert((ENERGY_STREAM_MARKS & (ENERGY_STREAM_MARKS - 1U)) == 0U, "marks index by a mask");
+static_assert(ENERGY_STREAM_MARKS_FIXED +
+                      ENERGY_STREAM_MARKS_MAX * (ENERGY_STREAM_MARK_BYTES + ENERGY_STREAM_LABEL_MAX) <
+                  ENERGY_STREAM_MESSAGE_MAX,
+              "a markers message fits a packet with no zero-length packet after it");
 
 /** CPU 0 runs these from SRAM, in its DMA interrupt and its loop; a copy a compiler kept out of
  *  line would land in flash. */
@@ -61,7 +76,19 @@ enum : uint8_t {
     ENERGY_STREAM_HEADER = 0xA1U,
     ENERGY_STREAM_END = 0xA2U,
     ENERGY_STREAM_EDGES = 0xA3U,
+    ENERGY_STREAM_MARKS_MESSAGE = 0xA4U,
 };
+
+/** What 0x94 answers, as energy_stream_mark finds it, and 1 for no capture, which its caller finds. */
+enum : uint8_t {
+    ENERGY_STREAM_MARK_SENT = 0U,
+    ENERGY_STREAM_MARK_NO_CAPTURE = 1U,
+    ENERGY_STREAM_MARK_NO_STREAM = 2U,
+    ENERGY_STREAM_MARK_FULL = 3U,
+};
+
+/** A markers message's flag: markers were lost before its first one. */
+#define ENERGY_STREAM_MARKS_LOST 1U
 
 /** The end message's reason. */
 enum : uint8_t {
@@ -96,6 +123,16 @@ typedef struct {
     uint8_t levels;
     uint8_t flags;
 } energy_stream_edge_entry_t;
+
+/** A marker as CPU 1 records it: the stamping timer as 0x94 ran, what the host sent, and whether
+ *  CPU 1 refused one for a full record since the last it recorded in this stream. */
+typedef struct {
+    uint32_t stamp;
+    uint32_t number;
+    uint8_t length;
+    bool lost;
+    uint8_t label[ENERGY_STREAM_LABEL_MAX];
+} energy_stream_mark_t;
 
 /** A read-latency hold, as stamping-timer values of the first trigger due after the conversion
  *  timer stopped: when it was due, give or take the few counts the stop's stamp lags, and when the
@@ -147,6 +184,23 @@ struct energy_stream {
     uint8_t edge_credit_fall;
     /** ENERGY_STREAM_EDGES_* for the next edges message. */
     uint8_t edge_flags;
+
+    /** Markers. CPU 1 records them as it runs 0x94, whichever core owns the rest, and the owner
+     *  sends them as markers messages. CPU 1 records only while `marking`, from a stream's header to
+     *  its end, and holds `mark_busy` from before it looks until it has recorded, so the end waits
+     *  for a marker CPU 1 has already said is in the stream. */
+    volatile bool marking;
+    volatile bool mark_busy;
+    volatile uint32_t marks_written;
+    volatile uint32_t marks_read;
+    /** Counted by each start of a stream. CPU 1's own: that it refused a marker for a full record,
+     *  and in which stream, so only the next marker of that stream says so. */
+    volatile uint32_t mark_streams;
+    bool mark_dropped;
+    uint32_t mark_dropped_stream;
+    /** ENERGY_STREAM_MARKS_LOST for the next markers message. */
+    uint8_t mark_flags;
+    energy_stream_mark_t marks[ENERGY_STREAM_MARKS];
 
     bool active;
     /** ENERGY_STREAM_FLAG_* since the last pairs message: the next one starts afresh and says so. */
@@ -210,6 +264,11 @@ ENERGY_STREAM_INLINE uint32_t energy_stream_divide(uint64_t n, uint32_t d, uint3
     uint64_t r = n >> 32U;
     uint32_t low = (uint32_t)n;
     uint32_t q = 0U;
+    // Unrolled, clang's copy runs to hundreds of bytes in each place it lands in CPU 0's SRAM. It
+    // runs once a message, so the loop costs nothing that matters.
+#ifdef __clang__
+#pragma clang loop unroll(disable)
+#endif
     for (uint32_t i = 0U; i < 32U; i++) {
         r = (r << 1U) | (low >> 31U);
         low <<= 1U;
@@ -269,30 +328,60 @@ ENERGY_STREAM_INLINE uint16_t energy_stream_edge_resolution(uint32_t clock_hz) {
     return (uint16_t)((1000000000U + clock_hz - 1U) / clock_hz);
 }
 
-/** Sends what the pin interrupt has recorded, after the pairs message just closed, so every edge
- *  up to a pairs message's last pair leaves before the next pairs message. A stream's edges start
- *  at the run CPU 0's loop asks for once it begins, which records the levels with the detectors
- *  cleared after the header; a pin that moved before then shows the move at that run.
- *
- * A run reads each pin's rise and fall detectors, clears what it read, then reads the levels. An
- * edge between the clear and the level read is in the levels but latched for the next run, so it
- * is reported now and its latch, when it comes, is not counted again (`edge_credit_*`). Otherwise
- * each latch is an edge, both together a pulse there and back, and the levels decide the rest. A
- * detector holds one edge of each kind, so pulses closer together than the interrupt takes merge,
- * but the levels always end where the pins are. */
-void energy_stream_edges_flush(struct energy_stream* stream);
+/** Sends the pairs message being built, then the edges and markers recorded since the last. It is
+ *  the only way to send markers: the pairs message is built in place, in the slot any other message
+ *  would take. Out of line, as one copy in CPU 0's SRAM serves every caller. */
+void energy_stream_close(struct energy_stream* stream);
 
-/** Sends the pairs message being built, then the edges recorded since the last. */
-ENERGY_STREAM_INLINE void energy_stream_close(struct energy_stream* stream) {
-    if ((stream->open_pairs != 0U) && !stream->open_dropped) {
-        uint8_t* const message = energy_stream_slot(stream);
-        (void)energy_stream_u16(message + 14, stream->open_pairs);
-        energy_stream_publish(stream,
-                              (uint16_t)(ENERGY_STREAM_PAIRS_FIXED + stream->open_pairs * ENERGY_STREAM_PAIR_BYTES));
+/** As a stream ends: CPU 1 records no more markers, and any it has begun is recorded. */
+void energy_stream_unmark(struct energy_stream* stream);
+
+/** CPU 1, running 0x94 with a capture running: records a marker for the stream, stamped by `timer`
+ *  once it is known to be the stream's, between its header and its end. Says whether it did
+ *  (ENERGY_STREAM_MARK_*). */
+static inline uint8_t energy_stream_mark(struct energy_stream* stream, volatile uint32_t const* timer,
+                                         uint32_t number, uint8_t const* label, uint8_t length) {
+    stream->mark_busy = true;
+    energy_stream_barrier();
+    uint8_t result = ENERGY_STREAM_MARK_NO_STREAM;
+    if (stream->marking) {
+        uint32_t const stamp = *timer;
+        energy_stream_barrier();
+        uint32_t const streams = stream->mark_streams;
+        uint32_t const at = stream->marks_written;
+        if ((at - stream->marks_read) >= ENERGY_STREAM_MARKS) {
+            stream->mark_dropped = true;
+            stream->mark_dropped_stream = streams;
+            result = ENERGY_STREAM_MARK_FULL;
+        } else {
+            energy_stream_mark_t* const mark = &stream->marks[at & (ENERGY_STREAM_MARKS - 1U)];
+            mark->stamp = stamp;
+            mark->number = number;
+            mark->length = length;
+            mark->lost = stream->mark_dropped && (stream->mark_dropped_stream == streams);
+            stream->mark_dropped = false;
+            for (uint32_t i = 0U; i < length; i++) {
+                mark->label[i] = label[i];
+            }
+            energy_stream_barrier();
+            stream->marks_written = at + 1U;
+            result = ENERGY_STREAM_MARK_SENT;
+        }
     }
-    stream->open_pairs = 0U;
-    stream->open_dropped = false;
-    energy_stream_edges_flush(stream);
+    energy_stream_barrier();
+    stream->mark_busy = false;
+    return result;
+}
+
+/** Whether markers have waited 10 ms by the stamping `timer`, which it reads only when some wait:
+ *  then a capture has clocked it. The owner sends them then, if no pairs message has taken them. */
+ENERGY_STREAM_INLINE bool energy_stream_marks_due(struct energy_stream const* stream, volatile uint32_t const* timer) {
+    uint32_t const read = stream->marks_read;
+    if (!stream->active || (stream->marks_written == read)) {
+        return false;
+    }
+    energy_stream_barrier();
+    return (*timer - stream->marks[read & (ENERGY_STREAM_MARKS - 1U)].stamp) >= (stream->clock_hz / 100U);
 }
 
 /** The first message of a stream. Starts the stream only if the ring had room for it. */
@@ -333,9 +422,13 @@ ENERGY_STREAM_INLINE bool energy_stream_begin(struct energy_stream* stream, ener
     stream->edge_levels = header->dio_levels & header->dio_mask;
     stream->edge_flags = 0U;
     stream->edge_mask = header->dio_mask;
+    stream->marks_read = stream->marks_written;
+    stream->mark_flags = 0U;
+    stream->mark_streams++;
     stream->active = true;
     energy_stream_barrier();
     stream->edge_begins++;
+    stream->marking = true;
     return true;
 }
 
@@ -344,6 +437,7 @@ ENERGY_STREAM_INLINE void energy_stream_end(struct energy_stream* stream, uint8_
     if (!stream->active) {
         return;
     }
+    energy_stream_unmark(stream);
     energy_stream_close(stream);
     stream->active = false;
     stream->edge_mask = 0U;

@@ -70,12 +70,18 @@ int main(void) {
         prefixes((uint8_t[]){0x90, 0, 0xe8, 3, 0, 0}, 6U, capacity);
         prefixes((uint8_t[]){0x91, 0, 0x80, 0x96, 0x98, 0, 1, 0, 0x80}, 9U, capacity);
         prefixes((uint8_t[]){0x92, 0, 0x80, 0x96, 0x98, 0, 1, 0, 1, 0, 0x80}, 11U, capacity);
+        prefixes((uint8_t[]){0x94, 1, 0, 0, 0, 0}, 6U, capacity);
+        prefixes((uint8_t[]){0x94, 1, 0, 0, 0, 2, 'h', 'i'}, 8U, capacity);
+        assert(check((uint8_t[]){0x94, 1, 0, 0, 0, 2, 'h', 'i'}, 8U, capacity, true).produced == 3U);
         dap_packet_plan_t p = check((uint8_t[]){0x06, 0, 0xff, 0xff, 2}, 5U, capacity, true);
         assert(p.produced == capacity && p.limit == (capacity - 4U) / 4U);
         p = check((uint8_t[]){0x1c, 0xff, 0xff}, 3U, capacity, true);
         assert(p.produced == capacity && p.limit == capacity - 4U);
     }
     check((uint8_t[]){0x1d, 8, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80}, 10U, 64U, false);
+    // A label the request does not hold, and a reply with no room.
+    check((uint8_t[]){0x94, 1, 0, 0, 0, 3, 'h', 'i'}, 8U, 64U, false);
+    check((uint8_t[]){0x94, 1, 0, 0, 0, 0}, 6U, 2U, false);
     check((uint8_t[]){0x05, 0, 1, 0x82}, 4U, 10U, false);
     check((uint8_t[]){0x05, 0, 1, 0x82}, 4U, 11U, true);
     for (uint32_t capacity = 0U; capacity < 4U; capacity++) {

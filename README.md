@@ -235,8 +235,9 @@ command is available only on MCU-Link Pro.
 
 The Pro has a second vendor interface, Verge Aux, which carries the DIO, supply and energy
 commands. A host can use the DIO pins, switch the supply and record energy through it while a
-debugger holds CMSIS-DAP. It is the Pro's last interface. [The host interface](HOST-INTERFACE.md)
-describes it.
+debugger holds CMSIS-DAP. A debugger can mark moments in that recording with vendor command
+0x94, which the probe stamps on the recording's clock as it runs. It is the Pro's last interface.
+[The host interface](HOST-INTERFACE.md) describes it.
 
 ## Releases
 

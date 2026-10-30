@@ -72,6 +72,10 @@ uint32_t energy_monitor_rate(void);
 /** Read accumulated calibrated energy since the most recent successful start. */
 [[nodiscard]] energy_monitor_status_t energy_monitor_accumulated(uint64_t* energy_nj, uint64_t* pairs);
 
+/** Records a marker in Verge Aux's energy stream, stamped now (HOST-INTERFACE.md, "Markers: 0x94"):
+ *  ENERGY_STREAM_MARK_*, or false through `available` without energy capture. */
+[[nodiscard]] uint8_t energy_monitor_mark(uint32_t number, uint8_t const* label, uint8_t length, bool* available);
+
 /** Pause and resume capture around an on-demand ADC conversion. */
 [[nodiscard]] bool energy_monitor_pause(void);
 [[nodiscard]] bool energy_monitor_resume(void);

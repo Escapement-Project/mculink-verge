@@ -1,5 +1,7 @@
 #include "energy_stream.h"
 
+#include <string.h>
+
 /** The one copy of what every close calls: on CPU 0 it runs in the DMA interrupt and the loop, so
  *  from SRAM. */
 #ifdef CPU_LPC55S69JBD64_cm33_core0
@@ -7,6 +9,13 @@
 #else
 #define ENERGY_STREAM_RAMFUNC
 #endif
+
+/** energy_stream_ns once for both flushes: clang unrolls its divisions to over a kilobyte, and
+ *  CPU 0's SRAM has no room for a copy in each. */
+ENERGY_STREAM_RAMFUNC __attribute__((noinline)) static uint64_t energy_stream_flush_ns(uint64_t counts,
+                                                                                      uint32_t clock_hz) {
+    return energy_stream_ns(counts, clock_hz);
+}
 
 /** An edges message as a flush builds it, in the slot at `written`. */
 typedef struct {
@@ -41,7 +50,7 @@ ENERGY_STREAM_INLINE void energy_stream_edge(struct energy_stream* stream, energ
             uint8_t* out = energy_stream_slot(stream);
             *out++ = ENERGY_STREAM_EDGES;
             *out++ = stream->edge_flags;
-            (void)energy_stream_u64(out, energy_stream_ns(counts, stream->clock_hz));
+            (void)energy_stream_u64(out, energy_stream_flush_ns(counts, stream->clock_hz));
             stream->edge_flags = 0U;
         }
     }
@@ -81,7 +90,18 @@ ENERGY_STREAM_INLINE uint32_t energy_stream_pin_edges(struct energy_stream* stre
     return edges;
 }
 
-ENERGY_STREAM_RAMFUNC void energy_stream_edges_flush(struct energy_stream* stream) {
+/** Sends what the pin interrupt has recorded, after the pairs message just closed, so every edge
+ *  up to a pairs message's last pair leaves before the next pairs message. A stream's edges start
+ *  at the run CPU 0's loop asks for once it begins, which records the levels with the detectors
+ *  cleared after the header; a pin that moved before then shows the move at that run.
+ *
+ * A run reads each pin's rise and fall detectors, clears what it read, then reads the levels. An
+ * edge between the clear and the level read is in the levels but latched for the next run, so it
+ * is reported now and its latch, when it comes, is not counted again (`edge_credit_*`). Otherwise
+ * each latch is an edge, both together a pulse there and back, and the levels decide the rest. A
+ * detector holds one edge of each kind, so pulses closer together than the interrupt takes merge,
+ * but the levels always end where the pins are. */
+ENERGY_STREAM_RAMFUNC static void energy_stream_edges_flush(struct energy_stream* stream) {
     uint32_t const written = stream->edge_entries_written;
     energy_stream_barrier();
     uint8_t const mask = stream->edge_mask;
@@ -123,4 +143,90 @@ ENERGY_STREAM_RAMFUNC void energy_stream_edges_flush(struct energy_stream* strea
     }
     energy_stream_barrier();
     stream->edge_entries_read = written;
+}
+
+/** A markers message as a flush builds it, in the slot at `written`. */
+typedef struct {
+    uint16_t length;
+    uint8_t marks;
+    bool dropped;
+} energy_stream_marks_t;
+
+ENERGY_STREAM_INLINE void energy_stream_marks_send(struct energy_stream* stream, energy_stream_marks_t* message) {
+    if (message->marks != 0U) {
+        if (message->dropped) {
+            stream->mark_flags |= ENERGY_STREAM_MARKS_LOST;
+        } else {
+            energy_stream_slot(stream)[2] = message->marks;
+            energy_stream_publish(stream, message->length);
+        }
+    }
+    message->marks = 0U;
+}
+
+/** Sends the markers CPU 1 has recorded, in as few messages as they fit. A marker stamped before a
+ *  start's timeline has no time to give and is dropped, as the stream ends without one. */
+ENERGY_STREAM_RAMFUNC static void energy_stream_marks_flush(struct energy_stream* stream) {
+    uint32_t const written = stream->marks_written;
+    energy_stream_barrier();
+    if (stream->active && !stream->timeline_pending) {
+        energy_stream_marks_t message = {0};
+        for (uint32_t read = stream->marks_read; read != written; read++) {
+            energy_stream_mark_t const* const mark = &stream->marks[read & (ENERGY_STREAM_MARKS - 1U)];
+            uint8_t const length = (mark->length < ENERGY_STREAM_LABEL_MAX) ? mark->length : ENERGY_STREAM_LABEL_MAX;
+            // A marker CPU 1 refused came just before this one: a message of its own says so.
+            if (mark->lost) {
+                energy_stream_marks_send(stream, &message);
+                stream->mark_flags |= ENERGY_STREAM_MARKS_LOST;
+            }
+            if (message.marks == 0U) {
+                message.dropped = energy_stream_free(stream) <= ENERGY_STREAM_CONTROL_SLOTS;
+                message.length = ENERGY_STREAM_MARKS_FIXED;
+                if (!message.dropped) {
+                    uint8_t* const out = energy_stream_slot(stream);
+                    out[0] = ENERGY_STREAM_MARKS_MESSAGE;
+                    out[1] = stream->mark_flags;
+                    stream->mark_flags = 0U;
+                }
+            }
+            if (!message.dropped) {
+                uint8_t* out = energy_stream_slot(stream) + message.length;
+                uint64_t const counts = energy_stream_counts_at(stream, mark->stamp);
+                out = energy_stream_u64(out, energy_stream_flush_ns(counts, stream->clock_hz));
+                out = energy_stream_u32(out, mark->number);
+                *out++ = length;
+                memcpy(out, mark->label, length);
+            }
+            message.length = (uint16_t)(message.length + ENERGY_STREAM_MARK_BYTES + length);
+            message.marks++;
+            if (message.marks == ENERGY_STREAM_MARKS_MAX) {
+                energy_stream_marks_send(stream, &message);
+            }
+        }
+        energy_stream_marks_send(stream, &message);
+    }
+    energy_stream_barrier();
+    stream->marks_read = written;
+}
+
+ENERGY_STREAM_RAMFUNC __attribute__((noinline)) void energy_stream_close(struct energy_stream* stream) {
+    if ((stream->open_pairs != 0U) && !stream->open_dropped) {
+        uint8_t* const message = energy_stream_slot(stream);
+        (void)energy_stream_u16(message + 14, stream->open_pairs);
+        energy_stream_publish(stream,
+                              (uint16_t)(ENERGY_STREAM_PAIRS_FIXED + stream->open_pairs * ENERGY_STREAM_PAIR_BYTES));
+    }
+    stream->open_pairs = 0U;
+    stream->open_dropped = false;
+    energy_stream_edges_flush(stream);
+    energy_stream_marks_flush(stream);
+}
+
+ENERGY_STREAM_RAMFUNC __attribute__((noinline)) void energy_stream_unmark(struct energy_stream* stream) {
+    // CPU 1 either sees `marking` clear, or has its marker recorded before the caller's flush.
+    stream->marking = false;
+    energy_stream_barrier();
+    for (uint32_t polls = 0U; stream->mark_busy && (polls < ENERGY_STREAM_MARK_POLLS); polls++) {
+    }
+    energy_stream_barrier();
 }

@@ -281,6 +281,13 @@ static inline bool dap_packet_plan(const uint8_t* p, uint32_t length, uint32_t c
         in = PRO_I2C_REQUEST_FIXED + dap_packet_u16(p + 6U);
         out = PRO_BUS_RESPONSE_FIXED + dap_packet_u16(p + 8U);
         break;
+    case 0x94:
+        if (length < 6U) {
+            return false;
+        }
+        in = 6U + p[5];
+        out = 3U;
+        break;
 #ifdef DAP_TIMING_DIAGNOSTICS
     case 0x93:
         in = 2U;

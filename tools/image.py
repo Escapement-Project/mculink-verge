@@ -1295,6 +1295,7 @@ DIO_DIR_OF = (4, 4, 4, 5)
 CAP_DIO = 1 << 6
 CAP_TARGET_POWER = 1 << 7
 EXT_CAP_DIO_AUX = 1 << 6
+EXT_CAP_MARKS = 1 << 7
 # The ordinary GPIO's port-wide registers, which the hook below sees: SET, CLR, NOT, DIRSET, DIRCLR,
 # DIRNOT, one word per port each.
 GPIO_PORT_REGS = {0x2200: "SET", 0x2280: "CLR", 0x2300: "NOT", 0x2380: "DIRSET", 0x2400: "DIRCLR", 0x2480: "DIRNOT"}
@@ -1415,6 +1416,7 @@ def check_dio(c: Checker, elf: str, request_slots: int) -> None:
                     f"{name} board: the DIO pins were set up: IOCON {[hex(v) for v in iocon]}, stores {pins.stores}")
             c.check(not flags & CAP_DIO, f"{name} board: vendor 0x82 claims the DIO pins")
             c.check(not extended & EXT_CAP_DIO_AUX, f"{name} board: vendor 0x82 claims the DIO pins on Verge Aux")
+            c.check(not extended & EXT_CAP_MARKS, f"{name} board: vendor 0x82 claims markers without energy capture")
             ok, state = dio(0x0F, 0x0F, 0x0F)
             c.check(not ok and state == [0, 0, 0, 0] and not pins.stores,
                     f"{name} board: vendor 0x8E answered {ok}, {state}, stores {pins.stores}")

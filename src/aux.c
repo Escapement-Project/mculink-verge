@@ -63,9 +63,12 @@ __attribute__((section(".ramfunc"))) void aux_received(const uint8_t* buffer, ui
     }
     uint32_t const kept = length < AUX_REQUEST_MAX ? length : AUX_REQUEST_MAX;
     // Zero past what arrived: CPU 1 checks the length, but a handler can still read a byte beyond it.
-    uint32_t words[AUX_REQUEST_MAX / 4U] = {0};
-    memcpy(words, buffer, kept);
-    memcpy(slot->request, words, AUX_REQUEST_MAX);
+    // Volatile word stores, which no compiler turns into a call to the library's memset in flash.
+    volatile uint32_t* const words = (volatile uint32_t*)(void*)slot->request;
+    for (uint32_t i = 0U; i < AUX_REQUEST_MAX / 4U; i++) {
+        words[i] = 0U;
+    }
+    memcpy(slot->request, buffer, kept);
     slot->request_len = (uint8_t)kept;
     slot->generation = generation;
     __DMB();
@@ -185,6 +188,29 @@ __attribute__((section(".ramfunc"))) static void stream_fault(void) {
     cpu0_unmask(basepri);
 }
 
+/** Markers go with the next pairs message, but no later than 10 ms after the first of them: a
+ *  capture below about 100 pairs a second takes longer than that to send one. Sending them sends the
+ *  pairs message being built first, as edges do. Only while CPU 0 owns the stream's state; CPU 1
+ *  sends them at its own closes. */
+__attribute__((section(".ramfunc"), noinline)) static bool marks_due(void) {
+    struct energy_integration const* const energy = dap_shared.energy_integration;
+    return (energy != nullptr) && !stream_owned_by_cpu1(&energy->stream) &&
+           energy_stream_marks_due(&energy->stream, &CTIMER4->TC);
+}
+
+__attribute__((section(".ramfunc"), noinline)) static void stream_marks(void) {
+    if (!marks_due()) {
+        return;
+    }
+    uint32_t const basepri = cpu0_mask_all_but_edges();
+    struct energy_integration* const energy = dap_shared.energy_integration;
+    // The DMA interrupt may have sent them, or ended the stream, since the check.
+    if (!stream_owned_by_cpu1(&energy->stream) && energy->stream.active) {
+        energy_stream_close(&energy->stream);
+    }
+    cpu0_unmask(basepri);
+}
+
 /** Stream messages wait while a mode 5 request is out, so its reply comes before its header. */
 __attribute__((section(".ramfunc"))) static bool stream_held(void) {
     aux_slot_t const* const slot = &dap_stage.aux;
@@ -244,6 +270,7 @@ __attribute__((section(".ramfunc"), noinline)) void aux_task(void) {
         in_length = live ? length : 0U;
     }
     stream_fault();
+    stream_marks();
     if (in_length == 0U) {
         stream_take();
     }
@@ -277,5 +304,6 @@ __attribute__((section(".ramfunc"), noinline)) bool aux_has_work(void) {
     bool const messages = (energy != nullptr) && (energy->stream.sent != energy->stream.written) && !stream_held();
     bool const fault = (energy != nullptr) && energy->stream.active && (dap_shared.energy_dma_error != 0U) &&
                        ((dap_shared.energy_control_ack & DAP_ENERGY_QUIET_FLAG) == 0U);
-    return (dap_stage.aux.state == AUX_SLOT_REPLY) || messages || fault || ((local_length != 0U) && !stream_waits());
+    return (dap_stage.aux.state == AUX_SLOT_REPLY) || messages || fault || marks_due() ||
+           ((local_length != 0U) && !stream_waits());
 }

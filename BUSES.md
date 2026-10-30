@@ -46,14 +46,15 @@ contends with any other.
 | CPU 1 | 3, 4 | The `.ramfunc` bit paths: ARM's SWD, the JTAG and two-pin blocks, where nothing is generated | Inside their timed windows |
 | CPU 1 | 5 | A staged command's request and reply in `dap_stage`: the generated transfers load write data and store read data there | Inside timed windows |
 | CPU 1 | 5 | Verge Aux's slot in `dap_stage`: its state before each command, and an aux request and its reply | Between commands |
-| CPU 1 | 7 | CTimer 4's counter, the energy stream's clock: read at each start, resume, hold and release | Energy commands, and around a read-latency measurement, outside its window |
+| CPU 1 | 7 | CTimer 4's counter, the energy stream's clock: read at each start, resume, hold and release, and to stamp each marker | Energy commands and `0x94`, and around a read-latency measurement, outside its window |
 | CPU 1 | 0, 3, 4, 6 | C code, `.ramfunc`, data and stack between transfers | Between timed windows |
 | CPU 1 | 11 | `dap_shared`: unstaged requests and replies, the queues, the LED inputs | Between timed windows |
 | CPU 1 | 10 | ADC0 (target sense, `dap_vendor`, the Pro's energy calibration) and settled energy FIFO results | Own core, never during a window: at boot on the Pro, a host's sense reads, a start that calibrates; FIFO drain at capture pause/stop |
-| CPU 1 | 2 | CPU 0's `energy_integration` in SRAM0: ring reads for latest-pair replies and the unconsumed capture tail; each start's tables, constants, descriptors and position; the running flag; the segment count a capture started at; the energy stream's timeline, and its messages at a start, pause or stop; a hold's record after each read-latency measurement | Host polls while capture runs; tail drain and capture setup around the quiet handshake; the running flag before each read-latency measurement and around each sense conversion; the DIO edges recorded since the last message, at a pause or stop | Never during a window |
+| CPU 1 | 2 | CPU 0's `energy_integration` in SRAM0: ring reads for latest-pair replies and the unconsumed capture tail; each start's tables, constants, descriptors and position; the running flag; the segment count a capture started at; the energy stream's timeline, and its messages at a start, pause or stop; a hold's record after each read-latency measurement; a marker's record, and the stream's marking and busy flags, for each `0x94` | Host polls while capture runs; tail drain and capture setup around the quiet handshake; the running flag before each read-latency measurement and around each sense conversion; the DIO edges recorded since the last message, at a pause or stop | Never during a window |
 | CPU 1 | 8 | Ordinary GPIO ports 0 and 1: the Pro's DIO pins and their translators' directions (`dio.c`), port 0 pin 8 for the target regulator (`target_power.c`), and the energy circuit's latch and calibration pins (`energy_monitor.c`) | Vendor 0x8E, 0x8F and 0x90, and the energy calibration at boot; own core, never during a window |
 | CPU 1 | 7 | CTimer 2 for the Pro's energy-capture trigger; SYSCON, IOCON and INPUTMUX for setup | Energy capture start/stop, and IOCON at boot on the Pro; CTimer 2 stopped and started around each read-latency measurement |
 | CPU 1 | 8, 10 | DMA0's busy bit and ADC0's status, polled until the held capture is idle | Before each read-latency measurement, while capture runs |
+| CPU 1 | 8, 10 | DMA0's error bits and ADC0's status, to tell a failed capture (`energy_capture_failed`) | Energy commands and `0x94` while a capture runs; own core, never during a window |
 | CPU 1 | 7 | SYSCON clocks and IOCON for the DIO pins (`dio_init`) | Boot only, on the Pro |
 | CPU 1 | 7 | PINT's enables for the DIO pins, turned off as SPI takes them (`dio_spi_begin`) | Each `0x91` SPI command, on the Pro; own core, never during a window |
 | CPU 1 | 7, 8 | SWO setup: SYSCON resets and clocks, Flexcomm 3, DMA0 channel 8's regs and its bit in the shared ones, each written one bit per channel | SWO commands only |
@@ -75,6 +76,7 @@ contends with any other.
 | CPU 0 | 7 | CTimer 3 (the status LED), and on the Pro CTimer 1 (FUNC) | 488 times a second |
 | CPU 0 | 7, 8, 2 | The DIO edge interrupt (`dio_edges.c`): CTimer 4's counter and PINT's latches on port 7, both GPIO ports' PIN registers on port 8, an entry in the edge record in SRAM0 | Each run, while a stream reports edges: at most 100,000 a second on average |
 | CPU 0 | 7 | PINT's enables and latches, CTimer 4's counter for the 10 ms check | CPU 0's loop, while a stream reports edges |
+| CPU 0 | 7, 2 | CTimer 4's counter and the oldest marker's stamp in SRAM0, for the markers' 10 ms check | CPU 0's loop, while a stream has markers waiting |
 | CPU 0 | 7 | INPUTMUX's pin interrupt selects, PINT's reset and mode | Boot only, on the Pro |
 | CPU 0 | 8 | Ordinary GPIO port 1 (the Pro's switched LEDs) | 488 times a second, on the Pro |
 | CPU 0 | 7 | SYSCON and IOCON through `vcom_start` (`USART_Init`, `CLOCK_*`) | Console initialization; line-coding changes touch only port 8 |

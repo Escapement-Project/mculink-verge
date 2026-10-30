@@ -30,7 +30,7 @@ def main() -> int:
             env = os.environ.copy()
             env["ASAN_OPTIONS"] = ":".join(filter(None, (env.get("ASAN_OPTIONS"), "detect_leaks=0")))
             run([executable], env)
-            print(f"  {compiler}: stream header, pairs, 10 ms rule, holds, resumes, a full ring, DIO edges")
+            print(f"  {compiler}: stream header, pairs, 10 ms rule, holds, resumes, a full ring, DIO edges, markers")
     return 0
 
 

@@ -42,7 +42,8 @@ Format 6 extended-capability bit 0 advertises energy capture on Pro units with H
 Bit 2 advertises accumulated energy reads through `0x90` mode 3. Bits 3 and 4 advertise SPI and I2C
 bridges on Pro units when J15 leaves USB-SIO enabled. Bit 5 advertises calibrated fields appended to
 the `0x90` latest reply. Bit 6 advertises `0x8E` on Verge Aux, and is set with capability flag
-bit 6. Bit 1 advertised the same fields as bit 5 with the current in µA; firmware no longer sets it.
+bit 6. Bit 7 advertises markers (`0x94`) and the stream's markers message, and is set with bit 0.
+Bit 1 advertised the same fields as bit 5 with the current in µA; firmware no longer sets it.
 Other extended bits are reserved.
 
 Fields are appended in later formats. Use the format version before reading fields added by a
@@ -218,6 +219,36 @@ For both commands, result values are `OK` (0), `UNAVAILABLE` (1), `INVALID` (2),
 `TRANSFER_ERROR` (4), and `NACK` (5; I2C only). `UNAVAILABLE` means this is not a Pro or J15 disabled
 USB-SIO at startup. These commands may be included in `DAP_ExecuteCommands` batches.
 
+## Markers: `0x94`
+
+A host debugging the target can mark a moment in an energy recording, such as a breakpoint hit or
+the start of a test step. Markers are available when `0x82` format 6 sets extended-capability bit 7.
+
+Send `[0x94, number:u32, length, label[length]]`. The probe passes the number and the label on
+unchanged; they mean what the host wants. The label is up to 32 bytes, UTF-8 by convention, and
+can be empty.
+
+The reply is `[0x94, status, result]`:
+
+| Result | Meaning |
+| --- | --- |
+| 0 | The marker is in the stream. |
+| 1 | No capture runs. |
+| 2 | A capture runs, but no host streams it. |
+| 3 | The probe had no room for the marker. The markers message holding the stream's next marker says one was lost before it. |
+
+Only result 0 puts the marker anywhere. Status is `DAP_ERROR` (`0xff`), with no result, for a label
+longer than 32 bytes and on a board without energy capture. A request shorter than its length says
+gets `[0xff]`, as any malformed command does. Verge Aux keeps the first 40 bytes of a request, so
+there a label longer than 34 bytes gets `[0xff]` too.
+
+The probe stamps the marker as it runs the command, on the clock that times the pairs and edges.
+Inside a `DAP_ExecuteCommands` batch, the marker sits between the commands before and after it, so a
+host can mark exactly where a sequence of debug operations starts or ends. The command works on
+CMSIS-DAP and on Verge Aux. A marker sent through Aux lands between two CMSIS-DAP commands.
+
+The probe keeps 16 markers waiting to be sent. A marker that finds them full gets result 3.
+
 ## The auxiliary interface: Verge Aux
 
 On the MCU-Link Pro, the DIO, supply and energy commands are also on a second USB interface,
@@ -236,9 +267,9 @@ The string doesn't contain `CMSIS-DAP`, so debuggers pass it by.
 
 A request is one transfer on EP5 OUT, in the format of the CMSIS-DAP command it names. The reply is
 one transfer on EP5 IN, in the format of that command's reply on CMSIS-DAP. The interface carries
-`0x82`, `0x8E`, `0x8F` and `0x90`. Any other command gets `[0xff]`, and so does a request too short
-for its command. Firmware from before `0x8E` was carried leaves extended capability bit 6 clear and
-answers it with `[0xff]`.
+`0x82`, `0x8E`, `0x8F`, `0x90` and `0x94`. Any other command gets `[0xff]`, and so does a request
+too short for its command. Firmware from before `0x8E` was carried leaves extended capability bit 6
+clear and answers it with `[0xff]`. Firmware from before `0x94` leaves bit 7 clear.
 
 The probe takes one request at a time. The next one waits on USB until the probe has answered the
 one before, so replies come in request order. A program that opens the interface reads and drops
@@ -272,7 +303,7 @@ stream's first message.
 none. The header says which pins the stream reports: none when J15 turns the DIO pins off, or when
 SPI has them at the start.
 
-A stream message starts with a byte from `0xa0` to `0xa3`, outside the vendor command range, so a
+A stream message starts with a byte from `0xa0` to `0xa4`, outside the vendor command range, so a
 host tells it from a reply by its first byte. Messages come between replies, never inside one.
 
 A stream ends when a host sends mode 7, and when the capture stops, restarts or fails. Its last
@@ -358,6 +389,20 @@ All the edges up to a pairs message's last pair arrive before the next pairs mes
 end. A host that holds back the pairs of one message until the next arrives knows the levels across
 them. The probe sends edges with each pairs message, and on their own once they have waited 10 ms.
 
+### Markers: `0xa4`
+
+| Offset | Field |
+| --- | --- |
+| 0 | `0xa4` |
+| 1 | Flags: bit 0, markers were lost before this message's first; other bits zero |
+| 2 | Marker count `m`, 1 to 11 |
+| 3 onward | `m` markers: time in ns since the capture started (u64), number (u32), label length (u8), then the label |
+
+Markers come in the order the probe ran them (`0x94`). Their times share the pairs' clock. A marker
+can arrive before or after the pairs around it, so place it by its time. The probe sends markers
+with each pairs message, and on their own once they have waited 10 ms. Only a marker run while the
+stream runs is sent: from its header to its end.
+
 Each run of the interrupt costs the probe time it needs for USB. Past an average of 100,000 runs a
 second, or 32 runs back to back, the probe stops taking edges for 1 to 2 ms and the next edges
 message sets bit 0. A pin toggling faster than that keeps about 20,000 to 35,000 of its edges a
@@ -373,10 +418,11 @@ second.
 
 ### When the host falls behind
 
-The probe keeps 16 messages a host has not read yet. When they fill, it drops new pairs and edges
-messages until there is room again, and keeps the last two places for a header and an end. The
-capture and its total carry on regardless. A host sees lost pairs as a jump in sequence numbers,
-and lost edges as bit 0 on the next edges message.
+The probe keeps 16 messages a host has not read yet. When they fill, it drops new pairs, edges and
+markers messages until there is room again, and keeps the last two places for a header and an end.
+The capture and its total carry on regardless. A host sees lost pairs as a jump in sequence numbers,
+lost edges as bit 0 on the next edges message, and lost markers as bit 0 on the next markers
+message.
 
 ### Converting a pair
 

@@ -15,8 +15,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/** The most of a request CPU 0 keeps, zero-filled past what arrived. Longer than any aux command's. */
-#define AUX_REQUEST_MAX 16U
+/** The most of a request CPU 0 keeps, zero-filled past what arrived. Longer than any aux command's:
+ *  0x94 with a 32-byte label is the longest, 38 bytes. */
+#define AUX_REQUEST_MAX 40U
 /** The reply space CPU 1 gives each request: the HID report size, which 0x82's reply already fits. */
 #define AUX_REPLY_MAX 64U
 
@@ -39,10 +40,11 @@ typedef struct {
     alignas(4) uint8_t reply[AUX_REPLY_MAX];
 } aux_slot_t;
 
-/** Identify firmware, the Pro's DIO pins, target supply and energy capture. Anything else gets
- *  [0xff]. */
+/** Identify firmware, the Pro's DIO pins, target supply, energy capture and markers. Anything else
+ *  gets [0xff]. */
 static inline bool aux_command_carried(uint8_t command) {
-    return (command == 0x82U) || (command == 0x8EU) || (command == 0x8FU) || (command == 0x90U);
+    return (command == 0x82U) || (command == 0x8EU) || (command == 0x8FU) || (command == 0x90U) ||
+           (command == 0x94U);
 }
 
 #endif

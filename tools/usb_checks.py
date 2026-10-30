@@ -276,7 +276,8 @@ def check_aux(c, elf0, elf1, symbols0, symbols1, fields):
     # The commands it carries answer as on CMSIS-DAP, size checks included.
     carried = (b"\x82", b"\x8e\x00\x00\x00", b"\x8e\x08\x08\x08", b"\x8e\x01\x01\x01", b"\x8e\x08\x00\x00", b"\x8e\x00",
                b"\x8f\x02", b"\x8f\x01", b"\x8f", b"\x90\x01", b"\x90\x03", b"\x90\x04\x00", b"\x90\x04\x02", b"\x90\x02",
-               b"\x90", b"\x90\x00\x01")
+               b"\x90", b"\x90\x00\x01", b"\x94\x01\x00\x00\x00\x02hi", b"\x94\x01\x00\x00\x00\x03hi", b"\x94",
+               b"\x94\x01\x00\x00\x00\x20" + bytes(32))
     for usb in (fresh(), pro(fresh())):
         for payload in carried:
             c.check(ask(usb, payload) == bulk(usb, payload), f"aux reply to {payload.hex()} differs from CMSIS-DAP's")
@@ -383,6 +384,9 @@ def check_aux(c, elf0, elf1, symbols0, symbols1, fields):
     c.check(usb.dispatch() == 0, "a request reached CPU 1 through an absent aux interface")
     c.note("Verge Aux: CMSIS-DAP-identical replies, [0xff] for the rest, OUT armed only with the slot free, ahead "
            "of the queue, in order, retry, gone hosts (new configuration, unconfigured, reply in flight), instance 0")
+
+
+CTIMER4_TC = 0x4002A008
 
 
 def check_aux_stream(c, elf0, elf1, symbols0, symbols1, fields, layout):
@@ -507,6 +511,52 @@ def check_aux_stream(c, elf0, elf1, symbols0, symbols1, fields, layout):
     sent = drain(usb)
     c.check(sent == [b"\xa2\x04" + (41).to_bytes(4, "little")], f"a failed capture's stream ended with {[m.hex() for m in sent]}")
 
+    # Markers (0x94): CPU 1 records one while a stream runs, stamped by CTimer 4, and CPU 0's loop
+    # sends it once it has waited 10 ms. CPU 1 reaches the capture state in CPU 0's SRAM.
+    energy_size = symbols0["energy_integration"][1]
+
+    def mark(usb, payload, stamp=1000):
+        for cpu in (usb.cpu0, usb.cpu1):
+            cpu.uc.mem_write(CTIMER4_TC, stamp.to_bytes(4, "little"))
+        usb.cpu1.uc.mem_write(usb.energy, bytes(usb.cpu0.uc.mem_read(usb.energy, energy_size)))
+        arrive(usb, payload)
+        ran = usb.dispatch()
+        usb.cpu0.uc.mem_write(usb.energy, bytes(usb.cpu1.uc.mem_read(usb.energy, energy_size)))
+        sent = drain(usb)
+        c.check(ran == 1, f"aux {payload.hex()} ran {ran} times")
+        return sent
+
+    usb = fresh()
+    capture(usb)
+    arrive(usb, b"\x90\x06\x00")
+    drain(usb)
+    sent = mark(usb, b"\x94\x07\x00\x00\x00\x02hi")
+    c.check(sent == [b"\x94\x00\x00"], f"a marker during a stream answered {[m.hex() for m in sent]}")
+    usb.cpu0.uc.mem_write(CTIMER4_TC, (1000 + 959_999).to_bytes(4, "little"))
+    c.check(drain(usb) == [] and usb.call0("aux_has_work") == 0, "a marker left before it had waited 10 ms")
+    usb.cpu0.uc.mem_write(CTIMER4_TC, (1000 + 960_000).to_bytes(4, "little"))
+    c.check(usb.call0("aux_has_work") == 1, "a marker that waited 10 ms left no work for CPU 0's loop")
+    # 1,000 counts of 96 MHz from the timeline's origin: 10,416 ns, rounded down.
+    want = b"\xa4\x00\x01" + (10_416).to_bytes(8, "little") + (7).to_bytes(4, "little") + b"\x02hi"
+    sent = drain(usb)
+    c.check(sent == [want], f"a marker that waited 10 ms was sent as {[m.hex() for m in sent]}")
+    for available, running, streaming, payload, want in (
+            (1, 1, False, b"\x94\x01\x00\x00\x00\x00", b"\x94\x00\x02"),
+            (1, 0, False, b"\x94\x01\x00\x00\x00\x00", b"\x94\x00\x01"),
+            (0, 1, False, b"\x94\x01\x00\x00\x00\x00", b"\x94\xff"),
+            (1, 1, True, b"\x94\x01\x00\x00\x00\x21" + bytes(33), b"\x94\xff"),
+            (1, 1, True, b"\x94\x01\x00\x00\x00\x03hi", b"\xff")):
+        usb = fresh()
+        capture(usb)
+        if streaming:
+            arrive(usb, b"\x90\x06\x00")
+            drain(usb)
+        usb.put("energy_available", available, 1)
+        field(usb, "running", running, 1)
+        sent = mark(usb, payload)
+        c.check(sent == [want], f"marker {payload[:7].hex()} with available {available}, running {running}, "
+                f"streaming {streaming}: {[m.hex() for m in sent]}")
+
     # After a configuration, messages are a gone host's until a header this configuration asked for:
     # one it did not, from a request that ran across the reset, is dropped too. Unconfigured, all are.
     usb = fresh()
@@ -542,4 +592,5 @@ def check_aux_stream(c, elf0, elf1, symbols0, symbols1, fields, layout):
     c.check(len(sent) == 2 and sent[0][:2] == b"\x90\x00" and sent[1][0] == 0xA1,
             f"mode 5 then its header sent {[m[:4].hex() for m in sent]}")
     c.note("stream on Verge Aux: modes 6 and 7 on CPU 0 with each result, waiting for CPU 1, reply before header,"
-           " end after mode 7, gone hosts' and unconfigured messages dropped, mode 5's reply first")
+           " end after mode 7, gone hosts' and unconfigured messages dropped, mode 5's reply first, markers from CPU 1"
+           " sent after 10 ms with each refusal")

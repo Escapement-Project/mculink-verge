@@ -71,6 +71,9 @@
 /// Executes one Pro I2C write, read, or combined transaction.
 #define ID_VENDOR_I2C ID_DAP_Vendor18
 #define ID_VENDOR_TIMING ID_DAP_Vendor19
+/// Marks a moment in Verge Aux's energy stream, stamped as the command runs (HOST-INTERFACE.md,
+/// "Markers: 0x94").
+#define ID_VENDOR_MARK ID_DAP_Vendor20
 
 /** Answered by ID_VENDOR_CJTAG_INFO, so a host can recognise this firmware rather than assume it.
  *
@@ -84,7 +87,8 @@
  *     [8+n]   board                   BOARD_KIND_* (board_pins.h); format 3 on
  *     [9+n]   scan formats, u32 LE    bit n: SCNFMT n offered (cJTAG_Offered); format 4 on
  *     [13+n]  extended capabilities   u32 LE; bit 0: energy capture; bit 2: accumulated energy;
- *                                     bits 3–4: SPI and I2C; bit 5: calibrated energy fields
+ *                                     bits 3–4: SPI and I2C; bit 5: calibrated energy fields;
+ *                                     bit 6: DIO on Verge Aux; bit 7: markers
  *
  * A host checks the magic to know it is us, the flags to know what it may use, and the build
  * string to know which image it is talking to. The capability flags are what makes this worth
@@ -140,6 +144,8 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
 #define CJTAG_EXT_CAP_I2C (1U << 4)
 /// Verge Aux carries ID_VENDOR_DIO, set with CJTAG_CAP_DIO. Aux from before it answers [0xff].
 #define CJTAG_EXT_CAP_DIO_AUX (1U << 6)
+/// ID_VENDOR_MARK and the stream's markers message, set with CJTAG_EXT_CAP_ENERGY.
+#define CJTAG_EXT_CAP_MARKS (1U << 7)
 #ifdef SWD_CODEGEN
 #define CJTAG_CAPS_SWD CJTAG_CAP_SWD_CODEGEN
 #else
@@ -331,7 +337,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         }
         uint32_t const extended = (dap_shared.energy_available
                                        ? CJTAG_EXT_CAP_ENERGY | CJTAG_EXT_CAP_ENERGY_CALIBRATED |
-                                             CJTAG_EXT_CAP_ENERGY_ACCUMULATED
+                                             CJTAG_EXT_CAP_ENERGY_ACCUMULATED | CJTAG_EXT_CAP_MARKS
                                        : 0U) |
                                   (pro_bus_available() ? CJTAG_EXT_CAP_SPI | CJTAG_EXT_CAP_I2C : 0U) |
                                   (dio_available() ? CJTAG_EXT_CAP_DIO_AUX : 0U);
@@ -594,6 +600,26 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         }
         response[1] = DAP_ERROR;
         return (2U << 16) | 2U;
+    }
+
+    case ID_VENDOR_MARK: {
+        // dap_packet.h's plan has checked that the label is all there.
+        uint8_t const length = request[5];
+        uint32_t const consumed = 6U + length;
+        bool available = false;
+        uint8_t result = 0U;
+        if (length <= ENERGY_STREAM_LABEL_MAX) {
+            uint32_t const number = (uint32_t)request[1] | ((uint32_t)request[2] << 8U) |
+                                    ((uint32_t)request[3] << 16U) | ((uint32_t)request[4] << 24U);
+            result = energy_monitor_mark(number, request + 6, length, &available);
+        }
+        if (!available) {
+            response[1] = DAP_ERROR;
+            return (consumed << 16) | 2U;
+        }
+        response[1] = DAP_OK;
+        response[2] = result;
+        return (consumed << 16) | 3U;
     }
 
     case ID_VENDOR_SPI:
