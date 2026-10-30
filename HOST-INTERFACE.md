@@ -41,8 +41,9 @@ disabled USB-SIO when the probe started.
 Format 6 extended-capability bit 0 advertises energy capture on Pro units with HW_VER_5 fitted.
 Bit 2 advertises accumulated energy reads through `0x90` mode 3. Bits 3 and 4 advertise SPI and I2C
 bridges on Pro units when J15 leaves USB-SIO enabled. Bit 5 advertises calibrated fields appended to
-the `0x90` latest reply. Bit 1 advertised the same fields with the current in µA; firmware no longer
-sets it. Other extended bits are reserved.
+the `0x90` latest reply. Bit 6 advertises `0x8E` on Verge Aux, and is set with capability flag
+bit 6. Bit 1 advertised the same fields as bit 5 with the current in µA; firmware no longer sets it.
+Other extended bits are reserved.
 
 Fields are appended in later formats. Use the format version before reading fields added by a
 later format. Ignore fields you do not understand. The format 4 and later cJTAG mask reports what
@@ -78,7 +79,8 @@ An invalid pin, unavailable DIO, or direction change that splits a group returns
 (`0xff`) and leaves the state unchanged. `DAP_OK` is `0x00`. The reply still reports the current
 state. The state persists across
 debug sessions and hosts, and resets to inputs when the probe restarts. J15 disables DIO when
-fitted at startup.
+fitted at startup. Verge Aux carries the same command on the same pins, so a host can use them while
+a debugger holds CMSIS-DAP (extended capability bit 6).
 
 The `verge dio` command is the supported user interface for these pins. It checks group changes
 before sending them and shows the reply state.
@@ -218,8 +220,8 @@ USB-SIO at startup. These commands may be included in `DAP_ExecuteCommands` batc
 
 ## The auxiliary interface: Verge Aux
 
-On the MCU-Link Pro, the supply and energy commands are also on a second USB interface, Verge Aux.
-A host can use it while a debugger holds the CMSIS-DAP interface.
+On the MCU-Link Pro, the DIO, supply and energy commands are also on a second USB interface,
+Verge Aux. A host can use it while a debugger holds the CMSIS-DAP interface.
 
 | Field | Value |
 | --- | --- |
@@ -234,8 +236,9 @@ The string doesn't contain `CMSIS-DAP`, so debuggers pass it by.
 
 A request is one transfer on EP5 OUT, in the format of the CMSIS-DAP command it names. The reply is
 one transfer on EP5 IN, in the format of that command's reply on CMSIS-DAP. The interface carries
-`0x82`, `0x8F` and `0x90`. Any other command gets `[0xff]`, and so does a request too short for its
-command.
+`0x82`, `0x8E`, `0x8F` and `0x90`. Any other command gets `[0xff]`, and so does a request too short
+for its command. Firmware from before `0x8E` was carried leaves extended capability bit 6 clear and
+answers it with `[0xff]`.
 
 The probe takes one request at a time. The next one waits on USB until the probe has answered the
 one before, so replies come in request order. A program that opens the interface reads and drops
@@ -245,8 +248,8 @@ nothing else would read that stream, and the probe keeps sending it. The probe a
 request before its next CMSIS-DAP command, so a request waits for at most the command running on
 CMSIS-DAP.
 
-The two interfaces share one target supply and one energy capture. A start on either restarts the
-capture and clears the total, and reads on either see the same capture.
+The two interfaces share one set of DIO pins, one target supply and one energy capture. A start on
+either restarts the capture and clears the total, and reads on either see the same capture.
 
 ## The energy stream
 

@@ -39,9 +39,10 @@ typedef struct {
     alignas(4) uint8_t reply[AUX_REPLY_MAX];
 } aux_slot_t;
 
-/** Identify firmware, the Pro's target supply and energy capture. Anything else gets [0xff]. */
+/** Identify firmware, the Pro's DIO pins, target supply and energy capture. Anything else gets
+ *  [0xff]. */
 static inline bool aux_command_carried(uint8_t command) {
-    return (command == 0x82U) || (command == 0x8FU) || (command == 0x90U);
+    return (command == 0x82U) || (command == 0x8EU) || (command == 0x8FU) || (command == 0x90U);
 }
 
 #endif

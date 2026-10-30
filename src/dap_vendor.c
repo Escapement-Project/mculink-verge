@@ -138,6 +138,8 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
 #define CJTAG_EXT_CAP_SPI (1U << 3)
 /// ID_VENDOR_I2C is available on the Pro when J15 leaves USB-SIO enabled.
 #define CJTAG_EXT_CAP_I2C (1U << 4)
+/// Verge Aux carries ID_VENDOR_DIO, set with CJTAG_CAP_DIO. Aux from before it answers [0xff].
+#define CJTAG_EXT_CAP_DIO_AUX (1U << 6)
 #ifdef SWD_CODEGEN
 #define CJTAG_CAPS_SWD CJTAG_CAP_SWD_CODEGEN
 #else
@@ -331,7 +333,8 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
                                        ? CJTAG_EXT_CAP_ENERGY | CJTAG_EXT_CAP_ENERGY_CALIBRATED |
                                              CJTAG_EXT_CAP_ENERGY_ACCUMULATED
                                        : 0U) |
-                                  (pro_bus_available() ? CJTAG_EXT_CAP_SPI | CJTAG_EXT_CAP_I2C : 0U);
+                                  (pro_bus_available() ? CJTAG_EXT_CAP_SPI | CJTAG_EXT_CAP_I2C : 0U) |
+                                  (dio_available() ? CJTAG_EXT_CAP_DIO_AUX : 0U);
         for (uint32_t i = 0U; i < 4U; i++) {
             *out++ = (uint8_t)(extended >> (8U * i));
         }

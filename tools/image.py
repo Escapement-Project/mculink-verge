@@ -857,7 +857,8 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: 
     from usb_lifecycle import check_sequences
 
     fields = ("transfer_abort", "request", "request_tail", "rx_armed_slot", "next_request_seq", "first_live_seq",
-              "response_len", "response_tail", "response_seq", "response_transport", "response_head", "reboot_mode")
+              "response_len", "response_tail", "response_seq", "response_transport", "response_head", "reboot_mode",
+              "board", "jumpers")
     offsets = shared_offsets(slots, *fields, small_enums=short_enums(elf0))
     check_idle(c, elf0, symbols_with_size(elf0), offsets["reboot_mode"], code_lab)
     check_unconfigured(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
@@ -1293,6 +1294,7 @@ DIO_PINS = ((0, 20), (0, 26), (1, 2), (1, 3), (1, 1), (1, 25))
 DIO_DIR_OF = (4, 4, 4, 5)
 CAP_DIO = 1 << 6
 CAP_TARGET_POWER = 1 << 7
+EXT_CAP_DIO_AUX = 1 << 6
 # The ordinary GPIO's port-wide registers, which the hook below sees: SET, CLR, NOT, DIRSET, DIRCLR,
 # DIRNOT, one word per port each.
 GPIO_PORT_REGS = {0x2200: "SET", 0x2280: "CLR", 0x2300: "NOT", 0x2380: "DIRSET", 0x2400: "DIRCLR", 0x2480: "DIRNOT"}
@@ -1397,7 +1399,9 @@ def check_dio(c: Checker, elf: str, request_slots: int) -> None:
         pins = DioPins(probe)
         probe.call("dio_init")
         iocon = [int.from_bytes(probe.uc.mem_read(IOCON + 4 * (32 * port + pin), 4), "little") for port, pin in DIO_PINS]
-        flags = probe.command(bytes([0x82]))[7]
+        info = probe.command(bytes([0x82]))
+        flags = info[7]
+        extended = int.from_bytes(info[14 + info[8]:18 + info[8]], "little")
 
         def dio(mask: int, outputs: int, levels: int) -> tuple[bool, list[int]]:
             pins.step()
@@ -1410,6 +1414,7 @@ def check_dio(c: Checker, elf: str, request_slots: int) -> None:
             c.check(not any(mine) and not pins.stores,
                     f"{name} board: the DIO pins were set up: IOCON {[hex(v) for v in iocon]}, stores {pins.stores}")
             c.check(not flags & CAP_DIO, f"{name} board: vendor 0x82 claims the DIO pins")
+            c.check(not extended & EXT_CAP_DIO_AUX, f"{name} board: vendor 0x82 claims the DIO pins on Verge Aux")
             ok, state = dio(0x0F, 0x0F, 0x0F)
             c.check(not ok and state == [0, 0, 0, 0] and not pins.stores,
                     f"{name} board: vendor 0x8E answered {ok}, {state}, stores {pins.stores}")
@@ -1420,6 +1425,7 @@ def check_dio(c: Checker, elf: str, request_slots: int) -> None:
                 and all(not pins.bit(pins.dir, n) for n in range(4)),
                 f"{name}: dio_init left the directions {pins.dir}, latches {pins.latch}: {pins.fights}")
         c.check(bool(flags & CAP_DIO), f"{name}: vendor 0x82 flags {flags:#04x} lack the DIO pins")
+        c.check(bool(extended & EXT_CAP_DIO_AUX), f"{name}: vendor 0x82 extended {extended:#x} lacks DIO on Verge Aux")
         # (mask, outputs, levels), whether it is taken, and outputs, latch and the LED after it.
         steps = (
             ((0x00, 0x00, 0x00), True, 0x00, 0x00, 0),

@@ -8,7 +8,7 @@
  * DIO0 and DIO1 are on port 0 and DIO2 and DIO3 on port 1, so one command moves the two ports a
  * store apart: DIO2 follows DIO0 and DIO1 by about 40 ns.
  *
- * The host reaches these pins through CMSIS-DAP vendor commands 0x8E and 0x91.
+ * The host reaches these pins through vendor commands 0x8E, on CMSIS-DAP or Verge Aux, and 0x91.
  *
  * The state outlives sessions, so a host can hold a target's boot pin through a reconnect. Only a
  * reset of the probe puts the pins back to inputs. CPU 1 only.

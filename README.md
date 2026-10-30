@@ -212,7 +212,7 @@ inputs when the probe restarts.
 
 `verge dio` reads them, and `verge dio --high 0 --low 1,2` sets them (see verge's README). From a
 checkout, `uv run tools/dap.py dio` does the same. Both send vendor command 0x8E, which
-`src/dap_vendor.c` describes.
+`src/dap_vendor.c` describes. Verge Aux carries it too.
 
 ## The Pro's SPI and I2C bridges
 
@@ -233,9 +233,10 @@ command is available only on MCU-Link Pro.
 
 ## Verge Aux
 
-The Pro has a second vendor interface, Verge Aux, which carries the supply and energy commands. A
-host can switch the supply and record energy through it while a debugger holds CMSIS-DAP. It is the
-Pro's last interface. [The host interface](HOST-INTERFACE.md) describes it.
+The Pro has a second vendor interface, Verge Aux, which carries the DIO, supply and energy
+commands. A host can use the DIO pins, switch the supply and record energy through it while a
+debugger holds CMSIS-DAP. It is the Pro's last interface. [The host interface](HOST-INTERFACE.md)
+describes it.
 
 ## Releases
 
