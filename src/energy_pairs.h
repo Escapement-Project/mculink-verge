@@ -26,8 +26,8 @@ static inline void energy_add_pair(const struct energy_integration* energy, ener
     energy_total_add(total, (uint64_t)mv * energy_target_na(shunt_na, mv), energy->scale_q32);
 }
 
-/** A sample converts the voltage, then the current, averaged over up to 128 conversions, then the
- *  range. A switch while the current converts blends codes from both ranges, read with the range
+/** A sample converts the voltage and the current together, averaged over up to 128 conversions, then
+ *  the range. A switch while the current converts blends codes from both ranges, read with the range
  *  after: on the way up, anywhere from the true reading to the low range's code read with the high
  *  range's table. So a pair whose range differs from the previous pair's takes the next pair's
  *  current, unless that pair switched too and may be a blend itself; then it keeps its own. */

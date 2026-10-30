@@ -113,9 +113,9 @@ Stop and pause include complete samples in the unfinished DMA segment and ADC FI
 voltage/current/range tuple is discarded. Internal pauses preserve the latest-sample sequence.
 The total resets when the probe restarts.
 
-Voltage and current conversions use the highest ADC hardware averaging that sustains the effective
-timer rate. The selector uses 128x through 1,794 pairs/s, 64x through 3,575, 32x through 7,096,
-16x through 13,969, 8x through 27,088, 4x through 51,063, 2x through 91,603, then 1x through
+A pair's voltage and current are converted together, and use the highest ADC hardware averaging that
+sustains the effective timer rate. The selector uses 128x through 3,323 pairs/s, 64x through 6,596,
+32x through 13,001, 16x through 25,263, 8x through 47,808, 4x through 86,330, then 2x through
 100,000. The range-state conversion stays at 1x so gain changes appear in the next pair. The start
 reply reports the timer's effective pair rate.
 
@@ -345,17 +345,17 @@ The points are the ones `0x90` mode 4 reports.
 | 16 onward | `k` pairs of 5 bytes each: voltage code (u16), current code (u16), then a byte with bit 0 set on the low range |
 
 Pair `i` of a message (from 0) has sequence number `first + i` and was taken at
-`time + i × 1,000,000,000 / rate` ns. That is when its voltage was converted. Its current was
-converted half a period later, so a host lining currents up with DIO edges adds
-`500,000,000 / rate` ns. A message never spans a pause or a hold, so its pairs are
-evenly spaced. The probe pauses the capture for a moment when it reads the target's supply voltage,
-and the next message sets flag bit 0. It holds the conversions while it measures a read latency, as a
-debugger connects at a fast clock, and the next message sets bit 1. Either way the message's time
-shows how long it took. Only a pause ends the pairs' run for step 5 below.
+`time + i × 1,000,000,000 / rate` ns. Its voltage and current are converted together from then,
+averaged over the same stretch, which lasts at most one period. A message never spans a pause or a
+hold, so its pairs are evenly spaced. The probe pauses the capture for a moment when it reads the
+target's supply voltage, and the next message sets flag bit 0. It holds the conversions while it
+measures a read latency, as a debugger connects at a fast clock, and the next message sets bit 1.
+Either way the message's time shows how long it took. Only a pause ends the pairs' run for step 5
+below.
 
 A message holds at most 99 pairs and less than 10 ms of them, so it fits one 512-byte packet. The
 probe sends it once it is full, or once the pairs it has taken in reach 10 ms. It takes pairs in a
-batch every 10 ms or so; below about 100 pairs a second a batch takes longer, up to 1.8 s at one
+batch every 10 ms or so; below about 230 pairs a second a batch takes longer, up to 2.3 s at one
 pair a second, and so does a message.
 
 ### DIO edges: `0xa3`

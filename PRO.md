@@ -170,11 +170,11 @@ the probe's target supply can give.
   its setting, it clocks the latch. The comparator still holds the latch's reset, so a current that
   has come back above the threshold keeps the high range. Between Table 4's limit and the
   threshold, a current stays on whichever range it is on. The firmware sizes the segments to the
-  sample rate: 5 to 10 ms of samples each, and at most 114 samples, which is under 10 ms from
-  11,378 samples a second. The first whole segment under the limit re-arms the low range: within
-  about 20 ms of the current falling from 200 samples a second up, and within 2.3 ms at 100,000.
-  Below 356 samples a second a segment holds under two samples, and the low range comes back within
-  four.
+  sample rate: 5 to 10 ms of samples each, and at most 146 samples, which is under 10 ms from
+  14,629 samples a second. The first whole segment under the limit re-arms the low range: within
+  about 20 ms of the current falling from 230 samples a second up, and within 2.9 ms at 100,000.
+  Below 457 samples a second a segment is its floor of 16 words, about two and a third samples,
+  and the low range comes back within five.
 
 ### Calibration
 
@@ -239,8 +239,9 @@ With 5 ms it read it right.
   350 mA setting's high range by up to about 0.3%, through R4.
 - The sheet gives no tolerance for the divider. It moves the current taken off each sample, which
   matters in the low ranges.
-- Each sample converts the voltage, then the current, averaged over up to 128 conversions, and
-  then the range. A range switch while the current converts mixes codes from both ranges, and
+- Each sample converts the voltage and the current together, averaged over up to 128
+  conversions, and then the range. A range switch while the current converts mixes codes from
+  both ranges, and
   neither table reads the mix right. So when a sample's range differs from the one before it, the
   energy total takes the next sample's current for it, unless that sample switched too. The sample
   keeps its own voltage. A start counts the sample before it as on the low range, because it
@@ -248,12 +249,16 @@ With 5 ms it read it right.
   target-sense read a host asks for. When capture pauses after a switching sample, before the next
   one arrives, that sample keeps its own current. The reply with the latest sample shows each
   sample as it was converted.
-- The voltage's acquisition time is 7.5 cycles of the 12 MHz ADC clock; the current's and the
-  range's are 3.5. With 3.5 cycles, an unaveraged voltage read 0.27% higher than one averaged 16
-  times, and the energy total carried that error. With 7.5, the voltage reads within 0.02% of 16
-  averages at 10,000 samples a second, at every averaging. A sample with N averages takes
-  27 + 52 N cycles, measured. The firmware uses the most averaging that finishes a sample before
-  the next is due (HOST-INTERFACE.md).
+- The voltage and the current are the A and B sides of channel 0, and one dual single-ended
+  conversion takes both at once, so they average over the same stretch. Both results land in FIFO0,
+  the voltage's first: with both FIFO selects alike, "the CH_A results will always be stored before
+  the CH_B results" (UM11126 section 38.7.8), and the part did so in 1,600 trials of 1,600. Both
+  acquire for 7.5 cycles of the 12 MHz ADC clock, the range for 3.5. With 3.5 cycles, an unaveraged
+  voltage read 0.27% higher than one averaged 16 times, and the energy total carried that error.
+  With 7.5, the voltage read within 0.02% of 16 averages at 10,000 samples a second, at every
+  averaging, when the two sides converted one after the other. A sample with N averages takes 27 +
+  28 N cycles, measured; converting the two sides one after the other took 27 + 52 N. The firmware
+  uses the most averaging that finishes a sample before the next is due (HOST-INTERFACE.md).
 - While the probe measures the target's read latency, it stops the conversions, and the energy
   total leaves that time out. It measures at a connection at fast clocks, again when a measurement
   contradicts itself, and when a host asks. With capture running, the measurement found later

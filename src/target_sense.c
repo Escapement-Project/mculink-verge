@@ -115,68 +115,67 @@ target_sense_current_range_t target_sense_current_range(void) {
 }
 
 static lpadc_hardware_average_mode_t monitor_average_mode(uint32_t rate_hz) {
-    // A pair at N averages takes 27 + 52 N ADCK cycles, the unaveraged range-state conversion
-    // included. Each limit is the fastest effective rate whose period holds one, which a longer
-    // sample time in configure_pair_commands moves.
-    if (rate_hz <= 1794U) {
+    // A pair at N averages takes 27 + 28 N ADCK cycles, the unaveraged range-state conversion
+    // included. Each limit is the fastest effective rate whose period holds one at every request
+    // that rounds to it: 6,597 can come from a period a quarter cycle short of 64 averages. A
+    // longer sample time in configure_pair_command moves them.
+    if (rate_hz <= 3323U) {
         return kLPADC_HardwareAverageCount128;
     }
-    if (rate_hz <= 3575U) {
+    if (rate_hz <= 6596U) {
         return kLPADC_HardwareAverageCount64;
     }
-    if (rate_hz <= 7096U) {
+    if (rate_hz <= 13001U) {
         return kLPADC_HardwareAverageCount32;
     }
-    if (rate_hz <= 13969U) {
+    if (rate_hz <= 25263U) {
         return kLPADC_HardwareAverageCount16;
     }
-    if (rate_hz <= 27088U) {
+    if (rate_hz <= 47808U) {
         return kLPADC_HardwareAverageCount8;
     }
-    if (rate_hz <= 51063U) {
+    if (rate_hz <= 86330U) {
         return kLPADC_HardwareAverageCount4;
     }
-    if (rate_hz <= 91603U) {
-        return kLPADC_HardwareAverageCount2;
-    }
-    return kLPADC_HardwareAverageCount1;
+    return kLPADC_HardwareAverageCount2;
 }
 
-static void configure_pair_commands(lpadc_hardware_average_mode_t average, uint32_t current_next,
-                                     lpadc_conv_command_config_t* command) {
+/** The capture's pair as command 1, chained to `next`: the voltage on CH0A (PIO0_23/ADC0_0) and the
+ *  current on CH0B (PIO0_16/ADC0_8) in one dual single-ended conversion, so both average over the
+ *  same window. With both sides sent to FIFO0, the A side's result always comes first (UM11126
+ *  section 38.7.8). Nothing else in a result tells them apart, so the trigger keeps the B side in
+ *  FIFO0 and energy_sample_feed reads them in that order. */
+static void configure_pair_command(lpadc_hardware_average_mode_t average, uint32_t next,
+                                   lpadc_conv_command_config_t* command) {
     LPADC_GetDefaultConvCommandConfig(command);
     command->channelNumber = 0U;
-    command->sampleChannelMode = kLPADC_SampleChannelSingleEndSideA;
+    command->sampleChannelMode = kLPADC_SampleChannelDualSingleEndBothSide;
     command->conversionResolutionMode = kLPADC_ConversionResolutionHigh;
     command->hardwareAverageMode = average;
     // At ADCK3 the voltage read 0.27% higher unaveraged than averaged 16 times. At ADCK7 every
     // averaging reads within 0.02% of 16 times at 10,000 pairs/s.
     command->sampleTimeMode = kLPADC_SampleTimeADCK7;
-    command->chainedNextCommandNumber = 2U;
+    command->chainedNextCommandNumber = next;
     LPADC_SetConvCommandConfig(ADC0, 1U, command);
-
-    // PIO0_16/ADC0_8 is CH0B, paired with voltage on PIO0_23/ADC0_0 (CH0A).
-    command->sampleChannelMode = kLPADC_SampleChannelSingleEndSideB;
-    command->sampleTimeMode = kLPADC_SampleTimeADCK3;
-    command->chainedNextCommandNumber = current_next;
-    LPADC_SetConvCommandConfig(ADC0, 2U, command);
 }
 
 void target_sense_configure_monitor(uint32_t rate_hz) {
     lpadc_conv_command_config_t command;
-    configure_pair_commands(monitor_average_mode(rate_hz), 3U, &command);
+    configure_pair_command(monitor_average_mode(rate_hz), 2U, &command);
 
     command.channelNumber = 2U;
     command.sampleChannelMode = kLPADC_SampleChannelSingleEndSideA;
     // Keep the range-state conversion fresh so gain changes appear in the next captured pair.
     command.hardwareAverageMode = kLPADC_HardwareAverageCount1;
+    command.sampleTimeMode = kLPADC_SampleTimeADCK3;
     command.chainedNextCommandNumber = 0U;
-    LPADC_SetConvCommandConfig(ADC0, 3U, &command);
+    LPADC_SetConvCommandConfig(ADC0, 2U, &command);
 
     lpadc_conv_trigger_config_t trigger;
     LPADC_GetDefaultConvTriggerConfig(&trigger);
     trigger.targetCommandId = 1U;
     trigger.enableHardwareTrigger = true;
+    trigger.channelBFIFOSelect = 0U;
     LPADC_SetConvTriggerConfig(ADC0, ENERGY_TRIGGER, &trigger);
 }
 
@@ -241,31 +240,27 @@ target_sense_status_t target_sense_convert_pair_for_calibration(uint16_t* voltag
     lpadc_conv_command_config_t command;
     // The capture's sample time with the most averaging: averaging leaves the transfer alone and
     // takes the noise out of the points every later reading is scaled by.
-    configure_pair_commands(kLPADC_HardwareAverageCount128, 0U, &command);
+    configure_pair_command(kLPADC_HardwareAverageCount128, 0U, &command);
 
     lpadc_conv_trigger_config_t trigger;
     LPADC_GetDefaultConvTriggerConfig(&trigger);
     trigger.targetCommandId = 1U;
     trigger.enableHardwareTrigger = false;
+    trigger.channelBFIFOSelect = 0U;
     LPADC_SetConvTriggerConfig(ADC0, SENSE_TRIGGER, &trigger);
     LPADC_DoSoftwareTrigger(ADC0, 1UL << SENSE_TRIGGER);
 
-    bool voltage_found = false;
-    bool current_found = false;
+    // The voltage's result, then the current's (configure_pair_command).
+    uint32_t found = 0U;
     lpadc_conv_result_t result;
-    for (uint32_t i = 0U; i < SENSE_RESULT_POLLS && !(voltage_found && current_found); i++) {
-        if (!LPADC_GetConvResult(ADC0, &result, 0U)) {
+    for (uint32_t i = 0U; i < SENSE_RESULT_POLLS && found < 2U; i++) {
+        if (!LPADC_GetConvResult(ADC0, &result, 0U) || (result.commandIdSource != 1U)) {
             continue;
         }
-        if (result.commandIdSource == 1U) {
-            *voltage_code = result.convValue;
-            voltage_found = true;
-        } else if (result.commandIdSource == 2U) {
-            *current_code = result.convValue;
-            current_found = true;
-        }
+        *((found == 0U) ? voltage_code : current_code) = result.convValue;
+        found++;
     }
-    status = (voltage_found && current_found) ? TARGET_SENSE_OK : TARGET_SENSE_NO_RESULT;
+    status = (found == 2U) ? TARGET_SENSE_OK : TARGET_SENSE_NO_RESULT;
     return energy_monitor_resume() ? status : TARGET_SENSE_NO_RESULT;
 }
 

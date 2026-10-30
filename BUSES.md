@@ -62,7 +62,7 @@ contends with any other.
 | DMA0 | 8 then 2 | Flexcomm 0 and 1 FIFOs to the consoles' receive rings | Whenever console bytes arrive |
 | DMA0 | 2 then 8 | The consoles' send buffers to Flexcomm 0 and 1 FIFOs | Each send from the host |
 | DMA0 | 11, 2 | Descriptors: channel entries and SWO's ring in `dap_shared`, the consoles' rings in SRAM0 | Each send, and each segment of a ring |
-| DMA0 | 10, 2, 11 | ADC0 RESFIFO to the energy ring in SRAM0, two segments of 16 to 1024 words, about 10 ms each at the capture's rate; channel 21's table entry in `dap_shared`, its reload descriptors in SRAM0 | While energy capture runs, except during a read-latency measurement; nine DMA reads per voltage/current/range sample, the two after each result reading an empty FIFO; at most about 200 interrupts/s below 11,378 pairs/s, about 879/s at 100 kpair/s |
+| DMA0 | 10, 2, 11 | ADC0 RESFIFO to the energy ring in SRAM0, two segments of 16 to 1024 words, about 10 ms each at the capture's rate; channel 21's table entry in `dap_shared`, its reload descriptors in SRAM0 | While energy capture runs, except during a read-latency measurement; about seven DMA reads per voltage/current/range sample, measured: the voltage's and the current's results arrive together, and up to two reads after each burst find the FIFO empty; at most about 200 interrupts/s below 14,629 pairs/s, about 684/s at 100 kpair/s |
 | USB HS controller | 11 | Endpoint buffers in USB SRAM | Every USB transfer |
 | CPU 0 | 0, 2 | Code and data | Always |
 | CPU 0 | 9, 11 | USB device regs and buffers (TinyUSB) | Every USB transfer |

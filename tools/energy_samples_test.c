@@ -16,8 +16,8 @@ static uint32_t nanoamps(uint16_t code, bool low) {
 static void feed_pair(struct energy_integration* energy, energy_total_t* total, uint16_t voltage, uint16_t current,
                       bool low) {
     energy_consume_result(energy, word(1U, voltage), total);
-    energy_consume_result(energy, word(2U, current), total);
-    energy_consume_result(energy, word(3U, low ? 65535U : 0U), total);
+    energy_consume_result(energy, word(1U, current), total);
+    energy_consume_result(energy, word(2U, low ? 65535U : 0U), total);
 }
 
 static void expect_pair(energy_total_t* total, uint16_t voltage, uint32_t shunt_na) {
@@ -73,23 +73,39 @@ int main(void) {
         assert(!energy_sample_feed(&decoder, 0U));
         assert(!energy_sample_feed(&decoder, 0x81000001U));
     }
+    // A range with no pair before it, and a command the capture does not use, are not a sample.
     assert(!energy_sample_feed(&decoder, word(2U, 10U)));
     assert(!energy_sample_feed(&decoder, word(3U, 20U)));
+    // Command 1's two results: the voltage, then the current.
     assert(!energy_sample_feed(&decoder, word(1U, 32768U)));
     assert(!energy_sample_feed(&decoder, 0U));
-    assert(!energy_sample_feed(&decoder, word(2U, 123U)));
-    assert(energy_sample_feed(&decoder, word(3U, 32768U)));
+    assert(!energy_sample_feed(&decoder, word(1U, 123U)));
+    assert(!energy_sample_feed(&decoder, word(3U, 7U)));
+    assert(energy_sample_feed(&decoder, word(2U, 32768U)));
     assert(decoder.sequence == 1U && decoder.have_sample);
     assert(decoder.last_voltage == 32768U && decoder.last_current == 123U && decoder.last_range == 32768U);
     decoder.sequence = UINT32_MAX;
     assert(!energy_sample_feed(&decoder, word(1U, 1U)));
     decoder.phase = ENERGY_EXPECT_VOLTAGE;
     assert(!energy_sample_feed(&decoder, word(2U, 2U)));
-    assert(!energy_sample_feed(&decoder, word(3U, 3U)));
     assert(!energy_sample_feed(&decoder, word(1U, 4U)));
-    assert(!energy_sample_feed(&decoder, word(2U, 5U)));
-    assert(energy_sample_feed(&decoder, word(3U, 6U)));
-    assert(decoder.sequence == 0U && decoder.have_sample && decoder.last_voltage == 4U);
+    assert(!energy_sample_feed(&decoder, word(1U, 5U)));
+    assert(energy_sample_feed(&decoder, word(2U, 6U)));
+    assert(decoder.sequence == 0U && decoder.have_sample && decoder.last_voltage == 4U && decoder.last_current == 5U);
+    // The end of a pair this decoder joined late: its current and range, then a whole pair.
+    assert(!energy_sample_feed(&decoder, word(1U, 100U)));
+    assert(!energy_sample_feed(&decoder, word(2U, 101U)));
+    assert(!energy_sample_feed(&decoder, word(1U, 102U)));
+    assert(!energy_sample_feed(&decoder, word(1U, 103U)));
+    assert(energy_sample_feed(&decoder, word(2U, 104U)));
+    assert(decoder.last_voltage == 102U && decoder.last_current == 103U && decoder.last_range == 104U);
+    // A pair whose range was not seen: its successor's voltage starts afresh.
+    assert(!energy_sample_feed(&decoder, word(1U, 7U)));
+    assert(!energy_sample_feed(&decoder, word(1U, 8U)));
+    assert(!energy_sample_feed(&decoder, word(1U, 9U)));
+    assert(!energy_sample_feed(&decoder, word(1U, 10U)));
+    assert(energy_sample_feed(&decoder, word(2U, 11U)));
+    assert(decoder.last_voltage == 9U && decoder.last_current == 10U);
 
     energy_total_t total = {0};
     energy_total_add(&total, 3300U * 1000U, 4194304U);

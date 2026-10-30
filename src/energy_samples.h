@@ -44,13 +44,17 @@ static inline bool energy_sample_feed(energy_sample_decoder_t* decoder, uint32_t
         return false;
     }
     uint32_t const command = (result >> 24U) & 15U;
-    if (command == 1U) {
-        decoder->voltage = (uint16_t)result;
-        decoder->phase = ENERGY_EXPECT_CURRENT;
-    } else if (command == 2U && decoder->phase == ENERGY_EXPECT_CURRENT) {
+    // Command 1 converts the voltage and the current at once and leaves the voltage's result first
+    // (src/target_sense.c, configure_pair_command); command 2, the range state, ends the pair. Only
+    // the order tells the two command 1 results apart, so a range that ends a pair not seen whole
+    // drops it, and the next one starts afresh.
+    if (command == 1U && decoder->phase == ENERGY_EXPECT_CURRENT) {
         decoder->current = (uint16_t)result;
         decoder->phase = ENERGY_EXPECT_RANGE;
-    } else if (command == 3U && decoder->phase == ENERGY_EXPECT_RANGE) {
+    } else if (command == 1U) {
+        decoder->voltage = (uint16_t)result;
+        decoder->phase = ENERGY_EXPECT_CURRENT;
+    } else if (command == 2U && decoder->phase == ENERGY_EXPECT_RANGE) {
         decoder->last_voltage = decoder->voltage;
         decoder->last_current = decoder->current;
         decoder->last_range = (uint16_t)result;
@@ -58,6 +62,8 @@ static inline bool energy_sample_feed(energy_sample_decoder_t* decoder, uint32_t
         decoder->have_sample = true;
         decoder->phase = ENERGY_EXPECT_VOLTAGE;
         return true;
+    } else if (command == 2U) {
+        decoder->phase = ENERGY_EXPECT_VOLTAGE;
     }
     return false;
 }

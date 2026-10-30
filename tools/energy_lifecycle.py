@@ -21,10 +21,10 @@ def check_sequences(c, setup, result, rate):
             codes = [rng.randrange(1, 65536) for _ in range(count)]
             words = []
             for code in codes:
-                words.extend((result(1, code), result(2, 1), result(3, 0), 0, 0, 0, 0, 0, 0))
+                words.extend((result(1, code), result(1, 1), result(2, 0), 0, 0, 0, 0, 0, 0))
             partial = rng.randrange(3)
             next_code = rng.randrange(1, 65536)
-            extra = [result(1, next_code), result(2, 1), result(3, 0)]
+            extra = [result(1, next_code), result(1, 1), result(2, 0)]
             words.extend(extra[:partial])
             pending = rng.choice((False, True))
             processed = 0

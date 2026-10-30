@@ -72,8 +72,9 @@ class Adc:
             commands = tuple(int.from_bytes(self.page[at:at + 4], "little") for at in range(0x100, 0x118, 4))
             self.software_commands.append(commands)
             self.fifo.append(0x81002345)  # An on-demand conversion, not energy trigger 7.
-            if commands[1] >> 24 == 2:
-                self.fifo.append(0x82001234)
+            if (commands[0] >> 5) & 3 == 3:
+                # A dual single-ended conversion: side B's result after side A's, both in FIFO0.
+                self.fifo.append(0x81001234)
         self.page[offset:offset + size] = value.to_bytes(size, "little")
 
 
@@ -257,7 +258,8 @@ class CircuitAdc(Adc):
             loads = self.gpio.out[1] & sum(1 << pin for pin in Circuit.LOADS)
             self.states.append((self.gpio.q, loads))
             voltage, current = self.circuit.codes(self.gpio.out[1], self.gpio.q == 1)
-            self.fifo += [0x81000000 | voltage, 0x82000000 | current]
+            # One dual single-ended conversion: the voltage's result, then the current's.
+            self.fifo += [0x81000000 | voltage, 0x81000000 | current]
             self.page[offset:offset + size] = value.to_bytes(size, "little")
             return
         super().write(uc, offset, size, value, data)
@@ -453,6 +455,7 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1, layout)
 
 
 CTIMER2_BASE = 0x40028000
+CTIMER2_MR3 = CTIMER2_BASE + 0x24
 
 
 class Trigger:
@@ -639,18 +642,19 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
 
         return probe, dma, adc, put, get, local, written, feed, pause, total, hook
 
-    limits = ((1794, 7), (3575, 6), (7096, 5), (13969, 4), (27088, 3), (51063, 2), (91603, 1), (100000, 0))
+    limits = ((3323, 7), (6596, 6), (13001, 5), (25263, 4), (47808, 3), (86330, 2), (100000, 1))
     # Each limit's last request and the next, and the segment sizes' boundaries.
-    rates = (1, 10, 177, 179, 355, 356, 1000, 1795, 1796, 3576, 3577, 7096, 7097, 11377, 11379, 13971, 13972,
-             27095, 27096, 51091, 51092, 91690, 91691, 100000)
+    rates = (1, 10, 228, 229, 457, 458, 1000, 3323, 3324, 6596, 6597, 6598, 13002, 13003, 14628, 14629, 25269, 25270,
+             47832, 47833, 86408, 86409, 100000)
 
     def check_commands(words, average, calibration):
-        tail = 0 if calibration else 3
-        # The voltage samples for ADCK7 (CMDH[STS] 2), the current for ADCK3.
-        expected = (0x80, (2 << 24) | (average << 12) | (2 << 8), 0xA0, (tail << 24) | (average << 12))
-        c.check(words[:4] == expected, "ADC voltage/current channel, resolution, averaging, timing or chain changed")
+        tail = 0 if calibration else 2
+        # Voltage and current as one dual single-ended conversion of CH0 (CMDL[CTYPE] 3), both
+        # sampling for ADCK7 (CMDH[STS] 2).
+        expected = (0xE0, (tail << 24) | (average << 12) | (2 << 8))
+        c.check(words[:2] == expected, "ADC voltage/current channel, resolution, averaging, timing or chain changed")
         if not calibration:
-            c.check(words[4:] == (0x82, 0), "ADC range command is not a fresh unaveraged side-A conversion")
+            c.check(words[2:4] == (0x82, 0), "ADC range command is not a fresh unaveraged side-A conversion")
 
     for rate in rates:
         probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
@@ -661,14 +665,19 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         average = next(average for limit, average in limits if actual <= limit)
         words = tuple(int.from_bytes(adc.page[at:at + 4], "little") for at in range(0x100, 0x118, 4))
         check_commands(words, average, False)
+        # The pair, 27 + 28 N cycles of the ADC's FRO_HF / 8 clock, fits the conversion timer's
+        # period of two match intervals, whatever rate the request rounded to.
+        ticks = int.from_bytes(probe.uc.mem_read(CTIMER2_MR3, 4), "little") + 1
+        c.check((27 + 28 * (1 << average)) * 8 <= 2 * ticks,
+                f"{rate} pairs/s: {1 << average} averages overrun a period of {ticks} ticks a half")
         c.check(int.from_bytes(adc.page[0xBC:0xC0], "little") == 0x01000001,
                 "ADC monitor is not hardware trigger 7 starting at command 1")
-        # About 10 ms of the ring's nine words a pair: a power of two, no longer than 10 ms and over
+        # About 10 ms of the ring's seven words a pair: a power of two, no longer than 10 ms and over
         # 5, within 16 to 1024 words.
         segment = probe.energy.get("segment_words", 4)
         counts = [probe.energy.get("descriptors", 4, 16 * i) >> 16 & 0x3ff for i in range(2)]
         c.check(segment & (segment - 1) == 0 and 16 <= segment <= 1024 and
-                (segment * 100 <= actual * 9 or segment == 16) and (segment * 200 > actual * 9 or segment == 1024) and
+                (segment * 100 <= actual * 7 or segment == 16) and (segment * 200 > actual * 7 or segment == 1024) and
                 counts == [segment - 1] * 2 and dma.get(0x408 + 21 * 16) >> 16 & 0x3ff == segment - 1,
                 f"{actual} pairs/s: segments of {segment} words, descriptors count {counts}")
         probe.uc.hook_del(hook)
@@ -794,8 +803,8 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     probe.uc.hook_del(hook)
 
     probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
-    feed([result(1, 32768), result(2, 1), result(3, 0), result(1, 16384), result(2, 1)])
-    adc.fifo = [result(3, 0)]
+    feed([result(1, 32768), result(1, 1), result(2, 0), result(1, 16384), result(1, 1)])
+    adc.fifo = [result(2, 0)]
     adc.active_reads = 3
     written(5)
     pause()
@@ -810,13 +819,13 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     codes = [8192 * (i % 3 + 1) for i in range(113)]
     words = [0] * 1024
     for i, code in enumerate(codes):
-        words[i * 9:i * 9 + 3] = [result(1, code), result(2, 1), result(3, 0)]
+        words[i * 9:i * 9 + 3] = [result(1, code), result(1, 1), result(2, 0)]
     words[-1] = result(1, 49152)
     feed(words)
     probe.integrate()
     put("energy_segments", 1)
     total(codes)
-    feed([result(2, 1), result(3, 0), result(1, 4096)], 1024)
+    feed([result(1, 1), result(2, 0), result(1, 4096)], 1024)
     written(1027)
     reply = probe.command(bytes([0x90, 1]))
     c.check(len(reply) == 21 and reply[2] == 0 and int.from_bytes(reply[3:5], "little") == 49152 and
@@ -847,8 +856,13 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     c.check(len(reply) == 7 and reply[1] == 0, "on-demand sense/resume failed")
     c.check((adc.software_commands[-1][1] >> 8) & 7 == 5, "on-demand sensing lost its ADCK35 sample time")
     c.check(probe.energy.get("running", 1) == 1, "sense did not resume capture")
+    # The sense read borrowed command 1; the resume gives it back to the dual pair.
+    average = next(average for limit, average in limits if FIXTURE_RATE <= limit)
+    restored = tuple(int.from_bytes(adc.page[at:at + 4], "little") for at in range(0x100, 0x110, 4))
+    c.check(restored == (0xE0, (2 << 24) | (average << 12) | (2 << 8), 0x82, 0),
+            f"after a sense read, the capture's commands are {[hex(w) for w in restored]}")
     total(codes)
-    feed([result(2, 1), result(3, 0), result(1, 32768), result(2, 1), result(3, 0)])
+    feed([result(1, 1), result(2, 0), result(1, 32768), result(1, 1), result(2, 0)])
     written(5)
     reply = probe.command(bytes([0x90, 1]))
     c.check(reply[2] == 0 and int.from_bytes(reply[7:11], "little") == 115,
@@ -878,7 +892,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         for i in range((counted + 1) * size + min(17, size - 1)):
             sample, phase = divmod(i, 9)
             code = 4096 * (sample % 15 + 1)
-            stream.append(result(phase + 1, code if phase == 0 else 1 if phase == 1 else 0) if phase < 3 else 0)
+            stream.append(result(2 if phase == 2 else 1, code if phase == 0 else 1 if phase == 1 else 0) if phase < 3 else 0)
             if phase == 2:
                 codes.append(code)
         for index in range(counted):
@@ -948,7 +962,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         decoder[12:16] = u32(0xffffffff)
         decoder[16] = 1
         probe.energy.write("decoder", bytes(decoder))
-        words = [result(i % 9 + 1, 32768 if i % 9 == 0 else 1 if i % 9 == 1 else 0)
+        words = [result(2 if i % 9 == 2 else 1, 32768 if i % 9 == 0 else 1 if i % 9 == 1 else 0)
                  if i % 9 < 3 else 0 for i in range(1024)]
         feed(words, 1024 if byte_wrap else 0)
         probe.integrate()
@@ -960,7 +974,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
                 "energy byte/segment/sample counter wrap lost samples")
         probe.uc.hook_del(hook)
     probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
-    feed([result(1, 32768), result(2, 1), result(3, 0)])
+    feed([result(1, 32768), result(1, 1), result(2, 0)])
     written(3)
     pause()
     total([32768])
@@ -974,11 +988,11 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
 
     # A new start forgets the pair latest gave in the capture before, whose sequence was higher.
     probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
-    feed([result(1, 32768), result(2, 1), result(3, 0)] * 2)
+    feed([result(1, 32768), result(1, 1), result(2, 0)] * 2)
     written(6)
     before = probe.command(bytes([0x90, 1]))
     c.check(probe.call("energy_capture_start", 1) == 1, "the second start failed")
-    feed([result(1, 16384), result(2, 1), result(3, 0)])
+    feed([result(1, 16384), result(1, 1), result(2, 0)])
     written(3)
     after = probe.command(bytes([0x90, 1]))
     c.check(int.from_bytes(before[7:11], "little") == 2 and int.from_bytes(after[7:11], "little") == 1 and
@@ -1001,7 +1015,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
             ("under the limit again", [10000] * samples, [0] * samples, 1))):
         put("energy_range_retry_pending", 0, 1)
         words = [word for current, state in zip(currents, ranges)
-                 for word in (result(1, 32768), result(2, current), result(3, state))]
+                 for word in (result(1, 32768), result(1, current), result(2, state))]
         feed(words + [0] * (1024 - len(words)), segment * 1024)
         put("energy_segments", segment)
         probe.integrate()
@@ -1037,7 +1051,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         return q32
 
     def words(capture):
-        return [w for voltage, code, low in capture for w in (result(1, voltage), result(2, code), result(3, 65535 if low else 0))]
+        return [w for voltage, code, low in capture for w in (result(1, voltage), result(1, code), result(2, 65535 if low else 0))]
 
     def accumulated():
         return (get("energy_accumulator_pairs", 8), get("energy_accumulator_pj", 8), get("energy_accumulator_fraction_q32"))
@@ -1103,7 +1117,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     probe.uc.hook_del(hook)
     for fault in ("IRQ error", "pending error", "FIFO overflow"):
         probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
-        words = [result(1, 32768), result(2, 1), result(3, 0)] + [0] * 1021
+        words = [result(1, 32768), result(1, 1), result(2, 0)] + [0] * 1021
         feed(words)
         probe.integrate()
         put("energy_segments", 1)
@@ -1190,8 +1204,8 @@ def check_calibration(c, elf, symbols, offsets, model_syscon):
                       for low in (1, 0)}
         c.check(loads_seen[1] == low_loads and loads_seen[0] == high_loads,
                 f"{setting_ma} mA: loads by latch state {loads_seen}")
-        c.check(all((words[1] >> 12) & 7 == 7 and (words[3] >> 12) & 7 == 7 for words in adc.software_commands),
-                f"{setting_ma} mA: a calibration conversion averaged fewer than 128 times")
+        c.check(all((words[0] >> 5) & 3 == 3 and (words[1] >> 12) & 7 == 7 for words in adc.software_commands),
+                f"{setting_ma} mA: a calibration conversion was not one dual pair averaged 128 times")
         c.check(gpio.out[1] & ((1 << Circuit.CAL_DISC) | sum(1 << pin for pin in Circuit.LOADS)) == 0 and
                 gpio.function_29() == 7 and not gpio.dir[0] >> 29 & 1 and not gpio.out[0] >> 17 & 1,
                 f"{setting_ma} mA: calibration left the target isolated, a load on or the comparator off the latch")
@@ -1279,7 +1293,7 @@ def check_stream(c, setup, result, local_symbols):
     def pairs(n, first=0):
         words = []
         for i in range(n):
-            words += [result(1, 1000 + first + i), result(2, 2000 + first + i), result(3, 65535 if i % 2 else 0)]
+            words += [result(1, 1000 + first + i), result(1, 2000 + first + i), result(2, 65535 if i % 2 else 0)]
         return words
 
     probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()

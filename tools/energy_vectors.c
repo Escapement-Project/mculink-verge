@@ -143,9 +143,10 @@ static void print_sequence(const vector_tables_t* tables, uint32_t rate, uint32_
         }
         uint16_t const voltage = (uint16_t)(0x8000U + (lcg() % 0x4000U));
         uint16_t const current = (uint16_t)(lcg() & 0xFFFFU);
+        // A capture's three results: command 1's voltage and current, then command 2's range.
         energy_consume_result(&energy, 0x81070000U | voltage, &total);
-        energy_consume_result(&energy, 0x82070000U | current, &total);
-        energy_consume_result(&energy, 0x83070000U | (low ? 0xFFFFU : 0U), &total);
+        energy_consume_result(&energy, 0x81070000U | current, &total);
+        energy_consume_result(&energy, 0x82070000U | (low ? 0xFFFFU : 0U), &total);
         printf("%s[%u, %u, %u]", separator, voltage, current, low ? 1U : 0U);
         separator = ", ";
     }

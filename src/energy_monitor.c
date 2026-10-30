@@ -34,12 +34,14 @@
      DMA_CHANNEL_XFERCFG_SRCINC(0U) | DMA_CHANNEL_XFERCFG_DSTINC(1U) |                                \
      DMA_CHANNEL_XFERCFG_XFERCOUNT((words) - 1U))
 
-/** Ring words a pair takes: three results, and DMA0 reads the FIFO three times for each. The
- *  watermark request is still raised for two reads after the one that empties the FIFO, and
- *  those read an empty FIFO. UM11126 asks for a watermark of at least 2 with DMA, and the
- *  watermark stays at 0 regardless: at 2 the request sometimes stops one result short, so a pair's
- *  last results wait in the FIFO for the next pair's and the latest reply runs a pair behind. */
-#define ENERGY_WORDS_PER_PAIR 9U
+/** Ring words a pair takes on average: its three results, and the empty reads after them. The
+ *  watermark request is still raised for two reads after the one that empties the FIFO, and those
+ *  read an empty FIFO. The voltage's and the current's results land together, so a pair took 6.9
+ *  to 7.0 words at every rate, measured, and 5 to 9 any one pair; converted one after the other
+ *  they took 9. UM11126 asks for a watermark of at least 2 with DMA, and the watermark stays at 0
+ *  regardless: at 2 the request sometimes stops one result short, so a pair's last results wait in
+ *  the FIFO for the next pair's and the latest reply runs a pair behind. */
+#define ENERGY_WORDS_PER_PAIR 7U
 /** DMA0 has one completion flag a channel, so two segment ends must not come closer together than
  *  CPU 0's interrupt takes. Any 16 words span a gap between pairs. */
 #define ENERGY_SEGMENT_MIN_WORDS 16U
