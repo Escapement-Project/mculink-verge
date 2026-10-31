@@ -122,11 +122,10 @@ struct sched {
 
 /* Static rather than on the stack: it is the largest thing here. */
 static struct sched sched;
-static struct gen_event sched_events[256];
 
 static void sched_reset(struct sched* s, const struct gen_cfg* cfg) {
     s->cfg = cfg;
-    gen_schedule_reset(&s->q, sched_events, sizeof sched_events / sizeof sched_events[0]);
+    gen_schedule_reset(&s->q, gen_events, 256U);
     s->t = 0U;
     s->last_fall = 0U;
     s->last_rise = 0U;

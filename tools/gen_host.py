@@ -19,6 +19,8 @@ headers, which the generator's quoted includes would otherwise resolve to src/.
 """
 
 import argparse
+import hashlib
+from pathlib import Path
 import concurrent.futures
 import os
 import shutil
@@ -82,6 +84,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--jobs", type=int, choices=(1, 2, 4), default=1,
                     help="independent compiler variants to run at once")
+    ap.add_argument("--output", type=Path, help="save the agreed configuration hashes for a later comparison")
+    ap.add_argument("--reference", type=Path, help="require the sweep to match a saved output exactly")
     args = ap.parse_args()
     for tool in ("gcc", "clang", "arm-none-eabi-gcc", "qemu-system-arm"):
         if shutil.which(tool) is None:
@@ -120,6 +124,11 @@ def main() -> int:
             first = next((i for i, (a, b) in enumerate(zip(ours, reference.splitlines())) if a != b), len(ours))
             print(f"  {label} differs from host gcc first at configuration {first}")
         return 1
+    if args.reference and args.reference.read_text() != reference:
+        raise SystemExit(f"generated output differs from {args.reference}")
+    if args.output:
+        args.output.write_text(reference)
+    print(f"  sweep sha256 {hashlib.sha256(reference.encode()).hexdigest()}")
     built = sum(1 for line in reference.splitlines() if line.split()[2] == "1")
     transfers = sum(1 for line in reference.splitlines() if line.startswith("4a") and line.split()[-1] == "1")
     print(f"  all four agree on {lines} configurations ({built} built, {lines - built} refused;"

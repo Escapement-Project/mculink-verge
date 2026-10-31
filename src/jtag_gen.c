@@ -134,7 +134,6 @@ struct block {
 };
 
 static struct gen_schedule layout;
-static struct gen_event layout_events[SLOTS_MAX + 8U];
 
 static uint32_t later(uint32_t a, uint32_t b) { return a > b ? a : b; }
 
@@ -170,7 +169,7 @@ static bool finish(struct block* b, uint32_t cycles) {
  * instructions fit. */
 static bool try_four_wire(struct block* b, uint32_t cycles, uint32_t at) {
     const uint32_t sample = at % cycles;
-    gen_schedule_reset(&layout, layout_events, sizeof layout_events / sizeof layout_events[0]);
+    gen_schedule_reset(&layout, gen_events, SLOTS_MAX + 8U);
     put(0U, S_FALL);
     put(cycles / 2U, S_RISE);
     if (gen_taken(&layout, sample)) {
@@ -260,7 +259,7 @@ static bool layout_two_pin(struct block* b, uint32_t period, uint32_t latency, b
     const uint32_t high = p - low;
     b->blocks = shape_escapes(shape) ? 1U : BLOCKS;
     b->masked = p < TWO_PIN_MASK_WHOLE_BELOW;
-    gen_schedule_reset(&layout, layout_events, sizeof layout_events / sizeof layout_events[0]);
+    gen_schedule_reset(&layout, gen_events, SLOTS_MAX + 8U);
     put(0U, S_FALL);
     put(1U, S_TAKE_PIN);
     put(2U, S_TAKE_TXEN);
@@ -600,8 +599,6 @@ struct xfer {
 };
 
 static struct xfer xs;
-/* A two-pin transfer is up to 59 frames of about twenty events. */
-static struct gen_event xfer_events[1280];
 
 /** Whether a four-wire clock not laid yet puts an edge on `cycle`, if the clocks to come are like
  * the last one. */
@@ -1213,7 +1210,7 @@ static bool lay_xfer(const struct xfer_cfg* c, bool read, uint32_t p) {
                        .first = UINT32_MAX,
                        .uniform = c->loop,
                        .offset = UINT32_MAX};
-    gen_schedule_reset(&x->q, xfer_events, sizeof xfer_events / sizeof xfer_events[0]);
+    gen_schedule_reset(&x->q, gen_events, 1280U);
     x->p = p;
     if (c->two_pin) {
         x->low = p == 3U ? 2U : p / 2U;

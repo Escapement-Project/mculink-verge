@@ -38,6 +38,9 @@ struct gen_event {
     uint32_t insn;
 };
 
+/** Generators run serially. Consume or copy a schedule before resetting this workspace. */
+extern struct gen_event gen_events[];
+
 /** Instructions on cycles, sorted by cycle, at most one a cycle, in storage its user provides. */
 struct gen_schedule {
     struct gen_event* ev;
