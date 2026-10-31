@@ -67,6 +67,27 @@ static void test_header(void) {
     assert(take(&stream, &length) == NULL);
 }
 
+static void test_identified_header(void) {
+    static struct energy_stream stream;
+    energy_capture_id_t id = {.bytes = {[16] = 1U}};
+    assert(energy_identity_matches(&id, id.bytes));
+    for (uint32_t i = 0U; i < sizeof(id.bytes); i++) {
+        energy_capture_id_t stale = id;
+        stale.bytes[i] ^= 1U;
+        assert(!energy_identity_matches(&id, stale.bytes));
+    }
+    energy_capture_id_t const zero = {0};
+    assert(!energy_identity_matches(&zero, zero.bytes));
+    energy_stream_header_t const header = {
+        .rate_hz = 1000U, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = 1U,
+        .previous_low = true, .low = &low, .high = &high, .capture_id = &id};
+    assert(energy_stream_begin(&stream, &header));
+    uint16_t length = 0U;
+    uint8_t const* message = take(&stream, &length);
+    assert(message != NULL && length == 92U && message[1] == 2U);
+    assert(memcmp(message + 68U, id.bytes, sizeof(id.bytes)) == 0);
+}
+
 /** 99 pairs a message at most, evenly spaced, each message timed from the capture's start; the
  *  32-bit stamps wrap partway. */
 static void test_pairs(void) {
@@ -756,6 +777,7 @@ static void test_ns(void) {
 
 int main(void) {
     test_header();
+    test_identified_header();
     test_pairs();
     test_ten_ms();
     test_holds();

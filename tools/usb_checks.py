@@ -461,6 +461,79 @@ def check_aux_stream(c, elf0, elf1, symbols0, symbols1, fields, layout):
         sent = drain(usb)
         c.check(sent == [want], f"aux {payload.hex()} with available {available}, running {running}, error {error}: {[m.hex() for m in sent]}")
 
+    # A protected attach discards A's pending header and binds B's identity to the first new header.
+    token = bytes(range(16)) + (2).to_bytes(8, "little")
+    stale = bytes(range(16)) + (1).to_bytes(8, "little")
+    usb = fresh()
+    capture(usb)
+    usb.cpu0.uc.mem_write(usb.energy + layout["capture_id"], token)
+    publish(usb, b"\xa1\x01" + bytes(66))
+    publish(usb, b"\xa0" + bytes(15))
+    arrive(usb, b"\x90\x0a\x00")
+    sent = drain(usb)
+    c.check(len(sent) == 2 and sent[0] == b"\x90\x00\x00" and len(sent[1]) == 92
+            and sent[1][:2] == b"\xa1\x02" and sent[1][68:] == token,
+            f"protected attach boundary: {[m.hex() for m in sent]}")
+    for candidate, result in ((stale, 8), (bytes(24), 8), (token, 0), (token, 0)):
+        before = bytes(usb.cpu0.uc.mem_read(usb.energy, symbols0["energy_integration"][1]))
+        arrive(usb, b"\x90\x0d" + candidate)
+        sent = drain(usb)
+        c.check(sent[:1] == [bytes([0x90, 0, result])], f"conditional stream end {candidate.hex()}: {sent}")
+        if result == 8:
+            c.check(bytes(usb.cpu0.uc.mem_read(usb.energy, len(before))) == before,
+                    "stale stream end changed capture state")
+    for sequence in (1, 3):
+        field(usb, "capture_id_sequence", sequence)
+        arrive(usb, b"\x90\x0d" + token)
+        c.check(drain(usb) == [] and usb.call0("aux_has_work") == 0, "partial identity did not wait")
+        field(usb, "capture_id_sequence", sequence + 1)
+        c.check(drain(usb)[:1] == [b"\x90\x00\x00"], "published identity did not resume stop")
+    usb.put("energy_dma_error", 1, 1)
+    usb.put("energy_control_ack", 1)
+    for candidate, result in ((stale, 8), (token, 0)):
+        arrive(usb, b"\x90\x0d" + candidate)
+        c.check(drain(usb) == [bytes([0x90, 0, result])], "conditional stream cleanup hung after fault")
+
+    # CPU1 may publish a nonstream replacement after quiet release. An odd sequence prevents
+    # a mixed token from authorizing mode13 at any instruction in its snapshot/comparison.
+    a = bytes([0x11]) * 16 + (1).to_bytes(8, "little")
+    b = bytes([0x22]) * 16 + (2).to_bytes(8, "little")
+    mixed = a[:12] + b[12:]
+    usb = fresh()
+    capture(usb)
+    usb.cpu0.uc.mem_write(usb.energy + layout["capture_id"], a)
+    arrive(usb, b"\x90\x0d" + mixed)
+    trace = []
+    task, length = symbols0["aux_task"]
+    trace_hook = usb.cpu0.uc.hook_add(UC_HOOK_CODE, lambda uc, at, size, data: trace.append(at),
+                                    begin=task, end=task + length - 1)
+    usb.cpu0.uc.ctl_flush_tb()
+    drain(usb)
+    usb.cpu0.uc.hook_del(trace_hook)
+    for cut in range(len(trace)):
+        usb = fresh()
+        capture(usb)
+        usb.cpu0.uc.mem_write(usb.energy + layout["capture_id"], a)
+        arrive(usb, b"\x90\x0d" + mixed)
+        step = 0
+        def publish_identity(uc, at, size, data):
+            nonlocal step
+            if step == cut:
+                field(usb, "capture_id_sequence", 1)
+                uc.mem_write(usb.energy + layout["capture_id"], mixed)
+            if step == cut + 2:
+                uc.mem_write(usb.energy + layout["capture_id"], b)
+                field(usb, "capture_id_sequence", 2)
+            step += 1
+        interleave = usb.cpu0.uc.hook_add(UC_HOOK_CODE, publish_identity, begin=task, end=task + length - 1)
+        usb.cpu0.uc.ctl_flush_tb()
+        sent = drain(usb)
+        usb.cpu0.uc.hook_del(interleave)
+        usb.cpu0.uc.mem_write(usb.energy + layout["capture_id"], b)
+        field(usb, "capture_id_sequence", 2)
+        sent += drain(usb)
+        c.check(sent == [b"\x90\x00\x08"], f"partial identity at instruction {cut} accepted {sent}")
+
     # Mode 6 on a running capture: the reply, then the header from the next pair, then pairs.
     usb = fresh()
     capture(usb)

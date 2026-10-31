@@ -146,6 +146,7 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
 #define CJTAG_EXT_CAP_DIO_AUX (1U << 6)
 /// ID_VENDOR_MARK and the stream's markers message, set with CJTAG_EXT_CAP_ENERGY.
 #define CJTAG_EXT_CAP_MARKS (1U << 7)
+#define CJTAG_EXT_CAP_CAPTURE_ID (1U << 8)
 #ifdef SWD_CODEGEN
 #define CJTAG_CAPS_SWD CJTAG_CAP_SWD_CODEGEN
 #else
@@ -337,7 +338,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         }
         uint32_t const extended = (dap_shared.energy_available
                                        ? CJTAG_EXT_CAP_ENERGY | CJTAG_EXT_CAP_ENERGY_CALIBRATED |
-                                             CJTAG_EXT_CAP_ENERGY_ACCUMULATED | CJTAG_EXT_CAP_MARKS
+                                             CJTAG_EXT_CAP_ENERGY_ACCUMULATED | CJTAG_EXT_CAP_MARKS | CJTAG_EXT_CAP_CAPTURE_ID
                                        : 0U) |
                                   (pro_bus_available() ? CJTAG_EXT_CAP_SPI | CJTAG_EXT_CAP_I2C : 0U) |
                                   (dio_available() ? CJTAG_EXT_CAP_DIO_AUX : 0U);
@@ -521,24 +522,59 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
     case ID_VENDOR_ENERGY: {
         uint8_t const mode = request[1];
         response[1] = DAP_OK;
-        if ((mode == 0U) || (mode == 5U)) {
+        if ((mode == 0U) || (mode == 5U) || (mode == 8U) || (mode == 9U)) {
+            bool const streaming = (mode == 5U) || (mode == 9U);
+            bool const identified = (mode == 8U) || (mode == 9U);
             uint32_t const rate = (uint32_t)request[2] | ((uint32_t)request[3] << 8U) |
                                   ((uint32_t)request[4] << 16U) | ((uint32_t)request[5] << 24U);
             // Mode 5 starts a stream with the capture, and only Verge Aux carries a stream. Its last
             // byte is the DIO pins whose edges the stream reports.
-            if ((mode == 5U) && !dap_vendor_on_aux) {
+            if (streaming && !dap_vendor_on_aux) {
                 response[1] = DAP_ERROR;
                 return (7U << 16) | 2U;
             }
-            energy_monitor_status_t const status = (mode == 5U) ? energy_monitor_start_stream(rate, request[6])
-                                                                : energy_monitor_start(rate);
-            uint32_t const actual_rate = energy_monitor_rate();
+            energy_monitor_status_t const status = identified ? energy_monitor_start_identified(rate, streaming, streaming ? request[6] : 0U)
+                                                     : streaming ? energy_monitor_start_stream(rate, request[6])
+                                                                 : energy_monitor_start(rate);
+            uint32_t const actual_rate = identified && (status != ENERGY_MONITOR_OK) ? 0U : energy_monitor_rate();
             response[2] = (uint8_t)status;
             response[3] = (uint8_t)actual_rate;
             response[4] = (uint8_t)(actual_rate >> 8U);
             response[5] = (uint8_t)(actual_rate >> 16U);
             response[6] = (uint8_t)(actual_rate >> 24U);
-            return ((mode == 5U) ? (7U << 16) : (6U << 16)) | 7U;
+            if (identified) {
+                energy_capture_id_t capture_id = {0};
+                if (status == ENERGY_MONITOR_OK) {
+                    uint32_t unused = 0U;
+                    (void)energy_monitor_identity(&capture_id, &unused);
+                }
+                for (uint32_t i = 0U; i < ENERGY_IDENTITY_BYTES; i++) {
+                    response[7U + i] = capture_id.bytes[i];
+                }
+            }
+            return ((streaming ? 7U : 6U) << 16) | (identified ? 31U : 7U);
+        }
+        if (mode == 11U) {
+            response[2] = (uint8_t)energy_monitor_stop_identified(request + 2U);
+            return (26U << 16) | 3U;
+        }
+        if (mode == 12U) {
+            energy_capture_id_t capture_id = {0};
+            uint32_t rate = 0U;
+            energy_monitor_status_t const status = energy_monitor_identity(&capture_id, &rate);
+            response[2] = (uint8_t)status;
+            response[3] = status == ENERGY_MONITOR_OK ? 1U : 0U;
+            for (uint32_t i = 0U; i < 4U; i++) {
+                response[4U + i] = (uint8_t)(rate >> (8U * i));
+            }
+            for (uint32_t i = 0U; i < ENERGY_IDENTITY_BYTES; i++) {
+                response[8U + i] = capture_id.bytes[i];
+            }
+            return (2U << 16) | 32U;
+        }
+        if ((mode == 10U) || (mode == 13U)) {
+            response[1] = DAP_ERROR;
+            return ((mode == 10U ? 3U : 26U) << 16) | 2U;
         }
         if (mode == 1U) {
             energy_monitor_sample_t sample = {0};

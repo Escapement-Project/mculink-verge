@@ -264,8 +264,23 @@ static inline bool dap_packet_plan(const uint8_t* p, uint32_t length, uint32_t c
         if (length < 2U) {
             return false;
         }
-        in = p[1] == 0U ? 6U : p[1] == 4U ? 3U : p[1] == 5U ? 7U : 2U;
-        out = p[1] == 0U || p[1] == 5U ? 7U : p[1] == 1U ? 21U : p[1] == 2U ? 3U : p[1] == 3U ? 19U : p[1] == 4U ? 28U : 2U;
+        switch (p[1]) {
+        case 0U: case 8U: in = 6U; break;
+        case 4U: case 10U: in = 3U; break;
+        case 5U: case 9U: in = 7U; break;
+        case 11U: case 13U: in = 26U; break;
+        default: in = 2U; break;
+        }
+        switch (p[1]) {
+        case 0U: case 5U: out = 7U; break;
+        case 1U: out = 21U; break;
+        case 2U: case 10U: case 11U: case 13U: out = 3U; break;
+        case 3U: out = 19U; break;
+        case 4U: out = 28U; break;
+        case 8U: case 9U: out = 31U; break;
+        case 12U: out = 32U; break;
+        default: out = 2U; break;
+        }
         break;
     case 0x91:
         if (length < PRO_SPI_REQUEST_FIXED) {

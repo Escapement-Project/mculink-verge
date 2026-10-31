@@ -24,6 +24,7 @@
 #include <stdint.h>
 
 #include "energy_samples.h"
+#include "energy_identity.h"
 
 #define ENERGY_STREAM_SLOTS 16U
 #define ENERGY_STREAM_MESSAGE_MAX 512U
@@ -31,6 +32,7 @@
 #define ENERGY_STREAM_PAIR_BYTES 5U
 #define ENERGY_STREAM_PAIRS_FIXED 16U
 #define ENERGY_STREAM_HEADER_BYTES 68U
+#define ENERGY_STREAM_ID_HEADER_BYTES (ENERGY_STREAM_HEADER_BYTES + ENERGY_IDENTITY_BYTES)
 #define ENERGY_STREAM_END_BYTES 6U
 #define ENERGY_STREAM_HOLDS 8U
 /** Pairs messages leave this many slots for the header and end messages a stream needs. */
@@ -231,6 +233,7 @@ typedef struct {
     /** The stamping timer just after `dio_levels` was read. */
     uint32_t dio_stamp;
     uint16_t edge_resolution_ns;
+    energy_capture_id_t const* capture_id;
 } energy_stream_header_t;
 
 ENERGY_STREAM_INLINE void energy_stream_barrier(void) {
@@ -396,7 +399,7 @@ ENERGY_STREAM_INLINE bool energy_stream_begin(struct energy_stream* stream, ener
     }
     uint8_t* out = energy_stream_slot(stream);
     *out++ = ENERGY_STREAM_HEADER;
-    *out++ = 1U;
+    *out++ = header->capture_id != NULL ? 2U : 1U;
     out = energy_stream_u32(out, header->rate_hz);
     *out++ = header->setting;
     out = energy_stream_u16(out, header->full_scale_mv);
@@ -413,8 +416,13 @@ ENERGY_STREAM_INLINE bool energy_stream_begin(struct energy_stream* stream, ener
     }
     *out++ = header->dio_mask;
     *out++ = header->dio_levels;
-    (void)energy_stream_u16(out, header->edge_resolution_ns);
-    energy_stream_publish(stream, ENERGY_STREAM_HEADER_BYTES);
+    out = energy_stream_u16(out, header->edge_resolution_ns);
+    if (header->capture_id != NULL) {
+        for (uint32_t i = 0U; i < ENERGY_IDENTITY_BYTES; i++) {
+            *out++ = header->capture_id->bytes[i];
+        }
+    }
+    energy_stream_publish(stream, header->capture_id != NULL ? ENERGY_STREAM_ID_HEADER_BYTES : ENERGY_STREAM_HEADER_BYTES);
     // Whatever the pin interrupt recorded before is an earlier stream's.
     stream->edge_entries_read = stream->edge_entries_written;
     stream->edge_waiting = true;

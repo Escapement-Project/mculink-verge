@@ -8,6 +8,7 @@
 #include "fsl_device_registers.h"
 
 #include "energy_samples.h"
+#include "energy_identity.h"
 
 #define ENERGY_DMA_CHANNEL 21U
 #define ENERGY_DMA_MASK (1UL << ENERGY_DMA_CHANNEL)
@@ -22,6 +23,8 @@ typedef enum {
     ENERGY_MONITOR_BAD_ARGUMENT,
     ENERGY_MONITOR_ADC_ERROR,
     ENERGY_MONITOR_DMA_ERROR,
+    ENERGY_MONITOR_STALE_CAPTURE,
+    ENERGY_MONITOR_IDENTITY_ERROR,
 } energy_monitor_status_t;
 
 typedef struct {
@@ -57,6 +60,9 @@ void energy_monitor_calibrate(void);
 /** The same, with Verge Aux's stream beginning at its first pair (src/energy_stream.h) and reporting
  *  the edges of the DIO pins in `dio_mask` it can. */
 [[nodiscard]] energy_monitor_status_t energy_monitor_start_stream(uint32_t rate_hz, uint8_t dio_mask);
+[[nodiscard]] energy_monitor_status_t energy_monitor_start_identified(uint32_t rate_hz, bool stream, uint8_t dio_mask);
+[[nodiscard]] energy_monitor_status_t energy_monitor_identity(energy_capture_id_t* id, uint32_t* rate);
+[[nodiscard]] energy_monitor_status_t energy_monitor_stop_identified(uint8_t const* id);
 uint32_t energy_monitor_rate(void);
 
 /** Stop acquisition and leave the ADC ready for on-demand target-sense reads. */

@@ -59,6 +59,17 @@ int main(void) {
     check((uint8_t[]){0x93, 0}, 2U, 64U, false);
     prefixes((uint8_t[]){0x93, 0}, 2U, 67U);
 #endif
+    for (uint8_t mode = 8U; mode <= 13U; mode++) {
+        uint8_t bytes[64] = {0x90U, mode};
+        uint32_t const length = mode == 8U ? 6U : mode == 9U ? 7U : mode == 10U ? 3U : mode == 12U ? 2U : 26U;
+        uint32_t const reply = mode == 8U || mode == 9U ? 31U : mode == 12U ? 32U : 3U;
+        prefixes(bytes, length, reply);
+        assert(check(bytes, length, reply, true).produced == reply);
+        check(bytes, length, reply - 1U, false);
+        dap_packet_plan_t const padded = check(bytes, sizeof(bytes), reply, true);
+        assert(padded.consumed == length);
+
+    }
     for (uint32_t capacity = 64U; capacity <= 512U; capacity += 448U) {
         prefixes((uint8_t[]){0x11, 0x80, 0x96, 0x98, 0}, 5U, capacity);
         prefixes((uint8_t[]){0x06, 0, 1, 0, 0, 0x80, 0xff, 0, 0x80}, 9U, capacity);

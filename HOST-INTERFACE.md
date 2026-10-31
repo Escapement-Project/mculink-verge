@@ -39,6 +39,9 @@ Bits 0 and 4 are clear on the unsupported on-board variant. Bit 6 is clear if th
 disabled USB-SIO when the probe started.
 
 Format 6 extended-capability bit 0 advertises energy capture on Pro units with HW_VER_5 fitted.
+Bit 8 advertises capture identities and conditional stops (`0x90` modes 8–13). It is set with
+bit 0.
+
 Bit 2 advertises accumulated energy reads through `0x90` mode 3. Bits 3 and 4 advertise SPI and I2C
 bridges on Pro units when J15 leaves USB-SIO enabled. Bit 5 advertises calibrated fields appended to
 the `0x90` latest reply. Bit 6 advertises `0x8E` on Verge Aux, and is set with capability flag
@@ -181,6 +184,116 @@ The retained total does not account for lost samples.
 Raw ADC codes remain available in the reply prefix. Hosts can use the appended physical-unit fields
 when `calibrated-valid` is 1.
 
+### Capture identities
+
+An identity is 24 bytes: a 16-byte opaque boot value followed by an eight-byte little-endian
+capture counter. Hosts compare all 24 bytes and do not interpret the boot value. The all-zero
+identity means no capture has successfully started since this boot and is never accepted as a
+stop token.
+
+The firmware creates a boot value before the first successful start. It uses the hardware
+RNG's recommended initialization and entropy accumulation. A zero boot value is allowed: the
+nonzero counter keeps every successful capture's complete identity nonzero. It does not derive the value from the
+probe serial, a timer, uninitialized memory or a counter reset to zero. Entropy initialization has
+a bounded failure path. It never falls back to a fixed boot value.
+
+The counter starts at zero. Every successful start, including legacy modes 0 and 5, increments
+it and publishes a new identity before conversions begin. It never wraps: after UINT64_MAX,
+new starts fail with result 9 until a probe restart establishes a fresh boot value. The current
+capture continues. Pauses, holds, target supply changes and stream attach/detach keep the identity.
+
+Stop and failure retain the last identity with the retained total. A failed start does not
+publish a new identity. It may still pause or stop the old capture under the existing start
+failure rules; the old identity remains its identity. A probe restart clears the capture and
+retained identity. The next start uses the new boot value.
+
+Identities are scoped to a probe and identify a capture, not an authorized host. Any host can
+read an identity, attach to that capture and explicitly stop it. USB reconnection/re-enumeration
+makes a host discard cached ownership until it explicitly starts or attaches again.
+
+### Identity-aware requests
+
+All integers below are little-endian. `id[24]` is the identity above. Existing request and reply
+sizes stay unchanged, including inside DAP_ExecuteCommands. New modes avoid appending fields
+that an older batch parser would mistake for its next command's reply.
+
+| Request | Bytes | Interfaces | Action |
+| --- | ---: | --- | --- |
+| `[0x90,8,rate:u32]` | 6 | CMSIS-DAP, Aux | Start a new capture, as mode 0, and return its identity. |
+| `[0x90,9,rate:u32,dio_mask]` | 7 | Aux | Start a new capture and format-2 stream; return the capture identity for start cleanup. |
+| `[0x90,10,dio_mask]` | 3 | Aux | Attach a format-2 stream to the running capture, as mode 6. Its header gives the identity. |
+| `[0x90,11,id[24]]` | 26 | CMSIS-DAP, Aux | Stop acquisition only if the identity matches. |
+| `[0x90,12]` | 2 | CMSIS-DAP, Aux | Read capture state and identity without changing it. |
+| `[0x90,13,id[24]]` | 26 | Aux | End streaming only if the capture identity matches. Acquisition continues. |
+
+Modes 9, 10 and 13 on CMSIS-DAP return DAP_ERROR without side effects, as the existing stream-only
+modes do. An unsupported mode returns DAP_ERROR. A truncated request or one whose full reply
+cannot fit is rejected before side effects under the existing packet preflight rules. HID
+padding is not treated as additional parameters. The preflight consumes exactly the bytes above.
+
+Modes 8/9 return 31 bytes:
+
+| Offset | Field |
+| --- | --- |
+| 0 | 0x90 |
+| 1 | DAP_OK |
+| 2 | Result |
+| 3–6 | Effective rate, u32 |
+| 7–30 | Identity of the capture successfully started |
+
+The returned identity/rate are those selected by this start, not a later snapshot. On any
+nonzero result the rate and identity fields are zero. Failed operations do not grant ownership.
+Mode 10 returns `[0x90,DAP_OK,result]` in three bytes, as legacy mode 6 does. A successful mode
+10 grants an attached identity only once its format-2 header arrives. It never obtains one by
+reading status afterwards.
+
+Modes 11 and 13 return `[0x90,DAP_OK,result]` in three bytes. Mode 11 checks identity before it
+pauses the ADC or changes capture/stream state. Mode 13 checks before ending the stream. A stale
+request leaves acquisition, stream, total, fault and retained identity untouched. It emits no
+stream-end message. A nonzero matching retained identity can be stopped repeatedly: return 0
+when already stopped normally, or retained result 7 after a DMA/FIFO fault. Ending an already
+ended stream with the matching identity returns 0. All-zero or nonmatching identities return 8.
+
+Mode 12 returns 32 bytes:
+
+| Offset | Field |
+| --- | --- |
+| 0 | 0x90 |
+| 1 | DAP_OK |
+| 2 | Result: 0 running, 1 stopped, 3 unavailable, 7 failed, 9 identity unavailable |
+| 3 | Running: 0 or 1; a temporarily paused/held capture still reports 1 |
+| 4–7 | Effective rate, u32; zero with every nonzero result |
+| 8–31 | Current/retained identity; zero before first success or when unavailable |
+
+The state, rate and identity form one consistent snapshot. In particular, a status read must
+not combine one capture's identity with its replacement's running state. A capture with no pair
+yet reports running (0), with its identity. Its latest sample may still report NO_SAMPLE (2).
+Running is 1 only with result 0; it is 0 with every other result. A healthy never-started probe
+returns result 1, running 0, rate 0 and the zero identity. A first-start rate or calibration
+refusal leaves stopped state. A latched DMA/FIFO/control fault reports 7, with zero identity if
+no start succeeded. Result 9 is used only after entropy initialization actually failed, not merely
+because it has not been attempted. Unavailable hardware takes precedence and returns 3.
+
+Add to the result table:
+
+| Result | Meaning |
+| --- | --- |
+| 8 | Capture identity does not match; nothing changed |
+| 9 | Identity unavailable: entropy initialization failed or the counter is exhausted |
+
+Mode 12 reports 9 with zero identity only when no identity was established. Counter exhaustion
+does not make an existing identity unreadable or prevent stopping its capture. Modes 8/9 reject
+exhaustion or entropy failure before disturbing an existing capture. Old result values keep
+their meanings. Availability and request validation precede comparison; unsupported hardware
+returns 3 rather than 8.
+
+Legacy mode 2 remains unconditional. Legacy modes 0/5 create identities but keep their replies.
+Updated hosts require bit 8 for a capture they will stop automatically. They retain the identity
+from their start reply or attached header and use mode 11/13 for cleanup. A stale result never
+authorizes reading and stopping the replacement. A lost or malformed start reply grants no token;
+cleanup must not read the current identity and adopt it.
+
+
 ## Pro SPI: `0x91`
 
 SPI is available when `0x82` format 6 sets extended-capability bit 3. It uses the CMSIS-DAP vendor
@@ -285,7 +398,7 @@ either restarts the capture and clears the total, and reads on either see the sa
 ## The energy stream
 
 Through Verge Aux, a host can receive every pair the probe measures, with its time, so it can record
-a power profile. Three `0x90` modes control the stream. They exist only on Verge Aux; on CMSIS-DAP
+a power profile. The legacy `0x90` modes below control the stream. They exist only on Verge Aux; on CMSIS-DAP
 they answer `DAP_ERROR`.
 
 | Request | Action |
@@ -312,12 +425,12 @@ message says which. After a restart, a host that wants the new capture sends mod
 ### Header: `0xa1`
 
 The first message of every stream. Everything a host needs to convert the pairs that follow is in
-it. 68 bytes.
+it. Format 1 has 68 bytes; format 2 has 92.
 
 | Offset | Field |
 | --- | --- |
 | 0 | `0xa1` |
-| 1 | Stream format version, 1 |
+| 1 | Stream format version, 1 or 2 |
 | 2–5 | Effective rate, pairs a second, u32 |
 | 6 | Jumper setting: 1 for 350 mA, 2 for 50 mA, 0 unknown |
 | 7–8 | Voltage full scale in mV, u16 |
@@ -330,6 +443,21 @@ it. 68 bytes.
 | 64 | DIO pins reporting edges, bit `k` for DIO`k` |
 | 65 | Their levels when the stream started; pins not reporting read 0 |
 | 66–67 | Edge time resolution in ns, u16; 0 when no pin reports |
+
+Modes 9/10 select format 2. Offsets 0–67 keep this layout, with version 2. Offsets 68–91
+contain the 24-byte capture identity, with a nonzero counter. Legacy modes 5/6 keep format 1.
+The header's identity, calibration, rate and first sequence describe the same capture.
+No identity is appended to other stream messages.
+
+A successful mode 9/10 reply establishes a new stream boundary. Its own header is the first stream
+message after that reply. Firmware discards prior queued messages. A previously submitted USB
+message remains before the reply. Hosts discard messages saved before the reply before reading
+the new header. Mode 9's header identity must match its start reply. Mode 10 grants a token only
+when its header arrives. A missing attach header does not authorize a status read for cleanup.
+
+Mode 13 ends a matching stream with the same reason as mode 7. Restart ends it as before.
+A host retains its token for conditional failure cleanup, then discards it on end or disconnect.
+Historical archive identities never authorize live cleanup.
 
 The points are the ones `0x90` mode 4 reports.
 

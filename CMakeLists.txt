@@ -139,6 +139,7 @@ target_compile_definitions(${CORE1} PRIVATE CPU_LPC55S69JBD64_cm33_core1 SPI_RET
                                              I2C_RETRY_TIMES=100000U I2C_MASTER_TRANSMIT_IGNORE_LAST_NACK=0U)
 
 set(MCUX_DRIVERS ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcuxsdk-core/drivers)
+target_sources(${CORE1} PRIVATE src/energy_identity.c)
 set(LPC55_DEVICE ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcux-devices-lpc/LPC5500)
 
 target_sources(${CORE1} PRIVATE

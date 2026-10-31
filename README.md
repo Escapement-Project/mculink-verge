@@ -90,6 +90,11 @@ BENCH.md. Stock SWD captures are in mculink-stock-notes' `wire.md` and mculink-b
 Other stock figures are in BENCH.md under "The console" and in
 mculink-bench's `results/throughput/2026-10-21-stock.json`.
 
+Capture identities protect conditional stop and stream cleanup from a competing restart. New
+hosts require that capability for automatic cleanup. Legacy unconditional stop remains available.
+Identity initialization runs once before the first capture, outside wire windows. It does not
+change the transport clock limits above.
+
 ## Build
 
 ```

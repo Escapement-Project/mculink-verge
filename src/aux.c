@@ -29,7 +29,7 @@ static volatile bool in_busy;
 /** Counts USB configurations, for the slot's `generation`. */
 static uint32_t generation;
 /** A stream command (0x90 mode 6 or 7) CPU 0 answers itself, waiting for the capture state. */
-static uint8_t local_request[3];
+static uint8_t local_request[26];
 static uint8_t local_length;
 /** A header has gone since this configuration began: stream messages before it are a gone host's.
  *  Only a header this configuration asked for, by mode 5 or 6, counts. */
@@ -56,7 +56,8 @@ __attribute__((section(".ramfunc"))) void aux_received(const uint8_t* buffer, ui
     }
     // Modes 6 and 7 start and stop a stream without stopping the capture. CPU 0 owns the capture
     // state whenever CPU 1 has not asked for quiet (src/energy_integration.h), so it serves them.
-    if ((buffer[0] == 0x90U) && (length >= 2U) && ((buffer[1] == 6U) || (buffer[1] == 7U))) {
+    if ((buffer[0] == 0x90U) && (length >= 2U) &&
+        ((buffer[1] == 6U) || (buffer[1] == 7U) || (buffer[1] == 10U) || (buffer[1] == 13U))) {
         local_length = (uint8_t)(length < sizeof(local_request) ? length : sizeof(local_request));
         memcpy(local_request, buffer, local_length);
         return;
@@ -106,7 +107,11 @@ __attribute__((section(".ramfunc"))) static bool stream_owned_by_cpu1(struct ene
  *  running: then the answer waits. */
 __attribute__((section(".ramfunc"))) static bool stream_waits(void) {
     struct energy_integration const* const energy = dap_shared.energy_integration;
-    bool const failed = (local_request[1] == 6U) && (dap_shared.energy_dma_error != 0U);
+    if ((energy != nullptr) && (local_request[1] == 13U) && ((energy->capture_id_sequence & 1U) != 0U)) {
+        return true;
+    }
+    bool const failed = ((local_request[1] == 6U) || (local_request[1] == 10U) || (local_request[1] == 13U)) &&
+                        (dap_shared.energy_dma_error != 0U);
     return (energy != nullptr) && (dap_shared.energy_available != 0U) && !failed &&
            stream_owned_by_cpu1(&energy->stream) && (energy->running || energy->stream.active);
 }
@@ -118,10 +123,11 @@ __attribute__((section(".ramfunc"))) static bool stream_command(void) {
         return false;
     }
     __DMB();
-    bool const start = local_request[1] == 6U;
+    bool const identified = (local_request[1] == 10U) || (local_request[1] == 13U);
+    bool const start = (local_request[1] == 6U) || (local_request[1] == 10U);
     aux_in[0] = 0x90U;
     aux_in[1] = DAP_OK;
-    if (start && (local_length < 3U)) {
+    if ((start && (local_length < 3U)) || (identified && !start && (local_length < 26U))) {
         aux_in[0] = ID_DAP_Invalid;
         in_length = 1U;
         return true;
@@ -133,6 +139,20 @@ __attribute__((section(".ramfunc"))) static bool stream_command(void) {
     struct energy_stream* const stream = (energy != nullptr) ? &energy->stream : nullptr;
     if ((stream == nullptr) || (dap_shared.energy_available == 0U)) {
         result = 3U;
+    } else if (identified && !start) {
+        uint32_t const before = energy->capture_id_sequence;
+        __DMB();
+        energy_capture_id_t const capture_id = energy->capture_id;
+        __DMB();
+        if (((before & 1U) != 0U) || (before != energy->capture_id_sequence)) {
+            cpu0_unmask(basepri);
+            return false;
+        }
+        if (!energy_identity_matches(&capture_id, local_request + 2U)) {
+            result = 8U;
+        } else if (!stream_owned_by_cpu1(stream)) {
+            energy_stream_end(stream, ENERGY_STREAM_END_ASKED, energy->decoder.sequence);
+        }
     } else if (!start) {
         // Owned by CPU 1 means nothing streams (stream_waits).
         if (!stream_owned_by_cpu1(stream)) {
@@ -144,6 +164,9 @@ __attribute__((section(".ramfunc"))) static bool stream_command(void) {
         result = 1U;
     } else {
         energy_stream_end(stream, ENERGY_STREAM_END_ASKED, energy->decoder.sequence);
+        if (identified) {
+            stream->sent = stream->written;
+        }
         uint8_t levels = 0U;
         uint32_t stamp = 0U;
         uint8_t const pins = dio_edges_pins(local_request[2], &levels, &stamp);
@@ -159,10 +182,14 @@ __attribute__((section(".ramfunc"))) static bool stream_command(void) {
             .dio_levels = levels,
             .dio_stamp = stamp,
             .edge_resolution_ns = (pins != 0U) ? energy_stream_edge_resolution(stream->clock_hz) : 0U,
+            .capture_id = identified ? &energy->capture_id : nullptr,
         };
         // A full ring: the host is not reading, and the header would be lost too.
         result = energy_stream_begin(stream, &header) ? 0U : 7U;
         stream_expected = stream_expected || (result == 0U);
+        if (identified && (result == 0U)) {
+            stream_synced = false;
+        }
     }
     cpu0_unmask(basepri);
     aux_in[2] = result;
@@ -214,7 +241,7 @@ __attribute__((section(".ramfunc"), noinline)) static void stream_marks(void) {
 /** Stream messages wait while a mode 5 request is out, so its reply comes before its header. */
 __attribute__((section(".ramfunc"))) static bool stream_held(void) {
     aux_slot_t const* const slot = &dap_stage.aux;
-    return (slot->state != AUX_SLOT_FREE) && (slot->request[0] == 0x90U) && (slot->request[1] == 5U);
+    return (slot->state != AUX_SLOT_FREE) && (slot->request[0] == 0x90U) && ((slot->request[1] == 5U) || (slot->request[1] == 9U));
 }
 
 /** The next stream message into aux_in. Before a header since the configuration began, messages
@@ -259,8 +286,11 @@ __attribute__((section(".ramfunc"), noinline)) void aux_task(void) {
         uint8_t const length = slot->reply_len;
         bool const live = slot->generation == generation;
         // Mode 5's header is in the ring already, held back until this reply has gone.
-        if (live && (slot->request[0] == 0x90U) && (slot->request[1] == 5U)) {
+        if (live && (slot->request[0] == 0x90U) && ((slot->request[1] == 5U) || (slot->request[1] == 9U))) {
             stream_expected = true;
+            if ((slot->request[1] == 9U) && (slot->reply_len >= 3U) && (slot->reply[2] == 0U)) {
+                stream_synced = false;
+            }
         }
         if (live) {
             memcpy(aux_in, slot->reply, length);

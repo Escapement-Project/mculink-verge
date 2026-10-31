@@ -870,7 +870,7 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: 
     stream_layout = shared_offsets(slots, "running", "setting", "full_scale_mv", "previous_low", "low_range",
                                    "high_range", "decoder", "stream.written", "stream.sent", "stream.length",
                                    "stream.slot", "stream.active", "stream.next_sequence", "stream.period",
-                                   "stream.clock_hz", "stream.timeline_pending", small_enums=short_enums(elf0),
+                                   "stream.clock_hz", "stream.timeline_pending", "capture_id", "capture_id_sequence", small_enums=short_enums(elf0),
                                    struct_type="struct energy_integration")
     check_aux_stream(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets | stream_shared,
                      stream_layout)
@@ -1296,6 +1296,7 @@ CAP_DIO = 1 << 6
 CAP_TARGET_POWER = 1 << 7
 EXT_CAP_DIO_AUX = 1 << 6
 EXT_CAP_MARKS = 1 << 7
+EXT_CAP_CAPTURE_ID = 1 << 8
 # The ordinary GPIO's port-wide registers, which the hook below sees: SET, CLR, NOT, DIRSET, DIRCLR,
 # DIRNOT, one word per port each.
 GPIO_PORT_REGS = {0x2200: "SET", 0x2280: "CLR", 0x2300: "NOT", 0x2380: "DIRSET", 0x2400: "DIRCLR", 0x2480: "DIRNOT"}
@@ -1417,6 +1418,7 @@ def check_dio(c: Checker, elf: str, request_slots: int) -> None:
             c.check(not flags & CAP_DIO, f"{name} board: vendor 0x82 claims the DIO pins")
             c.check(not extended & EXT_CAP_DIO_AUX, f"{name} board: vendor 0x82 claims the DIO pins on Verge Aux")
             c.check(not extended & EXT_CAP_MARKS, f"{name} board: vendor 0x82 claims markers without energy capture")
+            c.check(not extended & EXT_CAP_CAPTURE_ID, f"{name} board: vendor 0x82 claims capture identity")
             ok, state = dio(0x0F, 0x0F, 0x0F)
             c.check(not ok and state == [0, 0, 0, 0] and not pins.stores,
                     f"{name} board: vendor 0x8E answered {ok}, {state}, stores {pins.stores}")
@@ -2306,6 +2308,8 @@ def main() -> int:
     check_jtag_chain(c, args.core1)
     check_energy_descriptors(c, args.core1, slots)
     check_energy_control(c, args.elf, args.core1, slots)
+    from energy_identity_checks import check_rng
+    check_rng(c, args.core1, symbols_with_size(args.core1))
     check_console_recovery(c, args.elf, slots)
     check_hid_padding(c, args.core1, slots)
     check_usb_transport(c, args.elf, args.core1, slots, args.code_lab)

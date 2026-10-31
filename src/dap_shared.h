@@ -88,6 +88,8 @@ struct energy_integration {
 
     /** Verge Aux's stream of the pairs integrated here (src/energy_stream.h). */
     struct energy_stream stream;
+    volatile uint32_t capture_id_sequence;
+    energy_capture_id_t capture_id;
 
     DAP_SHARED_DMA_DESCRIPTOR_ALIGN volatile dma_descriptor_t descriptors[ENERGY_SEGMENTS];
     volatile uint32_t ring[ENERGY_RING_WORDS];

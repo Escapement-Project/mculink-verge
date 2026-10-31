@@ -89,7 +89,8 @@ INTEGRATION_FIELDS = ("low_range", "high_range", "scale_q32", "full_scale_mv", "
                       "segment_words", "calibrated", "running", "consumed_bytes", "decoder", "on_high_range", "rearm_blocked",
                       "previous_low", "held", "held_mv", "held_na", "descriptors", "ring", "setting",
                       "stream.written", "stream.sent", "stream.length", "stream.slot", "stream.active", "stream.holds",
-                      "stream.holds_written", "stream.next_sequence", "stream.timeline_pending")
+                      "stream.holds_written", "stream.next_sequence", "stream.timeline_pending",
+                      "capture_id", "capture_id_sequence")
 # Where a machine without CPU 0's image keeps the struct: SRAM0, which CPU 1's image leaves alone.
 INTEGRATION_AT = 0x20008000
 
@@ -390,6 +391,7 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1, layout)
                                        ("DMA busy", 0, 0, ENERGY_MASK)):
         cpu1 = machine(elf1, symbols1)
         dma1 = Dma(cpu1)
+        cpu1.uc.mem_write(cpu1.sym["identity_initialized"], b"\x01")
         base = cpu1.sym["dap_shared"]
         energy = attach_integration(cpu1, offsets1, layout)
         energy.put("running", 1, 1)
@@ -592,6 +594,8 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
                             ("requested_rate_hz", FIXTURE_RATE), ("current_range", 1), ("adc_ready", 1),
                             ("inputmux_ready", 1)):
             local(name, value)
+        if "identity_initialized" in probe.sym:
+            local("identity_initialized", 1)
         # What a start publishes for CPU 0: the plain board's full scale, the 350 mA setting's limit.
         # The capture is under way on the high range, which every sample here reads.
         for field, value, size in (("running", 1, 1), ("calibrated", 1, 1), ("scale_q32", FIXTURE_SCALE, 8),
@@ -1152,6 +1156,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         probe.uc.hook_del(hook)
     c.note("energy partial/full/pending segments, FIFO tail, split tuples, Q32 carry and session resume/reset")
     check_stream(c, setup, result, local_symbols=symbols)
+    check_identity(c, setup, offsets)
     from energy_lifecycle import check_sequences
     check_sequences(c, setup, result, FIXTURE_RATE)
 
@@ -1367,3 +1372,93 @@ def check_stream(c, setup, result, local_symbols):
     probe.uc.hook_del(hook)
     c.note("energy stream: header, pairs drained by CPU 1 and integrated by CPU 0, times across a resume, a hold's"
            " record, ends at a restart, a stop and a fault, mode 5 refused on CMSIS-DAP")
+
+
+def check_identity(c, setup, offsets):
+    probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+    local("current_range", 2)
+    local("requested_rate_hz", 0)
+    local("accumulator_started", 0)
+    probe.energy.put("running", 0, 1)
+    info = probe.command(b"\x82")
+    c.check(int.from_bytes(info[14 + info[8]:18 + info[8]], "little") & (1 << 8), "capture identity capability missing")
+    before = probe.command(b"\x90\x0c")
+    c.check(before == b"\x90\x00\x01" + bytes(29), f"initial identity status {before.hex()}")
+    a = probe.command(b"\x90\x08" + u32(1000))
+    c.check(len(a) == 31 and a[:3] == b"\x90\x00\x00" and int.from_bytes(a[23:], "little") == 1,
+            f"identified start A {a.hex()}")
+    b = probe.command(b"\x90\x08" + u32(1000))
+    c.check(len(b) == 31 and b[:3] == b"\x90\x00\x00" and int.from_bytes(b[23:], "little") == 2,
+            f"identified start B {b.hex()}")
+    written(0)
+    for token in (a[7:], bytes(24)):
+        snapshot = probe.energy.read("capture_id", 24), get("energy_control_request"), get("energy_dma_error", 1)
+        reply = probe.command(b"\x90\x0b" + token)
+        c.check(reply == b"\x90\x00\x08" and probe.energy.get("running", 1) == 1 and
+                snapshot == (probe.energy.read("capture_id", 24), get("energy_control_request"), get("energy_dma_error", 1)),
+                "stale stop paused or changed B")
+    status = probe.command(b"\x90\x0c")
+    c.check(status == b"\x90\x00\x00\x01" + u32(1000) + b[7:], f"running identity status {status.hex()}")
+    local("capture_counter", (1 << 64) - 1)
+    exhausted = probe.command(b"\x90\x08" + u32(1000))
+    c.check(exhausted == b"\x90\x00\x09" + bytes(28) and probe.energy.get("running", 1) == 1
+            and probe.command(b"\x90\x0c") == status, "counter exhaustion changed running capture")
+    for _ in range(2):
+        c.check(probe.command(b"\x90\x0b" + b[7:]) == b"\x90\x00\x00", "matching/repeated stop failed")
+    c.check(probe.command(b"\x90\x0c") == b"\x90\x00\x01\x00" + bytes(4) + b[7:], "retained identity lost")
+    put("energy_dma_error", 1, 1)
+    c.check(probe.command(b"\x90\x0b" + b[7:]) == b"\x90\x00\x07", "matching fault stop lost fault")
+    probe.uc.hook_del(hook)
+    for mode in (9, 10, 13):
+        request = bytes([0x90, mode]) + (u32(1000) + b"\x00" if mode == 9 else b"\x00" if mode == 10 else b[7:])
+        c.check(probe.command(request) == b"\x90\xff", f"CMSIS-DAP accepted stream mode {mode}")
+    for reacquire in (False, True):
+        probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+        local("current_range", 2)
+        local("dap_vendor_on_aux", 1)
+        a = probe.command(b"\x90\x09" + u32(1000) + b"\x00")
+        c.check(a[:3] == b"\x90\x00\x00", "protected release fixture start failed")
+        sent = probe.energy.get("stream.sent", 4)
+        queued = probe.energy.get("stream.written", 4)
+        h = probe.energy.read("stream.slot", 92, (sent % 16) * 512)
+        c.check(queued == sent + 1 and h[:2] == b"\xa1\x02" and h[68:] == a[7:],
+                "identified start reply/header boundary mismatch")
+        written(0)
+        probe.uc.hook_del(hook)
+        failing = False
+        def enter_new_start(uc, at, size, data):
+            nonlocal failing
+            if uc.reg_read(UC_ARM_REG_R0) == 1:
+                failing = True
+        enter_hook = probe.uc.hook_add(UC_HOOK_CODE, enter_new_start,
+                                       begin=probe.sym["energy_capture_start"], end=probe.sym["energy_capture_start"])
+        def refuse_release(uc, access, at, size, value, data):
+            if not failing or (value & 1 and reacquire):
+                put("energy_control_ack", value)
+        base = probe.sym["dap_shared"]
+        request_offset = offsets["energy_control_request"]
+        failure_hook = probe.uc.hook_add(UC_HOOK_MEM_WRITE, refuse_release,
+                                        begin=base + request_offset, end=base + request_offset + 3)
+        probe.uc.ctl_flush_tb()
+        before_written = probe.energy.get("stream.written", 4)
+        failed = probe.command(b"\x90\x09" + u32(2000) + b"\x00")
+        c.check(failed == b"\x90\x00\x07" + bytes(28), f"failed identified release answered {failed.hex()}")
+        c.check(probe.energy.read("capture_id", 24) == a[7:], "failed start published candidate identity")
+        for index in range(before_written, probe.energy.get("stream.written", 4)):
+            at = index % 16
+            length = probe.energy.get("stream.length", 2, at * 2)
+            message = probe.energy.read("stream.slot", length, at * 512)
+            c.check(message[:1] != b"\xa1", "failed release exposed a candidate header")
+        probe.uc.hook_del(failure_hook)
+        probe.uc.hook_del(enter_hook)
+        def acknowledge(uc, access, at, size, value, data):
+            put("energy_control_ack", value)
+        success_hook = probe.uc.hook_add(UC_HOOK_MEM_WRITE, acknowledge,
+                                        begin=base + request_offset, end=base + request_offset + 3)
+        probe.uc.ctl_flush_tb()
+        retry = probe.command(b"\x90\x09" + u32(2000) + b"\x00")
+        c.check(retry[:3] == b"\x90\x00\x00" and retry[7:] != a[7:] and
+                int.from_bytes(retry[23:], "little") == 2, "retry after failed release reused published token")
+        probe.uc.hook_del(success_hook)
+    c.note("capture identities: initial/coherent/retained status; A replaced by B, stale/zero stop before pause;"
+           " counter exhaustion leaves B running; repeated/fault cleanup; Aux-only modes refused on CMSIS-DAP")
