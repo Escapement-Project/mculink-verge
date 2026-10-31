@@ -797,6 +797,10 @@ def decode_instruction(address: int, code: bytes) -> tuple[Insn, tuple[int, str 
 BETWEEN_COMMANDS = 2_000
 
 
+class AllocationAttempt(RuntimeError):
+    pass
+
+
 class Machine:
     def __init__(
         self,
@@ -888,11 +892,28 @@ class Machine:
             begin=SRAMX[0],
             end=SRAMX[0] + SRAMX[1] - 1,
         )
+        self.allocator_entries = {}
+        self._allocator_sources = {}
+        self.install_allocator_traps(self.sym, elf)
         # The code hook runs once per instruction, so leave it off while generated setup code runs.
         # emu_start's `until` stops a call at RETURN_MAGIC without it.
         self._hook: int | None = None
         if restart_at:
             self._hook_code(True)
+
+    def install_allocator_traps(self, linked_symbols: dict[str, int], elf: str) -> None:
+        if os.environ.get("MCULINK_CHECK_ALLOCATIONS") != "1":
+            return
+        allocators = {"malloc", "calloc", "realloc", "free", "_malloc_r", "_calloc_r",
+                      "_realloc_r", "_free_r", "_sbrk", "_sbrk_r"}
+        def allocation(uc, address, size, user):
+            raise AllocationAttempt(f"{self._allocator_sources[address]}: allocator entry "
+                                    f"{self.allocator_entries[address]} at {address:#x}")
+        for name, address in linked_symbols.items():
+            if name.split(".")[0] in allocators and address not in self.allocator_entries:
+                self.allocator_entries[address] = name
+                self._allocator_sources[address] = elf
+                self.uc.hook_add(UC_HOOK_CODE, allocation, begin=address, end=address)
 
     def _hook_code(self, on: bool) -> None:
         if on == (self._hook is not None) or (not on and self.restart_at):

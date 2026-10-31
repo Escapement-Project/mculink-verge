@@ -131,6 +131,7 @@ def dual_machine(elf0, symbols0, elf1, symbols1):
     size, vma, lma = sections(elf1)[".data"]
     probe.uc.mem_write(vma, bytes(probe.uc.mem_read(lma, size)))
     probe.sym = {name: address for name, (address, _) in symbols1.items()}
+    probe.install_allocator_traps(probe.sym, elf1)
     probe.sym["cpu0:DMA0_IRQHandler"] = symbols0["DMA0_IRQHandler"][0]
     return probe
 

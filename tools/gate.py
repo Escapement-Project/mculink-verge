@@ -115,6 +115,7 @@ def main() -> int:
     if args.codegen and args.part == "host":
         parser.error("--codegen cannot be used with --part host")
 
+    os.environ["MCULINK_CHECK_ALLOCATIONS"] = "1"
     started = time.monotonic()
     failures: list[str] = []
     built = []

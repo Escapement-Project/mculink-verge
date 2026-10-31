@@ -443,6 +443,7 @@ function(rewrite_ld pattern replacement what)
   set(_ld "${_ld}" PARENT_SCOPE)
 endfunction()
 # A later --defsym does not override the size already selected by the script's DEFINED test.
+rewrite_ld("HEAP_SIZE += [^\n]*;" "HEAP_SIZE = 0;" "the heap size assignment")
 rewrite_ld("STACK_SIZE = [^\n]*;" "STACK_SIZE = ${CORE0_STACK_LENGTH};" "the stack size assignment")
 rewrite_ld("(m_text +\\(RX\\) +: ORIGIN = 0x00000200, LENGTH = )0x[0-9A-Fa-f]+"
            "\\1${CORE0_TEXT_LENGTH}" "the m_text region")
@@ -475,7 +476,8 @@ rewrite_ld("\\*\\(\\.text\\*\\)" "*(EXCLUDE_FILE(${_ram_files}) .text*)" "*(.tex
 rewrite_ld("\\*\\(\\.ramfunc\\*\\)" "*(.ramfunc*)${_ram_inputs}" "the .ramfunc line to place code in RAM after")
 set(LD_FILE_GNU ${CMAKE_CURRENT_BINARY_DIR}/generated/core0.ld)
 set(LD_FILE_Clang ${LD_FILE_GNU})
-file(WRITE ${LD_FILE_GNU} "${_ld}")
+file(CONFIGURE OUTPUT ${LD_FILE_GNU} CONTENT "${_ld}" @ONLY)
+set_property(TARGET ${PROJECT_NAME} APPEND PROPERTY LINK_DEPENDS ${LD_FILE_GNU})
 
 family_configure_device_example(${PROJECT_NAME} noos)
 

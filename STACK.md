@@ -1,8 +1,10 @@
 # Stack checks
 
 CPU0 reserves 4 KiB at the top of SRAM0. CPU1 uses SRAM4's 16 KiB. The linker defines both
-ranges, and the image checks verify their limits. CPU0's link also refuses overlap with data
-and the heap.
+ranges, and the image checks verify their limits. CPU0's link refuses overlap with data.
+Neither core reserves a heap. The gate traps entry to linked allocator functions and checks the
+trap by deliberately calling each one. Serial formatting and all command/error paths exercised
+by the image checks run with that trap active.
 
 Inspect synchronous stack paths in a linked image:
 

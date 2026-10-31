@@ -770,6 +770,23 @@ def check_energy_descriptors(c: Checker, elf: str, slots: int) -> None:
            " 1024-, 64- and 16-word segments")
 
 
+def check_allocator_trap(c: Checker, elf: str) -> None:
+    if os.environ.get("MCULINK_CHECK_ALLOCATIONS") != "1":
+        return
+    from cycles import AllocationAttempt
+    probe = Machine(elf, Target([]), restart_at=set(), model=Model())
+    if not probe.allocator_entries:
+        c.note(f"{elf}: no allocator entry linked")
+        return
+    for address, name in probe.allocator_entries.items():
+        try:
+            probe.call(name, 0, 16, timeout_insns=100)
+        except AllocationAttempt:
+            continue
+        c.check(False, f"allocator trap missed {name} at {address:#x}")
+    c.note(f"{elf}: allocator trap falsified at {len(probe.allocator_entries)} linked entries; active for all image checks")
+
+
 def check_energy_control(c: Checker, elf0: str, elf1: str, slots: int) -> None:
     from energy_checks import INTEGRATION_FIELDS, check_calibration, check_control, check_hold, check_samples
 
@@ -880,6 +897,7 @@ def check_stacks(c: Checker, elf0: str, elf1: str) -> None:
     cpu0, cpu1 = symbols(elf0), symbols(elf1)
     c.check(cpu0["__StackTop"] == 0x20010000 and cpu0["__StackLimit"] == 0x2000f000,
             "CPU0 does not reserve its configured 4 KiB stack")
+    c.check(cpu0["__HeapLimit"] == cpu0["__HeapBase"], "CPU0 unexpectedly reserves a heap")
     c.check(cpu0["__HeapLimit"] <= cpu0["__StackLimit"], "CPU0 data/heap overlaps its reserved stack")
     c.check(cpu1.get("__core1_stack_bottom") == 0x20040000 and cpu1["__core1_stack_top"] == 0x20044000,
             "CPU1 does not reserve its configured 16 KiB stack")
@@ -2265,6 +2283,8 @@ def main() -> int:
         observer.install()
 
     c = Checker()
+    check_allocator_trap(c, args.elf)
+    check_allocator_trap(c, args.core1)
     # REQUEST_SLOTS is what the host is told as the packet count, and it sizes dap_shared.
     slots = args.packet_count
     swo = bool(config_value(args.config, "SWO_UART"))
