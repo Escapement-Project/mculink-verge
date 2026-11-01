@@ -1,6 +1,6 @@
 # Stack checks
 
-CPU0 reserves 4 KiB at the top of SRAM0. CPU1 uses SRAM4's 16 KiB. The linker defines both
+CPU0 reserves 4 KiB at the top of SRAM0. CPU1 reserves the first 16 KiB of SRAM1 (0x20010000..0x20013fff). The linker defines both
 ranges, and the image checks verify their limits. CPU0's link refuses overlap with data.
 Neither core reserves a heap. The gate traps entry to linked allocator functions and checks the
 trap by deliberately calling each one. Serial formatting and all command/error paths exercised

@@ -787,6 +787,17 @@ def check_allocator_trap(c: Checker, elf: str) -> None:
     c.note(f"{elf}: allocator trap falsified at {len(probe.allocator_entries)} linked entries; active for all image checks")
 
 
+def check_stream_storage(c: Checker, elf0: str, elf1: str) -> None:
+    sym0, sym1 = symbols_with_size(elf0), symbols(elf1)
+    at, size = sym0["energy_stream_slots"]
+    c.check((at, size) == (0x20040000, 8192), f"stream slots at {at:#x}, {size} bytes")
+    c.check(sections(elf0)[".stream_slots"][:2] == (8192, at), "stream slots are not in their reserved section")
+    c.check(sym1.get("energy_stream_slots") == at, "cores disagree on singleton stream storage")
+    c.check(sym1["__data_start__"] == 0x20014000, "CPU1 data does not follow its stack")
+    c.check(sym1["__bss_end__"] <= 0x2003E000, "CPU1 data overlaps staged commands")
+    c.note("16 stream message slots in SRAM4; CPU1 stack retains 16 KiB in SRAM1")
+
+
 def check_energy_control(c: Checker, elf0: str, elf1: str, slots: int) -> None:
     from energy_checks import INTEGRATION_FIELDS, check_calibration, check_control, check_hold, check_samples
 
@@ -886,7 +897,7 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: 
                                    "energy_control_ack", small_enums=short_enums(elf0))
     stream_layout = shared_offsets(slots, "running", "setting", "full_scale_mv", "previous_low", "low_range",
                                    "high_range", "decoder", "stream.written", "stream.sent", "stream.length",
-                                   "stream.slot", "stream.active", "stream.next_sequence", "stream.period",
+                                   "stream.active", "stream.next_sequence", "stream.period",
                                    "stream.clock_hz", "stream.timeline_pending", "capture_id", "capture_id_sequence", small_enums=short_enums(elf0),
                                    struct_type="struct energy_integration")
     check_aux_stream(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets | stream_shared,
@@ -899,7 +910,7 @@ def check_stacks(c: Checker, elf0: str, elf1: str) -> None:
             "CPU0 does not reserve its configured 4 KiB stack")
     c.check(cpu0["__HeapLimit"] == cpu0["__HeapBase"], "CPU0 unexpectedly reserves a heap")
     c.check(cpu0["__HeapLimit"] <= cpu0["__StackLimit"], "CPU0 data/heap overlaps its reserved stack")
-    c.check(cpu1.get("__core1_stack_bottom") == 0x20040000 and cpu1["__core1_stack_top"] == 0x20044000,
+    c.check(cpu1.get("__core1_stack_bottom") == 0x20010000 and cpu1["__core1_stack_top"] == 0x20014000,
             "CPU1 does not reserve its configured 16 KiB stack")
     c.note("linked stack reservations: CPU0 4 KiB, CPU1 16 KiB, no CPU0 data/heap overlap")
 
@@ -2327,6 +2338,7 @@ def main() -> int:
     check_vendor_plans(c, args.core1, symbols_with_size(args.core1), vendor_boards(args.core1, slots))
     check_jtag_chain(c, args.core1)
     check_energy_descriptors(c, args.core1, slots)
+    check_stream_storage(c, args.elf, args.core1)
     check_energy_control(c, args.elf, args.core1, slots)
     from energy_identity_checks import check_rng
     check_rng(c, args.core1, symbols_with_size(args.core1), slots)

@@ -22,10 +22,10 @@ Source: UM11126 rev 2.8 tables 4, 5 and 6.
 | 0 | 0x0000_0000 flash, 0x0300_0000 boot ROM | Both cores' C code (CPU 0 from 0x200, CPU 1 from 0x4_0000) |
 | 1 | 0x0400_0000 SRAMX, 32 KB | Generated code (SWD, JTAG), code lab arena at 0x0400_4000 |
 | 2 | 0x2000_0000 SRAM0, 64 KB | CPU 0's data, stack (top 4 KB, see [STACK.md](STACK.md)) and `.ramfunc` (`vcom_task` and the energy integration among them); the consoles' receive rings, send buffers and ring descriptors, and the energy ring, its reload descriptors and its integration state (`energy_integration`), which DMA0 reaches |
-| 3 | 0x2001_0000 SRAM1, 64 KB | CPU 1's `.data` and `.ramfunc` (cJTAG blocks and command loops); Clang's command buffers also fit here |
+| 3 | 0x2001_0000 SRAM1, 64 KB | CPU 1's full 16 KiB stack in the bottom quarter, followed by `.data` and `.ramfunc` (cJTAG blocks and command loops); Clang's command buffers also fit here |
 | 4 | 0x2002_0000 SRAM2, 64 KB | The rest of CPU 1's `.ramfunc` (JTAG blocks and transfer command loops), then `.bss`, including GCC's `response_copy` and `request_copy`. Placement varies by compiler |
 | 5 | 0x2003_0000 SRAM3, 64 KB | `dap_stage` in the top 8 KB from 0x2003_E000: packet-sized commands and replies CPU 0 stages for CPU 1, and Verge Aux's request slot. Below it, CPU 1's `.data` and `.bss` where they outgrow SRAM2 (the builds without generated SWD), and the tail of `.cold_bss` (the JTAG generator's two saved builds, 32 KB, touched only on a wire or configuration switch), which comes after every other `.bss` so that the statics each command reads stay in SRAM2 |
-| 6 | 0x2004_0000 SRAM4, 16 KB | CPU 1's stack (top at 0x2004_4000), the whole bank |
+| 6 | 0x2004_0000 SRAM4, 16 KB | Stream message storage in the lower 8 KB from 0x2004_0000; upper 8 KB unused |
 | 7 | 0x4000_0000 APB bridge 0 **and** 0x4002_0000 APB bridge 1 | Every APB peripheral, both bridges on one port (below) |
 | 8 | 0x4008_0000 | DMA0 regs, SCTimer, Flexcomm 0 to 4, mailbox, ordinary GPIO |
 | 9 | 0x4009_0000 | USB HS device regs, CRC, Flexcomm 5 to 7, SDIO, debug mailbox, HS SPI |
@@ -44,14 +44,14 @@ contends with any other.
 | CPU 1 | 1 | Generated code fetch | Every generated transfer |
 | CPU 1 | 3, 4 | Shared generator event workspace, 1280 events with JTAG or 256 for SWD only | Builds run serially between timed windows; each schedule is consumed before reuse |
 | CPU 1 | 10 | Secure GPIO (`DBGIF_GPIO`): every SWDIO, SWCLK, TMS, TDI, TDO access | Inside every timed window |
-| CPU 1 | 3, 4 | The `.ramfunc` bit paths: ARM's SWD, the JTAG and two-pin blocks, where nothing is generated | Inside their timed windows |
+| CPU 1 | 3, 4, 5 | The `.ramfunc` bit paths: ARM's SWD, the JTAG and two-pin blocks, where nothing is generated | Inside their timed windows |
 | CPU 1 | 5 | A staged command's request and reply in `dap_stage`: the generated transfers load write data and store read data there | Inside timed windows |
 | CPU 1 | 5 | Verge Aux's slot in `dap_stage`: its state before each command, and an aux request and its reply | Between commands |
 | CPU 1 | 7 | CTimer 4's counter, the energy stream's clock: read at each start, resume, hold and release, and to stamp each marker | Energy commands and `0x94`, and around a read-latency measurement, outside its window |
-| CPU 1 | 0, 3, 4, 6 | C code, `.ramfunc`, data and stack between transfers | Between timed windows |
+| CPU 1 | 0, 3, 4, 5 | C code, `.ramfunc`, data and stack between transfers | Between timed windows |
 | CPU 1 | 11 | `dap_shared`: unstaged requests and replies, the queues, the LED inputs | Between timed windows |
 | CPU 1 | 10 | ADC0 (target sense, `dap_vendor`, the Pro's energy calibration) and settled energy FIFO results | Own core, never during a window: at boot on the Pro, a host's sense reads, a start that calibrates; FIFO drain at capture pause/stop |
-| CPU 1 | 2 | CPU 0's `energy_integration` in SRAM0: ring reads for latest-pair replies and the unconsumed capture tail; each start's identity, publication sequence, tables, constants, descriptors and position; the running flag; the segment count a capture started at; the energy stream's timeline, and its messages at a start, pause or stop; a hold's record after each read-latency measurement; a marker's record, and the stream's marking and busy flags, for each `0x94` | Host polls while capture runs; tail drain and capture setup around the quiet handshake; the running flag before each read-latency measurement and around each sense conversion; the DIO edges recorded since the last message, at a pause or stop | Never during a window |
+| CPU 1 | 2 | CPU 0's `energy_integration` in SRAM0: ring reads for latest-pair replies and the unconsumed capture tail; each start's identity, publication sequence, tables, constants, descriptors and position; the running flag; the segment count a capture started at; the energy stream's timeline, and its message indices at a start, pause or stop; a hold's record after each read-latency measurement; a marker's record, and the stream's marking and busy flags, for each `0x94` | Host polls while capture runs; tail drain and capture setup around the quiet handshake; the running flag before each read-latency measurement and around each sense conversion; the DIO edges recorded since the last message, at a pause or stop | Never during a window |
 | CPU 1 | 8 | Ordinary GPIO ports 0 and 1: the Pro's DIO pins and their translators' directions (`dio.c`), port 0 pin 8 for the target regulator (`target_power.c`), and the energy circuit's latch and calibration pins (`energy_monitor.c`) | Vendor 0x8E, 0x8F and 0x90, and the energy calibration at boot; own core, never during a window |
 | CPU 1 | 7 | RNG registers, SYSCON clock/reset and PMC power control for the capture's 128-bit boot value | Once, before the first capture starts; bounded entropy/health waits; own core, outside every wire window |
 | CPU 1 | 7 | CTimer 2 for the Pro's energy-capture trigger; SYSCON, IOCON and INPUTMUX for setup | Energy capture start/stop, and IOCON at boot on the Pro; CTimer 2 stopped and started around each read-latency measurement |
@@ -70,9 +70,10 @@ contends with any other.
 | CPU 0 | 9, 11 | USB device regs and buffers (TinyUSB) | Every USB transfer |
 | CPU 0 | 11 then 5 | Each staged command, from its USB slot into `dap_stage`, and each staged reply back | As each arrives and as each starts to send, so during CPU 1's windows when commands are queued |
 | CPU 0 | 11 then 5 | Each Verge Aux request, from its USB buffer into `dap_stage`, and each reply back | On the Pro, as each arrives and as each reply is taken, so during CPU 1's windows |
-| CPU 0 | 2 then 11 | Each energy stream message, from its ring in SRAM0 to Verge Aux's USB buffer | While a stream runs, up to about 1,000 times a second |
+| CPU 0, CPU 1 | 6 | Stream message payload slots, 16 × 512 bytes, reserved at 0x2004_0000 in both linkers | The capture owner builds each message before publishing its SRAM0 length/index; CPU0 sends published slots. CPU1 writes only outside timed windows under capture ownership; no DMA uses this bank. Timing/load validation is pending. |
+| CPU 0 | 6 then 11 | Each energy stream message, from its reserved SRAM4 slots to Verge Aux's USB buffer | While a stream runs, up to about 1,000 times a second |
 | CPU 0 | 8 | USART0/1 (VCOM), mailbox, DMA0 regs: its setup, the console channels, the interrupt for both rings | Continuously; the consoles' ring positions while it waits |
-| CPU 0 | 2, 8, 10, 11 | Integrates each completed energy segment in the DMA interrupt, running from SRAM0: checks DMA0's error and ADC0's overflow bits, reads the samples and its state in SRAM0, and updates the accumulator in `dap_shared` | Each completed energy segment, except while CPU 1 owns capture state |
+| CPU 0 | 2, 6, 8, 10, 11 | Integrates each completed energy segment in the DMA interrupt, running from SRAM0: checks DMA0's error and ADC0's overflow bits, reads the samples and its state in SRAM0, and writes stream payloads in SRAM4, and updates the accumulator in `dap_shared` | Each completed energy segment, except while CPU 1 owns capture state |
 | CPU 0 | 8 | GPIO0: reads P0_29 and P0_30, pulses P0_17, to re-arm the energy capture's low range | At most once per completed energy-ring segment, after one that stayed on the high range under the low range's limit |
 | CPU 0 | 11 | The consoles' channel entries in DMA0's table | Each send |
 | CPU 0 | 7 | CTimer 3 (the status LED), and on the Pro CTimer 1 (FUNC) | 488 times a second |
@@ -143,3 +144,9 @@ its conditional stream-end comparison if the sequence is odd or changes across i
 Acquisition start and conditional acquisition stop run on CPU 1. CPU 0's quiet acknowledgement
 serializes its stream mutation with a start. DMA remains masked while CPU 0 attaches or ends a
 stream. A stale acquisition stop compares before requesting quiet.
+
+CPU 1 reserves its full 16 KiB stack at 0x20010000..0x20013fff, in SRAM1 on port 3.
+Its data/code starts at 0x20014000. CPU 0 never reaches SRAM1/2.
+Stream payloads use SRAM4 on port 6, which no CPU 1 timed window reaches.
+Both images resolve energy_stream_slots to the same reserved array. There is one payload queue;
+a second independent stream cannot use it while the first has queued messages.

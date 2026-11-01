@@ -33,15 +33,19 @@ static uint8_t const* take(struct energy_stream* stream, uint16_t* length) {
     uint32_t const at = stream->sent & (ENERGY_STREAM_SLOTS - 1U);
     *length = stream->length[at];
     stream->sent++;
-    return stream->slot[at];
+    return energy_stream_slots[at];
 }
 
 static energy_calibration_t const low = {.code = {100U, 30000U}, .current_na = {5000U, 900000U}, .count = 2U};
 static energy_calibration_t const high = {
     .code = {200U, 20000U, 40000U, 60000U}, .current_na = {1000000U, 50000000U, 100000000U, 150000000U}, .count = 4U};
 
-static void start(struct energy_stream* stream, uint32_t started_raw, bool streaming) {
+static void reset_stream(struct energy_stream* stream) {
     memset(stream, 0, sizeof(*stream));
+}
+
+static void start(struct energy_stream* stream, uint32_t started_raw, bool streaming) {
+    reset_stream(stream);
     energy_stream_timeline_prepare(stream, 1U);
     if (streaming) {
         energy_stream_header_t const header = {
@@ -69,6 +73,7 @@ static void test_header(void) {
 
 static void test_identified_header(void) {
     static struct energy_stream stream;
+    reset_stream(&stream);
     energy_capture_id_t id = {.bytes = {[16] = 1U}};
     assert(energy_identity_matches(&id, id.bytes));
     for (uint32_t i = 0U; i < sizeof(id.bytes); i++) {
@@ -325,7 +330,7 @@ static void edge_entry(struct energy_stream* stream, uint32_t stamp, uint8_t ris
  *  `sync_raw` reading the same levels with the pins cleared; the capture starts at `started_raw`. */
 static void start_edges(struct energy_stream* stream, uint32_t started_raw, uint8_t mask, uint8_t levels,
                         uint32_t header_raw, uint32_t sync_raw) {
-    memset(stream, 0, sizeof(*stream));
+    reset_stream(stream);
     energy_stream_timeline_prepare(stream, 1U);
     energy_stream_header_t const header = {
         .rate_hz = CLOCK_HZ / PERIOD, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = 1U,
@@ -756,7 +761,7 @@ static void test_marks_early(void) {
     uint8_t const* m = take(&stream, &length);
     assert(m != NULL && m[0] == 0xA4U && u64(m + 3) == 0U);
 
-    memset(&stream, 0, sizeof(stream));
+    reset_stream(&stream);
     energy_stream_timeline_prepare(&stream, 1U);
     energy_stream_header_t const header = {.rate_hz = 1000U, .low = &low, .high = &high};
     assert(energy_stream_begin(&stream, &header));

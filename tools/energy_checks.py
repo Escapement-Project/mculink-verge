@@ -3,7 +3,7 @@
 import itertools
 import struct
 
-from cycles import Machine, Model, RETURN_MAGIC, SCRATCH, Target, sections, u32
+from cycles import Machine, Model, RETURN_MAGIC, SCRATCH, Target, sections, symbols, u32
 from unicorn import UC_HOOK_CODE, UC_HOOK_MEM_WRITE
 from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_PRIMASK, UC_ARM_REG_R0
 
@@ -88,7 +88,7 @@ def machine(elf, symbols):
 INTEGRATION_FIELDS = ("low_range", "high_range", "scale_q32", "full_scale_mv", "rearm_below_na", "segments_at_start",
                       "segment_words", "calibrated", "running", "consumed_bytes", "decoder", "on_high_range", "rearm_blocked",
                       "previous_low", "held", "held_mv", "held_na", "descriptors", "ring", "setting",
-                      "stream.written", "stream.sent", "stream.length", "stream.slot", "stream.active", "stream.holds",
+                      "stream.written", "stream.sent", "stream.length", "stream.active", "stream.holds",
                       "stream.holds_written", "stream.next_sequence", "stream.timeline_pending",
                       "capture_id", "capture_id_sequence")
 # Where a machine without CPU 0's image keeps the struct: SRAM0, which CPU 1's image leaves alone.
@@ -107,11 +107,17 @@ class Integration:
     def get(self, field, size, offset=0):
         return int.from_bytes(self.probe.uc.mem_read(self.at + self.layout[field] + offset, size), "little")
 
+    def address(self, field):
+        return self.at + self.layout[field]
+
+    def read_slots(self, size, index):
+        return bytes(self.probe.uc.mem_read(self.probe.sym["energy_stream_slots"] + 512 * index, size))
+
     def write(self, field, data, offset=0):
-        self.probe.uc.mem_write(self.at + self.layout[field] + offset, data)
+        self.probe.uc.mem_write(self.address(field) + offset, data)
 
     def read(self, field, size, offset=0):
-        return bytes(self.probe.uc.mem_read(self.at + self.layout[field] + offset, size))
+        return bytes(self.probe.uc.mem_read(self.address(field) + offset, size))
 
     def decoder_size(self):
         return self.layout["on_high_range"] - self.layout["decoder"]
@@ -131,6 +137,7 @@ def dual_machine(elf0, symbols0, elf1, symbols1):
     size, vma, lma = sections(elf1)[".data"]
     probe.uc.mem_write(vma, bytes(probe.uc.mem_read(lma, size)))
     probe.sym = {name: address for name, (address, _) in symbols1.items()}
+    probe.sym["energy_stream_slots"] = symbols(elf1)["energy_stream_slots"]
     probe.install_allocator_traps(probe.sym, elf1)
     probe.sym["cpu0:DMA0_IRQHandler"] = symbols0["DMA0_IRQHandler"][0]
     return probe
@@ -1271,7 +1278,7 @@ def check_stream(c, setup, result, local_symbols):
         for i in range(sent, written):
             at = i % 16
             length = energy.get("stream.length", 2, 2 * at)
-            out.append(energy.read("stream.slot", length, 512 * at))
+            out.append(energy.read_slots(length, at))
         energy.put("stream.sent", written, 4)
         return out
 
@@ -1421,7 +1428,7 @@ def check_identity(c, setup, offsets):
         c.check(a[:3] == b"\x90\x00\x00", "protected release fixture start failed")
         sent = probe.energy.get("stream.sent", 4)
         queued = probe.energy.get("stream.written", 4)
-        h = probe.energy.read("stream.slot", 92, (sent % 16) * 512)
+        h = probe.energy.read_slots(92, sent % 16)
         c.check(queued == sent + 1 and h[:2] == b"\xa1\x02" and h[68:] == a[7:],
                 "identified start reply/header boundary mismatch")
         written(0)
@@ -1448,7 +1455,7 @@ def check_identity(c, setup, offsets):
         for index in range(before_written, probe.energy.get("stream.written", 4)):
             at = index % 16
             length = probe.energy.get("stream.length", 2, at * 2)
-            message = probe.energy.read("stream.slot", length, at * 512)
+            message = probe.energy.read_slots(length, at)
             c.check(message[:1] != b"\xa1", "failed release exposed a candidate header")
         probe.uc.hook_del(failure_hook)
         probe.uc.hook_del(enter_hook)

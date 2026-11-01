@@ -334,22 +334,20 @@ else()
   set(CORE_CLOCK_MHZ 144)
 endif()
 
-# How the two images share the part. CPU 1 runs the bit paths from RAM, and their load copies are
-# most of its flash, so it gets the larger share of both. CPU 0's RAM is SRAM0 alone. CPU 1's is
-# SRAM1 up to the top 8 KB of SRAM3, with its stack in SRAM4. The cores meet in that top of
-# SRAM3, which holds dap_stage, the commands CPU 0 stages for CPU 1, and in USB SRAM, split between
-# TinyUSB's buffers and dap_shared (both in src/dap_shared.h). Not SRAM4 for dap_stage: a load
-# next to a store costs a cycle more there than in SRAM1 to SRAM3, and the generated transfers
-# make those against their buffers.
+# CPU0 owns SRAM0. CPU1's full 16 KiB stack occupies the bottom of SRAM1, followed by its
+# data/code through SRAM3, below dap_stage's top 8 KiB. Stream slots use SRAM4; CPU0 reaches
+# no timed CPU1 port for them. USB SRAM holds TinyUSB and dap_shared.
 set(CORE1_FLASH_ORIGIN 0x00040000)
 set(CORE1_FLASH_END    0x0009D800)  # where the SDK's own reservation for CPU 1 ends
 set(CORE0_RAM_LENGTH   0x00010000)
 set(CORE0_STACK_LENGTH 0x00001000)
-set(CORE1_RAM_ORIGIN   0x20010000)
-set(CORE1_RAM_LENGTH   0x0002E000)
+set(CORE1_RAM_ORIGIN   0x20014000)
+set(CORE1_RAM_LENGTH   0x0002A000)
+set(STREAM_SLOTS_ORIGIN 0x20040000)
+set(STREAM_SLOTS_LENGTH 0x00002000)
 set(DAP_STAGE_ORIGIN   0x2003E000)
 set(DAP_STAGE_LENGTH   0x00002000)
-set(CORE1_STACK_ORIGIN 0x20040000)
+set(CORE1_STACK_ORIGIN 0x20010000)
 set(CORE1_STACK_LENGTH 0x00004000)
 set(CORE0_USB_LENGTH   0x00001000)
 set(DAP_SHARED_ORIGIN  0x40101000)
@@ -452,14 +450,14 @@ rewrite_ld("(m_core1_image +\\(RX\\) +: )ORIGIN = 0x[0-9A-Fa-f]+, LENGTH = 0x[0-
 rewrite_ld("(m_data +\\(RW\\) +: ORIGIN = 0x20000000, LENGTH = )0x[0-9A-Fa-f]+ - RPMSG_SHMEM_SIZE"
            "\\1${CORE0_RAM_LENGTH}" "the m_data region")
 rewrite_ld("(m_usb_sram +\\(RW\\) +: ORIGIN = 0x40100000, LENGTH = )0x[0-9A-Fa-f]+"
-           "\\1${CORE0_USB_LENGTH}\n  m_dap_shared (RW) : ORIGIN = ${DAP_SHARED_ORIGIN}, LENGTH = ${DAP_SHARED_LENGTH}\n  m_dap_stage (RW) : ORIGIN = ${DAP_STAGE_ORIGIN}, LENGTH = ${DAP_STAGE_LENGTH}"
+           "\\1${CORE0_USB_LENGTH}\n  m_dap_shared (RW) : ORIGIN = ${DAP_SHARED_ORIGIN}, LENGTH = ${DAP_SHARED_LENGTH}\n  m_dap_stage (RW) : ORIGIN = ${DAP_STAGE_ORIGIN}, LENGTH = ${DAP_STAGE_LENGTH}\n  m_stream_slots (RW) : ORIGIN = ${STREAM_SLOTS_ORIGIN}, LENGTH = ${STREAM_SLOTS_LENGTH}"
            "the m_usb_sram region")
 # The boards this image runs on, for verge to read from the file (src/board_straps.c), right after
 # the vector table.
 rewrite_ld("(KEEP\\(\\*\\(\\.isr_vector\\)\\)[^\n]*\n)"
            "\\1    KEEP(*(.image_boards))\n" "the vector table's KEEP")
 rewrite_ld("(\n  m_usb_global \\(NOLOAD\\) :)"
-           "\n  .dap_shared (NOLOAD) :\n  {\n    KEEP(*(.dap_shared))\n  } > m_dap_shared\n  .dap_stage (NOLOAD) :\n  {\n    KEEP(*(.dap_stage))\n  } > m_dap_stage\n\\1"
+           "\n  .stream_slots (NOLOAD) :\n  {\n    KEEP(*(.stream_slots))\n  } > m_stream_slots\n  .dap_shared (NOLOAD) :\n  {\n    KEEP(*(.dap_shared))\n  } > m_dap_shared\n  .dap_stage (NOLOAD) :\n  {\n    KEEP(*(.dap_stage))\n  } > m_dap_stage\n\\1"
            "the m_usb_global section")
 
 # memcpy goes into the RAM copy of .data, as on CPU 1: it stages every command. USB_RAM moves

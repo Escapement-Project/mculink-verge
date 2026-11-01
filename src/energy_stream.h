@@ -216,8 +216,12 @@ struct energy_stream {
     volatile uint32_t written;
     volatile uint32_t sent;
     uint16_t length[ENERGY_STREAM_SLOTS];
-    alignas(4) uint8_t slot[ENERGY_STREAM_SLOTS][ENERGY_STREAM_MESSAGE_MAX];
+    /** Valid only for a non-dropped open pairs message. */
+    uint8_t* open_payload;
 };
+
+/** The singleton capture's payload queue. Independent stream objects cannot share it concurrently. */
+extern uint8_t energy_stream_slots[ENERGY_STREAM_SLOTS][ENERGY_STREAM_MESSAGE_MAX];
 
 /** What a stream's header carries besides its tables (HOST-INTERFACE.md, "Header: 0xa1"). */
 typedef struct {
@@ -247,17 +251,16 @@ ENERGY_STREAM_INLINE uint8_t* energy_stream_u16(uint8_t* out, uint16_t value) {
 }
 
 ENERGY_STREAM_INLINE uint8_t* energy_stream_u32(uint8_t* out, uint32_t value) {
-    for (uint32_t i = 0U; i < 4U; i++) {
-        out[i] = (uint8_t)(value >> (8U * i));
-    }
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    value = __builtin_bswap32(value);
+#endif
+    __builtin_memcpy(out, &value, sizeof value);
     return out + 4;
 }
 
 ENERGY_STREAM_INLINE uint8_t* energy_stream_u64(uint8_t* out, uint64_t value) {
-    for (uint32_t i = 0U; i < 8U; i++) {
-        out[i] = (uint8_t)(value >> (8U * i));
-    }
-    return out + 8;
+    out = energy_stream_u32(out, (uint32_t)value);
+    return energy_stream_u32(out, (uint32_t)(value >> 32U));
 }
 
 /** `n / d` and its remainder, for a quotient under 2^32. The C library's 64-bit division runs from
@@ -299,7 +302,7 @@ ENERGY_STREAM_INLINE uint32_t energy_stream_free(struct energy_stream const* str
 }
 
 ENERGY_STREAM_INLINE uint8_t* energy_stream_slot(struct energy_stream* stream) {
-    return stream->slot[stream->written & (ENERGY_STREAM_SLOTS - 1U)];
+    return energy_stream_slots[stream->written & (ENERGY_STREAM_SLOTS - 1U)];
 }
 
 /** Hand the slot at `written` to CPU 0's loop. */
@@ -562,6 +565,7 @@ ENERGY_STREAM_INLINE void energy_stream_pair(struct energy_stream* stream, uint3
         stream->open_counts = counts;
         if (!stream->open_dropped) {
             uint8_t* out = energy_stream_slot(stream);
+            stream->open_payload = out + ENERGY_STREAM_PAIRS_FIXED;
             *out++ = ENERGY_STREAM_PAIRS;
             *out++ = stream->gap;
             out = energy_stream_u32(out, sequence);
@@ -571,9 +575,8 @@ ENERGY_STREAM_INLINE void energy_stream_pair(struct energy_stream* stream, uint3
         }
     }
     if (!stream->open_dropped) {
-        uint8_t* out = energy_stream_slot(stream) + ENERGY_STREAM_PAIRS_FIXED + stream->open_pairs * ENERGY_STREAM_PAIR_BYTES;
-        out = energy_stream_u16(out, voltage);
-        out = energy_stream_u16(out, current);
+        uint8_t* out = stream->open_payload + stream->open_pairs * ENERGY_STREAM_PAIR_BYTES;
+        out = energy_stream_u32(out, (uint32_t)voltage | ((uint32_t)current << 16U));
         *out = low ? 1U : 0U;
     }
     stream->open_pairs++;

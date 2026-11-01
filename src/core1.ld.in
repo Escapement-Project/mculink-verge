@@ -9,10 +9,13 @@ MEMORY
   m_stack      (RW) : ORIGIN = @CORE1_STACK_ORIGIN@, LENGTH = @CORE1_STACK_LENGTH@
   m_dap_shared (RW) : ORIGIN = @DAP_SHARED_ORIGIN@, LENGTH = @DAP_SHARED_LENGTH@
   m_dap_stage  (RW) : ORIGIN = @DAP_STAGE_ORIGIN@, LENGTH = @DAP_STAGE_LENGTH@
+  m_stream_slots (RW) : ORIGIN = @STREAM_SLOTS_ORIGIN@, LENGTH = @STREAM_SLOTS_LENGTH@
 }
 
 SECTIONS
 {
+  PROVIDE(energy_stream_slots = ORIGIN(m_stream_slots));
+
   .text :
   {
     KEEP(*(.core1_vectors))

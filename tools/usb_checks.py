@@ -427,7 +427,7 @@ def check_aux_stream(c, elf0, elf1, symbols0, symbols1, fields, layout):
         """A message as the capture's owner publishes one."""
         written = field(usb, "stream.written")
         at = written % 16
-        usb.cpu0.uc.mem_write(usb.energy + layout["stream.slot"] + 512 * at, message)
+        usb.cpu0.uc.mem_write(symbols0["energy_stream_slots"][0] + 512 * at, message)
         field(usb, "stream.length", len(message), 2, 2 * at)
         field(usb, "stream.written", written + 1)
 

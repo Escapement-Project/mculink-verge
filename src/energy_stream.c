@@ -10,6 +10,13 @@
 #define ENERGY_STREAM_RAMFUNC
 #endif
 
+#ifndef CPU_LPC55S69JBD64_cm33_core1
+#ifdef CPU_LPC55S69JBD64_cm33_core0
+__attribute__((section(".stream_slots")))
+#endif
+alignas(4) uint8_t energy_stream_slots[ENERGY_STREAM_SLOTS][ENERGY_STREAM_MESSAGE_MAX];
+#endif
+
 /** energy_stream_ns once for both flushes: clang unrolls its divisions to over a kilobyte, and
  *  CPU 0's SRAM has no room for a copy in each. */
 ENERGY_STREAM_RAMFUNC __attribute__((noinline)) static uint64_t energy_stream_flush_ns(uint64_t counts,

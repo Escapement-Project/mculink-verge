@@ -255,7 +255,7 @@ __attribute__((section(".ramfunc"))) static void stream_take(void) {
     while (stream->sent != stream->written) {
         __DMB();
         uint32_t const at = stream->sent & (ENERGY_STREAM_SLOTS - 1U);
-        uint8_t const* const message = stream->slot[at];
+        uint8_t const* const message = energy_stream_slots[at];
         if (stream_synced || ((message[0] == ENERGY_STREAM_HEADER) && stream_expected)) {
             stream_synced = true;
             stream_expected = false;
