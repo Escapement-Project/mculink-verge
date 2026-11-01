@@ -22,6 +22,7 @@ __attribute__((always_inline)) static inline bool energy_identity_matches(energy
     return (difference == 0U) && (counter != 0U);
 }
 
+/** CPU 1's cycle counter must be running before this call. */
 [[nodiscard]] bool energy_identity_boot(uint8_t boot[16]);
 
 #endif

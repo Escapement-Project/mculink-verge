@@ -2329,7 +2329,7 @@ def main() -> int:
     check_energy_descriptors(c, args.core1, slots)
     check_energy_control(c, args.elf, args.core1, slots)
     from energy_identity_checks import check_rng
-    check_rng(c, args.core1, symbols_with_size(args.core1))
+    check_rng(c, args.core1, symbols_with_size(args.core1), slots)
     check_console_recovery(c, args.elf, slots)
     check_hid_padding(c, args.core1, slots)
     check_usb_transport(c, args.elf, args.core1, slots, args.code_lab)
