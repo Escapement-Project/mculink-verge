@@ -49,8 +49,9 @@
 /** The HID report size, which CPU 0 checks against CFG_TUD_HID_EP_BUFSIZE. */
 #define DAP_SHARED_HID_REPORT_SIZE 64U
 
-/** A segment's most words: XFERCOUNT's 1024 transfers. Each capture picks its own size up to this. */
-#define ENERGY_SEGMENT_MAX_WORDS 1024U
+/** A segment's most words. Each capture picks its own size up to this: about 1 ms of pairs, which
+ *  at 100,000 pairs/s is 512 words. XFERCOUNT would allow 1024. */
+#define ENERGY_SEGMENT_MAX_WORDS 512U
 #define ENERGY_SEGMENTS 2U
 #define ENERGY_RING_WORDS (ENERGY_SEGMENT_MAX_WORDS * ENERGY_SEGMENTS)
 

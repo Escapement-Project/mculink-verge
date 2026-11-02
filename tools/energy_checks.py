@@ -440,7 +440,7 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1, layout)
     cpu1.uc.mem_write(base + offsets1["energy_available"], b"\x01")
     energy = attach_integration(cpu1, offsets1, layout)
     energy.put("running", 1, 1)
-    energy.put("segment_words", 1024, 4)  # as a start leaves it
+    energy.put("segment_words", SEGMENT, 4)  # as a start leaves it
     pending = 0
 
     def acknowledge(uc, at, size, data):
@@ -558,6 +558,8 @@ def check_hold(c, elf1, symbols1, offsets1, layout):
 SHUNT_NA = 1_000_000
 # The fixture's capture: a rate the timer makes exactly, with full-size segments.
 FIXTURE_RATE = 16000
+# A full segment: ENERGY_SEGMENT_MAX_WORDS, the most a start picks.
+SEGMENT = 512
 FIXTURE_SCALE = (1 << 32) // FIXTURE_RATE
 DIVIDER_NA_PER_MV_Q16 = (65536 * 1_000_000 + 330_000) // 660_000
 
@@ -610,7 +612,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         # What a start publishes for CPU 0: the plain board's full scale, the 350 mA setting's limit.
         # The capture is under way on the high range, which every sample here reads.
         for field, value, size in (("running", 1, 1), ("calibrated", 1, 1), ("scale_q32", FIXTURE_SCALE, 8),
-                                   ("segment_words", 1024, 4), ("full_scale_mv", 3300, 4),
+                                   ("segment_words", SEGMENT, 4), ("full_scale_mv", 3300, 4),
                                    ("rearm_below_na", 1500000, 4), ("previous_low", 0, 1)):
             energy.put(field, value, size)
         calibration = struct.pack("<4H7IB3x", 0, 65535, 0, 0, SHUNT_NA, SHUNT_NA, 0, 0, 0, 0, 0, 2)
@@ -688,11 +690,11 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         c.check(int.from_bytes(adc.page[0xBC:0xC0], "little") == 0x01000001,
                 "ADC monitor is not hardware trigger 7 starting at command 1")
         # About 1 ms of the ring's seven words a pair: a power of two, no longer than 1 ms and over
-        # 0.5, within 16 to 1024 words.
+        # 0.5, within 16 to 512 words.
         segment = probe.energy.get("segment_words", 4)
         counts = [probe.energy.get("descriptors", 4, 16 * i) >> 16 & 0x3ff for i in range(2)]
-        c.check(segment & (segment - 1) == 0 and 16 <= segment <= 1024 and
-                (segment * 1000 <= actual * 7 or segment == 16) and (segment * 2000 > actual * 7 or segment == 1024) and
+        c.check(segment & (segment - 1) == 0 and 16 <= segment <= SEGMENT and
+                (segment * 1000 <= actual * 7 or segment == 16) and (segment * 2000 > actual * 7 or segment == SEGMENT) and
                 counts == [segment - 1] * 2 and dma.get(0x408 + 21 * 16) >> 16 & 0x3ff == segment - 1,
                 f"{actual} pairs/s: segments of {segment} words, descriptors count {counts}")
         probe.uc.hook_del(hook)
@@ -831,8 +833,8 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     probe.uc.hook_del(hook)
 
     probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
-    codes = [8192 * (i % 3 + 1) for i in range(113)]
-    words = [0] * 1024
+    codes = [8192 * (i % 3 + 1) for i in range((SEGMENT - 1) // 9)]
+    words = [0] * SEGMENT
     for i, code in enumerate(codes):
         words[i * 9:i * 9 + 3] = [result(1, code), result(1, 1), result(2, 0)]
     words[-1] = result(1, 49152)
@@ -840,11 +842,11 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     probe.integrate()
     put("energy_segments", 1)
     total(codes)
-    feed([result(1, 1), result(2, 0), result(1, 4096)], 1024)
-    written(1027)
+    feed([result(1, 1), result(2, 0), result(1, 4096)], SEGMENT)
+    written(SEGMENT + 3)
     reply = probe.command(bytes([0x90, 1]))
     c.check(len(reply) == 21 and reply[2] == 0 and int.from_bytes(reply[3:5], "little") == 49152 and
-            int.from_bytes(reply[7:11], "little") == 114, "latest lost a tuple spanning DMA segments")
+            int.from_bytes(reply[7:11], "little") == len(codes) + 1, "latest lost a tuple spanning DMA segments")
     # The calibrated fields: millivolts, and nanoamps less the divider's share.
     mv = 49152 * 2 * 3300 >> 16
     calibrated = (mv, SHUNT_NA - (mv * DIVIDER_NA_PER_MV_Q16 >> 16), 1)
@@ -880,7 +882,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     feed([result(1, 1), result(2, 0), result(1, 32768), result(1, 1), result(2, 0)])
     written(5)
     reply = probe.command(bytes([0x90, 1]))
-    c.check(reply[2] == 0 and int.from_bytes(reply[7:11], "little") == 115,
+    c.check(reply[2] == 0 and int.from_bytes(reply[7:11], "little") == len(codes) + 1,
             "session sequence reset or an old partial tuple crossed restart")
     pause()
     total(codes + [32768])
@@ -892,7 +894,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
 
     # The fixture's full-size segments, and the sizes a start picks at 100,000, 5,000 and 1,000 pairs/s.
     # After an odd number of segments through CPU 0, the drain runs past the ring's end.
-    for (rate, size), counted in itertools.product(((FIXTURE_RATE, 1024), (100000, 512), (5000, 32), (1000, 16)),
+    for (rate, size), counted in itertools.product(((FIXTURE_RATE, SEGMENT), (100000, 512), (5000, 32), (1000, 16)),
                                                    (3, 4)):
         probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
         if rate != FIXTURE_RATE:
@@ -970,23 +972,25 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
 
     for byte_wrap in (True, False):
         probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
-        probe.energy.put("consumed_bytes", 0xfffff000 if byte_wrap else 0, 4)
+        segment_bytes = 4 * SEGMENT
+        probe.energy.put("consumed_bytes", (1 << 32) - segment_bytes if byte_wrap else 0, 4)
         probe.energy.put("segments_at_start", 0 if byte_wrap else 0xffffffff, 4)
-        put("energy_segments", 0xfffff if byte_wrap else 0xffffffff)
+        put("energy_segments", (1 << 32) // segment_bytes - 1 if byte_wrap else 0xffffffff)
         put("energy_accumulator_pairs", 0xffffffff, 8)
         decoder = bytearray(probe.energy.decoder_size())
         decoder[12:16] = u32(0xffffffff)
         decoder[16] = 1
         probe.energy.write("decoder", bytes(decoder))
         words = [result(2 if i % 9 == 2 else 1, 32768 if i % 9 == 0 else 1 if i % 9 == 1 else 0)
-                 if i % 9 < 3 else 0 for i in range(1024)]
-        feed(words, 1024 if byte_wrap else 0)
+                 if i % 9 < 3 else 0 for i in range(SEGMENT)]
+        pairs = (SEGMENT + 6) // 9
+        feed(words, SEGMENT if byte_wrap else 0)
         probe.integrate()
-        put("energy_segments", 0x100000 if byte_wrap else 0)
+        put("energy_segments", (1 << 32) // segment_bytes if byte_wrap else 0)
         written(0)
         reply = probe.command(bytes([0x90, 1]))
-        c.check(reply[2] == 0 and int.from_bytes(reply[7:11], "little") == 113 and
-                get("energy_accumulator_pairs", 8) == 0xffffffff + 114,
+        c.check(reply[2] == 0 and int.from_bytes(reply[7:11], "little") == pairs - 1 and
+                get("energy_accumulator_pairs", 8) == 0xffffffff + pairs,
                 "energy byte/segment/sample counter wrap lost samples")
         probe.uc.hook_del(hook)
     probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
@@ -1019,7 +1023,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     # A segment that stays on the high range under the 350 mA setting's 1.5 mA asks for the low
     # range back; one sample over, or a segment that ends on the low range, does not. The cases run
     # in turn on one machine, so a segment over the limit must not hold back the next.
-    samples = 300
+    samples = SEGMENT * 3 // 10
     probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
     # 100 nA a code, so 10000 is 1 mA and 20000 is 2 mA.
     probe.energy.write("high_range", struct.pack("<4H7IB3x", 0, 65535, 0, 0, 0, 6553500, 0, 0, 100 << 16, 0, 0, 2))
@@ -1032,7 +1036,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         put("energy_range_retry_pending", 0, 1)
         words = [word for current, state in zip(currents, ranges)
                  for word in (result(1, 32768), result(1, current), result(2, state))]
-        feed(words + [0] * (1024 - len(words)), segment * 1024)
+        feed(words + [0] * (SEGMENT - len(words)), segment * SEGMENT)
         put("energy_segments", segment)
         probe.integrate()
         c.check(get("energy_range_retry_pending", 1) == expected, f"low-range re-arm, {label}")
@@ -1112,8 +1116,12 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     # One capture: up mid-segment (a blended code), down then straight back up, down on segment 0's
     # last pair, and up on the ring's last pair, whose next pair is still in the ADC's FIFO at the
     # pause. Segment 0 goes through CPU 0's interrupt, the rest through CPU 1's drain.
-    shape = ([(50000, True)] * 100 + [(59000, False)] + [(300, False)] * 99 + [(40000, True), (59000, False)] +
-             [(300, False)] * 138 + [(40000, True)] + [(20000, True)] * 60 + [(59000, False)])
+    # At 1024 words: 100, 99, 138 and 60 pairs, the switch down on pair 340.
+    last_whole = (SEGMENT - 3) // 3
+    run = SEGMENT * 100 // 1024
+    shape = ([(50000, True)] * run + [(59000, False)] + [(300, False)] * (run - 1) + [(40000, True), (59000, False)] +
+             [(300, False)] * (last_whole - 2 * run - 2) + [(40000, True)] + [(20000, True)] * (run * 3 // 5) +
+             [(59000, False)])
     first = [(30000 + i % 7 * 1000, code, low) for i, (code, low) in enumerate(shape)]
     tail = (41000, 300, False)
     feed(words(first))
@@ -1170,11 +1178,11 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     probe.uc.hook_del(hook)
     for fault in ("IRQ error", "pending error", "FIFO overflow"):
         probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
-        words = [result(1, 32768), result(1, 1), result(2, 0)] + [0] * 1021
+        words = [result(1, 32768), result(1, 1), result(2, 0)] + [0] * (SEGMENT - 3)
         feed(words)
         probe.integrate()
         put("energy_segments", 1)
-        written(1024)
+        written(SEGMENT)
         total([32768])
         if fault == "IRQ error":
             put("energy_dma_error", 1, 1)
@@ -1187,7 +1195,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         reply = probe.command(bytes([0x90, 3]))
         c.check(len(reply) == 19 and reply[2] == 7 and int.from_bytes(reply[3:11], "little") == (power_pw(32768) * FIXTURE_SCALE >> 32) // 1000 and
                 int.from_bytes(reply[11:19], "little") == 1, f"{fault}: total status/layout lost retained data")
-        feed(words, 1024)
+        feed(words, SEGMENT)
         probe.integrate()
         total([32768])
         reply = probe.command(bytes([0x90, 2]))

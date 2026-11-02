@@ -738,8 +738,8 @@ def check_energy_descriptors(c: Checker, elf: str, slots: int) -> None:
     entry = sym["dap_shared"][0] + offsets["dma_table"] + 21 * 16
     ring, size = INTEGRATION_AT + layout["ring"], layout["size"] - layout["ring"]
     descriptors, descriptor_bytes = INTEGRATION_AT + layout["descriptors"], layout["ring"] - layout["descriptors"]
-    c.check(size == 8192 and descriptor_bytes == 32, "energy ring/descriptor dimensions changed")
-    for words in (1024, 64, 16):
+    c.check(size == 4096 and descriptor_bytes == 32, "energy ring/descriptor dimensions changed")
+    for words in (512, 64, 16):
         for restart in range(2):
             probe.uc.mem_write(descriptors, bytes([0xee]) * descriptor_bytes)
             probe.uc.mem_write(entry, bytes([0xee]) * 16)
@@ -764,7 +764,7 @@ def check_energy_descriptors(c: Checker, elf: str, slots: int) -> None:
                 at = link
             c.check(destinations == [0, 1, 0, 1, 0], f"{words}-word energy startup/restart {restart}: {destinations}")
     c.note("actual energy descriptor links alternate segments from the first transfer, including restart, at"
-           " 1024-, 64- and 16-word segments")
+           " 512-, 64- and 16-word segments")
 
 
 def check_allocator_trap(c: Checker, elf: str) -> None:
