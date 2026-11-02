@@ -211,9 +211,11 @@ static const calibration_load_t load_r4 = {1UL << 29U, 16500U + LOAD_SWITCH_MILL
 #define CAL_DISC (1UL << 24U)
 
 /** Each range's loads, smallest current first (PRO.md, "Calibration"). The divider's current alone
- *  is a point only in the low ranges: in the high ones it sits under the amplifier's output floor. */
+ *  is a point only in the low ranges: in the high ones it sits under the amplifier's output floor.
+ *  Without R1, the 350 mA setting's high range read 0.5 mA 4% high, extending R3's slope down a
+ *  curve that bends up towards the floor. R1 counts only clear of that floor. */
 static const calibration_load_t* const loads_350_low[] = {&no_load, &load_r1, &load_r3, nullptr};
-static const calibration_load_t* const loads_350_high[] = {&load_r3, &load_r2, &load_r4, nullptr};
+static const calibration_load_t* const loads_350_high[] = {&load_r1, &load_r3, &load_r2, &load_r4, nullptr};
 static const calibration_load_t* const loads_50_low[] = {&no_load, &load_r1, nullptr};
 static const calibration_load_t* const loads_50_high[] = {&load_r1, &load_r3, &load_r2, nullptr};
 
@@ -222,6 +224,9 @@ static const calibration_load_t* const loads_50_high[] = {&load_r1, &load_r3, &l
 #define CALIBRATION_CODE_LIMIT 65400U
 /** Two points closer than this give no slope worth having. */
 #define CALIBRATION_MIN_STEP 64U
+/** How far over a high range's no-load reading, the amplifier's output floor, a point has to be.
+ *  A point pinned at the floor reads the currents between it and the next point low. */
+#define CALIBRATION_FLOOR_MARGIN 64U
 /** Node T with the probe's 3.3 V on the shunts. Less means CTRL_CAL_DISC did not switch it. */
 #define CALIBRATION_MIN_MV 2500U
 
@@ -273,8 +278,10 @@ static calibration_point_t calibration_point(const calibration_load_t* load, uin
     return POINT_OK;
 }
 
-/** Fills `calibration` with the points kept so far, whether or not the range succeeds. */
-static bool calibration_range(const calibration_load_t* const* loads, energy_calibration_t* calibration) {
+/** Fills `calibration` with the points kept so far, whether or not the range succeeds. A point
+ *  under `min_code` is left out. */
+static bool calibration_range(const calibration_load_t* const* loads, uint32_t min_code,
+                              energy_calibration_t* calibration) {
     *calibration = (energy_calibration_t){0};
     for (; (*loads != nullptr) && (calibration->count < 4U); loads++) {
         uint16_t code = 0U;
@@ -285,6 +292,9 @@ static bool calibration_range(const calibration_load_t* const* loads, energy_cal
         }
         if (result == POINT_SATURATED) {
             break;
+        }
+        if (code < min_code) {
+            continue;
         }
         uint8_t const count = calibration->count;
         if (count > 0U) {
@@ -343,12 +353,15 @@ __attribute__((noinline)) static bool current_calibrate(void) {
     GPIO->SET[0] = p17;
     calibration_settle();
     bool const low_ok = latch_in_low_range() &&
-                        calibration_range(wide ? loads_350_low : loads_50_low, &low_range_calibration);
+                        calibration_range(wide ? loads_350_low : loads_50_low, 0U, &low_range_calibration);
 
     GPIO->CLR[0] = p29;
     calibration_settle();
-    bool const high_ok = !latch_in_low_range() &&
-                         calibration_range(wide ? loads_350_high : loads_50_high, &high_range_calibration);
+    uint16_t floor_code = 0U;
+    uint32_t floor_na = 0U;
+    bool const high_ok = !latch_in_low_range() && (calibration_point(&no_load, &floor_code, &floor_na) == POINT_OK) &&
+                         calibration_range(wide ? loads_350_high : loads_50_high,
+                                           floor_code + CALIBRATION_FLOOR_MARGIN, &high_range_calibration);
 
     GPIO->CLR[1] = CAL_DISC | loads;
     IOCON->PIO[0][29] = IOCON_FUNC7 | IOCON_SLEW_FAST | IOCON_DIGITAL_EN;

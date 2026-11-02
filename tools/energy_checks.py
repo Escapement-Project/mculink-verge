@@ -159,10 +159,13 @@ class Circuit:
     LOADS = {22: 6650.0, 23: 66.5, 26: 1650.0, 29: 16.5}  # PIO1 pin: ohms
     CAL_DISC = 24
 
-    def __init__(self, setting_ma, gain=1.0, switch_ohms=0.24, supply=3.3, full_scale=3.0):
+    def __init__(self, setting_ma, gain=1.0, switch_ohms=0.24, supply=3.3, full_scale=3.0, contact=0.0,
+                 offset=OFFSET):
         self.low = 50.0 if setting_ma == 350 else 200.0
-        self.high = (0.24 if setting_ma == 350 else 2.0) + 0.0165  # Q3 at a gate-source voltage of -3.3 V
+        # Q3 at a gate-source voltage of -3.3 V, and J17's contact.
+        self.high = (0.24 if setting_ma == 350 else 2.0) + 0.0165 + contact
         self.gain, self.switch_ohms, self.supply, self.full_scale = gain, switch_ohms, supply, full_scale
+        self.offset = offset
 
     def shunt(self, low_range):
         return self.low if low_range else 1 / (1 / self.low + 1 / self.high)
@@ -172,7 +175,7 @@ class Circuit:
 
     def current_code(self, amps, low_range):
         ideal = self.code(30 * self.gain * amps * self.shunt(low_range))
-        return min(65535, max(self.FLOOR, ideal + self.OFFSET))
+        return min(65535, max(self.FLOOR, ideal + self.offset))
 
     def node(self, port1, low_range):
         """The shunt current and node T's voltage with the probe's 3.3 V on the shunts."""
@@ -1245,11 +1248,13 @@ def check_calibration(c, elf, symbols, offsets, model_syscon):
         points = [struct.unpack_from("<HI", reply, 4 + 6 * i) for i in range(4)]
         return reply[2], (tuple(code for code, _ in points), tuple(na for _, na in points), reply[3])
 
-    plans = {350: ({22, 26}, {26, 23, 29}), 50: ({22}, {22, 26, 23})}
-    for setting_ma, (low_loads, high_loads) in plans.items():
+    # Loads converted by latch state, and the high range's points. With nominal parts, R1 lands 18
+    # codes over the 350 mA setting's high range floor, too close to keep.
+    plans = {350: ({22, 26}, {22, 26, 23, 29}, 3), 50: ({22}, {22, 26, 23}, 3)}
+    for setting_ma, (low_loads, high_loads, high_points) in plans.items():
         probe, gpio, circuit, adc, ok, tables = run(setting_ma)
         c.check(ok, f"{setting_ma} mA: calibration failed on nominal parts")
-        c.check(tables[True][3] == len(low_loads) + 1 and tables[False][3] == len(high_loads),
+        c.check(tables[True][3] == len(low_loads) + 1 and tables[False][3] == high_points,
                 f"{setting_ma} mA: points {tables[True][3]} low, {tables[False][3]} high")
         loads_seen = {low: {pin for q, loads in adc.states if q == low for pin in Circuit.LOADS if loads >> pin & 1}
                       for low in (1, 0)}
@@ -1289,6 +1294,18 @@ def check_calibration(c, elf, symbols, offsets, model_syscon):
             c.check(result == 0 and (codes, currents, count) == (tables[low][0], tables[low][1], tables[low][3]),
                     f"{setting_ma} mA: mode 4 differs from the {'low' if low else 'high'} range's table")
 
+    # J17's contact can double the 350 mA setting's high range resistance (PRO.md). Then R1 clears
+    # the floor and is a point, unless the amplifier's offset pins it at the floor.
+    for offset, kept in ((Circuit.OFFSET, True), (-110, False)):
+        _, _, circuit, _, ok, tables = run(350, contact=0.25, offset=offset)
+        currents, count = tables[False][1], tables[False][3]
+        c.check(ok and count == (4 if kept else 3) and abs(currents[0] - (500_000 if kept else 2_000_000)) < 50_000,
+                f"350 mA, 0.5 ohm high range, offset {offset}: {count} points from {currents[0]} nA")
+        for target in (0.8e-3, 1.1e-3, 1.5e-3):
+            code = circuit.current_code(target + 3.3 / 660e3, False)
+            measured = firmware_target_na(tables[False], code, circuit.code(3.3 / 2)) / 1e9
+            c.check(abs(measured - target) <= 0.002 * target,
+                    f"350 mA, 0.5 ohm high range, offset {offset}: {target * 1e6:.0f} uA read {measured * 1e6:.3f} uA")
     _, _, _, _, ok, tables = run(350, gain=1.03)
     c.check(ok and tables[True][3] == 2, "350 mA: a saturated R3 point did not drop out of the low range")
     _, _, _, _, ok, _ = run(50, gain=1.025)

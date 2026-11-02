@@ -212,11 +212,21 @@ With 5 ms it read it right.
   in the 350 mA setting's high range is about 0.3 mA. The divider keeps the low ranges clear of
   that floor whenever the target is powered: 2.7 µA at 1.8 V is still 88 codes in the 350 mA
   setting and 355 in the 50 mA setting.
+- **Below the lowest point.** A table extends its first segment below its lowest point. The
+  amplifier's output bends up as it nears its floor, so a reading there comes out high. Extended
+  down from R3, the 350 mA setting's high range read R1's 0.5 mA 4% high on one unit, so R1 can be
+  a point there too.
+- **The floor.** Each high range first converts with no load, which reads the amplifier's floor.
+  A point less than 64 codes above that reading is left out: one pinned at the floor would read
+  the currents between it and the next point low. At the nominal resistance R1 gives about 84
+  codes, about 27 over the floor, so R3 stays the lowest point. R1 counts on a unit whose high
+  range has more resistance, as J17's contact can add (Accuracy limits): at 0.49 Ω it gave 155
+  codes over a floor of 57.
 
 | setting | range | points | across the resistor |
 | --- | --- | --- | --- |
 | 350 mA | low | no load, R1, R3 | 0.25 mV, 25 mV, 97 mV |
-| | high | R3, R2, R4 | 0.5 mV, 13 mV, 49 mV |
+| | high | R1 if clear of the floor, R3, R2, R4 | 0.13 mV, 0.5 mV, 13 mV, 49 mV |
 | 50 mA | low | no load, R1 | 1 mV, 97 mV |
 | | high | R1, R3, R2 | 1 mV, 4 mV, 96 mV |
 
@@ -245,7 +255,10 @@ With 5 ms it read it right.
   (PMPB15XP Fig. 8) beside the 0.24 Ω resistor. In the 50 mA setting the same target reads 0.35% high.
   UM11673 gives the 350 mA setting's high range 5% accuracy and the others 1%.
 - J17's contact is in the high range's resistance too. Calibration measures it, but moving the
-  jumpers away and back leaves the setting as it was, so only a reset calibrates again.
+  jumpers away and back leaves the setting as it was, so only a reset calibrates again. On one
+  unit the 350 mA setting's high range measured 0.27, 0.75 and 0.49 Ω at boots on three days,
+  against 0.26 Ω nominal, so its full scale was 366, 133 and 205 mA. Each boot read its own
+  resistance right; a current past that boot's full scale saturates.
 - The low range lowers the target's supply (the drop across the sense resistors), so a target
   whose current follows its supply draws differently on the two ranges, and is read that way.
 - The calibration switches are counted at their typical on-resistance. Their spread moves the
