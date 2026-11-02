@@ -28,11 +28,12 @@ static volatile uint16_t in_length;
 static volatile bool in_busy;
 /** Counts USB configurations, for the slot's `generation`. */
 static uint32_t generation;
-/** A stream command (0x90 mode 6 or 7) CPU 0 answers itself, waiting for the capture state. */
+/** A stream command (0x90 mode 6, 7, 10 or 13) CPU 0 answers itself, waiting for the capture
+ *  state. */
 static uint8_t local_request[26];
 static uint8_t local_length;
 /** A header has gone since this configuration began: stream messages before it are a gone host's.
- *  Only a header this configuration asked for, by mode 5 or 6, counts. */
+ *  Only a header this configuration asked for, by mode 5, 6, 9 or 10, counts. */
 static bool stream_synced;
 static bool stream_expected;
 
@@ -54,8 +55,9 @@ __attribute__((section(".ramfunc"))) void aux_received(const uint8_t* buffer, ui
     if ((buffer != aux_out) || (length == 0U) || (slot->state != AUX_SLOT_FREE)) {
         return;
     }
-    // Modes 6 and 7 start and stop a stream without stopping the capture. CPU 0 owns the capture
-    // state whenever CPU 1 has not asked for quiet (src/energy_integration.h), so it serves them.
+    // Modes 6, 7, 10 and 13 start and stop a stream without stopping the capture. CPU 0 owns the
+    // capture state whenever CPU 1 has not asked for quiet (src/energy_integration.h), so it serves
+    // them.
     if ((buffer[0] == 0x90U) && (length >= 2U) &&
         ((buffer[1] == 6U) || (buffer[1] == 7U) || (buffer[1] == 10U) || (buffer[1] == 13U))) {
         local_length = (uint8_t)(length < sizeof(local_request) ? length : sizeof(local_request));
@@ -101,10 +103,10 @@ __attribute__((section(".ramfunc"))) static bool stream_owned_by_cpu1(struct ene
     return ((dap_shared.energy_control_ack & DAP_ENERGY_QUIET_FLAG) != 0U) || stream->timeline_pending;
 }
 
-/** Whether a mode 6 or 7 has to wait for the capture state. CPU 1 holds it from boot to the first
- *  start and after every stop, with nothing running and no stream, and then the answer needs no
- *  write. It also holds it for a moment inside a command, around a supply read, with the capture
- *  running: then the answer waits. */
+/** Whether a mode 6, 7, 10 or 13 has to wait for the capture state. CPU 1 holds it from boot to
+ *  the first start and after every stop, with nothing running and no stream, and then the answer
+ *  needs no write. It also holds it for a moment inside a command, around a supply read, with the
+ *  capture running: then the answer waits. */
 __attribute__((section(".ramfunc"))) static bool stream_waits(void) {
     struct energy_integration const* const energy = dap_shared.energy_integration;
     if ((energy != nullptr) && (local_request[1] == 13U) && ((energy->capture_id_sequence & 1U) != 0U)) {
@@ -116,7 +118,7 @@ __attribute__((section(".ramfunc"))) static bool stream_waits(void) {
            stream_owned_by_cpu1(&energy->stream) && (energy->running || energy->stream.active);
 }
 
-/** 0x90 mode 6 or 7 into aux_in; false while it has to wait (stream_waits). Replies as
+/** 0x90 mode 6, 7, 10 or 13 into aux_in; false while it has to wait (stream_waits). Replies as
  *  HOST-INTERFACE.md "The energy stream" gives them. */
 __attribute__((section(".ramfunc"))) static bool stream_command(void) {
     if (stream_waits()) {
@@ -238,7 +240,7 @@ __attribute__((section(".ramfunc"), noinline)) static void stream_marks(void) {
     cpu0_unmask(basepri);
 }
 
-/** Stream messages wait while a mode 5 request is out, so its reply comes before its header. */
+/** Stream messages wait while a mode 5 or 9 request is out, so its reply comes before its header. */
 __attribute__((section(".ramfunc"))) static bool stream_held(void) {
     aux_slot_t const* const slot = &dap_stage.aux;
     return (slot->state != AUX_SLOT_FREE) && (slot->request[0] == 0x90U) && ((slot->request[1] == 5U) || (slot->request[1] == 9U));

@@ -176,6 +176,8 @@ measurement", has the details.
 | 5 | Invalid argument |
 | 6 | Calibration failed: the ADC did not answer, or a range kept fewer than two usable points |
 | 7 | DMA failed or the ADC FIFO overflowed |
+| 8 | Capture identity does not match; nothing changed (modes 11 and 13) |
+| 9 | Identity unavailable: entropy initialization failed or the capture counter is exhausted. Any start can return it, legacy modes 0 and 5 included |
 
 Result 7 persists after stop and failed starts. The firmware retains the recorded total and stops
 integrating when it detects the fault. A successful new start clears the fault and the total.
@@ -273,13 +275,6 @@ returns result 1, running 0, rate 0 and the zero identity. A first-start rate or
 refusal leaves stopped state. A latched DMA/FIFO/control fault reports 7, with zero identity if
 no start succeeded. Result 9 is used only after entropy initialization actually failed, not merely
 because it has not been attempted. Unavailable hardware takes precedence and returns 3.
-
-Add to the result table:
-
-| Result | Meaning |
-| --- | --- |
-| 8 | Capture identity does not match; nothing changed |
-| 9 | Identity unavailable: entropy initialization failed or the counter is exhausted |
 
 Mode 12 reports 9 with zero identity only when no identity was established. Counter exhaustion
 does not make an existing identity unreadable or prevent stopping its capture. Modes 8/9 reject
