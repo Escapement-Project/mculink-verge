@@ -634,8 +634,9 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             }
             return (3U << 16) | 28U;
         }
+        // Mode 6 is Aux's alone, but its DIO mask is still part of the request in a batch.
         response[1] = DAP_ERROR;
-        return (2U << 16) | 2U;
+        return ((mode == 6U ? 3U : 2U) << 16) | 2U;
     }
 
     case ID_VENDOR_MARK: {

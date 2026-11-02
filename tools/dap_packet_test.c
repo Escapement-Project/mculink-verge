@@ -70,6 +70,11 @@ int main(void) {
         assert(padded.consumed == length);
 
     }
+    {
+        uint8_t bytes[64] = {0x90U, 6U};
+        prefixes(bytes, 3U, 2U);
+        assert(check(bytes, sizeof(bytes), 2U, true).consumed == 3U);
+    }
     for (uint32_t capacity = 64U; capacity <= 512U; capacity += 448U) {
         prefixes((uint8_t[]){0x11, 0x80, 0x96, 0x98, 0}, 5U, capacity);
         prefixes((uint8_t[]){0x06, 0, 1, 0, 0, 0x80, 0xff, 0, 0x80}, 9U, capacity);
