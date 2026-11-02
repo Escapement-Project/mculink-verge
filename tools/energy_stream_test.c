@@ -105,7 +105,7 @@ static void test_pairs(void) {
     for (uint32_t s = 1U; s <= 250U; s++) {
         energy_stream_pair(&stream, s, (uint16_t)s, (uint16_t)(s * 3U), (s % 2U) == 0U);
     }
-    energy_stream_batch_end(&stream);
+    energy_stream_batch_end(&stream, stream.next_sequence - 1U);
     uint32_t first = 1U;
     for (uint32_t message = 0U; message < 2U; message++) {
         uint8_t const* m = take(&stream, &length);
@@ -140,19 +140,19 @@ static void test_ten_ms(void) {
     for (uint32_t s = 1U; s <= 7U; s++) {
         energy_stream_pair(&stream, s, 1U, 1U, true);
     }
-    energy_stream_batch_end(&stream);
+    energy_stream_batch_end(&stream, stream.next_sequence - 1U);
     assert(take(&stream, &length) == NULL);
     for (uint32_t s = 8U; s <= 14U; s++) {
         energy_stream_pair(&stream, s, 1U, 1U, true);
     }
     uint8_t const* m = take(&stream, &length);
     assert(m != NULL && u32(m + 2) == 1U && u16(m + 14) == 10U);
-    energy_stream_batch_end(&stream);
+    energy_stream_batch_end(&stream, stream.next_sequence - 1U);
     assert(take(&stream, &length) == NULL && stream.open_pairs == 4U);
     for (uint32_t s = 15U; s <= 20U; s++) {
         energy_stream_pair(&stream, s, 1U, 1U, true);
     }
-    energy_stream_batch_end(&stream);
+    energy_stream_batch_end(&stream, stream.next_sequence - 1U);
     m = take(&stream, &length);
     assert(m != NULL && u32(m + 2) == 11U && u16(m + 14) == 10U && u64(m + 6) == ns(TICKS + 10U * (uint64_t)PERIOD));
 }
@@ -168,7 +168,7 @@ static void test_holds(void) {
         start(&stream, started, true);
         uint16_t length = 0U;
         (void)take(&stream, &length);
-        energy_stream_batch_begin(&stream);
+        energy_stream_batch_begin(&stream, stream.next_sequence - 1U);
         for (uint32_t s = 1U; s <= 3U; s++) {
             energy_stream_pair(&stream, s, 1U, 1U, true);
         }
@@ -177,7 +177,7 @@ static void test_holds(void) {
         energy_stream_hold_t* const hold = energy_stream_hold(&stream, due + lags[i]);
         assert(hold != NULL);
         hold->came = due + 12345U;
-        energy_stream_batch_begin(&stream);
+        energy_stream_batch_begin(&stream, stream.next_sequence - 1U);
         for (uint32_t s = 4U; s <= 5U; s++) {
             energy_stream_pair(&stream, s, 1U, 1U, true);
         }
@@ -193,12 +193,12 @@ static void test_holds(void) {
     // waits for that pair.
     static struct energy_stream stream;
     start(&stream, 0U, false);
-    energy_stream_batch_begin(&stream);
+    energy_stream_batch_begin(&stream, stream.next_sequence - 1U);
     (void)energy_stream_time(&stream, 1U);
     energy_stream_hold_t* const hold = energy_stream_hold(&stream, TICKS + 2U * PERIOD);
     hold->came = TICKS + 2U * PERIOD + 500U;
     assert(energy_stream_time(&stream, 2U) == TICKS + PERIOD && stream.holds_read == 0U);
-    energy_stream_batch_begin(&stream);
+    energy_stream_batch_begin(&stream, stream.next_sequence - 1U);
     assert(energy_stream_time(&stream, 3U) == TICKS + 2U * PERIOD + 500U && stream.holds_read == 1U);
     // More holds than the ring keeps: the rest are not recorded, and nothing is overwritten.
     for (uint32_t i = 0U; i < ENERGY_STREAM_HOLDS + 3U; i++) {
@@ -224,7 +224,7 @@ static void test_out_of_step(void) {
     m = take(&stream, &length);
     assert(m != NULL && u32(m + 2) == 5U && u16(m + 14) == 2U && m[1] == ENERGY_STREAM_FLAG_HELD);
     stream.timeline_pending = true;
-    energy_stream_batch_begin(&stream);
+    energy_stream_batch_begin(&stream, stream.next_sequence - 1U);
 }
 
 /** A pause sends the pairs so far; the resume continues the clock by however long the pause took,
@@ -349,14 +349,80 @@ static void test_full_recovers(void) {
     assert(first != NULL && first[0] == 0xA0U && first[1] == 0U && u32(first + 2) == s && u16(first + 14) == 1U);
 }
 
-/** Without a stream, pairs are timed and nothing is sent. */
+/** Without a stream, a batch with no hold to place goes untimed and moves the timeline on at its
+ *  end; one with a hold times its pairs. Either way the timeline ends where timing every pair puts
+ *  it, so a stream started after them times its first pair right. */
+static void test_untimed(void) {
+    static struct energy_stream stream;
+    static struct energy_stream reference;
+    start(&stream, 0U, false);
+    start(&reference, 0U, false);
+    uint32_t s = 0U;
+    for (uint32_t batch = 0U; batch < 7U; batch++) {
+        if (batch == 6U) {
+            // Out of step, as after pairs the decoder dropped: both ways end at the same place.
+            stream.next_sequence += 5U;
+            reference.next_sequence += 5U;
+        }
+        if (batch == 2U) {
+            // Pair 2 x 7 + 1 was due at TICKS + 14 x PERIOD and came 777 counts late.
+            energy_stream_hold_t* const hold = energy_stream_hold(&stream, TICKS + 14U * PERIOD);
+            hold->came = TICKS + 14U * PERIOD + 777U;
+            energy_stream_hold_t* const twin = energy_stream_hold(&reference, TICKS + 14U * PERIOD);
+            twin->came = hold->came;
+        }
+        energy_stream_batch_begin(&stream, s);
+        energy_stream_batch_begin(&reference, s);
+        // Batch 2 has a hold to place; batch 5's came after batch 4 began, so 4 stays untimed.
+        assert(stream.untimed == (batch != 2U && batch != 5U));
+        reference.untimed = false;
+        if (batch == 4U) {
+            energy_stream_hold_t* const late = energy_stream_hold(&stream, TICKS + 35U * PERIOD + 777U);
+            late->came = TICKS + 35U * PERIOD + 777U + 999U;
+            energy_stream_hold_t* const twin = energy_stream_hold(&reference, TICKS + 35U * PERIOD + 777U);
+            twin->came = late->came;
+        }
+        for (uint32_t i = 0U; i < 7U; i++) {
+            s++;
+            energy_stream_pair(&stream, s, 1U, 1U, true);
+            energy_stream_pair(&reference, s, 1U, 1U, true);
+        }
+        if (batch == 0U) {
+            assert(stream.next_sequence == 1U && reference.next_sequence == 8U);
+        }
+        energy_stream_batch_end(&stream, s);
+        energy_stream_batch_end(&reference, s);
+        assert(!stream.untimed && stream.next_sequence == reference.next_sequence &&
+               stream.next_raw == reference.next_raw && stream.next_counts == reference.next_counts);
+    }
+    assert(stream.next_counts == TICKS + 49U * (uint64_t)PERIOD + 777U + 999U);
+    // A stream started now times its first pair from there.
+    energy_stream_header_t const header = {
+        .rate_hz = CLOCK_HZ / PERIOD, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = s + 1U,
+        .previous_low = true, .low = &low, .high = &high, .dio_mask = 0U, .dio_levels = 0U, .edge_resolution_ns = 0U};
+    assert(energy_stream_begin(&stream, &header));
+    uint16_t length = 0U;
+    (void)take(&stream, &length);
+    energy_stream_batch_begin(&stream, s);
+    assert(!stream.untimed);
+    energy_stream_pair(&stream, s + 1U, 1U, 1U, true);
+    energy_stream_batch_end(&stream, s + 1U);
+    energy_stream_end(&stream, 2U, s + 1U);
+    uint8_t const* const m = take(&stream, &length);
+    assert(m != NULL && m[0] == 0xA0U && u32(m + 2) == s + 1U &&
+           u64(m + 6) == ns(TICKS + 49U * (uint64_t)PERIOD + 777U + 999U));
+}
+
+/** Without a stream, a batch goes untimed, nothing is sent, and its end moves the timeline on. */
 static void test_idle(void) {
     static struct energy_stream stream;
     start(&stream, 0U, false);
+    energy_stream_batch_begin(&stream, 0U);
+    assert(stream.untimed);
     for (uint32_t s = 1U; s <= 300U; s++) {
         energy_stream_pair(&stream, s, 1U, 1U, true);
     }
-    energy_stream_batch_end(&stream);
+    energy_stream_batch_end(&stream, 300U);
     assert(stream.written == 0U && stream.next_sequence == 301U);
     assert(stream.next_counts == TICKS + 300U * (uint64_t)PERIOD);
 }
@@ -459,7 +525,7 @@ static void test_edges_messages(void) {
     edge_entry(&stream, last + ENERGY_STREAM_EDGE_SPAN - 5U, level, level ^ 1U, level, 0U);
     level ^= 1U;
     edge_entry(&stream, last + ENERGY_STREAM_EDGE_SPAN + 9U, level, level ^ 1U, level, 0U);
-    energy_stream_batch_end(&stream);
+    energy_stream_batch_end(&stream, stream.next_sequence - 1U);
     assert(take(&stream, &length) == NULL);
     energy_stream_end(&stream, 2U, 1U);
     uint8_t const* m = take(&stream, &length);
@@ -652,7 +718,7 @@ static void test_marks(void) {
     for (uint32_t s = 1U; s <= 10U; s++) {
         energy_stream_pair(&stream, s, 1U, 1U, true);
     }
-    energy_stream_batch_end(&stream);
+    energy_stream_batch_end(&stream, stream.next_sequence - 1U);
     uint8_t const* m = take(&stream, &length);
     assert(m != NULL && m[0] == 0xA0U && u16(m + 14) == 10U);
     m = take(&stream, &length);
@@ -734,7 +800,7 @@ static void test_marks_open_pairs(void) {
     for (uint32_t s = 1U; s <= 7U; s++) {
         energy_stream_pair(&stream, s, (uint16_t)(100U + s), 1U, true);
     }
-    energy_stream_batch_end(&stream);
+    energy_stream_batch_end(&stream, stream.next_sequence - 1U);
     assert(take(&stream, &length) == NULL && stream.open_pairs == 7U);
     assert(mark(&stream, TICKS + 7U * PERIOD, 1U, "due") == ENERGY_STREAM_MARK_SENT);
     assert(due(&stream, TICKS + 7U * PERIOD + CLOCK_HZ / 100U));
@@ -839,6 +905,7 @@ int main(void) {
     test_full();
     test_full_after_hold();
     test_full_recovers();
+    test_untimed();
     test_idle();
     test_edges();
     test_edges_messages();

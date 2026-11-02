@@ -150,6 +150,9 @@ struct energy_stream {
     uint32_t next_sequence;
     uint32_t next_raw;
     uint64_t next_counts;
+    /** This batch's pairs go untimed (energy_stream_batch_begin), counted from `untimed_from`. */
+    bool untimed;
+    uint32_t untimed_from;
     uint32_t period;
     uint32_t clock_hz;
     /** Set by a start or a resume while it owns the state, cleared once its timer runs and `next_raw`
@@ -514,13 +517,18 @@ static inline energy_stream_hold_t* energy_stream_hold(struct energy_stream* str
     return hold;
 }
 
-/** Before the owner integrates a batch of pairs: a start's timeline, and the holds recorded so far. */
-ENERGY_STREAM_INLINE void energy_stream_batch_begin(struct energy_stream* stream) {
+/** Before the owner integrates a batch of pairs: a start's timeline, and the holds recorded so far.
+ *  `sequence` is the decoder's count of pairs so far. Without a stream or a hold to place, the batch
+ *  goes untimed: energy_stream_batch_end moves the timeline on by all its pairs at once, which is
+ *  where timing them one at a time leaves it. */
+ENERGY_STREAM_INLINE void energy_stream_batch_begin(struct energy_stream* stream, uint32_t sequence) {
     for (uint32_t polls = 0U; stream->timeline_pending && (polls < ENERGY_STREAM_PENDING_POLLS); polls++) {
     }
     energy_stream_barrier();
     stream->holds_seen = stream->holds_written;
     energy_stream_barrier();
+    stream->untimed = !stream->active && !stream->timeline_pending && (stream->holds_read == stream->holds_seen);
+    stream->untimed_from = sequence;
 }
 
 /** The time of pair `sequence`, the next: the decoder numbers every pair it completes. One out of
@@ -548,10 +556,14 @@ ENERGY_STREAM_INLINE uint64_t energy_stream_time(struct energy_stream* stream, u
     return counts;
 }
 
-/** A pair, as the owner integrates it: timed always, so a stream started mid-capture knows the
- *  time; appended while a stream runs. */
+/** A pair, as the owner integrates it: timed here in a timed batch, and at the end of an untimed
+ *  one (energy_stream_batch_begin), so a stream started mid-capture knows the time; appended while
+ *  a stream runs. */
 ENERGY_STREAM_INLINE void energy_stream_pair(struct energy_stream* stream, uint32_t sequence, uint16_t voltage,
                                              uint16_t current, bool low) {
+    if (stream->untimed) {
+        return;
+    }
     uint64_t const counts = energy_stream_time(stream, sequence);
     if (!stream->active) {
         return;
@@ -591,9 +603,19 @@ ENERGY_STREAM_INLINE void energy_stream_pair(struct energy_stream* stream, uint3
     }
 }
 
-/** After each batch of pairs the owner integrates: a message whose next pair would take it past
- *  10 ms leaves now rather than at the next batch. */
-ENERGY_STREAM_INLINE void energy_stream_batch_end(struct energy_stream* stream) {
+/** After each batch of pairs the owner integrates, `sequence` pairs counted: an untimed batch's
+ *  pairs move the timeline on, and a message whose next pair would take it past 10 ms leaves now
+ *  rather than at the next batch. */
+ENERGY_STREAM_INLINE void energy_stream_batch_end(struct energy_stream* stream, uint32_t sequence) {
+    if (stream->untimed) {
+        uint32_t const pairs = sequence - stream->untimed_from;
+        if (pairs != 0U) {
+            stream->next_raw += pairs * stream->period;
+            stream->next_counts += (uint64_t)pairs * stream->period;
+            stream->next_sequence = sequence + 1U;
+        }
+        stream->untimed = false;
+    }
     if (stream->active && (stream->open_pairs != 0U) &&
         ((stream->next_counts - stream->open_counts) >= stream->clock_hz / 100U)) {
         energy_stream_close(stream);

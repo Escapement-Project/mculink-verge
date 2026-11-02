@@ -89,7 +89,8 @@ INTEGRATION_FIELDS = ("low_range", "high_range", "scale_q32", "full_scale_mv", "
                       "segment_words", "calibrated", "running", "consumed_bytes", "decoder", "on_high_range", "rearm_blocked",
                       "previous_low", "held", "held_mv", "held_na", "descriptors", "ring", "setting",
                       "stream.written", "stream.sent", "stream.length", "stream.active", "stream.holds",
-                      "stream.holds_written", "stream.next_sequence", "stream.timeline_pending",
+                      "stream.holds_written", "stream.next_sequence", "stream.next_raw", "stream.next_counts",
+                      "stream.timeline_pending",
                       "capture_id", "capture_id_sequence")
 # Where a machine without CPU 0's image keeps the struct: SRAM0, which CPU 1's image leaves alone.
 INTEGRATION_AT = 0x20008000
@@ -1411,6 +1412,23 @@ def check_stream(c, setup, result, local_symbols):
     c.check(len(got) >= 1 and got[0][1] == 1 and u32_at(got[0], 2) == 11 and
             int.from_bytes(got[0][6:14], "little") == ns(ticks + 480_000),
             f"stream: first message after a resume {[m[:16].hex() for m in got]}")
+    # Without a stream, CPU 0's batches go untimed and move the timeline on at each end: after three
+    # segments it stands where timing each pair puts it, which a stream started then (mode 6) uses
+    # for its first sequence and time.
+    quiet, quiet_dma, _, _, quiet_get, quiet_local, _, quiet_feed, _, _, quiet_hook = setup()
+    quiet_stamp = 0x7FFFFF00
+    c.check(start(quiet, quiet_local, quiet_stamp, streaming=False), "stream: a start with no stream failed")
+    size = quiet.energy.get("segment_words", 4)
+    per = size // 3
+    for index in range(3):
+        quiet_feed(pairs(per, index * per) + [0] * (size - 3 * per), index * size)
+        quiet.integrate()
+    done = 3 * per
+    timeline = (quiet.energy.get("stream.next_sequence", 4), quiet.energy.get("stream.next_raw", 4),
+                quiet.energy.get("stream.next_counts", 8))
+    expected = (done + 1, (quiet_stamp + ticks + done * period) & 0xFFFFFFFF, ticks + done * period)
+    c.check(timeline == expected, f"stream: timeline after {done} untimed pairs {timeline}, not {expected}")
+    quiet.uc.hook_del(quiet_hook)
     # A hold: CPU 1 records when the first trigger after the stop was due and when it came, from the
     # conversion timer's frozen count and output (here 0 and low: the next toggle rises). Only the
     # generated paths measure a read latency, so a build without them holds nothing.

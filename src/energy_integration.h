@@ -75,7 +75,7 @@ static inline bool energy_consume_until(struct energy_integration* energy, uint3
         dap_shared.energy_dma_error = 1U;
         return false;
     }
-    energy_stream_batch_begin(&energy->stream);
+    energy_stream_batch_begin(&energy->stream, energy->decoder.sequence);
     energy_accumulator_write_begin();
     energy_total_t total = energy_accumulator_values();
     uint32_t index = (energy->consumed_bytes / sizeof(uint32_t)) & (ring_words - 1U);
@@ -95,7 +95,7 @@ static inline bool energy_consume_until(struct energy_integration* energy, uint3
     energy->consumed_bytes = written;
     energy_accumulator_publish(&total, energy->scale_q32);
     energy_accumulator_write_end();
-    energy_stream_batch_end(&energy->stream);
+    energy_stream_batch_end(&energy->stream, energy->decoder.sequence);
     return true;
 }
 
