@@ -445,7 +445,7 @@ static bool capture_drain(void) {
     energy_flush_held(energy, &total);
     // An incomplete tuple belongs to this capture, even when the next one uses the same rate.
     energy->decoder.phase = ENERGY_EXPECT_VOLTAGE;
-    energy_accumulator_publish(&total);
+    energy_accumulator_publish(&total, energy->scale_q32);
     energy_accumulator_write_end();
     if (!empty) {
         dap_shared.energy_dma_error = 1U;

@@ -43,14 +43,17 @@ static void test_range_switches(void) {
 
     feed_pair(&energy, &total, 30000U, 50000U, true);
     expect_pair(&expected, 30000U, nanoamps(50000U, true));
-    // Up, with a blended code: it takes the next pair's current.
+    // Up, with a blended code: it takes the next pair's current. A fold here, with the pair held
+    // across it, changes nothing: folds come at every batch's end.
     feed_pair(&energy, &total, 31000U, 59000U, false);
     assert(total.pairs == 1U);
+    energy_total_fold(&total, energy.scale_q32);
     feed_pair(&energy, &total, 32000U, 300U, false);
     expect_pair(&expected, 31000U, nanoamps(300U, false));
     expect_pair(&expected, 32000U, nanoamps(300U, false));
     // Down, then straight back up: the first keeps its own, the second takes the one after.
     feed_pair(&energy, &total, 33000U, 40000U, true);
+    energy_total_fold(&total, energy.scale_q32);
     feed_pair(&energy, &total, 34000U, 59000U, false);
     feed_pair(&energy, &total, 35000U, 300U, false);
     expect_pair(&expected, 33000U, nanoamps(40000U, true));
@@ -61,6 +64,7 @@ static void test_range_switches(void) {
     assert(total.pairs == 6U);
     energy_flush_held(&energy, &total);
     expect_pair(&expected, 36000U, nanoamps(20000U, true));
+    energy_total_fold(&total, energy.scale_q32);
     assert(total.pairs == 7U && total.pj == expected.pj && total.fraction_q32 == expected.fraction_q32);
     energy_flush_held(&energy, &total);
     assert(total.pairs == 7U);
@@ -121,7 +125,7 @@ int main(void) {
     total = (energy_total_t){0};
     energy_total_add(&total, (uint64_t)UINT32_MAX * UINT32_MAX, UINT64_C(1) << 32U);
     assert(total.pj == (uint64_t)UINT32_MAX * UINT32_MAX && total.fraction_q32 == 0U);
-    total = (energy_total_t){UINT64_MAX - 1U, UINT64_MAX, UINT32_MAX};
+    total = (energy_total_t){.pj = UINT64_MAX - 1U, .pairs = UINT64_MAX, .fraction_q32 = UINT32_MAX};
     energy_total_add(&total, 3300U * 1000U, 4194304U);
     assert(total.pj == UINT64_MAX && total.pairs == UINT64_MAX);
 

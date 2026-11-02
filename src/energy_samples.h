@@ -37,6 +37,9 @@ typedef struct {
     uint64_t pj;
     uint64_t pairs;
     uint32_t fraction_q32;
+    /** Power summed since the last energy_total_fold, in picowatts. Under 2^54 for a batch: a
+     *  ring of pairs, each under 2^45. */
+    uint64_t pending_pw;
 } energy_total_t;
 
 static inline bool energy_sample_feed(energy_sample_decoder_t* decoder, uint32_t result) {
@@ -91,18 +94,40 @@ static inline uint32_t energy_target_na(uint32_t shunt_na, uint32_t voltage_mv) 
     return shunt_na <= divider_na ? 0U : shunt_na - divider_na;
 }
 
-/** Adds one sample's power, in picowatts (millivolts times nanoamps). scale_q32 is
+/** Adds power_pw times scale_q32 / 2^32 picojoules, carrying the fraction exactly. scale_q32 is
  *  floor(2^32 / sample_rate), with a rate of at least one sample/s. */
-static inline void energy_total_add(energy_total_t* total, uint64_t power_pw, uint64_t scale_q32) {
+static inline void energy_total_carry(energy_total_t* total, uint64_t power_pw, uint64_t scale_q32) {
     uint64_t const low = (uint64_t)(uint32_t)power_pw * scale_q32;
     uint64_t increment = (power_pw >> 32U) * scale_q32 + (low >> 32U);
     uint32_t const previous = total->fraction_q32;
     total->fraction_q32 += (uint32_t)low;
     increment += total->fraction_q32 < previous;
     total->pj = UINT64_MAX - total->pj < increment ? UINT64_MAX : total->pj + increment;
+}
+
+static inline void energy_total_count(energy_total_t* total) {
     if (total->pairs != UINT64_MAX) {
         total->pairs++;
     }
+}
+
+/** Adds one sample's power, in picowatts (millivolts times nanoamps), at once. */
+static inline void energy_total_add(energy_total_t* total, uint64_t power_pw, uint64_t scale_q32) {
+    energy_total_carry(total, power_pw, scale_q32);
+    energy_total_count(total);
+}
+
+/** Adds one sample's power to the batch's sum; energy_total_fold turns the sum into energy. The
+ *  carry is exact, so the total comes out as energy_total_add a sample at a time gives it, with
+ *  one multiply a batch rather than a sample. */
+static inline void energy_total_sum(energy_total_t* total, uint64_t power_pw) {
+    total->pending_pw += power_pw;
+    energy_total_count(total);
+}
+
+static inline void energy_total_fold(energy_total_t* total, uint64_t scale_q32) {
+    energy_total_carry(total, total->pending_pw, scale_q32);
+    total->pending_pw = 0U;
 }
 
 #endif

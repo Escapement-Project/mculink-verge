@@ -47,11 +47,14 @@ static inline void energy_accumulator_write_end(void) {
 }
 
 static inline energy_total_t energy_accumulator_values(void) {
-    return (energy_total_t){dap_shared.energy_accumulator_pj, dap_shared.energy_accumulator_pairs,
-                            dap_shared.energy_accumulator_fraction_q32};
+    return (energy_total_t){.pj = dap_shared.energy_accumulator_pj,
+                            .pairs = dap_shared.energy_accumulator_pairs,
+                            .fraction_q32 = dap_shared.energy_accumulator_fraction_q32};
 }
 
-static inline void energy_accumulator_publish(const energy_total_t* total) {
+/** Folds the batch's summed power in at `scale_q32`, then publishes. */
+static inline void energy_accumulator_publish(energy_total_t* total, uint64_t scale_q32) {
+    energy_total_fold(total, scale_q32);
     dap_shared.energy_accumulator_pj = total->pj;
     dap_shared.energy_accumulator_pairs = total->pairs;
     dap_shared.energy_accumulator_fraction_q32 = total->fraction_q32;
@@ -90,7 +93,7 @@ static inline bool energy_consume_until(struct energy_integration* energy, uint3
         index = 0U;
     }
     energy->consumed_bytes = written;
-    energy_accumulator_publish(&total);
+    energy_accumulator_publish(&total, energy->scale_q32);
     energy_accumulator_write_end();
     energy_stream_batch_end(&energy->stream);
     return true;

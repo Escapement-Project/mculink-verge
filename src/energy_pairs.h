@@ -21,9 +21,8 @@ static inline bool energy_low_range(uint16_t range_code) {
     return range_code >= 32768U;
 }
 
-static inline void energy_add_pair(const struct energy_integration* energy, energy_total_t* total, uint32_t mv,
-                                   uint32_t shunt_na) {
-    energy_total_add(total, (uint64_t)mv * energy_target_na(shunt_na, mv), energy->scale_q32);
+static inline void energy_add_pair(energy_total_t* total, uint32_t mv, uint32_t shunt_na) {
+    energy_total_sum(total, (uint64_t)mv * energy_target_na(shunt_na, mv));
 }
 
 /** A sample converts the voltage and the current together, averaged over up to 128 conversions, then
@@ -49,12 +48,12 @@ static inline void energy_consume_result(struct energy_integration* energy, uint
     uint32_t const mv = energy_voltage_mv(energy->decoder.last_voltage, energy->full_scale_mv);
     bool const switched = low != energy->previous_low;
     if (!switched && !energy->held) {
-        energy_add_pair(energy, total, mv, shunt_na);
+        energy_add_pair(total, mv, shunt_na);
         return;
     }
     energy->previous_low = low;
     if (energy->held) {
-        energy_add_pair(energy, total, energy->held_mv, switched ? energy->held_na : shunt_na);
+        energy_add_pair(total, energy->held_mv, switched ? energy->held_na : shunt_na);
         energy->held = false;
     }
     if (switched) {
@@ -63,13 +62,13 @@ static inline void energy_consume_result(struct energy_integration* energy, uint
         energy->held_na = shunt_na;
         return;
     }
-    energy_add_pair(energy, total, mv, shunt_na);
+    energy_add_pair(total, mv, shunt_na);
 }
 
 /** A pair still waiting for the next one when capture pauses: its own reading is all there is. */
 static inline void energy_flush_held(struct energy_integration* energy, energy_total_t* total) {
     if (energy->held) {
-        energy_add_pair(energy, total, energy->held_mv, energy->held_na);
+        energy_add_pair(total, energy->held_mv, energy->held_na);
         energy->held = false;
     }
 }

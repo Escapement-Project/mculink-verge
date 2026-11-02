@@ -151,6 +151,7 @@ static void print_sequence(const vector_tables_t* tables, uint32_t rate, uint32_
         separator = ", ";
     }
     energy_flush_held(&energy, &total);
+    energy_total_fold(&total, energy.scale_q32);
     printf("],\n     \"pj\": %" PRIu64 ", \"fraction_q32\": %" PRIu32 ", \"pairs\": %" PRIu64 "}%s\n", total.pj,
            total.fraction_q32, total.pairs, last ? "" : ",");
 }
