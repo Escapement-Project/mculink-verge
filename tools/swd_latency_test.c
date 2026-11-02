@@ -23,8 +23,32 @@ struct target {
     uint32_t read_period;
     uint32_t odd_word_at; // a latency whose reads come back right but different, or 0
     uint32_t odd_tries;   // and only for this many generations, or 0 for all of them
+    uint32_t ghost_at;    // a latency that reads right though its range misses the real one, or 0
+    uint32_t ghost_tries; // and only for this many generations, or 0 for all of them
+    bool boundary;        // the real latency lies between `latency` and the next
+    uint32_t edges;       // how a build with an edge between them reads: edge_reads
     uint32_t tries;
+    uint64_t ran;     // latencies generated at the host's read period
+    uint32_t repeats; // generations of one already there
 };
+
+/** Whether a build whose claimed range ends or starts between a boundary target's two latencies
+ * reads right: 0 never, 1 always, 2 to 5 by its code, 6 to 9 afresh every generation, as a sample
+ * on the edge of a bit does. */
+static bool edge_reads(const struct target* t, uint32_t period, int32_t first, int32_t last) {
+    if (t->edges < 2U) {
+        return t->edges == 1U;
+    }
+    uint32_t h =
+        (t->edges * 2246822519U) ^ (period * 2654435761U) ^ ((uint32_t)first * 40503U) ^ ((uint32_t)last * 97U);
+    if (t->edges >= 6U) {
+        h ^= t->tries * 3266489917U;
+    }
+    h ^= h >> 15;
+    h *= 2246822519U;
+    h ^= h >> 13;
+    return (h & 1U) != 0U;
+}
 
 static bool served(const struct swd_gen_config* config, uint32_t latency) {
     swd_gen_fn read;
@@ -53,7 +77,19 @@ static void try_latency(uint32_t period, uint32_t latency, struct latency_try* o
     out->first = swd_gen_info.read_first;
     out->last = swd_gen_info.read_last;
     out->same_below = swd_gen_info.masked_from;
-    out->passed = (t->latency != 0U) && (out->first <= (int32_t)t->latency) && ((int32_t)t->latency <= out->last);
+    if (period == t->read_period) {
+        const uint64_t bit = (uint64_t)1 << (latency - 1U);
+        t->repeats += (t->ran & bit) != 0U ? 1U : 0U;
+        t->ran |= bit;
+    }
+    const int32_t n = (int32_t)t->latency;
+    if (t->boundary) {
+        out->passed = ((out->first <= n) && (n + 1 <= out->last)) ||
+                      (((out->last == n) || (out->first == n + 1)) && edge_reads(t, period, out->first, out->last));
+    } else {
+        out->passed = (n != 0) && (out->first <= n) && (n <= out->last);
+    }
+    out->passed = out->passed || ((latency == t->ghost_at) && ((t->ghost_tries == 0U) || (t->tries < t->ghost_tries)));
     const bool odd = (latency == t->odd_word_at) && ((t->odd_tries == 0U) || (t->tries < t->odd_tries));
     out->word = odd ? DPIDR ^ 0x10U : DPIDR;
     t->tries++;
@@ -241,7 +277,7 @@ int main(void) {
     static const uint32_t periods[][2] = {{3, 4},   {4, 4},   {5, 5},   {6, 6},   {7, 7},   {8, 8},  {9, 9},
                                           {10, 10}, {12, 12}, {13, 13}, {16, 16}, {20, 20}, {40, 40}};
     static const uint32_t starts[] = {7U, 1U, 30U};
-    uint32_t outcomes[6] = {0};
+    uint32_t outcomes[7] = {0};
     uint32_t most_tries[sizeof periods / sizeof periods[0]] = {0};
     uint32_t failures = stall_failures;
     for (uint32_t p = 0U; p < sizeof periods / sizeof periods[0]; p++) {
@@ -288,27 +324,94 @@ int main(void) {
     assert(r.outcome == LATENCY_NO_BAND && r.latency == 0U && r.tries == 1U);
 
     // A word other than the safe read's is a read gone wrong, however the reads agree. This target
-    // reads it at a latency whose range holds its own, so no latency agrees with every read.
+    // reads it at a latency whose range holds its own, so no latency agrees with every read, but
+    // one does with that build's edges a cycle off: one search, ending on a build that serves it.
     struct target odd = {7U, 4U, 4U, 6U};
     latency_measure(&wire, 4U, 7U, try_latency, &odd, &r);
-    assert((r.word == DPIDR) && (r.outcome == LATENCY_INCONSISTENT) && (r.latency == 0U));
-    assert((odd.tries == r.tries) && (r.tries % LATENCY_ATTEMPTS == 0U) && (r.periods % LATENCY_ATTEMPTS == 0U));
+    struct target odd_once = {7U, 4U, 4U, 6U};
+    struct latency_result once;
+    latency_measure_once(&wire, 4U, 7U, try_latency, &odd_once, &once);
+    const struct swd_gen_config odd_production = {.period = 4U, .latency = r.latency, .turnaround = 1U};
+    assert((r.word == DPIDR) && (r.outcome == LATENCY_BOUNDARY) && (r.tries == once.tries) &&
+           (r.periods == once.periods) && served(&odd_production, 7U));
+
+    // The same at a longer period leaves no latency even a cycle off. The latency in use read
+    // right at the host's period, so it is kept.
+    struct target kept = {7U, 5U, 5U, 6U};
+    latency_measure(&wire, 5U, 7U, try_latency, &kept, &r);
+    assert((r.outcome == LATENCY_INCONSISTENT) && (r.latency == 0U));
+
+    // Reads that contradict each other by more than a cycle, here a build whose range ends four
+    // cycles short of the latency reading right, run the search again. The latency in use failed
+    // at the host's period, so it is not kept: the build that read right there is used.
+    struct target ghost = {7U, 4U, 4U, 0U, 0U, 1U};
+    latency_measure(&wire, 4U, 3U, try_latency, &ghost, &r);
+    assert((r.outcome == LATENCY_INCONSISTENT) && (r.latency == 1U) && (ghost.tries == r.tries) &&
+           (r.tries % LATENCY_ATTEMPTS == 0U) && (r.periods % LATENCY_ATTEMPTS == 0U));
     const uint32_t first_periods = r.periods / LATENCY_ATTEMPTS;
 
-    // The same read gone wrong only during the first search, as a stall by another master on the
-    // port does: the next search ends where an undisturbed one does, and the generations add up.
-    const uint32_t first_search = odd.tries / LATENCY_ATTEMPTS;
+    // The same only during the first search: the next ends where an undisturbed one does, and the
+    // generations add up.
+    const uint32_t first_search = ghost.tries / LATENCY_ATTEMPTS;
     struct target clean = {7U, 4U, 4U, 0U};
     struct latency_result undisturbed;
-    latency_measure(&wire, 4U, 7U, try_latency, &clean, &undisturbed);
-    struct target disturbed = {7U, 4U, 4U, 6U, first_search};
-    latency_measure(&wire, 4U, 7U, try_latency, &disturbed, &r);
+    latency_measure(&wire, 4U, 3U, try_latency, &clean, &undisturbed);
+    struct target disturbed = {7U, 4U, 4U, 0U, 0U, 1U, first_search};
+    latency_measure(&wire, 4U, 3U, try_latency, &disturbed, &r);
     assert((r.outcome == undisturbed.outcome) && (r.latency == undisturbed.latency) && (r.latency != 0U) &&
            (r.tries == first_search + undisturbed.tries) && (disturbed.tries == r.tries) &&
            (r.periods == first_periods + undisturbed.periods));
 
-    printf("  outcomes: %u measured, %u ambiguous, %u unresolved, %u no band, %u inconsistent\n", outcomes[1],
-           outcomes[2], outcomes[3], outcomes[4], outcomes[5]);
+    // A latency on a cycle boundary, between n and n + 1: never a contradiction, both left a cycle
+    // off, and the build the search ends on holds both, whichever way the builds with an edge
+    // between them read. A boundary is found in one search that runs no build twice at the host's
+    // period, leaves only latencies within a cycle of it, and ends on a build with a cycle to spare
+    // either side.
+    uint32_t on_boundary[7] = {0};
+    uint32_t most_on_boundary = 0U;
+    for (uint32_t p = 0U; p < sizeof periods / sizeof periods[0]; p++) {
+        for (uint32_t n = 2U; n <= 39U; n++) {
+            for (uint32_t s = 0U; s < sizeof starts / sizeof starts[0]; s++) {
+                for (uint32_t edges = 0U; edges <= 9U; edges++) {
+                    const struct target fresh = {.latency = n,
+                                                 .write_period = periods[p][0],
+                                                 .read_period = periods[p][1],
+                                                 .boundary = true,
+                                                 .edges = edges};
+                    struct target t = fresh;
+                    latency_measure(&wire, t.read_period, starts[s], try_latency, &t, &r);
+                    struct target again = fresh;
+                    struct latency_result once;
+                    latency_measure_once(&wire, t.read_period, starts[s], try_latency, &again, &once);
+                    on_boundary[r.outcome]++;
+                    most_on_boundary = r.tries > most_on_boundary ? r.tries : most_on_boundary;
+                    const uint32_t used = r.latency != 0U ? r.latency : starts[s];
+                    const struct swd_gen_config production = {
+                        .period = t.write_period, .latency = used, .turnaround = 1U, .data_phase = 0U};
+                    const bool boundary_right =
+                        (r.outcome != LATENCY_BOUNDARY) ||
+                        ((t.repeats == 0U) && served(&production, n - 1U) && served(&production, n + 2U) &&
+                         ((r.tolerant & ~latency_range((int32_t)n - 1, (int32_t)n + 2)) == 0U));
+                    const uint64_t both = latency_range((int32_t)n, (int32_t)n + 1);
+                    if ((r.outcome == LATENCY_INCONSISTENT) || (r.outcome == LATENCY_NO_BAND) ||
+                        ((r.tolerant & both) != both) || (once.outcome != r.outcome) || (once.latency != r.latency) ||
+                        (once.tries != r.tries) || (once.periods != r.periods) || !served(&production, n) ||
+                        !served(&production, n + 1U) || !boundary_right) {
+                        printf("  period %u/%u, between %u and %u, from %u, edges %u: outcome %u, latency %u, "
+                               "%u tries, left 0x%016llx, a cycle off 0x%016llx\n",
+                               t.write_period, t.read_period, n, n + 1U, starts[s], edges, r.outcome, r.latency,
+                               r.tries, (unsigned long long)r.consistent, (unsigned long long)r.tolerant);
+                        failures++;
+                    }
+                }
+            }
+        }
+    }
+
+    printf("  outcomes: %u measured, %u ambiguous, %u unresolved, %u no band, %u inconsistent, %u boundary\n",
+           outcomes[1], outcomes[2], outcomes[3], outcomes[4], outcomes[5], outcomes[6]);
+    printf("  between two latencies: %u measured, %u ambiguous, %u unresolved, %u boundary, at most %u generations\n",
+           on_boundary[1], on_boundary[2], on_boundary[3], on_boundary[6], most_on_boundary);
     printf("  most generations, by read period:");
     for (uint32_t p = 0U; p < sizeof periods / sizeof periods[0]; p++) {
         printf(" %u/%u:%u", periods[p][0], periods[p][1], most_tries[p]);

@@ -20,7 +20,30 @@ static const struct latency_wire wire = {.safe_period = JTAG_GEN_SAFE_PERIOD, .o
 struct target {
     uint32_t wire;
     uint32_t latency; // the real one, or 0 for a target that never answers
+    bool boundary;    // the real latency lies between `latency` and the next
+    uint32_t edges;   // how a build whose range ends between them reads: edge_reads
+    uint32_t tries;
+    uint32_t host;    // the host's period
+    uint64_t ran;     // latencies generated at it
+    uint32_t repeats; // generations of one already there
 };
+
+/** Whether a build whose claimed range ends between a boundary target's two latencies reads
+ * right: 0 never, 1 always, 2 to 5 by its code, 6 to 9 afresh every generation, as a sample on the
+ * edge of a bit does. */
+static bool edge_reads(const struct target* t, uint32_t period, int32_t last) {
+    if (t->edges < 2U) {
+        return t->edges == 1U;
+    }
+    uint32_t h = (t->edges * 2246822519U) ^ (period * 2654435761U) ^ ((uint32_t)last * 97U);
+    if (t->edges >= 6U) {
+        h ^= t->tries * 3266489917U;
+    }
+    h ^= h >> 15;
+    h *= 2246822519U;
+    h ^= h >> 13;
+    return (h & 1U) != 0U;
+}
 
 static struct jtag_gen_config config_for(uint32_t wire_, uint32_t period, uint32_t latency) {
     // A DAP next to TDO with one more TAP behind it, as on a CC13xx.
@@ -28,7 +51,7 @@ static struct jtag_gen_config config_for(uint32_t wire_, uint32_t period, uint32
 }
 
 static void try_latency(uint32_t period, uint32_t latency, struct latency_try* out, void* context) {
-    const struct target* t = context;
+    struct target* t = context;
     struct jtag_gen_config config = config_for(t->wire, period, latency);
     config.earliest = 1U;
     jtag_gen_scan_fn scan;
@@ -39,9 +62,18 @@ static void try_latency(uint32_t period, uint32_t latency, struct latency_try* o
     out->first = 1;
     out->last = jtag_gen_info.scan_last;
     out->same_below = jtag_gen_info.same_below;
+    if (period == t->host) {
+        const uint64_t bit = (uint64_t)1 << (latency - 1U);
+        t->repeats += (t->ran & bit) != 0U ? 1U : 0U;
+        t->ran |= bit;
+    }
     // Sampled early, the reads agree on the bits before: a word with bit 0 set as often as not.
     out->passed = t->latency != 0U;
-    out->word = (int32_t)t->latency <= out->last ? IDCODE : (IDCODE << 1) | 1U;
+    const int32_t n = (int32_t)t->latency;
+    const bool early =
+        t->boundary ? (out->last < n) || ((out->last == n) && !edge_reads(t, period, out->last)) : out->last < n;
+    out->word = early ? (IDCODE << 1) | 1U : IDCODE;
+    t->tries++;
 }
 
 static uint32_t code_hash(void) {
@@ -200,7 +232,7 @@ int main(void) {
     for (uint32_t w = 0U; w < 2U; w++) {
         const uint32_t starts[] = {
             w == JTAG_GEN_TWO_PIN ? JTAG_GEN_LATENCY_DEFAULT : JTAG_GEN_FOUR_WIRE_LATENCY_DEFAULT, 1U, 30U};
-        uint32_t outcomes[6] = {0};
+        uint32_t outcomes[7] = {0};
         uint32_t most_tries[sizeof periods / sizeof periods[0]] = {0};
         uint32_t near_default[sizeof periods / sizeof periods[0]] = {0};
         for (uint32_t p = 0U; p < sizeof periods / sizeof periods[0]; p++) {
@@ -237,14 +269,66 @@ int main(void) {
                 }
             }
         }
+        // A latency on a cycle boundary, between n and n + 1: never a contradiction, both left a
+        // cycle off, and what the search ends on serves both, whichever way the builds whose range
+        // ends between them read. A boundary is found in one search that runs no build twice at
+        // the host's period, leaves only latencies within a cycle of it, and ends on the latest
+        // left, whose build has a cycle to spare: a later one costs clock rate.
+        uint32_t on_boundary[7] = {0};
+        uint32_t most_on_boundary = 0U;
+        for (uint32_t p = 0U; p < sizeof periods / sizeof periods[0]; p++) {
+            for (uint32_t n = 2U; n <= 39U; n++) {
+                for (uint32_t s = 0U; s < sizeof starts / sizeof starts[0]; s++) {
+                    for (uint32_t edges = 0U; edges <= 9U; edges++) {
+                        const struct target fresh = {
+                            .wire = w, .latency = n, .boundary = true, .edges = edges, .host = periods[p]};
+                        struct target t = fresh;
+                        struct latency_result r;
+                        latency_measure(&wire, periods[p], starts[s], try_latency, &t, &r);
+                        struct target again = fresh;
+                        struct latency_result once;
+                        latency_measure_once(&wire, periods[p], starts[s], try_latency, &again, &once);
+                        on_boundary[r.outcome]++;
+                        most_on_boundary = r.tries > most_on_boundary ? r.tries : most_on_boundary;
+                        const uint32_t used = r.latency != 0U ? r.latency : starts[s];
+                        const struct jtag_gen_config production = config_for(w, periods[p], used);
+                        jtag_gen_scan_fn scan;
+                        jtag_gen_xfer_fn read;
+                        jtag_gen_xfer_fn write;
+                        const bool built = jtag_gen_build(&production, &scan, &read, &write);
+                        const bool served = built && ((int32_t)n + 1 <= fewest());
+                        const bool boundary_right =
+                            (r.outcome != LATENCY_BOUNDARY) ||
+                            (built && (t.repeats == 0U) && ((int32_t)n + 2 <= fewest()) &&
+                             (r.latency == latency_highest(r.tolerant)) &&
+                             ((r.tolerant & ~latency_range((int32_t)n - 1, (int32_t)n + 2)) == 0U));
+                        const uint64_t both = latency_range((int32_t)n, (int32_t)n + 1);
+                        if ((r.outcome == LATENCY_INCONSISTENT) || (r.outcome == LATENCY_NO_BAND) ||
+                            ((r.tolerant & both) != both) || (once.outcome != r.outcome) ||
+                            (once.latency != r.latency) || (once.tries != r.tries) || (once.periods != r.periods) ||
+                            !served || !boundary_right) {
+                            printf("  %s period %u, between %u and %u, from %u, edges %u: outcome %u, latency %u, "
+                                   "%u tries, left 0x%016llx, a cycle off 0x%016llx\n",
+                                   names[w], periods[p], n, n + 1U, starts[s], edges, r.outcome, r.latency, r.tries,
+                                   (unsigned long long)r.consistent, (unsigned long long)r.tolerant);
+                            failures++;
+                        }
+                    }
+                }
+            }
+        }
+
         // No answer: nothing passes, nothing changes, and one generation at the safe period says so.
         struct target silent = {w, 0U};
         struct latency_result r;
         latency_measure(&wire, 5U, starts[0], try_latency, &silent, &r);
         assert(r.outcome == LATENCY_NO_BAND && r.latency == 0U && r.tries == 1U);
 
-        printf("  %s outcomes: %u measured, %u ambiguous, %u unresolved, %u no band, %u inconsistent\n", names[w],
-               outcomes[1], outcomes[2], outcomes[3], outcomes[4], outcomes[5]);
+        printf("  %s outcomes: %u measured, %u ambiguous, %u unresolved, %u no band, %u inconsistent, %u boundary\n",
+               names[w], outcomes[1], outcomes[2], outcomes[3], outcomes[4], outcomes[5], outcomes[6]);
+        printf("  %s between two latencies: %u measured, %u ambiguous, %u unresolved, %u boundary, at most %u "
+               "generations\n",
+               names[w], on_boundary[1], on_boundary[2], on_boundary[3], on_boundary[6], most_on_boundary);
         printf("  most generations, by period:");
         for (uint32_t p = 0U; p < sizeof periods / sizeof periods[0]; p++) {
             printf(" %u:%u", periods[p], most_tries[p]);

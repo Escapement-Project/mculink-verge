@@ -25,8 +25,16 @@
  * What it reads is the word the rest must match: a read whose samples come early or late can agree
  * on a wrong word, and on JTAG nothing else says so.
  *
- * A search that ends with no latency agreeing with every read runs again, up to LATENCY_ATTEMPTS
- * in all: a read another master stalled on the bit paths' port contradicts the rest (BUSES.md).
+ * On a long or loaded line the latency can sit on a cycle boundary. A build whose claimed range
+ * starts or ends there then reads right or not by its schedule, and no latency agrees with every
+ * read. So the search also keeps the latencies every read agrees with when each claimed edge is a
+ * cycle uncertain. Some left there with none agreeing exactly is LATENCY_BOUNDARY: a result, not a
+ * contradiction.
+ *
+ * A search that ends with no latency agreeing even then runs again, up to LATENCY_ATTEMPTS in
+ * all: a read another master stalled on the bit paths' port contradicts the rest (BUSES.md). A
+ * stall that fails one build can end as a boundary instead, which still ends on a build that read
+ * right.
  */
 #ifndef LATENCY_H
 #define LATENCY_H
@@ -40,7 +48,7 @@
 /** Longer read periods tried after the host's, while two latencies or more are left. */
 #define LATENCY_EXTRA_PERIODS 3U
 
-/** Searches run while each ends with no latency agreeing with every read. */
+/** Searches run while each ends LATENCY_INCONSISTENT. */
 #define LATENCY_ATTEMPTS 3U
 
 /** What a measurement found. */
@@ -49,7 +57,8 @@
 #define LATENCY_AMBIGUOUS 2U    // two neighbouring latencies do: the later is used
 #define LATENCY_UNRESOLVED 3U   // more do: the latest is used (see latency_measure)
 #define LATENCY_NO_BAND 4U      // nothing read right at the host's period, or the safe read did not
-#define LATENCY_INCONSISTENT 5U // no latency agrees with every read
+#define LATENCY_INCONSISTENT 5U // no latency agrees with every read, even a cycle off
+#define LATENCY_BOUNDARY 6U     // none agrees exactly, some a cycle off: see latency_widest
 
 /** What a wire's generator promises the search. */
 struct latency_wire {
@@ -76,6 +85,7 @@ struct latency_result {
     uint32_t outcome;    // LATENCY_*
     uint32_t latency;    // the one to use, or 0 to keep the latency in use
     uint64_t consistent; // bit n - 1 for every latency n every read agrees with
+    uint64_t tolerant;   // the same, with each claimed edge a cycle uncertain
     uint32_t word;       // what the passing reads read
     uint32_t tries;      // generations that ran reads, every attempt's
     uint32_t periods;    // read periods measured at, the host's included, every attempt's
@@ -115,18 +125,38 @@ struct latency_search {
     latency_try_fn try_latency;
     void* context;
     struct latency_result* result;
+    bool open_below;   // latency_wire's
     bool have_word;    // result->word is set, by the safe read, which reads right whatever the latency
     bool start_passed; // the latency in use, at the host's period
     uint32_t period;
+    bool host;      // this period is the host's
     uint64_t tried; // at this period
     uint64_t passed;
     uint32_t same_below; // at this period, once a generation has said, else 0
     bool same_tried;     // a latency below same_below has run
     bool same_passed;
+    // The builds run and those that read right at the host's period, and their claimed ranges.
+    uint64_t host_tried;
+    uint64_t host_passed;
+    int8_t host_first[LATENCY_MAX];
+    int8_t host_last[LATENCY_MAX];
 };
 
 /** Whether the search can stop: one latency or none left. */
 static inline bool latency_done(const struct latency_search* s) { return latency_count(s->result->consistent) <= 1U; }
+
+/** A claimed edge as kept: past either limit it is far outside every latency anyway. */
+static inline int8_t latency_edge(int32_t edge) {
+    return (int8_t)(edge < INT8_MIN ? INT8_MIN : edge > INT8_MAX ? INT8_MAX : edge);
+}
+
+static inline void latency_host_passed(struct latency_search* s, uint32_t latency, int32_t first, int32_t last) {
+    if (s->host) {
+        s->host_passed |= (uint64_t)1 << (latency - 1U);
+        s->host_first[latency - 1U] = latency_edge(first);
+        s->host_last[latency - 1U] = latency_edge(last);
+    }
+}
 
 /** Tries `latency` at this period once, and keeps only the latencies its reads agree with. */
 static inline bool latency_passes(struct latency_search* s, uint32_t latency) {
@@ -149,6 +179,9 @@ static inline bool latency_passes(struct latency_search* s, uint32_t latency) {
         return false;
     }
     s->result->tries++;
+    if (s->host) {
+        s->host_tried |= bit;
+    }
     if (t.passed && s->have_word && (t.word != s->result->word)) {
         t.passed = false;
     }
@@ -163,10 +196,25 @@ static inline bool latency_passes(struct latency_search* s, uint32_t latency) {
             s->have_word = true;
         }
         s->passed |= bit;
+        latency_host_passed(s, latency, t.first, t.last);
     }
     const uint64_t served = latency_range(t.first, t.last);
     s->result->consistent &= t.passed ? served : ~served;
+    // A range open below has no lower edge to doubt.
+    const int32_t first_doubt = s->open_below ? 0 : 1;
+    s->result->tolerant &=
+        t.passed ? latency_range(t.first - first_doubt, t.last + 1) : ~latency_range(t.first + first_doubt, t.last - 1);
     return t.passed;
+}
+
+/** Back to the host's period, `period`, keeping what its builds read there. */
+static inline void latency_host_again(struct latency_search* s, uint32_t period) {
+    s->period = period;
+    s->host = true;
+    s->tried = s->host_tried;
+    s->passed = s->host_passed;
+    s->same_below = 0U;
+    s->same_tried = false;
 }
 
 static inline void latency_new_period(struct latency_search* s, uint32_t period) {
@@ -209,11 +257,39 @@ static inline void latency_top(struct latency_search* s, uint32_t start) {
     }
 }
 
+/** Of the builds that read right at the host's period, the one whose claimed range reaches
+ * furthest past the latencies in `want` on its nearer side, the later on a tie; that reach is
+ * negative when none holds them all. 0 if none read right or `want` is empty. */
+static inline uint32_t latency_widest(const struct latency_search* s, uint64_t want) {
+    if (want == 0U) {
+        return 0U;
+    }
+    const int32_t lowest = (int32_t)__builtin_ctzll(want) + 1;
+    const int32_t highest = (int32_t)latency_highest(want);
+    uint32_t widest = 0U;
+    int32_t most = INT32_MIN;
+    for (uint32_t l = 1U; l <= LATENCY_MAX; l++) {
+        if ((s->host_passed & ((uint64_t)1 << (l - 1U))) == 0U) {
+            continue;
+        }
+        const int32_t below = lowest - s->host_first[l - 1U];
+        const int32_t above = s->host_last[l - 1U] - highest;
+        const int32_t spare = below < above ? below : above;
+        if (spare >= most) {
+            most = spare;
+            widest = l;
+        }
+    }
+    return widest;
+}
+
 /** One search from `start`, the latency in use, at read period `period` and then longer ones. */
 static inline void latency_measure_once(const struct latency_wire* wire, uint32_t period, uint32_t start,
                                         latency_try_fn try_latency, void* context, struct latency_result* result) {
-    *result = (struct latency_result){.consistent = latency_range(1, (int32_t)LATENCY_MAX)};
-    struct latency_search s = {.try_latency = try_latency, .context = context, .result = result};
+    *result = (struct latency_result){.consistent = latency_range(1, (int32_t)LATENCY_MAX),
+                                      .tolerant = latency_range(1, (int32_t)LATENCY_MAX)};
+    struct latency_search s = {
+        .try_latency = try_latency, .context = context, .result = result, .open_below = wire->open_below};
     if ((start < 1U) || (start > LATENCY_MAX)) {
         start = 1U;
     }
@@ -222,6 +298,7 @@ static inline void latency_measure_once(const struct latency_wire* wire, uint32_
     bool answered = latency_passes(&s, LATENCY_MAX);
     for (uint32_t k = 0U; answered && (k <= LATENCY_EXTRA_PERIODS) && !latency_done(&s); k++) {
         latency_new_period(&s, period + k);
+        s.host = k == 0U;
         if (wire->open_below) {
             latency_top(&s, start);
         } else {
@@ -234,12 +311,33 @@ static inline void latency_measure_once(const struct latency_wire* wire, uint32_
         }
     }
 
+    // A boundary's latency is picked among the builds that read right at the host's period, which
+    // a search that stopped early may not have tried for the latencies left. Where ranges are
+    // open below, the build for the latest left reads right for every one before it, as for
+    // LATENCY_UNRESOLVED, and a later one only costs clock rate.
+    if (!wire->open_below && answered && (result->consistent == 0U) && (result->tolerant != 0U)) {
+        latency_host_again(&s, period);
+        for (uint32_t l = 1U; l <= LATENCY_MAX; l++) {
+            if ((result->tolerant & ((uint64_t)1 << (l - 1U))) != 0U) {
+                (void)latency_passes(&s, l);
+            }
+        }
+    }
+
     const uint32_t left = latency_count(result->consistent);
     const uint32_t highest = latency_highest(result->consistent);
     if (!answered) {
         result->outcome = LATENCY_NO_BAND;
+    } else if ((left == 0U) && (result->tolerant != 0U)) {
+        result->outcome = LATENCY_BOUNDARY;
+        result->latency = wire->open_below ? latency_highest(result->tolerant) : latency_widest(&s, result->tolerant);
     } else if (left == 0U) {
         result->outcome = LATENCY_INCONSISTENT;
+        // Never keep a latency that failed where another build read right. With no latency left,
+        // the builds that read right stand in: each is built to serve its own latency.
+        if (!s.start_passed) {
+            result->latency = latency_widest(&s, s.host_passed);
+        }
     } else if (left == 1U) {
         result->outcome = LATENCY_MEASURED;
         result->latency = highest;

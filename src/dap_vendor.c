@@ -183,8 +183,8 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
  *     [46..53]  u64: the latencies every read agrees with, bit n - 1 for latency n
  *     [54..57]  connections whose DPIDR read failed and read right once measured
  *
- * A measurement that ends with no latency agreeing with every read runs again, up to
- * LATENCY_ATTEMPTS in all; [32] and [33] count every attempt's.
+ * A measurement that ends LATENCY_INCONSISTENT runs again, up to LATENCY_ATTEMPTS in all; [32]
+ * and [33] count every attempt's. One that ends LATENCY_BOUNDARY leaves [46..53] empty.
  *
  * Status is DAP_ERROR for a latency or a mode out of range, which change nothing, and for a
  * measurement asked for while the port is not plain SWD, which does not run. `ok` is 0 when the
@@ -216,7 +216,8 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
  *     [36..39]  the IDCODE that read right
  *     [40..43]  core cycles it took
  *     [44..47]  measurements since the probe started
- *     [48..55]  u64: the latencies every read agrees with, bit n - 1 for latency n
+ *     [48..55]  u64: the latencies every read agrees with, bit n - 1 for latency n; empty after
+ *               LATENCY_BOUNDARY
  *     [56..59]  connections whose first transfer failed and ran right once measured
  *     [60..63]  configurations copied back from a kept build with transfers, not generated
  *

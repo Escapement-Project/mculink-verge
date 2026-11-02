@@ -119,11 +119,13 @@ static struct known* known_target(void) {
 }
 
 /** Measures for the target the last line reset selected, and keeps what it found. A target that
- * did not answer is measured again at its next connection. */
+ * did not answer, or whose reads contradicted each other, is measured again at its next
+ * connection. */
 static void measure_target(void) {
     swd_sweep();
     const uint32_t outcome = swd_sweep_last.result.outcome;
-    if ((outcome != LATENCY_MEASURED) && (outcome != LATENCY_AMBIGUOUS) && (outcome != LATENCY_UNRESOLVED)) {
+    if ((outcome != LATENCY_MEASURED) && (outcome != LATENCY_AMBIGUOUS) && (outcome != LATENCY_UNRESOLVED) &&
+        (outcome != LATENCY_BOUNDARY)) {
         return;
     }
     struct known* target = known_target();

@@ -1190,7 +1190,8 @@ def sample_run(probe: "Probe", low: int, fill: int, at: int, count: int, expecte
 SWD_GEN_MODE_NONE, SWD_GEN_MODE_MEASURE, SWD_GEN_MODE_PIN, SWD_GEN_MODE_AUTOMATIC = range(4)
 LATENCY_OUTCOMES = ("never measured", "measured", "two latencies left, the later used",
                     "several latencies left", "nothing read right",
-                    "no latency agrees with every read")
+                    "no latency agrees with every read",
+                    "on a cycle boundary, the build with most to spare used")
 
 
 def swd_gen(probe: "Probe", latency: int = 0, mode: int = SWD_GEN_MODE_NONE) -> dict:
