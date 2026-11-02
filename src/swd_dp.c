@@ -465,27 +465,12 @@ SWD_TransferBlockFunction(Fast) SWD_TransferBlockFunction(Slow)
  * a block, and WAIT retries, which the generated loop hands back by stopping at the transfer that
  * did not acknowledge OK. */
 
-/** SW_DP.c's own transfer, renamed in CMakeLists.txt: what runs when nothing could be generated. */
-extern uint8_t arm_SWD_Transfer(uint32_t request, uint32_t* data);
-
-/** ARM's transfer behind the generated functions' contract, for when they could not be built. */
-static uint64_t arm_words(uint32_t packet, uint8_t* words, uint32_t count) {
-    const uint32_t request = (packet >> 1) & 0x0FU;
-    for (uint32_t i = 0U; i < count; i++) {
-        uint32_t data;
-        if ((request & DAP_TRANSFER_RnW) == 0U) {
-            __builtin_memcpy(&data, words, sizeof data);
-        }
-        const uint32_t ack = arm_SWD_Transfer(request, &data);
-        if (ack != DAP_TRANSFER_OK) {
-            return ack | ((uint64_t)(count - i) << 32);
-        }
-        if ((request & DAP_TRANSFER_RnW) != 0U) {
-            __builtin_memcpy(words, &data, sizeof data);
-        }
-        words += sizeof data;
-    }
-    return DAP_TRANSFER_OK;
+/** What a transfer runs when nothing could be generated: it leaves the wire alone and fails. There
+ * is no ARM path behind the generated one in this build. */
+static uint64_t refused_words(uint32_t packet, uint8_t* words, uint32_t count) {
+    (void)packet;
+    (void)words;
+    return DAP_TRANSFER_ERROR | ((uint64_t)count << 32);
 }
 
 /** The read and write functions a command runs, chosen once when it starts.
@@ -500,7 +485,7 @@ struct transfer_fns {
 
 static struct transfer_fns transfer_fns(void) {
     if (!swd_gen_ready()) {
-        return (struct transfer_fns){arm_words, arm_words};
+        return (struct transfer_fns){refused_words, refused_words};
     }
     return (struct transfer_fns){swd_gen_read, swd_gen_write};
 }

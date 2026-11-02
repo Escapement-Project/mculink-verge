@@ -22,9 +22,9 @@ Source: UM11126 rev 2.8 tables 4, 5 and 6.
 | 0 | 0x0000_0000 flash, 0x0300_0000 boot ROM | Both cores' C code (CPU 0 from 0x200, CPU 1 from 0x4_0000) |
 | 1 | 0x0400_0000 SRAMX, 32 KB | Generated code (SWD, JTAG), code lab arena at 0x0400_4000 |
 | 2 | 0x2000_0000 SRAM0, 64 KB | CPU 0's data, stack (top 4 KB, see [STACK.md](STACK.md)) and `.ramfunc` (`vcom_task` and the energy integration among them); the consoles' receive rings, send buffers and ring descriptors, and the energy ring, its reload descriptors and its integration state (`energy_integration`), which DMA0 reaches |
-| 3 | 0x2001_0000 SRAM1, 64 KB | CPU 1's full 16 KiB stack in the bottom quarter, followed by `.data` and `.ramfunc` (cJTAG blocks and command loops); Clang's command buffers also fit here |
-| 4 | 0x2002_0000 SRAM2, 64 KB | The rest of CPU 1's `.ramfunc` (JTAG blocks and transfer command loops), then the start of `.bss`. Placement varies by compiler |
-| 5 | 0x2003_0000 SRAM3, 64 KB | `dap_stage` in the top 8 KB from 0x2003_E000: packet-sized commands and replies CPU 0 stages for CPU 1, and Verge Aux's request slot. Below it, CPU 1's `.data` and `.bss` where they outgrow SRAM2, and the tail of `.cold_bss` (the JTAG generator's two saved builds, 32 KB, touched only on a wire or configuration switch), which comes after every other `.bss`. GCC's build without generated SWD outgrows SRAM2 with `.ramfunc`, so some of ARM's bit paths run from here. GCC's default build outgrows it with `.bss`, since CPU 1's stack took the bottom of SRAM1: `request_copy` and the upper half of `response_copy` (the unstaged command copies), the SWD sweep's words and the cJTAG staging words are here, exposed to CPU 0's `dap_stage` copies |
+| 3 | 0x2001_0000 SRAM1, 64 KB | CPU 1's full 16 KiB stack in the bottom quarter, followed by its `.ramfunc` (command processing around the generated code, and the sample probe's reads), `.data` and, in a product image, all of its `.bss` and the start of `.cold_bss` |
+| 4 | 0x2002_0000 SRAM2, 64 KB | The rest of CPU 1's `.cold_bss` in a product image. In the ARM reference build, ARM's bit paths in `.ramfunc` and its `.bss`, which on GCC run on into SRAM3. |
+| 5 | 0x2003_0000 SRAM3, 64 KB | `dap_stage` in the top 8 KB from 0x2003_E000: packet-sized commands and replies CPU 0 stages for CPU 1, and Verge Aux's request slot. Below it, nothing of a product image's CPU 1. `.cold_bss` (the JTAG generator's two saved builds, 32 KB, touched only on a wire or configuration switch) comes after every other `.bss` and may reach here. GCC's ARM reference build outgrows SRAM2 with `.ramfunc`, so some of ARM's bit paths run from here: a test build |
 | 6 | 0x2004_0000 SRAM4, 16 KB | Stream message storage in the lower 8 KB from 0x2004_0000; upper 8 KB unused |
 | 7 | 0x4000_0000 APB bridge 0 **and** 0x4002_0000 APB bridge 1 | Every APB peripheral, both bridges on one port (below) |
 | 8 | 0x4008_0000 | DMA0 regs, SCTimer, Flexcomm 0 to 4, mailbox, ordinary GPIO |
@@ -42,9 +42,9 @@ contends with any other.
 | Master | Port | What | When |
 | --- | --- | --- | --- |
 | CPU 1 | 1 | Generated code fetch | Every generated transfer |
-| CPU 1 | 3, 4, 5 | Shared generator event workspace, 1280 events with JTAG or 256 for SWD only | Builds run serially between timed windows; each schedule is consumed before reuse |
+| CPU 1 | 3 | Shared generator event workspace, 1280 events with JTAG or 256 for SWD only | Builds run serially between timed windows; each schedule is consumed before reuse |
 | CPU 1 | 10 | Secure GPIO (`DBGIF_GPIO`): every SWDIO, SWCLK, TMS, TDI, TDO access | Inside every timed window |
-| CPU 1 | 3, 4, 5 | The `.ramfunc` bit paths: ARM's SWD, the JTAG and two-pin blocks, where nothing is generated | Inside their timed windows |
+| CPU 1 | 3, 4, 5 | The `.ramfunc` bit paths of the ARM reference build: ARM's SWD, the JTAG and two-pin blocks | Inside their timed windows |
 | CPU 1 | 5 | A staged command's request and reply in `dap_stage`: the generated transfers load write data and store read data there | Inside timed windows |
 | CPU 1 | 5 | Verge Aux's slot in `dap_stage`: its state before each command, and an aux request and its reply | Between commands |
 | CPU 1 | 7 | CTimer 4's counter, the energy stream's clock: read at each start, resume, hold and release, and to stamp each marker | Energy commands and `0x94`, and around a read-latency measurement, outside its window |
@@ -97,7 +97,7 @@ for the whole update before using the DMA position. Pause drains the settled rin
 ## Timed windows and their exposure
 
 - **Bit paths, all wires** (port 10 secure GPIO; code from port 1, or ports 3 and 4 for the
-  `.ramfunc` paths, and 5 for those GCC's build without generated SWD places in SRAM3). The ordinary GPIO on port 8 shares with Flexcomm 0 to 4 and the mailbox, which
+  `.ramfunc` paths, and 5 for those GCC's ARM reference build places in SRAM3). The ordinary GPIO on port 8 shares with Flexcomm 0 to 4 and the mailbox, which
   CPU 0 polls; that is why the bit paths moved to the secure alias. During energy capture, DMA0
   reads ADC0 on port 10 and writes the ring on port 2. CPU 1's data bus wins every tie, but a DMA0
   read of ADC0 already under way holds a secure GPIO access up to 2 cycles. A held store holds
@@ -114,8 +114,7 @@ for the whole update before using the DMA position. Pause drains the settled rin
   Apart from CPU 0's abort byte, no other master accesses SRAMX, SRAM1 or SRAM2. During capture, DMA0 writes SRAM0 and CPU 1 reads
   it, between windows.
 - **A staged command's buffers** (port 5). CPU 0 copies the next command in and the last reply out
-  while CPU 1's transfer runs. In GCC's default build the unstaged copies, the SWD sweep's words
-  and the cJTAG staging words share this port too (the SRAM3 row above). CPU 0 boots with CPU 1's data bus at the top AHB matrix priority
+  while CPU 1's transfer runs. CPU 0 boots with CPU 1's data bus at the top AHB matrix priority
   (SYSCON AHBMATPRIO, set in `start_core1`), so CPU 1 wins every tie there and on every other
   port. The lab measurement below found no cycle lost to CPU 0 at that priority.
 

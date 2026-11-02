@@ -1,6 +1,6 @@
 """Run USB callbacks and command tasks from the linked images; stub endpoint submission only."""
 
-from cycles import Model, RETURN_MAGIC, SCRATCH, STACK_TOP, build, u16, u32
+from cycles import Model, RETURN_MAGIC, SCRATCH, STACK_TOP, build, dap_setup, u16, u32
 from energy_checks import machine
 from unicorn import UC_HOOK_CODE
 from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3
@@ -154,6 +154,7 @@ def check_transport(c, elf0, elf1, symbols0, symbols1, fields, slots):
         for inject in (False, True):
             transfer = build(elf1, "swd", True, Model())
             transfer.sym.update({name: address for name, (address, _) in symbols1.items()})
+            dap_setup(transfer)
             transfer.command(b"\x02\x01")
             transfer.command(b"\x11" + u32(10_000_000))
             transfer.command(b"\x04\x00" + u16(7) + u16(0))

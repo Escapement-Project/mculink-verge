@@ -25,7 +25,8 @@
 /** A two-pin packet the probe drives is a falling edge, a data store and a rising edge. A
  * four-wire clock is five instructions and runs at no less than five cycles whatever the period. */
 #define JTAG_GEN_PERIOD_MIN 3U
-/** Longer periods leave the cycle counts of one frame near 32 bits; ARM's path runs them. */
+/** Longer periods leave the cycle counts of one frame near 32 bits. DAP_SWJ_Clock refuses the
+ * clocks that would need them (src/dap_dispatch.c). */
 #define JTAG_GEN_PERIOD_MAX (1U << 24)
 /** Cycles from the falling edge that launches TDO to the first load that sees it: on two pins the
  * fall that starts the TDO packet, on four wires the clock's own fall. On a CC1312R1 two pins
@@ -107,11 +108,11 @@ extern uint32_t jtag_gen_clock_hz;
 extern uint32_t jtag_gen_latency[2];
 
 extern jtag_gen_scan_fn jtag_gen_scan;
-/** nullptr when they did not fit: ARM's transfers then run as scans. */
+/** nullptr when they did not fit: ARM's transfer logic then runs over the generated scans. */
 extern jtag_gen_xfer_fn jtag_gen_read;
 extern jtag_gen_xfer_fn jtag_gen_write;
 
-/** How many configurations were generated, how many could not be and ran ARM's path, and how many
+/** How many configurations were generated, how many could not be and refused the wire, and how many
  * were copied back from a kept build with transfers instead. */
 extern uint32_t jtag_gen_builds;
 extern uint32_t jtag_gen_failures;
@@ -153,7 +154,7 @@ extern uint8_t jtag_gen_command;
 
 /** Generates for `wire` at the current clock, latency, chain position and idle cycles if any
  * changed since the last call. Only one wire's code exists at a time. False when it cannot be
- * generated: the caller runs ARM's path instead. */
+ * generated: there is no ARM path behind it, and the caller fails without touching the wire. */
 bool jtag_gen_ready(uint32_t wire);
 /** jtag_gen_ready with the transfers too, where they fit. jtag_gen_ready alone builds the scans, so a
  * framing switch or a new configuration costs no transfer generation until a transfer needs one;

@@ -371,8 +371,13 @@ static uint32_t block_whole(const uint8_t* request, uint8_t* response) {
         goto end;
     }
     const uint32_t request_value = *request++;
-    // The generated transfers are for one chain position: this command's.
-    if (!jtag_gen_ready_transfers(jtag_gen_wire()) || !transfers_fit()) {
+    // The generated transfers are for one chain position: this command's. With nothing generated
+    // for it there are no scans either, and no ARM path behind them.
+    if (!jtag_gen_ready_transfers(jtag_gen_wire())) {
+        response_value = DAP_TRANSFER_ERROR;
+        goto end;
+    }
+    if (!transfers_fit()) {
         return jgen_BlockImpl(request - 4, response_head);
     }
     const uint32_t ir = (request_value & DAP_TRANSFER_APnDP) != 0U ? JTAG_APACC : JTAG_DPACC;

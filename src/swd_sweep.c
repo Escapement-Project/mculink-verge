@@ -160,8 +160,10 @@ static uint32_t run_transfer(const uint8_t* request, uint8_t* response) {
 /** Out of line and in flash: inlined, it would take the measurement into SRAM with it. */
 __attribute__((noinline)) uint32_t swd_sweep_connect(const uint8_t* request, uint8_t* response) {
     swd_sweep_line.reset = false;
-    // [1] the DAP index, [2] the transfer count, [3] the first transfer's request.
-    if (!swd_sweep_automatic || (request[2] == 0U) || ((request[3] & ~DAP_TRANSFER_TIMESTAMP) != DPIDR_READ)) {
+    // [1] the DAP index, [2] the transfer count, [3] the first transfer's request. With nothing
+    // generated the transfer refuses, which must not read as a misread DPIDR worth a line reset.
+    if (!swd_sweep_automatic || (request[2] == 0U) || ((request[3] & ~DAP_TRANSFER_TIMESTAMP) != DPIDR_READ) ||
+        !swd_gen_ready()) {
         return run_transfer(request, response);
     }
     bool measured = false;

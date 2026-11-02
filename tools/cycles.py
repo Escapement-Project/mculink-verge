@@ -1404,6 +1404,19 @@ ID_CJTAG_CONTROL = 0x83
 AP_DRW_READ, AP_DRW_WRITE = 0x0F, 0x0D
 
 
+def dap_setup(probe: "Machine") -> None:
+    """The defaults CPU 1 sets at boot, before its first command (DAP_Setup in core1_main.c).
+
+    GCC's link-time optimisation folds DAP_Setup into core1_main, and then the commands a host sends
+    set the same: SWD's turnaround, which the generator refuses at zero, and the transfer
+    settings."""
+    if "DAP_Setup" in probe.sym:
+        probe.call("DAP_Setup")
+        return
+    probe.command(bytes([0x13, 0x00]))  # DAP_SWD_Configure: one turnaround clock, no data phase
+    probe.command(bytes([0x04, 0, 100, 0, 0, 0]))  # DAP_TransferConfigure: no idle, 100 WAIT retries
+
+
 def build(elf: str, wire: str, read: bool, model: Model, record_stats: bool = True) -> Machine:
     """A machine with a target model attached, found from the wire rather than from symbols.
 

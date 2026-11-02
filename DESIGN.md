@@ -38,7 +38,8 @@ tolerated in the command window. A predicted read-edge count of 43 did not match
 
 ## How OScan1 is wired in
 
-ARM's `JTAG_DP.c` is compiled **three times**, and the wire framing is the only thing that differs:
+In the ARM reference build, ARM's `JTAG_DP.c` is compiled **three times**, and the wire framing is
+the only thing that differs:
 
 - normally, with its five entry points renamed `jtag4_*`;
 - again through `src/cjtag_jtag_dp.c`, renamed `cjtag_*`, with the pin layer shadowed so each

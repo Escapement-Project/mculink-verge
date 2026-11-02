@@ -22,7 +22,8 @@
 /** A read clock is four: two edges, a sample and the sample's use. Clocks the target drives run
  * at no less than this whatever the period. */
 #define SWD_GEN_READ_PERIOD_MIN 4U
-/** Longer periods leave the cycle counts of one transfer near 32 bits; ARM's path runs them. */
+/** Longer periods leave the cycle counts of one transfer near 32 bits. DAP_SWJ_Clock refuses the
+ * clocks that would need them (src/dap_dispatch.c). */
 #define SWD_GEN_PERIOD_MAX (1U << 24)
 /** Cycles from a rising-edge store to the first load that sees the bit it launched. The bench
  * measured 7 on two targets; TIMING.md says why it should be measured per target. */
@@ -70,13 +71,14 @@ extern uint32_t swd_gen_latency;
 extern swd_gen_fn swd_gen_read;
 extern swd_gen_fn swd_gen_write;
 
-/** How many configurations were generated, and how many could not be and ran ARM's path. */
+/** How many configurations were generated, and how many could not be and refused the wire. */
 extern uint32_t swd_gen_builds;
 extern uint32_t swd_gen_failures;
 
 /** Generates for the current clock, latency and DAP_Data settings if they changed since the
  * last call, which only swd_gen_changed tells it, or if JTAG's code took SRAMX. False when they
- * cannot be generated: the caller runs ARM's transfer instead. */
+ * cannot be generated: there is no ARM path behind them, and transfers fail without touching the
+ * wire. */
 bool swd_gen_ready(void);
 
 /** What swd_gen_ready generates for now: the clock, the latency, the stall and DAP_Data's

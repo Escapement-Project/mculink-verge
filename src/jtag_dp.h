@@ -1,4 +1,4 @@
-/** The compiled copies of ARM's JTAG_DP entry points.
+/** The compiled copies of ARM's JTAG_DP entry points, in the ARM reference build alone.
  *
  * JTAG_DP.c is built four times with its five entry points renamed each time: jtag4_* drives four
  * wires, cjtag_* drives paced OScan1 frames, cjtagf_* drives them without pacing, and cjtagt_*

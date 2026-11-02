@@ -14,16 +14,19 @@ stream identical and still cost a cycle on every data bit.
 
 Code that predates the rule and breaks it, which is the work list:
 
-- ARM's SWD paths: the unrolled C in `.ramfunc`, which serves every SWD transfer in a build with
-  `SWD_CODEGEN` off, and SW_DP.c's transfer, the generated paths' fallback when nothing could be
-  generated.
-- The four-wire JTAG and two-pin paths (`JTAG_DP.c`, compiled three times) and their pacing: the
-  generated JTAG paths' fallback, and all a build with `JTAG_CODEGEN` off has.
-- The sequence commands (`DAP_SWJ_Sequence`, `DAP_SWD_Sequence`, `DAP_JTAG_Sequence`).
+- ARM's SWD paths: the unrolled C in `.ramfunc` and SW_DP.c's transfer. Only the ARM reference
+  build (both generators off) carries them, as the wire tools/equiv.py holds the generated paths to.
+- The four-wire JTAG and two-pin paths (`JTAG_DP.c`, compiled three times) and their pacing:
+  likewise the ARM reference build's alone.
+- The sequence commands `DAP_SWJ_Sequence` and `DAP_SWD_Sequence`, which every build runs on ARM's
+  C. `DAP_JTAG_Sequence` runs on the generated scans.
+- `cJTAG_FrameTap` (`src/cjtag.c`), C paced by `DAP_Data.clock_delay`: the OScan2 and OScan6 frames
+  vendor 0x83's activation sends, in every build.
 
 **Gate on both compilers.** `uv run tools/gate.py` before committing firmware or tool changes. It
-runs the host checks, then builds gcc and clang, each in the default configuration and with
-`SWD_CODEGEN` and `JTAG_CODEGEN` off. It holds every image to its baselines in the emulator, and
+runs the host checks, then builds gcc and clang, each in the default configuration and as the ARM
+reference, with `SWD_CODEGEN` and `JTAG_CODEGEN` off. The two options go together; CMake refuses
+one without the other. It holds every image to its baselines in the emulator, and
 each generated image to its compiler's ARM paths on every `tools/equiv.py` matrix.
 `ninja -C <build> check` checks one image only.
 

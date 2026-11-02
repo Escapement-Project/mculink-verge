@@ -188,7 +188,7 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
  *
  * Status is DAP_ERROR for a latency or a mode out of range, which change nothing, and for a
  * measurement asked for while the port is not plain SWD, which does not run. `ok` is 0 when the
- * current configuration could not be generated and transfers run ARM's own code.
+ * current configuration could not be generated and transfers fail without touching the wire.
  */
 #define SWD_GEN_MODE_NONE 0U
 #define SWD_GEN_MODE_MEASURE 1U
@@ -222,7 +222,7 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
  *
  * Status is DAP_ERROR for a latency or a mode out of range, which change nothing, and for a
  * measurement asked for while the port is not JTAG, which does not run. `ok` is 0 when the current
- * configuration could not be generated and the wire runs ARM's own code; its bit 1 says whole
+ * configuration could not be generated and commands fail without touching the wire; its bit 1 says whole
  * transfers were generated too, rather than run as scans, and bit 2 that their data bits are a
  * loop.
  */

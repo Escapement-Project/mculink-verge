@@ -44,6 +44,7 @@ from cycles import (  # noqa: E402
     Model,
     Target,
     build,
+    dap_setup,
     load_address,
     sections,
     symbols,
@@ -537,8 +538,7 @@ def check_response_bounds(c: Checker, elf: str, packet_size: int) -> None:
     worst = 0
     for label, payload in OVERFLOW_CASES:
         probe = build(elf, "swd", True, Model())
-        if "DAP_Setup" in probe.sym:
-            probe.call("DAP_Setup")
+        dap_setup(probe)
         probe.command(bytes([0x02, 1]))  # Connect, SWD
         probe.command(bytes([0x11]) + u32(10_000_000))  # SWJ_Clock
         probe.command(bytes([0x04, 0]) + u16(100) + u16(0))  # TransferConfigure
@@ -600,8 +600,7 @@ def check_request_bounds(c: Checker, elf: str, packet_size: int) -> None:
 
     for label, payload in REQUEST_CASES:
         probe = build(elf, "swd", True, Model())
-        if "DAP_Setup" in probe.sym:
-            probe.call("DAP_Setup")
+        dap_setup(probe)
         probe.command(bytes([0x02, 1]))  # Connect, SWD
         probe.uc.mem_write(SCRATCH, payload[:0x400] + bytes(max(0, 0x400 - len(payload))))
         before = bytes(probe.uc.mem_read(base + size, watch))
@@ -637,8 +636,7 @@ def check_bounded_commands(c: Checker, elf: str, slots: int) -> None:
                                          for i in range(slots)]
     for capacity, response in ((capacity, buffer) for capacity in (64, 512) for buffer in buffers):
         probe = build(elf, "swd", True, Model())
-        if "DAP_Setup" in probe.sym:
-            probe.call("DAP_Setup")
+        dap_setup(probe)
         probe.command(bytes([2, 1]))
         probe.command(bytes([0x11]) + u32(10_000_000))
         state, state_size = sym["DAP_Data"]
@@ -707,8 +705,7 @@ def check_bounded_commands(c: Checker, elf: str, slots: int) -> None:
 
 def check_jtag_chain(c: Checker, elf: str) -> None:
     probe = build(elf, "jtag", True, Model())
-    if "DAP_Setup" in probe.sym:
-        probe.call("DAP_Setup")
+    dap_setup(probe)
     probe.command(bytes([2, 2]))
     probe.command(bytes([0x11]) + u32(10_000_000))
     state = symbols_with_size(elf)["DAP_Data"]
@@ -1242,6 +1239,81 @@ def check_image_boards(c: Checker, elf: str) -> None:
     c.check((fmt, length, zero) == (1, 16, 0), f"the record reads format {fmt}, length {length}, {zero:#x}")
     c.check(boards == IMAGE_BOARDS, f"the image declares boards {boards:#x}, wanted {IMAGE_BOARDS:#x}")
     c.note(f"image: declares boards {boards:#x} for verge, at {base + at:#x} in {vectors[0]:#x} bytes of vectors")
+
+
+# ARM's transfer paths, which only the reference build (both generators off) may carry.
+ARM_TRANSFER_PATHS = re.compile(r"(arm_SWD_Transfer|arm_jtag4_Transfer|jtag4_[A-Za-z]+|cjtag[ft]?_[A-Z][A-Za-z]*|cJTAG_Frame(Slow|Fast)"
+                                r"|JTAG_TransferBlock(Fast|Slow)?|SWD_Transfer(Block|Command)?(Fast|Slow))")
+
+
+def check_generation_refusals(c: Checker, elf: str) -> None:
+    """A product image runs every transfer on generated code, with no ARM path behind it. A clock
+    the generators cannot serve is refused and the clock kept; and where nothing could be
+    generated anyway, a command fails without a pin moving, rather than answering OK over a wire
+    it never drove."""
+    sym = symbols_with_size(elf)
+    if "swd_gen_clock_hz" not in sym:
+        arm = sorted(n for n in sym if ARM_TRANSFER_PATHS.fullmatch(n.split(".")[0]))
+        c.check(bool(arm), "the ARM reference carries no ARM transfer path")
+        c.note("ARM reference: carries ARM's transfer paths, and is not held to the generation refusals")
+        return
+    arm = sorted(n for n in sym if ARM_TRANSFER_PATHS.fullmatch(n.split(".")[0]))
+    c.check(not arm, f"a product image carries ARM transfer paths: {', '.join(arm[:6])}")
+    for wire, port, clock in (("swd", 1, "swd_gen_clock_hz"), ("jtag", 2, "jtag_gen_clock_hz")):
+        probe = build(elf, wire, True, Model())
+        dap_setup(probe)
+        probe.command(bytes([2, port]))
+        probe.command(bytes([0x11]) + u32(1_000_000))
+        if wire == "jtag":
+            probe.command(bytes([0x15, 1, 4]))
+        at = probe.sym[clock]
+
+        def quiet(request: bytes, expect: bytes, what: str) -> None:
+            still = (probe.level, probe.dir)
+            probe.begin()
+            reply = probe.command(request)
+            counts = probe.end()
+            c.check(reply == expect, f"{wire} {what}: answered {reply.hex()}, expected {expect.hex()}")
+            c.check(counts.gpio_store == 0 and counts.tck_rise == 0 and (probe.level, probe.dir) == still,
+                    f"{wire} {what}: moved the wire ({counts.gpio_store} pin stores, {counts.tck_rise} clocks)")
+
+        # 8 Hz is the fastest clock whose period no generator takes; 9 Hz the slowest that has code.
+        quiet(bytes([0x11]) + u32(8), bytes([0x11, 0xff]), "an 8 Hz clock")
+        c.check(bytes(probe.uc.mem_read(at, 4)) == u32(1_000_000), f"{wire}: a refused clock changed the clock")
+        builds, failures = (probe.sym[f"{wire}_gen_{name}"] for name in ("builds", "failures"))
+        before = [bytes(probe.uc.mem_read(a, 4)) for a in (builds, failures)]
+        c.check(probe.command(bytes([0x11]) + u32(9)) == bytes([0x11, 0]), f"{wire}: a 9 Hz clock was refused")
+        after = [bytes(probe.uc.mem_read(a, 4)) for a in (builds, failures)]
+        c.check(after[0] != before[0] and after[1] == before[1], f"{wire}: a 9 Hz clock generated no code")
+        c.check(probe.command(bytes([0x11]) + u32(1_000_000)) == bytes([0x11, 0]), f"{wire}: 1 MHz refused")
+        # No request reaches a clock without code now, so set one behind the command's back; a
+        # DAP_TransferConfigure, as ARM's defaults, makes the generators look at their inputs again.
+        probe.uc.mem_write(at, u32(1))
+        c.check(probe.command(bytes([4, 0, 100, 0, 0, 0])) == bytes([4, 0]), f"{wire}: TransferConfigure failed")
+        if wire == "swd":
+            quiet(bytes([5, 0, 1, 0x02]), bytes([5, 0, 8]), "transfer with nothing generated")
+            # After a line reset a DPIDR read goes through the connect sweep, which reads a failed
+            # first read as a reason to reset the line again.
+            probe.command(bytes([0x12, 64]) + b"\xff" * 7 + b"\x00")
+            quiet(bytes([5, 0, 1, 0x02]), bytes([5, 0, 8]), "DPIDR read after a line reset with nothing generated")
+            quiet(bytes([6, 0, 1, 0, 0x02]), bytes([6, 0, 0, 8]), "block with nothing generated")
+            quiet(bytes([8, 0]) + u32(0x1E), bytes([8, 0xff]), "WriteABORT with nothing generated")
+        else:
+            quiet(bytes([0x14, 1, 0x88, 0xff]), bytes([0x14, 0xff]), "sequence with nothing generated")
+            quiet(bytes([0x16, 0]), bytes([0x16, 0xff]), "IDCODE with nothing generated")
+            quiet(bytes([5, 0, 1, 0x02]), bytes([5, 0, 8]), "transfer with nothing generated")
+            quiet(bytes([6, 0, 1, 0, 0x02]), bytes([6, 0, 0, 8]), "block with nothing generated")
+            quiet(bytes([8, 0]) + u32(0x1E), bytes([8, 0xff]), "WriteABORT with nothing generated")
+        probe.command(bytes([0x11]) + u32(1_000_000))
+        probe.begin()
+        reply = probe.command(bytes([5, 0, 1, 0x02]))
+        counts = probe.end()
+        # This harness's TAP model cannot answer a generated JTAG read in time, so the JTAG side
+        # shows only that the wire runs again.
+        recovered = reply[:3] == bytes([5, 1, 1]) if wire == "swd" else counts.tck_rise > 0
+        c.check(recovered, f"{wire}: a transfer after a refusal did not run: {reply[:8].hex()}")
+    c.note("product image: no ARM transfer path; 8 Hz refused and 9 Hz served; with nothing generated,"
+           " SWD and JTAG transfers, blocks, WriteABORT, JTAG sequences and IDCODE fail with no pin moved")
 
 
 def check_unconnected_block(c: Checker, elf: str) -> None:
@@ -2351,6 +2423,7 @@ def main() -> int:
     check_target_power(c, args.core1, slots)
     check_straps(c, args.elf, args.core1, slots)
     check_unconnected_block(c, args.core1)
+    check_generation_refusals(c, args.core1)
     check_image_boards(c, args.elf)
     check_sample_probe(c, args.core1)
     check_timestamp(c, args.core1)

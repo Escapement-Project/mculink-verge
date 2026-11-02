@@ -30,7 +30,9 @@ record the builds and methods.
 
 The core runs at 150 MHz. Each wire period is a whole number of core cycles, so the firmware
 rounds a requested rate down to the next available step: 30 MHz is 5 cycles, 18.75 MHz is 8.
-A request above the maximum gets the maximum.
+A request above the maximum gets the maximum. A request below 9 Hz gets `DAP_ERROR`, and the clock
+stays as it was: its period would be more than 2^24 core cycles, longer than the generated paths
+run.
 
 - **SWD.** A write clock takes 3 core cycles and a read clock 4. At a requested 50 MHz, a transfer's
   request and write data run at 50 MHz and its read data at 37.5 MHz. The target's reply delay does
@@ -165,8 +167,10 @@ for t in Release MinSizeRel; do for l in ON OFF; do
 done; done
 ```
 
-The transfer paths are generated at runtime by default. `-DSWD_CODEGEN=OFF -DJTAG_CODEGEN=OFF`
-builds ARM's paths alone, and the check holds that build to `tools/baseline-armwire/` instead. It
+The transfer paths are generated at runtime, and a product image carries no other transfer path.
+`-DSWD_CODEGEN=OFF -DJTAG_CODEGEN=OFF` builds ARM's paths alone, the reference the generated ones
+are held to, marked `+armwire`; CMake refuses one option off without the other. The check holds
+that build to `tools/baseline-armwire/` instead. It
 finds ARM's paths clocking SWD and both JTAG wires faster than requested at 10 and 20 MHz, and
 four-wire JTAG at 50 MHz too. That directory's `known-overshoot.txt` records them; see
 OPTIMISATIONS.md.

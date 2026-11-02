@@ -28,6 +28,7 @@
 #include "DAP.h"
 #include "cjtag.h"
 #include "dap_dispatch.h"
+#include "dap_block.h"
 #include "dap_packet.h"
 #include "hot.h"
 #include "jtag_chain.h"
@@ -77,12 +78,17 @@ COMMAND_PATH static uint32_t transfer_block(const uint8_t* request, uint8_t* res
     }
 #ifdef JTAG_CODEGEN
     const uint32_t wire = jtag_gen_wire();
-    if (jtag_gen_ready_transfers(wire)) {
-        const uint32_t length = jgen_TransferBlock(request, response);
-        jtag_gen_learn(wire);
-        return length;
+    if (!jtag_gen_ready_transfers(wire)) {
+        // Nothing to run it on: no transfers done, and a protocol error, with the wire untouched.
+        response[0] = 0U;
+        response[1] = 0U;
+        response[2] = DAP_TRANSFER_ERROR;
+        return dap_block_result(request, 3U);
     }
-#endif
+    const uint32_t length = jgen_TransferBlock(request, response);
+    jtag_gen_learn(wire);
+    return length;
+#else
     if (!cJTAG_Active()) {
         return JTAG_TransferBlock(request, response);
     }
@@ -93,7 +99,49 @@ COMMAND_PATH static uint32_t transfer_block(const uint8_t* request, uint8_t* res
         return cjtagf_TransferBlock(request, response);
     }
     return cjtag_TransferBlock(request, response);
+#endif
 }
+
+#if defined(SWD_CODEGEN) && defined(JTAG_CODEGEN)
+/** Whether the generators can run `hz`. A period longer than either takes, 8 Hz and slower, has
+ *  no code, and this build has no ARM path to run it on. */
+static bool clock_generates(uint32_t hz) {
+    uint32_t const period = ((CPU_CLOCK - 1U) / hz) + 1U;
+    return (period <= SWD_GEN_PERIOD_MAX) && (period <= JTAG_GEN_PERIOD_MAX);
+}
+
+/** A command whose wire runs on generated code and which has no failure of its own to report.
+ *  When nothing could be generated, ARM's handler would answer DAP_OK over a wire it never drove:
+ *  these answer DAP_ERROR before it runs. Transfers report the failure themselves. */
+static bool generation_refuses(const uint8_t* request) {
+    switch (*request) {
+    case ID_DAP_JTAG_Sequence:
+        return !jtag_gen_ready(jtag_gen_wire());
+    case ID_DAP_JTAG_IDCODE:
+    case ID_DAP_WriteABORT:
+        if ((*request == ID_DAP_WriteABORT) && (DAP_Data.debug_port == DAP_PORT_SWD)) {
+            return !swd_gen_ready();
+        }
+        // ARM's handler refuses an index past the chain itself, without the wire. Otherwise it sets
+        // the index and scans IR there, so the code to check is the code for that position.
+        if ((DAP_Data.debug_port != DAP_PORT_JTAG) || (request[1] >= DAP_Data.jtag_dev.count)) {
+            return false;
+        }
+        DAP_Data.jtag_dev.index = request[1];
+        return !jtag_gen_ready_transfers(jtag_gen_wire());
+    default:
+        return false;
+    }
+}
+
+/** `[command, DAP_ERROR]`. execute_one takes the length consumed from its own plan of the request,
+ *  so the one returned here is never read. */
+static uint32_t refuse(const uint8_t* request, uint8_t* response) {
+    response[0] = *request;
+    response[1] = DAP_ERROR;
+    return (1U << 16) | 2U;
+}
+#endif
 
 COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* response) {
 #ifdef JTAG_CODEGEN
@@ -108,6 +156,11 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
         response[1] = DAP_OK;
         return (3U << 16) | 2U;
     }
+#if defined(SWD_CODEGEN) && defined(JTAG_CODEGEN)
+    if (generation_refuses(request)) {
+        return refuse(request, response);
+    }
+#endif
     if ((*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_SWD)) {
 #ifdef SWD_CODEGEN
         if (swd_sweep_pending()) {
@@ -151,6 +204,12 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
         // ARM keeps only the delay it derives from the clock, and the generators want the clock.
         const uint32_t hz = (uint32_t)request[1] | ((uint32_t)request[2] << 8) | ((uint32_t)request[3] << 16) |
                             ((uint32_t)request[4] << 24);
+#if defined(SWD_CODEGEN) && defined(JTAG_CODEGEN)
+        // ARM's handler refuses 0 Hz the same way, keeping the clock it had.
+        if ((hz != 0U) && !clock_generates(hz)) {
+            return refuse(request, response);
+        }
+#endif
         if (hz != 0U) {
 #ifdef SWD_CODEGEN
             swd_gen_clock_hz = hz;

@@ -42,11 +42,17 @@ option(MARKER "Mark command processing on the J8 header" ON)
 # until the bench has settled it; BENCH.md has the measurements behind it.
 option(SWD_SAMPLE_AFTER_EDGE "Sample SWDIO after the rising edge on the delayed SWD path" OFF)
 # Generate the SWD transfer paths at run time into SRAMX, for the clock the host asks for. See
-# src/swd_gen.c. Off builds ARM's paths alone, the wire tools/equiv.py holds the generated one to.
+# src/swd_gen.c.
 option(SWD_CODEGEN "Generate the SWD transfer paths at run time" ON)
-# Generate the four-wire and two-pin (OScan1) JTAG paths at run time into SRAMX. See
-# src/jtag_gen.c. Off builds ARM's paths alone.
+# Generate the four-wire and two-pin JTAG paths at run time into SRAMX. See src/jtag_gen.c.
 option(JTAG_CODEGEN "Generate the JTAG transfer paths at run time" ON)
+# A product image generates both and carries no ARM transfer path. Both off is the ARM reference,
+# the wire tools/equiv.py holds the generated paths to: a test build, marked +armwire.
+if((SWD_CODEGEN AND NOT JTAG_CODEGEN) OR (JTAG_CODEGEN AND NOT SWD_CODEGEN))
+  message(FATAL_ERROR
+    "SWD_CODEGEN and JTAG_CODEGEN go together: both on for a product image, both off for the ARM "
+    "reference.")
+endif()
 # Run TinyUSB's device stack from SRAM. Flash runs at 11 wait states, and the stack's interrupt
 # handler and task are branchy code the prefetcher cannot cover; they are paid once per command.
 option(USB_RAM "Run TinyUSB from SRAM" ON)
@@ -74,12 +80,8 @@ set(FW_VARIANT "")
 if(SWD_SAMPLE_AFTER_EDGE)
   string(APPEND FW_VARIANT "+after-edge")
 endif()
-if(NOT SWD_CODEGEN AND NOT JTAG_CODEGEN)
+if(NOT SWD_CODEGEN)
   string(APPEND FW_VARIANT "+armwire")
-elseif(NOT SWD_CODEGEN)
-  string(APPEND FW_VARIANT "+armswd")
-elseif(NOT JTAG_CODEGEN)
-  string(APPEND FW_VARIANT "+armjtag")
 endif()
 if(CODE_LAB)
   string(APPEND FW_VARIANT "+lab")
@@ -142,6 +144,16 @@ set(MCUX_DRIVERS ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcuxsdk
 target_sources(${CORE1} PRIVATE src/energy_identity.c)
 set(LPC55_DEVICE ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcux-devices-lpc/LPC5500)
 
+# ARM's JTAG paths, four-wire and the cJTAG copies with the wire layer replaced, are the ARM
+# reference build's alone. They keep their places in the list: link order moves GCC's LTO output.
+set(ARM_CJTAG_SOURCES "")
+set(ARM_JTAG_SOURCES "")
+if(NOT JTAG_CODEGEN)
+  set(ARM_CJTAG_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp.c
+                        ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp_fast.c
+                        ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp_tracked.c)
+  set(ARM_JTAG_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_dp_block.c ${DAP_SRC}/JTAG_DP.c)
+endif()
 target_sources(${CORE1} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/core1_start.S
   ${CMAKE_CURRENT_SOURCE_DIR}/src/core1_main.c
@@ -165,14 +177,11 @@ target_sources(${CORE1} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/sample_probe.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_dp.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp_fast.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp_tracked.c
+  ${ARM_CJTAG_SOURCES}
   ${DAP_SRC}/SW_DP.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_dp.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_dispatch.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_dp_block.c
-  ${DAP_SRC}/JTAG_DP.c
+  ${ARM_JTAG_SOURCES}
   ${CMAKE_CURRENT_SOURCE_DIR}/src/swo.c
   )
 
@@ -215,9 +224,10 @@ set_source_files_properties(
   PROPERTIES COMPILE_OPTIONS "${UPSTREAM_RELAX}"
   )
 
-# ARM's SWD_Transfer is renamed out of the way so src/swd_dp.c can own the name with a cheaper
-# data phase. The rest of SW_DP.c -- SWJ_Sequence and SWD_Sequence -- is still ARM's and still
-# linked, so this is a replaced function rather than a replaced file.
+# ARM's SWD_Transfer is renamed out of the way so src/swd_dp.c can own the name: the generated
+# route in a product image, ARM's transfer with a cheaper data phase in the ARM reference. The rest
+# of SW_DP.c -- SWJ_Sequence and SWD_Sequence -- is still ARM's and still linked, so this is a
+# replaced function rather than a replaced file.
 set_source_files_properties(${DAP_SRC}/SW_DP.c PROPERTIES COMPILE_DEFINITIONS
   "SWD_Transfer=arm_SWD_Transfer"
   )
@@ -335,8 +345,8 @@ else()
 endif()
 
 # CPU0 owns SRAM0. CPU1's full 16 KiB stack occupies the bottom of SRAM1, followed by its
-# data/code through SRAM3, below dap_stage's top 8 KiB. Stream slots use SRAM4; CPU0 reaches
-# no timed CPU1 port for them. USB SRAM holds TinyUSB and dap_shared.
+# data/code, which may run up to dap_stage's top 8 KiB of SRAM3. Stream slots use SRAM4; CPU0
+# reaches no timed CPU1 port for them. USB SRAM holds TinyUSB and dap_shared.
 set(CORE1_FLASH_ORIGIN 0x00040000)
 set(CORE1_FLASH_END    0x0009D800)  # where the SDK's own reservation for CPU 1 ends
 set(CORE0_RAM_LENGTH   0x00010000)

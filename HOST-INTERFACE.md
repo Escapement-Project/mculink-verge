@@ -12,6 +12,12 @@ or a reply that cannot fit receives `0xff`. SPI and I2C retain their four-byte i
 reply when it fits. Read blocks are shortened to the available reply space; SWO reads return at
 most that space. Hosts should size requests to the transport's packet size.
 
+`DAP_SWJ_Clock` answers `DAP_ERROR` for a clock below 9 Hz and keeps the clock it had, as it does
+for 0 Hz. Every transfer runs on code the firmware generates for the clock and settings in use. In
+the unexpected case that it cannot generate them, a command fails before the wire moves: transfers
+and blocks report a protocol error (8) with no transfer done, and `DAP_JTAG_Sequence`,
+`DAP_JTAG_IDCODE` and `DAP_WriteABORT` answer `DAP_ERROR`.
+
 If a batch contains a malformed command or runs out of reply space, execution stops before that
 command. The reply retains the preceding subreplies and reports the number of commands executed.
 A command that executes and returns an error still counts. This is the firmware's defensive
