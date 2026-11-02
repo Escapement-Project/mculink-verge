@@ -11,13 +11,16 @@
  * through SWO_SEGMENTS reload descriptors linked in a circle. DMA0 is CPU 0's, shared with the
  * consoles: CPU 0 sets the controller up at boot, and this file touches channel 8 alone. Capture
  * costs no CPU time per byte and carries on through any command, however long. Each descriptor
- * raises INTA as it completes, and CPU 0's DMA interrupt counts them (src/main.c): the count is
- * what tells one lap of the ring from the next, since CPU 1 takes no interrupts and one command
- * can outlast a lap. The ring arithmetic is in src/swo_ring.h, where the host can test it.
+ * raises INTA or INTB as it completes (src/dma_ring.h), and CPU 0's DMA interrupt counts them
+ * (src/main.c): the count is what tells one lap of the ring from the next, since CPU 1 takes no
+ * interrupts and one command can outlast a lap. The ring arithmetic is in src/swo_ring.h, where
+ * the host can test it.
  *
  * Replies follow ARM's SWO.c (CMSIS-DAP 2.1.2), with three differences. The ring never pauses: a
  * full ring overwrites its oldest bytes, so an overrun reports DAP_SWO_BUFFER_OVERRUN and the
- * reader skips forward to the oldest bytes still intact. P0_3 is Flexcomm 3's only while capture
+ * reader skips forward to the oldest bytes still intact. A segment CPU 0 counts too late loses the
+ * count, and with it where any byte is: that reports an overrun too, and the ring starts again
+ * empty while the UART runs on. P0_3 is Flexcomm 3's only while capture
  * runs, not from DAP_SWO_Mode on, so JTAG keeps TDO between captures. And DAP_SWO_ExtendedStatus
  * counts all eight bytes of index and timestamp in its reply length, where ARM's counts four.
  */
@@ -44,12 +47,15 @@ static_assert(SWO_STREAM == 0, "no streaming endpoint yet");
 #define SWO_USART USART3
 #define SWO_DMA DMA0
 
-/** A segment: byte reads from FIFORD into the next SWO_SEGMENT_BYTES of the ring, then on to the
- *  next descriptor with INTA raised. Nothing clears the trigger, so the circle runs until stopped. */
-#define SWO_SEGMENT_XFERCFG                                                                         \
+/** Segment `segment` of CPU 0's count: byte reads from FIFORD into the next SWO_SEGMENT_BYTES of
+ *  the ring, then on to the next descriptor with its flag raised (src/dma_ring.h). Nothing clears
+ *  the trigger, so the circle runs until stopped. */
+#define SWO_SEGMENT_XFERCFG(segment)                                                                \
     (DMA_CHANNEL_XFERCFG_CFGVALID_MASK | DMA_CHANNEL_XFERCFG_RELOAD_MASK |                          \
-     DMA_CHANNEL_XFERCFG_SETINTA_MASK | DMA_CHANNEL_XFERCFG_WIDTH(0U) | DMA_CHANNEL_XFERCFG_SRCINC(0U) | \
-     DMA_CHANNEL_XFERCFG_DSTINC(1U) | DMA_CHANNEL_XFERCFG_XFERCOUNT(SWO_SEGMENT_BYTES - 1U))
+     (dma_ring_flag_b(segment) ? DMA_CHANNEL_XFERCFG_SETINTB_MASK : DMA_CHANNEL_XFERCFG_SETINTA_MASK) | \
+     DMA_CHANNEL_XFERCFG_WIDTH(0U) | DMA_CHANNEL_XFERCFG_SRCINC(0U) | DMA_CHANNEL_XFERCFG_DSTINC(1U) |  \
+     DMA_CHANNEL_XFERCFG_XFERCOUNT(SWO_SEGMENT_BYTES - 1U))
+static_assert((SWO_SEGMENTS % 2U) == 0U, "each descriptor raises the same flag every lap");
 
 #define SWO_LINE_ERRORS \
     (USART_STAT_FRAMERRINT_MASK | USART_STAT_PARITYERRINT_MASK | USART_STAT_RXNOISEINT_MASK | USART_STAT_DELTARXBRK_MASK)
@@ -57,9 +63,9 @@ static_assert(SWO_STREAM == 0, "no streaming endpoint yet");
 /** Bounds on the two waits for hardware, in polls. Either finishes in well under a microsecond. */
 #define SWO_DRAIN_POLLS 1000U
 
-/** How long CPU 0's DMA interrupt can take between reading a completion and counting it. It masks
- *  every interrupt in between, so nothing preempts it there. The poll bound is for the image
- *  checker, whose cycle counter does not move. */
+/** How long CPU 0's DMA interrupt can take between reading a completion and counting it, or
+ *  reporting the count lost. It masks every interrupt in between, so nothing preempts it there.
+ *  The poll bound is for the image checker, whose cycle counter does not move. */
 #define SWO_COUNT_SETTLE_US 2U
 #define SWO_COUNT_SETTLE_POLLS 10000U
 
@@ -74,8 +80,11 @@ static bool baudrate_set;
 static bool capturing;
 /** DAP_SWO_STREAM_ERROR and DAP_SWO_BUFFER_OVERRUN, held until a status reply reports them. */
 static uint8_t errors;
-/** dap_shared.swo_segments as capture started, so positions count from that capture. */
+/** dap_shared.swo_segments as the ring last started, so positions count from there. */
 static uint32_t segments_at_start;
+/** The position of the ring's first byte when it last started: 0 for a capture, and after a lost
+ *  count, the newest position handed out before. */
+static uint32_t ring_base;
 /** The position capture stopped at. */
 static uint32_t written_at_stop;
 static uint32_t read_position;
@@ -130,21 +139,48 @@ static void collect_errors(void) {
     }
 }
 
-/** The DMA's position since capture started. Positions are modulo 2^32, so taking the segments
- *  before the start off the total is the same as counting from the start. */
-static uint32_t dma_written(void) {
-    return dma0_ring_written(&dap_shared.swo_segments, SWO_DMA_CHANNEL) - (segments_at_start * SWO_SEGMENT_BYTES);
+/** The DMA's position into `*at`, unless the count is lost (src/dma_ring.h). Positions are modulo
+ *  2^32, so taking the segments before the ring started off the total is the same as counting
+ *  from its start. */
+static bool dma_written(uint32_t* at) {
+    bool overtaken = false;
+    uint32_t const written = dma0_ring_written(&dap_shared.swo_segments, SWO_DMA_CHANNEL, &overtaken);
+    *at = ring_base + written - (segments_at_start * SWO_SEGMENT_BYTES);
+    // CPU 0 sets swo_lost before it clears the flags, so a read that found them clear finds it.
+    return !overtaken && (dap_shared.swo_lost == 0U);
 }
 
-static uint32_t written(void) {
-    return capturing ? dma_written() : written_at_stop;
+static bool written(uint32_t* at) {
+    if (!capturing) {
+        *at = written_at_stop;
+        return true;
+    }
+    return dma_written(at);
 }
 
-static void capture_start(void) {
+/** Start DMA0 round the ring from its first byte, which is position `base`. The channel is
+ *  stopped. */
+static void ring_start(uint32_t base) {
+    // A completion CPU 0 has read but not yet counted would land after the snapshot, and every
+    // position from here would read a segment long; a count it is about to report lost would
+    // restart this ring for nothing.
+    SWO_DMA->COMMON[0].INTA = SWO_DMA_MASK;
+    SWO_DMA->COMMON[0].INTB = SWO_DMA_MASK;
+    uint32_t const cleared = TIMESTAMP_GET();
+    for (uint32_t i = 0U; (i < SWO_COUNT_SETTLE_POLLS) &&
+                          ((TIMESTAMP_GET() - cleared) < (SWO_COUNT_SETTLE_US * (TIMESTAMP_CLOCK / 1000000U)));
+         i++) {
+    }
+    uint32_t const first = dap_shared.swo_segments;
+    dap_shared.swo_lost = 0U;
+    segments_at_start = first;
+    ring_base = base;
+
+    // Segment k of this ring is segment first + k of CPU 0's count, which picks its flag.
     volatile dma_descriptor_t* const ring = dap_shared.swo_dma;
     uint32_t const source = (uint32_t)&SWO_USART->FIFORD;
     for (uint32_t k = 0U; k < SWO_SEGMENTS; k++) {
-        ring[k].xfercfg = SWO_SEGMENT_XFERCFG;
+        ring[k].xfercfg = SWO_SEGMENT_XFERCFG(first + k);
         ring[k].source_end = source;
         ring[k].destination_end = (uint32_t)&dap_shared.swo_ring[((k + 1U) * SWO_SEGMENT_BYTES) - 1U];
         ring[k].link = (uint32_t)&ring[(k + 1U) % SWO_SEGMENTS];
@@ -155,34 +191,45 @@ static void capture_start(void) {
     entry->source_end = source;
     entry->destination_end = ring[0].destination_end;
     entry->link = ring[0].link;
+    __DMB();
 
+    SWO_DMA->CHANNEL[SWO_DMA_CHANNEL].CFG = DMA_CHANNEL_CFG_PERIPHREQEN_MASK;
+    SWO_DMA->COMMON[0].INTENSET = SWO_DMA_MASK;
+    SWO_DMA->COMMON[0].ENABLESET = SWO_DMA_MASK;
+    SWO_DMA->CHANNEL[SWO_DMA_CHANNEL].XFERCFG = SWO_SEGMENT_XFERCFG(first) | DMA_CHANNEL_XFERCFG_SWTRIG_MASK;
+}
+
+static void ring_stop(void) {
+    SWO_DMA->COMMON[0].ENABLECLR = SWO_DMA_MASK;
+    for (uint32_t i = 0U; (i < SWO_DRAIN_POLLS) && ((SWO_DMA->COMMON[0].BUSY & SWO_DMA_MASK) != 0U); i++) {
+    }
+    SWO_DMA->COMMON[0].ABORT = SWO_DMA_MASK;
+}
+
+/** The ring's count is lost: drop what it holds and start it again, with nothing unread, at the
+ *  newest position handed out: the index, which poll sets before any copy, so the reader never
+ *  passes it. The UART runs on. Its 16-byte FIFO holds what arrives meanwhile, and more than that
+ *  is an overrun the next poll reports. */
+static void ring_restart(void) {
+    ring_stop();
+    read_position = stamp_index;
+    ring_start(read_position);
+}
+
+static void capture_start(void) {
     SWO_USART->FIFOCFG = USART_FIFOCFG_EMPTYRX_MASK | USART_FIFOCFG_EMPTYTX_MASK;
     SWO_USART->STAT = SWO_LINE_ERRORS;
     SWO_USART->FIFOSTAT = USART_FIFOSTAT_RXERR_MASK;
     SWO_DMA->COMMON[0].ERRINT = SWO_DMA_MASK;
     dap_shared.swo_dma_error = 0U;
-
-    // A completion from the last capture that CPU 0 has read but not yet counted would land after
-    // the snapshot, and every position from here would read a segment long.
-    SWO_DMA->COMMON[0].INTA = SWO_DMA_MASK;
-    uint32_t const cleared = TIMESTAMP_GET();
-    for (uint32_t i = 0U; (i < SWO_COUNT_SETTLE_POLLS) &&
-                          ((TIMESTAMP_GET() - cleared) < (SWO_COUNT_SETTLE_US * (TIMESTAMP_CLOCK / 1000000U)));
-         i++) {
-    }
-    segments_at_start = dap_shared.swo_segments;
     read_position = 0U;
     written_at_stop = 0U;
     stamp_index = 0U;
     stamp_tick = TIMESTAMP_GET();
     errors = 0U;
-    __DMB();
 
     // The DMA first, so the first byte the UART takes has somewhere to go.
-    SWO_DMA->CHANNEL[SWO_DMA_CHANNEL].CFG = DMA_CHANNEL_CFG_PERIPHREQEN_MASK;
-    SWO_DMA->COMMON[0].INTENSET = SWO_DMA_MASK;
-    SWO_DMA->COMMON[0].ENABLESET = SWO_DMA_MASK;
-    SWO_DMA->CHANNEL[SWO_DMA_CHANNEL].XFERCFG = SWO_SEGMENT_XFERCFG | DMA_CHANNEL_XFERCFG_SWTRIG_MASK;
+    ring_start(0U);
     board_swo_pin(true);
     SWO_USART->FIFOCFG = USART_FIFOCFG_ENABLERX_MASK | USART_FIFOCFG_DMARX_MASK;
     SWO_USART->CFG |= USART_CFG_ENABLE_MASK;
@@ -197,13 +244,15 @@ static void capture_stop(void) {
          i++) {
     }
     collect_errors();
-    written_at_stop = dma_written();
+    if (!dma_written(&written_at_stop)) {
+        // Nothing in the ring is anywhere known, so none of it is the host's.
+        errors |= DAP_SWO_BUFFER_OVERRUN;
+        read_position = stamp_index;
+        written_at_stop = read_position;
+    }
     capturing = false;
 
-    SWO_DMA->COMMON[0].ENABLECLR = SWO_DMA_MASK;
-    for (uint32_t i = 0U; (i < SWO_DRAIN_POLLS) && ((SWO_DMA->COMMON[0].BUSY & SWO_DMA_MASK) != 0U); i++) {
-    }
-    SWO_DMA->COMMON[0].ABORT = SWO_DMA_MASK;
+    ring_stop();
     SWO_DMA->COMMON[0].INTENCLR = SWO_DMA_MASK;
     SWO_USART->FIFOCFG = USART_FIFOCFG_EMPTYRX_MASK;
 }
@@ -214,7 +263,12 @@ static uint32_t poll(void) {
     if (capturing) {
         collect_errors();
     }
-    uint32_t const at = written();
+    uint32_t at = 0U;
+    if (!written(&at)) {
+        errors |= DAP_SWO_BUFFER_OVERRUN;
+        ring_restart();
+        at = read_position;
+    }
     if (at != stamp_index) {
         stamp_index = at;
         stamp_tick = TIMESTAMP_GET();
@@ -360,13 +414,18 @@ uint32_t SWO_Data(const uint8_t* request, uint8_t* response) {
         if (count > limit) {
             count = limit;
         }
-        swo_copy(&response[3], dap_shared.swo_ring, read_position, count);
-        uint32_t const after = written();
-        if (swo_overrun(after, read_position)) {
-            // The DMA came round to these bytes while they were being copied.
+        swo_copy(&response[3], dap_shared.swo_ring, read_position - ring_base, count);
+        uint32_t after = 0U;
+        bool const lost = !written(&after);
+        if (lost || swo_overrun(after, read_position)) {
+            // The DMA came round to these bytes while they were being copied, or may have.
             status |= DAP_SWO_BUFFER_OVERRUN;
             count = 0U;
-            read_position = swo_resync(after);
+            if (lost) {
+                ring_restart();
+            } else {
+                read_position = swo_resync(after);
+            }
         } else {
             read_position += count;
             if (count != 0U) {

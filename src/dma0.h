@@ -9,20 +9,30 @@
 
 #include "dma_ring.h"
 
-/** Bytes `channel` has written since `*segments` was zero. The count, the pending flag and XFERCFG
- *  are read until the count and the flag read the same on both sides of XFERCFG, so all three
- *  describe one moment. Always inlined, so a caller in SRAM stays there. */
+/** The flag DMA0 raises as it completes segment `segment` of a ring's count (src/dma_ring.h). */
+static inline volatile uint32_t* dma0_ring_flag(uint32_t segment) {
+    return dma_ring_flag_b(segment) ? &DMA0->COMMON[0].INTB : &DMA0->COMMON[0].INTA;
+}
+
+/** Bytes `channel` has written since `*segments` was zero. The count, the due segment's flag and
+ *  XFERCFG are read until the count and the flag read the same on both sides of XFERCFG, so all
+ *  three describe one moment. `*lost` is the next segment's flag, read in the same window: up, the
+ *  count is behind by an unknown number of segments and the position means nothing. Always
+ *  inlined, so a caller in SRAM stays there. */
 __attribute__((always_inline)) static inline uint32_t dma0_ring_written(volatile uint32_t const* segments,
-                                                                        uint32_t channel) {
+                                                                        uint32_t channel, bool* lost) {
     uint32_t const mask = 1UL << channel;
     for (;;) {
         uint32_t const counted = *segments;
         __DMB();
-        bool const pending = (DMA0->COMMON[0].INTA & mask) != 0U;
+        volatile uint32_t const* const due = dma0_ring_flag(counted);
+        bool const pending = (*due & mask) != 0U;
         uint32_t const xfercfg = DMA0->CHANNEL[channel].XFERCFG;
-        bool const still_pending = (DMA0->COMMON[0].INTA & mask) != 0U;
+        bool const still_pending = (*due & mask) != 0U;
+        bool const overtaken = (*dma0_ring_flag(counted + 1U) & mask) != 0U;
         __DMB();
         if ((pending == still_pending) && (counted == *segments)) {
+            *lost = overtaken;
             return dma_ring_written(counted, pending, xfercfg);
         }
     }

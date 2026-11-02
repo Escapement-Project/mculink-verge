@@ -350,8 +350,9 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1, layout)
         c.check(get("energy_control_ack") == 0, "IRQ acknowledged before main-loop service")
         probe.call("energy_control_task")
         c.check(get("energy_control_ack") == 3, "main loop did not acknowledge quiet generation")
-        dma.set(0x58, ENERGY_MASK | SWO_MASK)
-        dma.set(0x60, ENERGY_MASK)
+        # SWO's second segment raises INTB (src/dma_ring.h).
+        dma.set(0x58, ENERGY_MASK)
+        dma.set(0x60, ENERGY_MASK | SWO_MASK)
         dma.set(0x40, ENERGY_MASK)
         probe.call("DMA0_IRQHandler")
         c.check(get("energy_segments") == 1 and get("swo_segments") == 2,

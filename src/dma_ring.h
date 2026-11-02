@@ -2,9 +2,16 @@
  *  tools/swo_ring_test.c can run it on the host. SWO capture (src/swo_ring.h) and the consoles'
  *  receive rings (src/vcom.c) are both one.
  *
- * Each descriptor fills the next DMA_RING_SEGMENT_BYTES and raises INTA, and CPU 0's DMA interrupt
- * counts the completions. Byte n of the stream lands at ring[n % ring_bytes]. Positions are byte
- * counts since the ring started, modulo 2^32, so every comparison is a difference.
+ * Each descriptor fills the next DMA_RING_SEGMENT_BYTES and raises a completion flag, and CPU 0's
+ * DMA interrupt counts the completions. Byte n of the stream lands at ring[n % ring_bytes].
+ * Positions are byte counts since the ring started, modulo 2^32, so every comparison is a
+ * difference.
+ *
+ * Segment n of a count raises INTA when n is even and INTB when odd. The two flags are one
+ * interrupt that only software tells apart (UM11126 21.6.11-12), and a flag holds one completion,
+ * so with one flag two completions before the interrupt runs would count as one. Alternating, they
+ * show as both flags, and the count is known to be lost. A ring's segments are even in number, so
+ * each descriptor raises the same flag every lap.
  */
 #ifndef DMA_RING_H
 #define DMA_RING_H
@@ -28,14 +35,36 @@ typedef struct {
     uint32_t link;
 } dma_descriptor_t;
 
+/** Whether segment `segment` of a count raises INTB rather than INTA. */
+static inline bool dma_ring_flag_b(uint32_t segment) {
+    return (segment & 1U) != 0U;
+}
+
+typedef enum {
+    DMA_RING_NONE,  // no completion for this ring
+    DMA_RING_ONE,   // the segment due: count it
+    DMA_RING_LOST,  // both flags, or the one not due: the count is out by an unknown number
+} dma_ring_take_t;
+
+/** What CPU 0's interrupt makes of the flags it took for a ring that has counted `counted`. Both
+ *  flags is two completions or more, and how many more no flag can say; the flag not due is a
+ *  count already wrong. Either way the ring has to start again. */
+static inline dma_ring_take_t dma_ring_take(uint32_t counted, bool took_a, bool took_b) {
+    if (!took_a && !took_b) {
+        return DMA_RING_NONE;
+    }
+    return ((took_a == took_b) || (took_b != dma_ring_flag_b(counted))) ? DMA_RING_LOST : DMA_RING_ONE;
+}
+
 /** Bytes written since the ring started.
  *
- * `segments` is how many descriptors CPU 0's interrupt has counted, `pending` whether one has
- * completed that it has not counted yet, and `xfercfg` the channel's XFERCFG. The three have to
+ * `segments` is how many descriptors CPU 0's interrupt has counted, `pending` whether the one due
+ * has completed and is not counted yet, and `xfercfg` the channel's XFERCFG. The three have to
  * come from one moment, which the reader ensures by reading them twice. The interrupt clears the
  * completion before it counts it, so a read between the two finds neither and comes out one
  * segment short, never long. A descriptor that has just run out reads as a full one still to go,
- * which comes to the same position as the next descriptor not yet started.
+ * which comes to the same position as the next descriptor not yet started. The reader also checks
+ * the next segment's flag: up, the interrupt is a segment late, and the position is lost.
  */
 static inline uint32_t dma_ring_written(uint32_t segments, bool pending, uint32_t xfercfg) {
     uint32_t const left = ((xfercfg >> DMA_XFERCOUNT_SHIFT) & DMA_XFERCOUNT_MASK) + 1U;

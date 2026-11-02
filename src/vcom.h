@@ -8,6 +8,8 @@
 #define VCOM_DMA_RX_CHANNEL(flexcomm) (4U + (2U * (flexcomm)))
 #define VCOM_DMA_TX_CHANNEL(flexcomm) (5U + (2U * (flexcomm)))
 #define VCOM_DMA_MASK (0xFUL << VCOM_DMA_RX_CHANNEL(0U))
+/** The receive rings, whose odd segments raise INTB (src/dma_ring.h). */
+#define VCOM_DMA_RX_MASK ((1UL << VCOM_DMA_RX_CHANNEL(0U)) | (1UL << VCOM_DMA_RX_CHANNEL(1U)))
 
 /** Bring up the target consoles that exist on this board (board_straps.h). Call after board_init, which
  *  also claims Flexcomm 0, after board_read_straps, and after DMA0 is enabled with its table. */
@@ -20,8 +22,9 @@ void vcom_task(void);
  *  SRAM, for CPU 0's wait in main.c. */
 bool vcom_ready(void);
 
-/** CPU 0's DMA interrupt: the completions of `done` (DMA0 INTA bits), already cleared. */
-void vcom_dma_done(uint32_t done);
+/** CPU 0's DMA interrupt: the completions of `done` and `done_b` (DMA0 INTA and INTB bits),
+ *  already cleared. */
+void vcom_dma_done(uint32_t done, uint32_t done_b);
 
 /** Stop failed channels; the main loop waits for idle before rebuilding their state. */
 void vcom_dma_error(uint32_t failed);

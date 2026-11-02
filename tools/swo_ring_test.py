@@ -31,7 +31,7 @@ def main() -> int:
             env = os.environ.copy()
             env["ASAN_OPTIONS"] = ":".join(filter(None, (env.get("ASAN_OPTIONS"), "detect_leaks=0")))
             run([executable], env)
-            print(f"  {compiler}: positions never ahead of the DMA, overruns, the ring copy, baud divisors and clocks")
+            print(f"  {compiler}: positions never ahead of the DMA, late interrupts found, overruns, the ring copy, baud divisors and clocks")
     return 0
 
 

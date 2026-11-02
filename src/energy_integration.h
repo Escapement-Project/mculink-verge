@@ -21,6 +21,7 @@
 #include "fsl_device_registers.h"
 
 #include "dap_shared.h"
+#include "dma0.h"
 #include "energy_monitor.h"
 #include "energy_pairs.h"
 #include "energy_samples.h"
@@ -29,7 +30,7 @@
 /** The flag DMA0 raises as it completes segment `counted` of a capture: INTA for the ring's first
  *  half, INTB for the second (src/energy_monitor.c). */
 static inline volatile uint32_t* energy_segment_flag(uint32_t counted) {
-    return ((counted & 1U) == 0U) ? &DMA0->COMMON[0].INTA : &DMA0->COMMON[0].INTB;
+    return dma0_ring_flag(counted);
 }
 
 /** Records a DMA error, an ADC FIFO overflow or a segment CPU 0 has not taken by the time the next

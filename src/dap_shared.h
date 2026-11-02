@@ -235,6 +235,9 @@ typedef struct {
     volatile uint32_t swo_segments;
     /** Set by CPU 0's DMA interrupt when SWO's channel failed, which it clears; taken by CPU 1. */
     volatile uint8_t swo_dma_error;
+    /** Set by CPU 0's DMA interrupt, before it clears the flags, when it finds SWO's count lost
+     *  (dma_ring_take); CPU 1 restarts the ring and clears it. */
+    volatile uint8_t swo_lost;
     /** Energy ring segments completed and its DMA error, maintained by CPU 0 for CPU 1. */
     volatile uint32_t energy_segments;
     /** Odd while CPU 0 clears an energy completion, integrates it and publishes its count. */

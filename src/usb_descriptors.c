@@ -330,10 +330,10 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
         if (request->wValue == DAP_SHARED_SWO_STATUS) {
             // Words: the segment count, DMA0's CTRL, ENABLESET, ACTIVE, BUSY, INTA and ERRINT, channel
             // 8's CFG, CTLSTAT and XFERCFG, Flexcomm 3's PSELID, the USART's CFG, STAT, FIFOCFG and
-            // FIFOSTAT, then P0_3's IOCON word: what tools/dap.py core1 --swo prints. A peripheral
-            // whose clock is off reads as zeros rather than being touched.
-            static uint32_t swo[16];
-            for (uint32_t i = 0U; i < 16U; i++) {
+            // FIFOSTAT, P0_3's IOCON word, then DMA0's INTB and swo_lost: what tools/dap.py core1
+            // --swo prints. A peripheral whose clock is off reads as zeros rather than being touched.
+            static uint32_t swo[18];
+            for (uint32_t i = 0U; i < 18U; i++) {
                 swo[i] = 0U;
             }
             swo[0] = dap_shared.swo_segments;
@@ -347,6 +347,7 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
                 swo[7] = DMA0->CHANNEL[SWO_DMA_CHANNEL].CFG;
                 swo[8] = DMA0->CHANNEL[SWO_DMA_CHANNEL].CTLSTAT;
                 swo[9] = DMA0->CHANNEL[SWO_DMA_CHANNEL].XFERCFG;
+                swo[16] = DMA0->COMMON[0].INTB;
             }
             if ((SYSCON->AHBCLKCTRL.AHBCLKCTRL1 & SYSCON_AHBCLKCTRL1_FC3_MASK) != 0U) {
                 swo[10] = FLEXCOMM3->PSELID;
@@ -356,6 +357,7 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
                 swo[14] = USART3->FIFOSTAT;
             }
             swo[15] = IOCON->PIO[0][3];
+            swo[17] = dap_shared.swo_lost;
             return tud_control_xfer(rhport, request, swo, (uint16_t)TU_MIN(sizeof(swo), request->wLength));
         }
         // A snapshot, so the reply is one consistent read of what CPU 1 last wrote.

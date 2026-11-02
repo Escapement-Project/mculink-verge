@@ -159,10 +159,12 @@ class Probe:
 
     def swo_status(self) -> dict[str, int]:
         """SWO capture's DMA and USART registers as CPU 0 reads them (DAP_SHARED_SWO_STATUS)."""
-        raw = bytes(self.device.ctrl_transfer(0xC0, USB_CORE1_STATUS_REQUEST, 2, 0, 64, timeout=1000))
+        raw = bytes(self.device.ctrl_transfer(0xC0, USB_CORE1_STATUS_REQUEST, 2, 0, 72, timeout=1000))
         names = ("segments", "dma_ctrl", "enableset", "active", "busy", "inta", "errint", "cfg", "ctlstat",
-                 "xfercfg", "pselid", "usart_cfg", "usart_stat", "fifocfg", "fifostat", "iocon_p0_3")
-        return dict(zip(names, struct.unpack("<16I", raw)))
+                 "xfercfg", "pselid", "usart_cfg", "usart_stat", "fifocfg", "fifostat", "iocon_p0_3", "intb",
+                 "lost")
+        # Firmware before INTB and swo_lost answers 16 words.
+        return dict(zip(names, struct.unpack(f"<{len(raw) // 4}I", raw[:len(raw) // 4 * 4])))
 
     def core1_status(self) -> dict[str, int]:
         """CPU 1's progress and last fault, answered by CPU 0 however CPU 1 is doing."""

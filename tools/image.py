@@ -823,11 +823,12 @@ def check_energy_control(c: Checker, elf0: str, elf1: str, slots: int) -> None:
 
 
 def check_console_recovery(c: Checker, elf: str, slots: int) -> None:
-    from vcom_checks import check_dma, check_line
+    from vcom_checks import check_dma, check_line, check_ring_flags
 
-    offsets = shared_offsets(slots, "dma_table", "swo_segments", small_enums=short_enums(elf))
+    offsets = shared_offsets(slots, "dma_table", "swo_segments", "swo_lost", small_enums=short_enums(elf))
     check_dma(c, elf, symbols_with_size(elf), offsets)
     check_line(c, elf, symbols_with_size(elf))
+    check_ring_flags(c, elf, symbols_with_size(elf), offsets)
 
 
 def check_hid_padding(c: Checker, elf: str, slots: int) -> None:
@@ -2288,10 +2289,14 @@ def check_console_dma(c: Checker, probe, name: str, count: int, table: int) -> N
         c.check(same(word(entry_rx + 4), usart + USART_FIFORD) and word(entry_rx + 8) == ring + 1023,
                 f"{name} board: console {i}'s receive entry does not run from its FIFO into its ring")
         link, ends = word(entry_rx + 12), []
-        for _ in range(VCOM_RX_RING_BYTES // 1024):
+        segments = VCOM_RX_RING_BYTES // 1024
+        for k in range(1, segments + 1):
             ends.append(word(link + 8))
-            c.check(word(link) == DMA_XFERCFG_RX & ~0x4 and same(word(link + 4), usart + USART_FIFORD),
-                    f"{name} board: console {i}'s ring descriptor at {link:#x} is not a reloading segment")
+            # Descriptor k raises INTA (bit 4) when k is even and INTB (bit 5) when odd (src/dma_ring.h).
+            flag = 0x10 if k % segments % 2 == 0 else 0x20
+            c.check(word(link) == (DMA_XFERCFG_RX & ~(0x4 | 0x10)) | flag and same(word(link + 4), usart + USART_FIFORD),
+                    f"{name} board: console {i}'s ring descriptor at {link:#x} is not a reloading segment"
+                    f" raising {'INTA' if flag == 0x10 else 'INTB'}")
             link = word(link + 12)
         c.check(link == word(entry_rx + 12) and ends == [ring + 1024 * (k + 2) - 1 for k in range(len(ends) - 1)] + [ring + 1023],
                 f"{name} board: console {i}'s ring descriptors do not fill its ring in order and come round")
@@ -2452,9 +2457,11 @@ def main() -> int:
     check_connect_on_capture_board(c, args.core1, slots)
     if swo:
         check_swo_baudrate(c, args.config, 96_000_000, args.core_clock_mhz * 1_000_000)
-        from swo_checks import check_copy
-        offset = shared_offsets(slots, "swo_ring", small_enums=short_enums(args.core1))["swo_ring"]
-        check_copy(c, args.core1, offset)
+        from swo_checks import check_copy, check_restart
+        offsets = shared_offsets(slots, "swo_ring", "swo_dma", "swo_segments", "swo_lost",
+                                 small_enums=short_enums(args.core1))
+        check_copy(c, args.core1, offsets["swo_ring"])
+        check_restart(c, args.core1, offsets)
     check_info(c, args.core1, args.packet_size, args.packet_count, swo)
     for image in (args.elf, args.core1):
         check_serial(c, image, bytes(range(1, 17)), args.prefix)

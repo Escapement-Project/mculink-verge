@@ -102,6 +102,175 @@ static void test_written_never_long(void) {
     printf("    %u reads accepted, %u of them short\n", accepted, short_by_a_segment);
 }
 
+static void test_take(void) {
+    for (uint32_t counted = 0U; counted < 4U; counted++) {
+        bool const due_b = (counted & 1U) != 0U;
+        assert(dma_ring_take(counted, false, false) == DMA_RING_NONE);
+        assert(dma_ring_take(counted, !due_b, due_b) == DMA_RING_ONE);
+        assert(dma_ring_take(counted, due_b, !due_b) == DMA_RING_LOST);
+        assert(dma_ring_take(counted, true, true) == DMA_RING_LOST);
+    }
+    assert(dma_ring_take(UINT32_MAX, false, true) == DMA_RING_ONE);
+    assert(!dma_ring_flag_b(0U) && dma_ring_flag_b(1U) && !dma_ring_flag_b(2U));
+}
+
+/** The DMA raising alternating flags, CPU 0's interrupt and a reader's dma0_ring_written, at
+ *  random, with the interrupt now and then held off for up to three segments. A reading the
+ *  reader accepts is never ahead of the writer and at most a segment behind it. A count that goes
+ *  wrong is always reported lost, by the interrupt or the reader, and only a segment completing
+ *  while the one before still had its flag up is: then the ring starts again. */
+struct ring_model {
+    uint32_t bytes;      // written since the ring started: the truth
+    uint32_t left;
+    uint32_t completed;  // segments completed since the ring started
+    uint32_t first;      // CPU 0's count when the ring started
+    bool a;              // INTA
+    bool b;              // INTB
+    uint32_t segments;   // CPU 0's count
+    bool lost;           // dap_shared.swo_lost; a console's `failed`
+    int isr;             // 0 idle; 1 has read INTA; 2 has read INTB and decided; 3 has cleared
+    bool took_a;
+    bool took_b;
+    dma_ring_take_t take;
+    uint32_t stall;      // bytes still to come before the interrupt may run
+    bool late;           // both flags have been up since the ring started
+};
+
+static void ring_model_start(struct ring_model* m) {
+    m->bytes = 0U;
+    m->left = DMA_RING_SEGMENT_BYTES;
+    m->completed = 0U;
+    m->first = m->segments;
+    m->a = false;
+    m->b = false;
+    m->lost = false;
+    m->stall = 0U;
+    m->late = false;
+}
+
+static void ring_model_isr(struct ring_model* m) {
+    switch (m->isr) {
+        case 0:
+            if ((m->stall == 0U) && (m->a || m->b)) {
+                m->took_a = m->a;
+                m->isr = 1;
+            }
+            break;
+        case 1:
+            m->took_b = m->b;
+            m->take = dma_ring_take(m->segments, m->took_a, m->took_b);
+            if (m->take == DMA_RING_LOST) {
+                m->lost = true;  // before the flags clear, as src/main.c does
+            }
+            m->isr = 2;
+            break;
+        case 2:
+            m->a = m->a && !m->took_a;
+            m->b = m->b && !m->took_b;
+            m->isr = 3;
+            break;
+        default:
+            if (m->take == DMA_RING_ONE) {
+                m->segments++;
+            }
+            m->isr = 0;
+            break;
+    }
+    // With nothing pending, the count is right or reported lost.
+    assert((m->isr != 0) || m->a || m->b || m->lost || ((m->segments - m->first) == m->completed));
+}
+
+static void ring_model_step(struct ring_model* m) {
+    if ((next_random() % 3U) != 0U) {
+        ring_model_isr(m);
+        return;
+    }
+    m->bytes++;
+    m->left--;
+    if (m->stall != 0U) {
+        m->stall--;
+    }
+    if (m->left == 0U) {
+        m->left = DMA_RING_SEGMENT_BYTES;
+        if (dma_ring_flag_b(m->first + m->completed)) {
+            m->b = true;
+        } else {
+            m->a = true;
+        }
+        // The segment before still has its flag up: the interrupt has missed its deadline.
+        m->late = m->late || (m->a && m->b);
+        m->completed++;
+    }
+    if ((m->isr == 0) && (m->stall == 0U) && (m->a || m->b) && ((next_random() % 64U) == 0U)) {
+        m->stall = next_random() % (3U * DMA_RING_SEGMENT_BYTES);
+    }
+}
+
+static void ring_model_steps(struct ring_model* m) {
+    for (uint32_t n = next_random() % 4U; n != 0U; n--) {
+        ring_model_step(m);
+    }
+}
+
+static void test_late_interrupt_found(void) {
+    struct ring_model m = {.segments = 7U};
+    ring_model_start(&m);
+    uint32_t accepted = 0U;
+    uint32_t restarts = 0U;
+    uint32_t found_by_reader = 0U;
+    for (uint32_t trial = 0U; trial < 3000000U; trial++) {
+        // Now and then a reader away long enough for the interrupt to find a late one first.
+        if ((next_random() % 16U) == 0U) {
+            for (uint32_t n = next_random() % 4096U; n != 0U; n--) {
+                ring_model_step(&m);
+            }
+        }
+        uint32_t const before = m.bytes;
+        uint32_t const counted = m.segments;
+        ring_model_steps(&m);
+        bool const due_b = dma_ring_flag_b(counted);
+        bool const pending = due_b ? m.b : m.a;
+        ring_model_steps(&m);
+        uint32_t const xfercfg = xfercfg_left(m.left);
+        uint32_t const at_xfercfg = m.bytes;
+        ring_model_steps(&m);
+        bool const still = due_b ? m.b : m.a;
+        ring_model_steps(&m);
+        bool const overtaken = due_b ? m.a : m.b;
+        ring_model_steps(&m);
+        bool const same = (counted == m.segments);
+        ring_model_steps(&m);
+        bool const lost = m.lost;
+        if (!((pending == still) && same)) {
+            continue;
+        }
+        if (overtaken || lost) {
+            assert(m.late);
+            found_by_reader += (overtaken && !lost) ? 1U : 0U;
+            // The ring starts again once the interrupt is out of the way.
+            while (m.isr != 0) {
+                ring_model_isr(&m);
+            }
+            ring_model_start(&m);
+            restarts++;
+            continue;
+        }
+        uint32_t const got = dma_ring_written(counted, pending, xfercfg) - (m.first * DMA_RING_SEGMENT_BYTES);
+        assert((int32_t)(at_xfercfg - got) >= 0);
+        assert((int32_t)(got - (before - DMA_RING_SEGMENT_BYTES)) >= 0);
+        accepted++;
+    }
+    // Run the interrupt out: a count gone wrong has to be found.
+    m.stall = 0U;
+    for (uint32_t i = 0U; i < 8U; i++) {
+        ring_model_isr(&m);
+    }
+    assert(m.lost || ((m.segments - m.first) == m.completed));
+    assert(accepted > 1000000U && restarts > 100U && found_by_reader > 10U && (restarts - found_by_reader) > 10U);
+    printf("    late interrupts: %u reads accepted, %u restarts, %u found by the reader first\n", accepted,
+           restarts, found_by_reader);
+}
+
 static void test_unread_and_overrun(void) {
     assert(swo_unread(100U, 40U) == 60U);
     assert(swo_unread(40U, 100U) == 0U);  // the writer read short of where the reader is
@@ -412,6 +581,8 @@ static void test_uart_clock(void) {
 int main(void) {
     test_written_fixed_points();
     test_written_never_long();
+    test_take();
+    test_late_interrupt_found();
     test_unread_and_overrun();
     test_copy_wraps();
     test_reader_keeps_up_and_recovers(SWO_RING_BYTES);

@@ -87,10 +87,14 @@ static_assert(VCOM_RX_SEGMENTS >= 3U, "dma_ring_resync needs three segments");
 #define VCOM_TX_BYTES CFG_TUD_CDC_RX_BUFSIZE
 static_assert(VCOM_TX_BYTES <= DMA_RING_SEGMENT_BYTES, "a send is one descriptor");
 
-#define VCOM_RX_XFERCFG                                                                             \
+static_assert((VCOM_RX_SEGMENTS % 2U) == 0U, "each descriptor raises the same flag every lap");
+
+/** Receive segment `segment` of the ring's count, with its flag (src/dma_ring.h). */
+#define VCOM_RX_XFERCFG(segment)                                                                    \
     (DMA_CHANNEL_XFERCFG_CFGVALID_MASK | DMA_CHANNEL_XFERCFG_RELOAD_MASK |                          \
-     DMA_CHANNEL_XFERCFG_SETINTA_MASK | DMA_CHANNEL_XFERCFG_WIDTH(0U) | DMA_CHANNEL_XFERCFG_SRCINC(0U) | \
-     DMA_CHANNEL_XFERCFG_DSTINC(1U) | DMA_CHANNEL_XFERCFG_XFERCOUNT(DMA_RING_SEGMENT_BYTES - 1U))
+     (dma_ring_flag_b(segment) ? DMA_CHANNEL_XFERCFG_SETINTB_MASK : DMA_CHANNEL_XFERCFG_SETINTA_MASK) | \
+     DMA_CHANNEL_XFERCFG_WIDTH(0U) | DMA_CHANNEL_XFERCFG_SRCINC(0U) | DMA_CHANNEL_XFERCFG_DSTINC(1U) |  \
+     DMA_CHANNEL_XFERCFG_XFERCOUNT(DMA_RING_SEGMENT_BYTES - 1U))
 #define VCOM_TX_XFERCFG(count)                                                                         \
     (DMA_CHANNEL_XFERCFG_CFGVALID_MASK | DMA_CHANNEL_XFERCFG_SETINTA_MASK | DMA_CHANNEL_XFERCFG_WIDTH(0U) | \
      DMA_CHANNEL_XFERCFG_SRCINC(1U) | DMA_CHANNEL_XFERCFG_DSTINC(0U) | DMA_CHANNEL_XFERCFG_XFERCOUNT((count) - 1U))
@@ -155,7 +159,7 @@ static void rx_start(uint32_t instance) {
     volatile dma_descriptor_t* const ring = vcom_rx_descriptors[instance];
     uint32_t const source = (uint32_t)&vcom[instance].usart->FIFORD;
     for (uint32_t k = 0U; k < VCOM_RX_SEGMENTS; k++) {
-        ring[k].xfercfg = VCOM_RX_XFERCFG;
+        ring[k].xfercfg = VCOM_RX_XFERCFG(k);
         ring[k].source_end = source;
         ring[k].destination_end = (uint32_t)&vcom_rx_ring[instance][((k + 1U) * DMA_RING_SEGMENT_BYTES) - 1U];
         ring[k].link = (uint32_t)&ring[(k + 1U) % VCOM_RX_SEGMENTS];
@@ -167,6 +171,7 @@ static void rx_start(uint32_t instance) {
     entry->destination_end = ring[0].destination_end;
     entry->link = ring[0].link;
     DMA0->COMMON[0].INTA = mask;
+    DMA0->COMMON[0].INTB = mask;
     vcom_rx[instance].segments = 0U;
     vcom_rx[instance].read = 0U;
     vcom_rx[instance].failed = false;
@@ -174,7 +179,7 @@ static void rx_start(uint32_t instance) {
     DMA0->CHANNEL[channel].CFG = DMA_CHANNEL_CFG_PERIPHREQEN_MASK;
     DMA0->COMMON[0].INTENSET = mask;
     DMA0->COMMON[0].ENABLESET = mask;
-    DMA0->CHANNEL[channel].XFERCFG = VCOM_RX_XFERCFG | DMA_CHANNEL_XFERCFG_SWTRIG_MASK;
+    DMA0->CHANNEL[channel].XFERCFG = VCOM_RX_XFERCFG(0U) | DMA_CHANNEL_XFERCFG_SWTRIG_MASK;
 }
 
 static void tx_start(uint32_t instance) {
@@ -280,9 +285,9 @@ void tud_cdc_line_coding_cb(uint8_t itf, cdc_line_coding_t const* coding) {
     }
 }
 
-/** Where console `instance`'s receive ring has been written to. */
-__attribute__((always_inline)) static inline uint32_t rx_written(uint32_t instance) {
-    return dma0_ring_written(&vcom_rx[instance].segments, vcom_rx[instance].channel);
+/** Where console `instance`'s receive ring has been written to, unless `*lost`. */
+__attribute__((always_inline)) static inline uint32_t rx_written(uint32_t instance, bool* lost) {
+    return dma0_ring_written(&vcom_rx[instance].segments, vcom_rx[instance].channel, lost);
 }
 
 /** USB to target: one send at a time, of everything TinyUSB holds, and a new line coding between
@@ -317,9 +322,19 @@ __attribute__((section(".ramfunc"))) static void send(uint32_t instance) {
  *
  * Nothing checks the ring again after the copy, as SWO_Data does. This core counts the
  * completions itself, so the position is exact and the copy starts a whole segment clear of the
- * writer: a segment takes 0.53 ms at 19.2 Mbaud, and the copy is at most TinyUSB's 512 bytes. */
+ * writer: a segment takes 0.53 ms at 19.2 Mbaud, and the copy is at most TinyUSB's 512 bytes.
+ * Exact unless the count is lost: the next segment's flag says so before the interrupt runs, and
+ * `failed` after it. The interrupt sets `failed` well after it clears the flags, but it runs whole
+ * between two instructions of this loop. */
 __attribute__((section(".ramfunc"))) static void receive(uint32_t instance) {
-    uint32_t const at = rx_written(instance);
+    bool lost = false;
+    uint32_t const at = rx_written(instance, &lost);
+    if (lost) {
+        vcom_dma_error(1UL << vcom_rx[instance].channel);
+    }
+    if (lost || vcom_rx[instance].failed) {
+        return;
+    }
     uint32_t read = vcom_rx[instance].read;
     if (dma_ring_overrun(at, read, VCOM_RX_RING_BYTES)) {
         read = dma_ring_resync(at, VCOM_RX_RING_BYTES);
@@ -369,22 +384,40 @@ __attribute__((section(".ramfunc"), noinline)) bool vcom_ready(void) {
             return true;
         }
         // The position is exact here, so a writer anywhere else is bytes or an overrun to resync.
-        if ((!vcom_tx[i].busy && (vcom_tx[i].recode || (tud_cdc_n_available(i) > 0U))) ||
-            ((rx_written(i) != vcom_rx[i].read) && (tud_cdc_n_write_available(i) > 0U))) {
+        // A lost one is the ring to restart.
+        bool lost = false;
+        uint32_t const at = rx_written(i, &lost);
+        if (lost || (!vcom_tx[i].busy && (vcom_tx[i].recode || (tud_cdc_n_available(i) > 0U))) ||
+            ((at != vcom_rx[i].read) && (tud_cdc_n_write_available(i) > 0U))) {
             return true;
         }
     }
     return false;
 }
 
-__attribute__((section(".ramfunc"))) void vcom_dma_done(uint32_t done) {
+__attribute__((section(".ramfunc"))) void vcom_dma_done(uint32_t done, uint32_t done_b) {
+    uint32_t lost = 0U;
     for (uint32_t i = 0U; i < vcom_count; i++) {
-        if ((done & (1UL << vcom_rx[i].channel)) != 0U && !vcom_rx[i].failed) {
-            vcom_rx[i].segments++;
+        uint32_t const rx_mask = 1UL << vcom_rx[i].channel;
+        if (!vcom_rx[i].failed) {
+            switch (dma_ring_take(vcom_rx[i].segments, (done & rx_mask) != 0U, (done_b & rx_mask) != 0U)) {
+                case DMA_RING_ONE:
+                    vcom_rx[i].segments++;
+                    break;
+                case DMA_RING_LOST:
+                    lost |= rx_mask;
+                    break;
+                default:
+                    break;
+            }
         }
         if ((done & (1UL << vcom_tx[i].channel)) != 0U && !vcom_tx[i].failed) {
             vcom_tx[i].busy = false;
         }
+    }
+    // A ring whose count is lost starts again, as a failed one does.
+    if (lost != 0U) {
+        vcom_dma_error(lost);
     }
 }
 

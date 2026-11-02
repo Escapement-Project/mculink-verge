@@ -2,7 +2,9 @@
 
 import struct
 
-from energy_checks import Dma, SWO_MASK, machine
+import itertools
+
+from energy_checks import Dma, ENERGY_MASK, SWO_MASK, machine
 from cycles import RETURN_MAGIC, SCRATCH, u32
 from unicorn import UC_HOOK_CODE
 from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2
@@ -200,3 +202,170 @@ def check_line(c, elf, symbols):
                     "console could not return to its original coding")
             probe.uc.hook_del(hook)
     c.note("console line validation, TX drain, RX DMA quiescence, FIFO/ring preservation and renumbering")
+
+
+INTA, INTB, ENABLESET, ENABLECLR, INTENCLR, ABORT = 0x58, 0x60, 0x20, 0x28, 0x50, 0x78
+SETINTA, SETINTB, SWTRIG = 1 << 4, 1 << 5, 1 << 2
+
+
+class WatchedDma(Dma):
+    """Dma recording dap_shared.swo_lost as each write that clears a SWO flag lands."""
+
+    def __init__(self, probe, lost_at):
+        super().__init__(probe)
+        self.probe, self.lost_at, self.lost_at_clear = probe, lost_at, []
+
+    def write(self, uc, offset, size, value, data):
+        if offset in (INTA, INTB) and value & SWO_MASK:
+            self.lost_at_clear.append(self.probe.uc.mem_read(self.lost_at, 1)[0])
+        super().write(uc, offset, size, value, data)
+
+
+def check_ring_flags(c, elf, symbols, offsets):
+    """CPU 0's DMA interrupt counts each ring's segments by alternating flags (src/dma_ring.h):
+    the flag due counts, the other or both mark the count lost. SWO's is reported in
+    dap_shared.swo_lost before the flags clear; a console's ring stops as a failed one does, and
+    vcom_task starts it again with both flags clear and its descriptors alternating. A console
+    reader that finds the next segment's flag up stops the ring itself and delivers nothing."""
+    probe = machine(elf, symbols)
+    base = probe.sym["dap_shared"]
+    dma = WatchedDma(probe, base + offsets["swo_lost"])
+
+    def word(address):
+        return int.from_bytes(probe.uc.mem_read(address, 4), "little")
+
+    def irq(a, b):
+        dma.set(INTA, a)
+        dma.set(INTB, b)
+        dma.lost_at_clear.clear()
+        probe.call("DMA0_IRQHandler")
+
+    # Energy capture's segment is told only its own channel's flags, whatever other ring
+    # completed alongside it.
+    took = []
+
+    def integrate(uc, at, size, data):
+        took.append((uc.reg_read(UC_ARM_REG_R0) & 0xFF, uc.reg_read(UC_ARM_REG_R1) & 0xFF))
+
+    hook = probe.uc.hook_add(UC_HOOK_CODE, integrate, begin=probe.sym["energy_integrate_segment"],
+                             end=probe.sym["energy_integrate_segment"])
+    probe.uc.ctl_flush_tb()
+    for other in (SWO_MASK, 1 << 4):
+        for energy_flag, other_flag in itertools.product((INTA, INTB), repeat=2):
+            took.clear()
+            irq(ENERGY_MASK * (energy_flag == INTA) | other * (other_flag == INTA),
+                ENERGY_MASK * (energy_flag == INTB) | other * (other_flag == INTB))
+            c.check(took == [(energy_flag == INTA, energy_flag == INTB)],
+                    f"energy segment on {'INTA' if energy_flag == INTA else 'INTB'} beside channel"
+                    f" {other.bit_length() - 1} on {'INTA' if other_flag == INTA else 'INTB'}: integration took {took}")
+    probe.uc.hook_del(hook)
+    probe.uc.ctl_flush_tb()
+
+    segments, lost = base + offsets["swo_segments"], base + offsets["swo_lost"]
+    for counted in (0, 1, 6, 0xFFFFFFFF):
+        due, other = (INTB, INTA) if counted & 1 else (INTA, INTB)
+        for took, name in (({due}, "due"), ({other}, "not due"), ({INTA, INTB}, "both")):
+            probe.uc.mem_write(segments, u32(counted))
+            probe.uc.mem_write(lost, b"\x00")
+            irq(SWO_MASK if INTA in took else 0, SWO_MASK if INTB in took else 0)
+            ok = name == "due"
+            c.check(word(segments) == (counted + ok) & 0xFFFFFFFF and probe.uc.mem_read(lost, 1)[0] == (not ok),
+                    f"SWO count {counted}, flag {name}: count {word(segments)}, lost {probe.uc.mem_read(lost, 1)[0]}")
+            c.check(dma.get(INTA) & SWO_MASK == 0 and dma.get(INTB) & SWO_MASK == 0,
+                    f"SWO count {counted}, flag {name}: a flag taken was left up")
+            c.check(all(seen == (not ok) for seen in dma.lost_at_clear) and dma.lost_at_clear,
+                    f"SWO count {counted}, flag {name}: swo_lost {dma.lost_at_clear} as the flags cleared")
+
+    # A console: channel 4 receives, 5 sends.
+    rx, tx = probe.sym["vcom_rx"], probe.sym["vcom_tx"]
+    probe.uc.mem_write(probe.sym["vcom_count"], u32(1))
+    probe.uc.mem_write(probe.sym["vcom"], struct.pack("<2I", 0x40086000, 96000000))
+    probe.uc.mem_write(tx, u32(5) + bytes(16))
+    mask = 1 << 4
+    usb = {probe.sym[n] for n in ("tud_cdc_n_available", "tud_cdc_n_read", "tud_cdc_n_write_available",
+                                  "tud_cdc_n_write", "tud_cdc_n_write_flush")}
+    written = []
+    preempt = []
+
+    def stub(uc, at, size, data):
+        if at in usb:
+            if at == probe.sym["tud_cdc_n_write"]:
+                written.append(uc.reg_read(UC_ARM_REG_R2))
+            # send() asks between vcom_task's recover() and receive()'s read: the interrupt runs
+            # there and finds the count lost, which leaves the flags clear and the count stale.
+            if at == probe.sym["tud_cdc_n_available"] and preempt:
+                preempt.clear()
+                uc.mem_write(rx + 12, b"\x01")
+                dma.set(ENABLESET, dma.get(ENABLESET) & ~mask)
+                dma.set(INTA, 0)
+                dma.set(INTB, 0)
+            room = at == probe.sym["tud_cdc_n_write_available"]
+            uc.reg_write(UC_ARM_REG_R0, 512 if room else 0)
+            uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+
+    hook = probe.uc.hook_add(UC_HOOK_CODE, stub)
+    probe.uc.ctl_flush_tb()
+
+    def console(counted, read=0):
+        probe.uc.mem_write(rx, struct.pack("<3IB3x", 4, read, counted, 0))
+        dma.set(ENABLESET, mask)
+
+    def failed():
+        return probe.uc.mem_read(rx + 12, 1)[0]
+
+    for counted in (0, 1, 2):
+        due, other = (INTB, INTA) if counted & 1 else (INTA, INTB)
+        for took, name in (({due}, "due"), ({other}, "not due"), ({INTA, INTB}, "both")):
+            console(counted)
+            irq(mask if INTA in took else 0, mask if INTB in took else 0)
+            ok = name == "due"
+            c.check(word(rx + 8) == counted + ok and failed() == (not ok),
+                    f"console count {counted}, flag {name}: count {word(rx + 8)}, failed {failed()}")
+            c.check(ok or dma.get(ENABLESET) & mask == 0, f"console count {counted}, flag {name}: ring left running")
+            if not ok:
+                c.check(probe.call("vcom_ready") == 1, f"console count {counted}, flag {name}: no wake to restart")
+                before = len(dma.writes)
+                probe.call("vcom_task")
+                after = dma.writes[before:]
+                c.check((ABORT, mask) in after and any(o == INTA and v & mask for o, v in after) and
+                        any(o == INTB and v & mask for o, v in after),
+                        f"console count {counted}, flag {name}: restart did not abort and clear both flags")
+                c.check(word(rx + 8) == 0 and word(rx + 4) == 0 and failed() == 0,
+                        f"console count {counted}, flag {name}: restart kept the old count or position")
+                started = [v for o, v in after if o == 0x408 + 4 * 16]
+                ring = probe.sym["vcom_rx_descriptors"]
+                flags = [word(ring + 16 * k) & (SETINTA | SETINTB) for k in range(4)]
+                c.check(started and started[-1] & (SWTRIG | SETINTA | SETINTB) == SWTRIG | SETINTA and
+                        flags == [SETINTA, SETINTB, SETINTA, SETINTB],
+                        f"console count {counted}, flag {name}: restarted ring's flags {started} {flags}")
+
+    # A reader that finds the next segment's flag up before the interrupt runs. The reader is where
+    # the position reads, so only the lost count can wake the loop.
+    for counted in (0, 1):
+        due, other = (INTB, INTA) if counted & 1 else (INTA, INTB)
+        for pending in (False, True):
+            console(counted, (counted + pending) * 1024)
+            dma.set(due, mask if pending else 0)
+            dma.set(other, mask)
+            dma.set(0x408 + 4 * 16, 1023 << 16)
+            c.check(probe.call("vcom_ready") == 1, f"console reader, count {counted}: overtaken ring did not wake")
+            written.clear()
+            probe.call("vcom_task")
+            c.check(not written and failed() == 1 and dma.get(ENABLESET) & mask == 0,
+                    f"console reader, count {counted}, pending {pending}: overtaken ring delivered {written}"
+                    f" or kept running")
+            dma.set(INTA, 0)
+            dma.set(INTB, 0)
+
+    # The interrupt finds the count lost after recover() and before the read: the stale position
+    # is not delivered.
+    console(2)
+    dma.set(0x408 + 4 * 16, (1023 - 300) << 16)
+    preempt.append(True)
+    written.clear()
+    probe.call("vcom_task")
+    c.check(not preempt and not written and failed() == 1,
+            f"console reader after the interrupt found the count lost: delivered {written}")
+    probe.uc.hook_del(hook)
+    c.note("ring flags: SWO and console counts by alternating flags, lost reported before the clear, console"
+           " restart, an overtaken console reader and one the interrupt overtook")
