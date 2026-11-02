@@ -56,7 +56,7 @@ uint32_t target_sense_full_scale_mv(void) {
  * LM4040 3.0 V reference instead (schematic sheet 2), which PRO.md's energy section builds on.
  */
 static target_sense_status_t adc_init(void) {
-    CLOCK_SetClkDiv(kCLOCK_DivAdcAsyncClk, 8U, true);
+    CLOCK_SetClkDiv(kCLOCK_DivAdcAsyncClk, TARGET_SENSE_ADC_DIVIDER, true);
     CLOCK_AttachClk(kFRO_HF_to_ADC_CLK);
     POWER_DisablePD(kPDRUNCFG_PD_LDOGPADC);
 
@@ -138,6 +138,15 @@ static lpadc_hardware_average_mode_t monitor_average_mode(uint32_t rate_hz) {
         return kLPADC_HardwareAverageCount4;
     }
     return kLPADC_HardwareAverageCount2;
+}
+
+/** A conversion takes 28 ADC clocks at ADCK7, so N averages take 28 N; the range's is the rest. */
+uint32_t target_sense_monitor_window_adck(uint32_t rate_hz) {
+    return 28U << (uint32_t)monitor_average_mode(rate_hz);
+}
+
+uint32_t target_sense_monitor_pair_adck(uint32_t rate_hz) {
+    return 27U + target_sense_monitor_window_adck(rate_hz);
 }
 
 /** The capture's pair as command 1, chained to `next`: the voltage on CH0A (PIO0_23/ADC0_0) and the

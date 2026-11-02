@@ -419,6 +419,10 @@ def check_aux_stream(c, elf0, elf1, symbols0, symbols1, fields, layout):
         field(usb, "setting", 2, 1)
         field(usb, "full_scale_mv", 3000)
         field(usb, "previous_low", 0, 1)
+        field(usb, "switch_weight_q16", 9786)
+        field(usb, "rearm_between_pairs", 1, 1)
+        field(usb, "previous_known", 1, 1)
+        field(usb, "previous_na", 6_700_000)
         field(usb, "stream.clock_hz", 96_000_000)
         field(usb, "stream.period", 96_000)
         field(usb, "stream.next_sequence", 42)
@@ -472,8 +476,8 @@ def check_aux_stream(c, elf0, elf1, symbols0, symbols1, fields, layout):
     publish(usb, b"\xa0" + bytes(15))
     arrive(usb, b"\x90\x0a\x00")
     sent = drain(usb)
-    c.check(len(sent) == 2 and sent[0] == b"\x90\x00\x00" and len(sent[1]) == 92
-            and sent[1][:2] == b"\xa1\x02" and sent[1][68:] == token,
+    c.check(len(sent) == 2 and sent[0] == b"\x90\x00\x00" and len(sent[1]) == 99
+            and sent[1][:2] == b"\xa1\x02" and sent[1][68:92] == token,
             f"protected attach boundary: {[m.hex() for m in sent]}")
     for candidate, result in ((stale, 8), (bytes(24), 8), (token, 0), (token, 0)):
         before = bytes(usb.cpu0.uc.mem_read(usb.energy, symbols0["energy_integration"][1]))
@@ -540,12 +544,15 @@ def check_aux_stream(c, elf0, elf1, symbols0, symbols1, fields, layout):
     capture(usb)
     arrive(usb, b"\x90\x06\x00")
     sent = drain(usb)
-    c.check(len(sent) == 2 and sent[0] == b"\x90\x00\x00" and len(sent[1]) == 68 and sent[1][:2] == b"\xa1\x01",
+    c.check(len(sent) == 2 and sent[0] == b"\x90\x00\x00" and len(sent[1]) == 75 and sent[1][:2] == b"\xa1\x01",
             f"mode 6 sent {[m[:8].hex() for m in sent]}")
-    if len(sent) == 2 and len(sent[1]) == 68:
+    if len(sent) == 2 and len(sent[1]) == 75:
         h = sent[1]
         c.check(int.from_bytes(h[2:6], "little") == 1000 and h[6] == 2 and int.from_bytes(h[7:9], "little") == 3000
                 and int.from_bytes(h[9:13], "little") == 42 and h[13] == 0, f"mode 6 header {h[:14].hex()}")
+        # Step 5's fields, with the current of the last pair integrated.
+        c.check(int.from_bytes(h[68:70], "little") == 9786 and h[70] == 3 and int.from_bytes(h[71:75], "little") == 6_700_000,
+                f"mode 6 header's step 5 fields {h[68:].hex()}")
     publish(usb, b"\xa0\x00" + bytes(14))
     c.check(drain(usb) == [b"\xa0\x00" + bytes(14)], "pairs after the header were not sent")
     # Mode 7: the reply, then the end, with the last pair integrated.

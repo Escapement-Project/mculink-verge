@@ -269,8 +269,24 @@ __attribute__((section(".ramfunc"))) static void usb_transport_task(void) {
     send_head();
 }
 
+/** Whether the converter has finished a pair and the next trigger is far enough off for the switch
+ *  to settle (energy_monitor.c, switch_timing), by the conversion timer alone: CTIMER2 is on port
+ *  7, which no timed window uses, and ADC0 shares port 10 with CPU 1's wire (BUSES.md). CTIMER2
+ *  toggles its trigger output every `trigger_ticks`, and the converter starts on its rise. */
+__attribute__((section(".ramfunc"))) static bool energy_between_pairs(struct energy_integration const* energy) {
+    uint32_t const emr = CTIMER2->EMR;
+    uint32_t const count = CTIMER2->TC;
+    if (CTIMER2->EMR != emr) {
+        return false;
+    }
+    uint32_t const since = ((emr & CTIMER_EMR_EM3_MASK) != 0U) ? (count + 1U) : (energy->trigger_ticks + count + 1U);
+    return (since >= energy->rearm_from_ticks) && (since <= energy->rearm_until_ticks);
+}
+
 /** Re-arm the Pro's low range outside the DMA interrupt, once the integration has seen the high
- *  range's current stay under the low range's limit for a whole segment. */
+ *  range's current stay under the low range's limit for a whole segment. Where the rate leaves
+ *  room, it waits until the converter is between pairs, so the pair after the switch is the low
+ *  range's alone (src/energy_pairs.h); the loop keeps coming back while it waits. */
 __attribute__((section(".ramfunc"), noinline)) static void energy_range_retry_task(void) {
     if ((dap_shared.energy_control_ack & DAP_ENERGY_QUIET_FLAG) != 0U ||
         dap_shared.energy_range_retry_pending == 0U) {
@@ -283,14 +299,23 @@ __attribute__((section(".ramfunc"), noinline)) static void energy_range_retry_ta
         dap_shared.energy_range_retry_active = 0U;
         return;
     }
-    dap_shared.energy_range_retry_pending = 0U;
-    uint32_t const range_pins = GPIO->PIN[0];
-    if (((range_pins & (1UL << 29U)) == 0U) || ((range_pins & (1UL << 30U)) != 0U)) {
+    bool const between = energy_integration.rearm_between_pairs;
+    if (between && !energy_between_pairs(&energy_integration)) {
         dap_shared.energy_range_retry_active = 0U;
         return;
     }
-    // The comparator keeps the reset, so a current back over the threshold keeps the high range.
-    energy_latch_clock();
+    // Nothing may come between the check and the edge, the pin interrupts included.
+    uint32_t const primask = __get_PRIMASK();
+    __disable_irq();
+    if (!between || energy_between_pairs(&energy_integration)) {
+        dap_shared.energy_range_retry_pending = 0U;
+        uint32_t const range_pins = GPIO->PIN[0];
+        // The comparator keeps the reset, so a current back over the threshold keeps the high range.
+        if (((range_pins & (1UL << 29U)) != 0U) && ((range_pins & (1UL << 30U)) == 0U)) {
+            energy_latch_clock();
+        }
+    }
+    __set_PRIMASK(primask);
     dap_shared.energy_range_retry_active = 0U;
 }
 
@@ -388,7 +413,13 @@ __attribute__((section(".ramfunc"))) static bool lab_hammer(void) {
 __attribute__((section(".ramfunc"))) static bool queued_work(void) {
     bool const reply_waiting =
         !response_in_flight && !dap_usb_slot_free(dap_shared.response_len, dap_shared.response_head);
-    return reply_waiting || disconnect_requested || tud_task_event_ready() || aux_has_work() ||
+    // A hold stops the conversion timer for a read-latency measurement: no gap comes until it
+    // ends, so the loop may wait meanwhile, and the next wake tries again.
+    bool const rearm_waiting = (dap_shared.energy_range_retry_pending != 0U) &&
+                               (dap_shared.energy_range_retry_enabled != 0U) &&
+                               ((dap_shared.energy_control_ack & DAP_ENERGY_QUIET_FLAG) == 0U) &&
+                               ((CTIMER2->TCR & CTIMER_TCR_CEN_MASK) != 0U);
+    return reply_waiting || disconnect_requested || tud_task_event_ready() || aux_has_work() || rearm_waiting ||
            dap_shared.energy_control_request != dap_shared.energy_control_ack;
 }
 

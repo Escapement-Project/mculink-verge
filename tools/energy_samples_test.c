@@ -70,8 +70,64 @@ static void test_range_switches(void) {
     assert(total.pairs == 7U);
 }
 
+/** The weighted stand-in at an up-switch: the next pair's current less the previous pair's share;
+ *  with no pair before it, the next pair's. A down-switch between pairs keeps its own. */
+static void test_weighted_switches(void) {
+    static struct energy_integration energy;
+    energy.low_range = (energy_calibration_t){
+        .code = {0U, 65535U}, .current_na = {0U, 30U * 65535U}, .slope_na_per_code_q16 = {30U << 16U}, .count = 2U};
+    energy.high_range = (energy_calibration_t){
+        .code = {0U, 65535U}, .current_na = {0U, 6000U * 65535U}, .slope_na_per_code_q16 = {6000U << 16U}, .count = 2U};
+    energy.scale_q32 = 4194304U;
+    energy.full_scale_mv = 3300U;
+    energy.rearm_below_na = UINT32_MAX;
+    energy.calibrated = true;
+    energy.previous_low = true;
+    energy.switch_weight_q16 = 16384U; // a quarter
+    energy.rearm_between_pairs = true;
+    energy_total_t total = {0};
+    energy_total_t expected = {0};
+
+    // The first pair is high: nothing before it, so the next pair's current.
+    feed_pair(&energy, &total, 30000U, 59000U, false);
+    feed_pair(&energy, &total, 30100U, 400U, false);
+    expect_pair(&expected, 30000U, nanoamps(400U, false));
+    expect_pair(&expected, 30100U, nanoamps(400U, false));
+    // Down between pairs: its own reading, at once.
+    feed_pair(&energy, &total, 31000U, 7000U, true);
+    assert(total.pairs == 3U && !energy.held);
+    expect_pair(&expected, 31000U, nanoamps(7000U, true));
+    feed_pair(&energy, &total, 31500U, 40000U, true);
+    expect_pair(&expected, 31500U, nanoamps(40000U, true));
+    // Up: three quarters of the next pair's current and a quarter of the one before, rounded.
+    feed_pair(&energy, &total, 32000U, 59000U, false);
+    feed_pair(&energy, &total, 33000U, 300U, false);
+    uint64_t const mixed = ((uint64_t)nanoamps(300U, false) * 49152U + (uint64_t)nanoamps(40000U, true) * 16384U + 32768U) >> 16U;
+    expect_pair(&expected, 32000U, (uint32_t)mixed);
+    expect_pair(&expected, 33000U, nanoamps(300U, false));
+    // A pause forgets the pair before: the next up-switch takes the next pair's current.
+    energy_flush_held(&energy, &total);
+    energy.previous_low = true;
+    energy.previous_known = false;
+    feed_pair(&energy, &total, 34000U, 59000U, false);
+    feed_pair(&energy, &total, 35000U, 500U, false);
+    expect_pair(&expected, 34000U, nanoamps(500U, false));
+    expect_pair(&expected, 35000U, nanoamps(500U, false));
+    // Without room between pairs, a down-switch takes the next pair's current again.
+    energy.rearm_between_pairs = false;
+    feed_pair(&energy, &total, 36000U, 3000U, true);
+    feed_pair(&energy, &total, 37000U, 20000U, true);
+    expect_pair(&expected, 36000U, nanoamps(20000U, true));
+    expect_pair(&expected, 37000U, nanoamps(20000U, true));
+    energy_total_fold(&total, energy.scale_q32);
+    assert(total.pairs == 10U && total.pj == expected.pj && total.fraction_q32 == expected.fraction_q32);
+    assert(energy_stand_in_na(UINT32_MAX, UINT32_MAX, 32768U) == UINT32_MAX);
+    assert(energy_stand_in_na(1000U, 0U, 0U) == 1000U);
+}
+
 int main(void) {
     test_range_switches();
+    test_weighted_switches();
     energy_sample_decoder_t decoder = {0};
     for (uint32_t i = 0U; i < 4096U; i++) {
         assert(!energy_sample_feed(&decoder, 0U));

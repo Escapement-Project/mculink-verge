@@ -31,7 +31,8 @@
 #define ENERGY_STREAM_PAIRS_MAX 99U
 #define ENERGY_STREAM_PAIR_BYTES 5U
 #define ENERGY_STREAM_PAIRS_FIXED 16U
-#define ENERGY_STREAM_HEADER_BYTES 68U
+/** Format 1's fields, then step 5's: weight, flags and the current before (HOST-INTERFACE.md). */
+#define ENERGY_STREAM_HEADER_BYTES 75U
 #define ENERGY_STREAM_ID_HEADER_BYTES (ENERGY_STREAM_HEADER_BYTES + ENERGY_IDENTITY_BYTES)
 #define ENERGY_STREAM_END_BYTES 6U
 #define ENERGY_STREAM_HOLDS 8U
@@ -241,6 +242,13 @@ typedef struct {
     uint32_t dio_stamp;
     uint16_t edge_resolution_ns;
     energy_capture_id_t const* capture_id;
+    /** Step 5: the previous pair's share of an up-switch's stand-in in 1/65536, whether a down-switch
+     *  keeps its own reading, and the current through the sense resistor of the pair before the
+     *  first one sent, where there is one (src/energy_pairs.h). */
+    uint32_t switch_weight_q16;
+    bool rearm_between_pairs;
+    bool previous_known;
+    uint32_t previous_na;
 } energy_stream_header_t;
 
 ENERGY_STREAM_INLINE void energy_stream_barrier(void) {
@@ -428,6 +436,9 @@ ENERGY_STREAM_INLINE bool energy_stream_begin(struct energy_stream* stream, ener
             *out++ = header->capture_id->bytes[i];
         }
     }
+    out = energy_stream_u16(out, (uint16_t)header->switch_weight_q16);
+    *out++ = (uint8_t)((header->rearm_between_pairs ? 1U : 0U) | (header->previous_known ? 2U : 0U));
+    out = energy_stream_u32(out, header->previous_known ? header->previous_na : 0U);
     energy_stream_publish(stream, header->capture_id != NULL ? ENERGY_STREAM_ID_HEADER_BYTES : ENERGY_STREAM_HEADER_BYTES);
     // Whatever the pin interrupt recorded before is an earlier stream's.
     stream->edge_entries_read = stream->edge_entries_written;

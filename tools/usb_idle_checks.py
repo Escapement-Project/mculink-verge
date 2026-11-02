@@ -75,3 +75,47 @@ def check_idle(c, elf, symbols, reboot_mode, code_lab=False):
         c.check(state["injected"] and state["drained"], f"idle {wake}: loop did not service work within 4000 instructions ({state})")
         c.check(probe.uc.reg_read(UC_ARM_REG_BASEPRI) == 0, f"idle {wake}: BASEPRI was not restored")
     c.note("CPU 0 idle: USB IRQ completes before masking; pending IRQ, mailbox, VCOM and DIO edges wake the SRAM wait")
+
+
+def check_idle_rearm(c, elf, symbols, offsets):
+    """A re-arm waiting for the gap between pairs keeps CPU 0's loop from waiting while the
+    conversion timer runs, and lets it wait while a hold has the timer stopped (src/main.c)."""
+    ctimer2_tcr = 0x40028004
+    for running in (True, False):
+        probe = machine(elf, symbols)
+        shared = symbols["dap_shared"][0]
+        probe.uc.mem_write(shared + offsets["reboot_mode"], b"\xff")
+        for name in ("usb_pending", "active_mode"):
+            if name in probe.sym:
+                probe.uc.mem_write(probe.sym[name], b"\xff")
+        for name in ("energy_range_retry_pending", "energy_range_retry_enabled"):
+            probe.uc.mem_write(shared + offsets[name], b"\x01")
+        probe.uc.mem_write(ctimer2_tcr, u32(int(running)))
+        state = {"tasks": 0, "waits": 0}
+        stubbed = {probe.sym[name] for name in ("energy_control_task", "energy_range_retry_task", "dio_edges_task",
+                                               "aux_task", "reboot_poll", "tud_task_event_ready", "vcom_ready",
+                                               "dio_edges_waiting", "aux_has_work", "lab_hammer") if name in probe.sym}
+
+        def hook(uc, at, size, data):
+            if at == probe.sym["tud_task_ext"]:
+                state["tasks"] += 1
+                if state["tasks"] == 3:
+                    uc.emu_stop()
+            elif at == probe.sym["wait_for_work"]:
+                state["waits"] += 1
+                uc.emu_stop()
+            elif at not in stubbed:
+                return
+            uc.reg_write(UC_ARM_REG_R0, 0)
+            uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+
+        probe.uc.reg_write(UC_ARM_REG_BASEPRI, 0)
+        probe.uc.hook_add(UC_HOOK_CODE, hook)
+        probe.uc.ctl_flush_tb()
+        probe.call("serve", timeout_insns=4000)
+        if running:
+            c.check(state["waits"] == 0 and state["tasks"] == 3,
+                    f"idle with a re-arm waiting and the timer running: {state}")
+        else:
+            c.check(state["waits"] == 1, f"idle with a re-arm waiting through a hold: {state}")
+    c.note("CPU 0 idle: a re-arm waiting for the gap keeps the loop awake while the conversion timer runs, not through a hold")

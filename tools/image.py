@@ -878,21 +878,23 @@ def check_hid_padding(c: Checker, elf: str, slots: int) -> None:
 
 def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: bool = False) -> None:
     from usb_checks import check_aux, check_aux_stream, check_transport, check_unconfigured
-    from usb_idle_checks import check_idle
+    from usb_idle_checks import check_idle, check_idle_rearm
     from usb_lifecycle import check_sequences
 
     fields = ("transfer_abort", "request", "request_tail", "rx_armed_slot", "next_request_seq", "first_live_seq",
               "response_len", "response_tail", "response_seq", "response_transport", "response_head", "reboot_mode",
-              "board", "jumpers")
+              "board", "jumpers", "energy_range_retry_pending", "energy_range_retry_enabled")
     offsets = shared_offsets(slots, *fields, small_enums=short_enums(elf0))
     check_idle(c, elf0, symbols_with_size(elf0), offsets["reboot_mode"], code_lab)
+    check_idle_rearm(c, elf0, symbols_with_size(elf0), offsets)
     check_unconfigured(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_transport(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_sequences(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_aux(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
     stream_shared = shared_offsets(slots, "energy_integration", "energy_available", "energy_dma_error",
                                    "energy_control_ack", small_enums=short_enums(elf0))
-    stream_layout = shared_offsets(slots, "running", "setting", "full_scale_mv", "previous_low", "low_range",
+    stream_layout = shared_offsets(slots, "running", "setting", "full_scale_mv", "previous_low", "previous_known",
+                                   "previous_na", "switch_weight_q16", "rearm_between_pairs", "low_range",
                                    "high_range", "decoder", "stream.written", "stream.sent", "stream.length",
                                    "stream.active", "stream.next_sequence", "stream.period",
                                    "stream.clock_hz", "stream.timeline_pending", "capture_id", "capture_id_sequence", small_enums=short_enums(elf0),

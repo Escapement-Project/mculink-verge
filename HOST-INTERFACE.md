@@ -431,7 +431,7 @@ message says which. After a restart, a host that wants the new capture sends mod
 ### Header: `0xa1`
 
 The first message of every stream. Everything a host needs to convert the pairs that follow is in
-it. Format 1 has 68 bytes; format 2 has 92.
+it. Format 1 has 75 bytes; format 2 has 99. Firmware from before step 5's fields sent 68 and 92.
 
 | Offset | Field |
 | --- | --- |
@@ -449,9 +449,14 @@ it. Format 1 has 68 bytes; format 2 has 92.
 | 64 | DIO pins reporting edges, bit `k` for DIO`k` |
 | 65 | Their levels when the stream started; pins not reporting read 0 |
 | 66–67 | Edge time resolution in ns, u16; 0 when no pin reports |
+| 68–69 | Step 5's weight `w`, u16, 0 to 32,768 |
+| 70 | Step 5's flags: bit 0, a pair that switched down keeps its own current; bit 1, offsets 71–74 hold a current |
+| 71–74 | Current through the sense resistor of the pair before the first one sent (step 3), nA, u32; 0 without bit 1 |
 
 Modes 9/10 select format 2. Offsets 0–67 keep this layout, with version 2. Offsets 68–91
-contain the 24-byte capture identity, with a nonzero counter. Legacy modes 5/6 keep format 1.
+contain the 24-byte capture identity, with a nonzero counter, and offsets 68–74 above move to
+92–98. Legacy modes 5/6 keep format 1. A header without step 5's fields, from older firmware,
+means a weight of 0 and no flags.
 The header's identity, calibration, rate and first sequence describe the same capture.
 No identity is appended to other stream messages.
 
@@ -579,18 +584,27 @@ digests of the conversion, and pair sequences with the totals they give.
    `divider_na = (mv × 99,297) >> 16`. The target's current is the sense current less `divider_na`,
    or 0 if that would be negative.
 5. **Range switches.** A pair converted while the range switched can mix readings from both ranges.
-   So a pair whose range differs from the one before it uses the next pair's current from step 3
-   in place of its own. Step 4 still uses its own voltage.
+   So a pair whose range differs from the one before it may take another current from step 3 in
+   place of its own. Step 4 still uses its own voltage.
+   - A pair that switched up takes `(next × (65536 − w) + before × w + 32768) >> 16`, in 64-bit
+     arithmetic: `next` is the next pair's current from step 3, `before` the previous pair's, and
+     `w` the header's weight. Without a pair before it in the run, `w` counts as 0.
+   - A pair that switched down keeps its own current if the header's flag bit 0 is set. Otherwise
+     it takes the next pair's current.
    - If the next pair switched too, the first keeps its own current.
    - A pair still waiting for the next one when the capture pauses keeps its own current: when the
-     message after it sets flag bit 0, or when the stream ends. A hold, bit 1, does not end the run.
-   - The header gives the range before the first pair a stream sends. After a pause the range
-     before is the low range again, as at a start: the probe sets the range to low as it resumes.
+     message after it sets flag bit 0, or when the stream ends. A hold, bit 1, does not end the run,
+     and the pair before stays the pair before.
+   - The header gives the range before the first pair a stream sends and, with its flag bit 1, the
+     step 3 current of the pair before it. After a pause the range before is the low range again,
+     as at a start: the probe sets the range to low as it resumes. A pause, a start and lost pairs
+     leave no pair before.
 
 A host that wants the probe's total adds `mv × target_na` picowatts for each pair, scaled by
 `floor(2^32 / rate)` in 32-bit fixed point, carrying the fraction from pair to pair. For a stream
 started with mode 5, once the capture stops, that sum equals the total `0x90` mode 3 reports,
-provided no pairs were lost.
+provided no pairs were lost. A host that ignores the header's step 5 fields sums switching pairs
+as older firmware did, a little apart from this firmware's total.
 
 ## Other commands
 

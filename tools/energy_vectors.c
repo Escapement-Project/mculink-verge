@@ -111,7 +111,8 @@ static void print_convert(const vector_tables_t* tables, bool last) {
 
 /** A sequence through the firmware's own integration: a pause flushes a waiting pair and, as a
  *  resume does, makes the range before low again (src/energy_monitor.c, energy_capture_start). */
-static void print_sequence(const vector_tables_t* tables, uint32_t rate, uint32_t seed, uint32_t length, bool last) {
+static void print_sequence(const vector_tables_t* tables, uint32_t rate, uint32_t weight_q16, bool between, uint32_t seed,
+                           uint32_t length, bool last) {
     static struct energy_integration energy;
     energy = (struct energy_integration){0};
     energy.low_range = tables->low;
@@ -121,10 +122,14 @@ static void print_sequence(const vector_tables_t* tables, uint32_t rate, uint32_
     energy.rearm_below_na = UINT32_MAX;
     energy.calibrated = true;
     energy.previous_low = true;
+    energy.switch_weight_q16 = weight_q16;
+    energy.rearm_between_pairs = between;
     energy_total_t total = {0};
     lcg_state = seed;
 
-    printf("    {\"rate\": %" PRIu32 ", \"full_scale_mv\": %" PRIu32 ", \"low\": ", rate, tables->full_scale_mv);
+    printf("    {\"rate\": %" PRIu32 ", \"full_scale_mv\": %" PRIu32 ", \"switch_weight_q16\": %" PRIu32
+           ", \"rearm_between_pairs\": %s, \"low\": ",
+           rate, tables->full_scale_mv, weight_q16, between ? "true" : "false");
     print_points(&tables->low);
     printf(", \"high\": ");
     print_points(&tables->high);
@@ -138,6 +143,7 @@ static void print_sequence(const vector_tables_t* tables, uint32_t rate, uint32_
         if ((i != 0U) && ((lcg() % 50U) == 0U)) {
             energy_flush_held(&energy, &total);
             energy.previous_low = true;
+            energy.previous_known = false;
             printf("%s\"pause\"", separator);
             separator = ", ";
         }
@@ -172,14 +178,17 @@ int main(void) {
     };
     uint32_t const count = sizeof(tables) / sizeof(tables[0]);
 
-    printf("{\n  \"format\": 1,\n  \"convert\": [\n");
+    printf("{\n  \"format\": 2,\n  \"convert\": [\n");
     for (uint32_t i = 0U; i < count; i++) {
         print_convert(&tables[i], i + 1U == count);
     }
     printf("  ],\n  \"sequences\": [\n");
-    uint32_t const rates[] = {1U, 1000U, 3333U, 100000U};
-    for (uint32_t i = 0U; i < 4U; i++) {
-        print_sequence(&tables[i % count], rates[i], 0x5EED0000U + i, 200U, i == 3U);
+    // Each rate with a weight its averaging could give, and with and without re-arms between pairs.
+    uint32_t const rates[] = {1U, 1000U, 3333U, 100000U, 1000U, 100000U};
+    uint32_t const weights[] = {0U, 9786U, 24576U, 15292U, 32768U, 15292U};
+    bool const between[] = {true, true, false, true, false, false};
+    for (uint32_t i = 0U; i < 6U; i++) {
+        print_sequence(&tables[i % count], rates[i], weights[i], between[i], 0x5EED0000U + i, 200U, i == 5U);
     }
     printf("  ]\n}\n");
     return 0;

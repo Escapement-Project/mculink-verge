@@ -87,7 +87,9 @@ def machine(elf, symbols):
 # struct energy_integration's members (src/dap_shared.h), which image.py lays out.
 INTEGRATION_FIELDS = ("low_range", "high_range", "scale_q32", "full_scale_mv", "rearm_below_na", "segments_at_start",
                       "segment_words", "calibrated", "running", "consumed_bytes", "decoder", "on_high_range", "rearm_blocked",
-                      "previous_low", "held", "held_mv", "held_na", "descriptors", "ring", "setting",
+                      "previous_low", "held", "held_mv", "held_na", "held_weight_q16", "held_before_na",
+                      "previous_known", "previous_na", "switch_weight_q16", "rearm_between_pairs", "trigger_ticks",
+                      "rearm_from_ticks", "rearm_until_ticks", "descriptors", "ring", "setting",
                       "stream.written", "stream.sent", "stream.length", "stream.active", "stream.holds",
                       "stream.holds_written", "stream.next_sequence", "stream.next_raw", "stream.next_counts",
                       "stream.timeline_pending",
@@ -393,6 +395,31 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1, layout)
                 f"P0_29 made an output {gpio.took_29}")
     c.note("CPU 0's re-arm sets the latch only through the comparator's reset, and never takes P0_29")
 
+    # Where the rate leaves room, the re-arm waits for the converter to be between pairs, by CTIMER2
+    # alone (a half period of 100 ticks here, the window 20 to 60 ticks after the trigger's rise),
+    # and stays pending until then.
+    for label, count, em3, fires in (("in the gap", 30, 1, True), ("converting", 5, 1, False),
+                                     ("late in the gap", 80, 1, False), ("in the period's low half", 30, 0, False),
+                                     ("at the window's end", 59, 1, True)):
+        rearm = machine(elf0, symbols0)
+        gpio = Gpio(rearm, lambda: 1)
+        rearm.uc.mem_unmap(ORDINARY_GPIO, 0x4000)
+        rearm.uc.mmio_map(ORDINARY_GPIO, 0x4000, gpio.read, None, gpio.write, None)
+        gpio.out[0] = gpio.dir[0] = 1 << 17
+        integration = rearm.sym["energy_integration"]
+        for field, value, size in (("rearm_between_pairs", 1, 1), ("trigger_ticks", 100, 4), ("rearm_from_ticks", 20, 4),
+                                   ("rearm_until_ticks", 60, 4)):
+            rearm.uc.mem_write(integration + layout[field], value.to_bytes(size, "little"))
+        rearm.uc.mem_write(CTIMER2_BASE + 0x08, u32(count))
+        rearm.uc.mem_write(CTIMER2_BASE + 0x3C, u32(em3 << 3))
+        for field, value in (("energy_range_retry_pending", 1), ("energy_range_retry_enabled", 1)):
+            rearm.uc.mem_write(shared + offsets0[field], bytes([value]))
+        rearm.call("energy_range_retry_task")
+        pending = rearm.uc.mem_read(shared + offsets0["energy_range_retry_pending"], 1)[0]
+        c.check(gpio.q == int(fires) and pending == int(not fires),
+                f"re-arm {label}: latch {gpio.q}, still pending {pending}")
+    c.note("a re-arm waits for the first half of the gap between pairs, by CTIMER2, and stays pending until it comes")
+
     probe.uc.reg_write(UC_ARM_REG_PRIMASK, 1)
     put("energy_control_request", 7)
     probe.call("energy_control_task")
@@ -688,6 +715,16 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         ticks = int.from_bytes(probe.uc.mem_read(CTIMER2_MR3, 4), "little") + 1
         c.check((27 + 28 * (1 << average)) * 8 <= 2 * ticks,
                 f"{rate} pairs/s: {1 << average} averages overrun a period of {ticks} ticks a half")
+        # The stand-in's weight is half the share of a period the current's conversions span, and a
+        # re-arm waits for the first half of a pair's gap where that is 2 us or more (src/energy_pairs.h).
+        window, busy = 28 * (1 << average) * 8, (27 + 28 * (1 << average) + 4) * 8
+        weight = min(32768, ((window << 16) + 2 * ticks) // (4 * ticks))
+        gap = max(0, 2 * ticks - busy)
+        timing = tuple(probe.energy.get(name, size) for name, size in (
+            ("switch_weight_q16", 4), ("rearm_between_pairs", 1), ("trigger_ticks", 4), ("rearm_from_ticks", 4),
+            ("rearm_until_ticks", 4)))
+        c.check(timing == (weight, int(gap >= 192), ticks, busy, busy + gap // 2),
+                f"{actual} pairs/s: switch timing {timing}, against {(weight, int(gap >= 192), ticks, busy, busy + gap // 2)}")
         c.check(int.from_bytes(adc.page[0xBC:0xC0], "little") == 0x01000001,
                 "ADC monitor is not hardware trigger 7 starting at command 1")
         # About 1 ms of the ring's seven words a pair: a power of two, no longer than 1 ms and over
@@ -712,9 +749,10 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     local("current_range", 2)
     local("requested_rate_hz", 1000)
     for field, size in (("low_range", len(low)), ("high_range", len(high)), ("calibrated", 1), ("scale_q32", 8),
-                        ("full_scale_mv", 4), ("rearm_below_na", 4), ("segment_words", 4)):
+                        ("full_scale_mv", 4), ("rearm_below_na", 4), ("segment_words", 4), ("previous_known", 1)):
         probe.energy.write(field, bytes([0xee]) * size)
     value = probe.call("energy_capture_start", 1)
+    c.check(probe.energy.get("previous_known", 1) == 0, "a start kept a pair before it for the stand-in")
     actual = int.from_bytes(probe.uc.mem_read(probe.sym["actual_rate_hz"], 4), "little")
     published = (probe.energy.read("low_range", len(low)), probe.energy.read("high_range", len(high)),
                  probe.energy.get("calibrated", 1), probe.energy.get("scale_q32", 8),
@@ -1079,10 +1117,11 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         probe.uc.hook_del(hook)
     c.note("re-arm by segment at 16 and 64 words, pairs straddling segment ends")
 
-    # A pair whose range differs from the previous pair's takes the next pair's current, unless that
-    # pair switched too; one still waiting at a pause keeps its own; a start counts as the low range.
-    # Distinct tables (30 and 6000 nA a code) make the swap show: a blended code read on the high
-    # range is hundreds of milliamps.
+    # A pair that switched up takes the next pair's current less the previous pair's share, the
+    # weight; one that switched down takes the next pair's, or keeps its own where re-arms land
+    # between pairs; either keeps its own if the next pair switched too, or at a pause; a start
+    # counts as the low range, with no pair before it. Distinct tables (30 and 6000 nA a code) make
+    # the swap show: a blended code read on the high range is hundreds of milliamps.
     probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
     per_code = {True: 30, False: 6000}
     for field, name, low in (("low_range", "low_range_calibration", True), ("high_range", "high_range_calibration", False)):
@@ -1093,17 +1132,24 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         probe.energy.write(field, table)
     probe.energy.put("previous_low", 1, 1)  # as a start leaves it
 
-    def expected(capture):
+    def expected(capture, weight, between):
         """The rule, for one capture's pairs of (voltage code, current code, low range)."""
         q32 = 0
         for i, (voltage, code, low) in enumerate(capture):
-            switched = low != (capture[i - 1][2] if i else True)
+            before = capture[i - 1] if i else None
+            switched = low != (before[2] if before else True)
             following = capture[i + 1] if i + 1 < len(capture) else None
-            if switched and following and following[2] == low:
-                code = following[1]
+            na = code * per_code[low]
+            if switched and not (low and between) and following and following[2] == low:
+                share = weight if (not low and before) else 0
+                before_na = before[1] * per_code[before[2]] if before else 0
+                na = (following[1] * per_code[low] * (65536 - share) + before_na * share + 32768) >> 16
             mv = voltage * 2 * 3300 >> 16
-            q32 += mv * max(code * per_code[low] - (mv * DIVIDER_NA_PER_MV_Q16 >> 16), 0) * FIXTURE_SCALE
+            q32 += mv * max(na - (mv * DIVIDER_NA_PER_MV_Q16 >> 16), 0) * FIXTURE_SCALE
         return q32
+
+    def switching():
+        return probe.energy.get("switch_weight_q16", 4), probe.energy.get("rearm_between_pairs", 1) == 1
 
     def words(capture):
         return [w for voltage, code, low in capture for w in (result(1, voltage), result(1, code), result(2, 65535 if low else 0))]
@@ -1125,23 +1171,29 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
              [(59000, False)])
     first = [(30000 + i % 7 * 1000, code, low) for i, (code, low) in enumerate(shape)]
     tail = (41000, 300, False)
+    probe.energy.put("switch_weight_q16", 20000, 4)
+    probe.energy.put("rearm_between_pairs", 1, 1)
     feed(words(first))
     probe.integrate()
     written(3 * len(first))
     adc.fifo = words([tail])
     pause()
-    q32 = expected(first + [tail])
+    q32 = expected(first + [tail], 20000, True)
     c.check(accumulated() == (len(first) + 1, q32 >> 32, q32 & 0xffffffff),
             f"range switches: {accumulated()[:2]}, against {len(first) + 1} pairs and {q32 >> 32} pJ")
 
-    # A resume after a capture that ended high: the first low pair keeps its own, and a switch on the
-    # last pair keeps its own at the pause.
+    # A resume after a capture that ended high: the first low pair keeps its own, the first switch up
+    # weighs the pair before it with the start's own weight, and a switch on the last pair keeps its
+    # own at the pause.
     resume("resume")
-    second = [(36000, 1000, True), (37000, 2000, True), (38000, 59000, False)]
+    weight, between = switching()
+    c.check(weight != 0, "a start left no weight for the stand-in")
+    second = [(36000, 1000, True), (37000, 2000, True), (38000, 59000, False), (38500, 300, False), (39000, 3000, True),
+              (39500, 3500, True), (40000, 59000, False)]
     feed(words(second))
     written(3 * len(second))
     pause()
-    q32 += expected(second)
+    q32 += expected(second, weight, between)
     c.check(accumulated() == (len(first) + 1 + len(second), q32 >> 32, q32 & 0xffffffff),
             f"range switch across a resume: {accumulated()[:2]}, against {q32 >> 32} pJ")
 
@@ -1159,17 +1211,21 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     pause()
     local("requested_rate_hz", FIXTURE_RATE)
     c.check(probe.call("energy_capture_start", 1) == 1, "new session after a failure did not start")
-    third = [(36000, 1000, True), (37000, 2000, True)]
+    # Without room between pairs, a down-switch takes the next pair's current.
+    probe.energy.put("rearm_between_pairs", 0, 1)
+    third = [(36000, 1000, True), (37000, 2000, True), (38000, 59000, False), (38500, 300, False), (39000, 3000, True),
+             (39500, 3500, True)]
     feed(words(third))
     written(3 * len(third))
     pause()
-    q32 = expected(third)
+    q32 = expected(third, probe.energy.get("switch_weight_q16", 4), False)
     c.check(accumulated() == (len(third), q32 >> 32, q32 & 0xffffffff),
             f"new session after a failure with a pair waiting: {accumulated()[:2]}, against {len(third)} pairs")
     probe.uc.hook_del(hook)
-    c.note("a pair across a range switch takes the next pair's current unless that one switched too, across"
-           " segments, the FIFO's tail and a pause; a start counts as the low range; a failed capture's"
-           " waiting pair stays out of the next session")
+    c.note("a pair across a range switch takes the weighted stand-in up, the next pair's current or its own"
+           " down, its own if the next one switched too, across segments, the FIFO's tail and a pause; a start"
+           " counts as the low range with no pair before it; a failed capture's waiting pair stays out of the"
+           " next session")
 
     probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
     adc.active_reads = -1
@@ -1377,9 +1433,11 @@ def check_stream(c, setup, result, local_symbols):
     stamp = 0xFFFF0000
     c.check(start(probe, local, stamp), "stream: an armed start failed")
     header = messages(probe)
-    c.check(len(header) == 1 and len(header[0]) == 68 and header[0][:2] == b"\xa1\x01", f"stream: start sent {header}")
-    if header and len(header[0]) == 68:
+    c.check(len(header) == 1 and len(header[0]) == 75 and header[0][:2] == b"\xa1\x01", f"stream: start sent {header}")
+    if header and len(header[0]) == 75:
         h = header[0]
+        c.check(u16_at(h, 68) == probe.energy.get("switch_weight_q16", 4) and h[70] == probe.energy.get("rearm_between_pairs", 1)
+                and u32_at(h, 71) == 0, f"stream: header's step 5 fields {h[68:].hex()}")
         c.check(u32_at(h, 2) == clock // period and h[6] == 1 and u16_at(h, 7) == probe.energy.get("full_scale_mv", 4)
                 and u32_at(h, 9) == 1 and h[13] == 1, f"stream: header fields {h[:14].hex()}")
         c.check(h[14] == 2 and u16_at(h, 15) == 0 and u16_at(h, 21) == 65535 and h[39] == 2 and h[64] == 0,

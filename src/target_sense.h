@@ -52,6 +52,14 @@ target_sense_status_t target_sense_adc_init(void);
 target_sense_current_range_t target_sense_current_range(void);
 void target_sense_configure_monitor(uint32_t rate_hz);
 
+/** ADC0 runs from FRO_HF over this, the clock the capture's timer counts. */
+#define TARGET_SENSE_ADC_DIVIDER 8U
+
+/** The capture's pair at `rate_hz`, in ADC clocks: from its first current sample to its range
+ *  sample, and from its trigger to its end. */
+uint32_t target_sense_monitor_window_adck(uint32_t rate_hz);
+uint32_t target_sense_monitor_pair_adck(uint32_t rate_hz);
+
 /** True while something grounds J6 pin 9, which a standard target header does. */
 bool target_sense_detected(void);
 

@@ -182,10 +182,17 @@ the probe's target supply can give.
   rate, from 7 to 15 ms at 20,000 samples a second to 1.5 to 3 ms at 100,000. A target asleep for
   8 ms in every 10 was then read on the high range for the whole of its sleep at the first rate
   and mostly on the low range at the second, and its readings moved with the rate.
+- **Between samples.** CPU 0 clocks the latch only while the ADC is between samples, in the first
+  half of the time from one sample's end to the next one's trigger, so the sample after a switch
+  down is the low range's alone. It tells where the ADC is from the conversion timer. Where the rate
+  leaves under 2 µs between samples, just under each averaging step's limit, it clocks the latch
+  whenever it gets to it.
 - **What a switch down does to the target.** The low range's resistor goes back in series, and
   the target's supply falls by the drop above. The target's decoupling gives up part of its
-  current while the supply settles, so for about a millisecond the reading dips. The next switch
-  up recharges it, and the energy total counts that charge once.
+  current while the supply settles, so for about a millisecond the reading dips. The current
+  rises further on the low range before a switch up, as the decoupling feeds the target, until
+  it reaches the threshold. The switch up then recharges the decoupling in a spike of a few
+  microseconds. The energy total misses most of that spike (Accuracy limits).
 
 ### Calibration
 
@@ -266,15 +273,30 @@ With 5 ms it read it right.
 - The sheet gives no tolerance for the divider. It moves the current taken off each sample, which
   matters in the low ranges.
 - Each sample converts the voltage and the current together, averaged over up to 128
-  conversions, and then the range. A range switch while the current converts mixes codes from
-  both ranges, and
-  neither table reads the mix right. So when a sample's range differs from the one before it, the
-  energy total takes the next sample's current for it, unless that sample switched too. The sample
+  conversions, and then the range. A switch up while the current converts mixes codes from both
+  ranges, and neither table reads the mix right. The comparator switches up at any moment, and
+  the range converted after the current cannot tell a sample that switched during its
+  conversions from one that switched before them. So a sample that switched up takes a stand-in
+  for its current in the energy total: the next sample's current, less a share of the difference
+  from the one before it. The share is half the part of the sample period its conversions span:
+  almost half just under each averaging step's limit, 23% at 100,000 samples a second, 15% at
+  1,000, and less below that. Over
+  many switches at moments the target sets, that is the right total on average. A sample that
+  switched down between samples keeps its own current; at a rate with too little time between
+  samples it takes the next sample's. Either keeps its own if the next sample switched too, and
   keeps its own voltage. A start counts the sample before it as on the low range, because it
-  clocks the latch to the low range. That includes each resume, and capture resumes after every
-  target-sense read a host asks for. When capture pauses after a switching sample, before the next
-  one arrives, that sample keeps its own current. The reply with the latest sample shows each
-  sample as it was converted.
+  clocks the latch to the low range, and leaves no sample before it for the stand-in. That
+  includes each resume, and capture resumes after every target-sense read a host asks for. When
+  capture pauses after a switching sample, before the next one arrives, that sample keeps its own
+  current. The reply with the latest sample shows each sample as it was converted.
+- The stand-in leaves out what happens inside the switching sample. That is most of the
+  decoupling's recharge at a switch up, about its capacitance times 90 mV in the 350 mA setting.
+  From about 40,000 samples a second the samples after the switch catch part of it, so the total
+  rises with the rate there. A target with about 5 µF that woke every 10 ms read 1.4% apart
+  across 1,000 to 100,000 samples a second, highest at both ends. The stand-in also leaves out a
+  burst shorter than one sample period that starts on the low range. The same target with 200 µs
+  bursts read 6.7% low at 1,000 samples a second against 20,000. Pick a rate whose sample period
+  is well under the shortest burst.
 - The voltage and the current are the A and B sides of channel 0, and one dual single-ended
   conversion takes both at once, so they average over the same stretch. Both results land in FIFO0,
   the voltage's first: with both FIFO selects alike, "the CH_A results will always be stored before

@@ -50,7 +50,8 @@ static void start(struct energy_stream* stream, uint32_t started_raw, bool strea
     if (streaming) {
         energy_stream_header_t const header = {
             .rate_hz = CLOCK_HZ / PERIOD, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = 1U,
-            .previous_low = true, .low = &low, .high = &high, .dio_mask = 0U, .dio_levels = 5U, .edge_resolution_ns = 0U};
+            .previous_low = true, .low = &low, .high = &high, .dio_mask = 0U, .dio_levels = 5U, .edge_resolution_ns = 0U,
+            .switch_weight_q16 = 24576U, .rearm_between_pairs = true};
         assert(energy_stream_begin(stream, &header));
     }
     energy_stream_timeline_run(stream, true, CLOCK_HZ, TICKS, started_raw);
@@ -68,6 +69,8 @@ static void test_header(void) {
     assert(u32(m + 23) == 900000U && u16(m + 27) == 0U && u32(m + 29) == 0U && u16(m + 33) == 0U && u32(m + 35) == 0U);
     assert(m[39] == 4U && u16(m + 40) == 200U && u32(m + 42) == 1000000U && u16(m + 58) == 60000U);
     assert(u32(m + 60) == 150000000U && m[64] == 0U && m[65] == 5U && u16(m + 66) == 0U);
+    // Step 5's fields; no pair before a capture's first, so no current before.
+    assert(u16(m + 68) == 24576U && m[70] == 1U && u32(m + 71) == 0U);
     assert(take(&stream, &length) == NULL);
 }
 
@@ -85,12 +88,15 @@ static void test_identified_header(void) {
     assert(!energy_identity_matches(&zero, zero.bytes));
     energy_stream_header_t const header = {
         .rate_hz = 1000U, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = 1U,
-        .previous_low = true, .low = &low, .high = &high, .capture_id = &id};
+        .previous_low = true, .low = &low, .high = &high, .capture_id = &id,
+        .switch_weight_q16 = 32768U, .previous_known = true, .previous_na = 1234567U};
     assert(energy_stream_begin(&stream, &header));
     uint16_t length = 0U;
     uint8_t const* message = take(&stream, &length);
-    assert(message != NULL && length == 92U && message[1] == 2U);
+    assert(message != NULL && length == 99U && message[1] == 2U);
+    // The identity where format 2 always had it, step 5's fields after it.
     assert(memcmp(message + 68U, id.bytes, sizeof(id.bytes)) == 0);
+    assert(u16(message + 92) == 32768U && message[94] == 2U && u32(message + 95) == 1234567U);
 }
 
 /** 99 pairs a message at most, evenly spaced, each message timed from the capture's start; the

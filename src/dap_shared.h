@@ -69,6 +69,15 @@ struct energy_integration {
     uint32_t segment_words; // a power of two, for the rate (src/energy_integration.h)
     uint8_t setting;        // the current range jumper, as a stream's header gives it: 1 350 mA, 2 50 mA
     bool calibrated;
+    /** Half the share of a period the current's conversions span, in 1/65536 (src/energy_pairs.h). */
+    uint32_t switch_weight_q16;
+    /** Whether CPU 0 re-arms the low range between pairs, and when: CTIMER2 counts half periods of
+     *  `trigger_ticks`, and a re-arm lands from `rearm_from_ticks` to `rearm_until_ticks` after a
+     *  trigger (src/main.c). */
+    bool rearm_between_pairs;
+    uint32_t trigger_ticks;
+    uint32_t rearm_from_ticks;
+    uint32_t rearm_until_ticks;
     /** From a start to the end of the pause that follows: set and cleared by CPU 1 while CPU 0
      *  cannot take an energy completion. */
     bool running;
@@ -81,11 +90,19 @@ struct energy_integration {
     bool rearm_blocked;
     /** A pair whose range differs from the one before may have converted its current across the
      *  switch, so it waits for the next pair's current (src/energy_pairs.h). A start sets the range
-     *  before to low, because it clocks the latch to the low range. */
+     *  before to low, because it clocks the latch to the low range. A down-switch between pairs
+     *  does not wait. */
     bool previous_low;
     bool held;
     uint32_t held_mv;
     uint32_t held_na; // its own reading, for a pause that comes before the next pair
+    /** The share of the pair before a held up-switch in its stand-in, in 1/65536; 0 after a down-switch
+     *  or with no pair before it. */
+    uint32_t held_weight_q16;
+    uint32_t held_before_na;
+    /** The last pair's own current through the sense resistor; none since a start or pause. */
+    bool previous_known;
+    uint32_t previous_na;
 
     /** Verge Aux's stream of the pairs integrated here (src/energy_stream.h). */
     struct energy_stream stream;

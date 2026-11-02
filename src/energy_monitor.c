@@ -50,6 +50,12 @@
  *  (BUSES.md). Measured; no longer hold was seen. */
 #define ADC0_LOAD_STALL 2U
 
+/** ADC clocks from a trigger to its pair's first conversion: an allowance, not measured. */
+#define ENERGY_TRIGGER_LATENCY_ADCK 4U
+/** The least time between a pair's end and the next trigger that CPU 0 aims a re-arm into: 2 us of
+ *  FRO_HF. */
+#define ENERGY_REARM_MIN_GAP_TICKS 192U
+
 static uint32_t requested_rate_hz;
 static uint32_t actual_rate_hz;
 /** Set by energy_monitor_start_stream for the start it makes: Verge Aux's stream begins with it. */
@@ -468,16 +474,37 @@ static void stamp_init(void) {
     stamp_ready = true;
 }
 
+/** CTIMER2 toggles the trigger every half period of this many FRO_HF ticks; it rises once a period. */
+static uint32_t timer_ticks(uint32_t rate_hz) {
+    return (CLOCK_GetFroHfFreq() + rate_hz) / (2U * rate_hz);
+}
+
 static uint32_t timer_effective_rate(uint32_t rate_hz) {
-    uint32_t const clock_hz = CLOCK_GetFroHfFreq();
-    uint32_t const ticks = (clock_hz + rate_hz) / (2U * rate_hz);
-    return clock_hz / (2U * ticks);
+    return CLOCK_GetFroHfFreq() / (2U * timer_ticks(rate_hz));
+}
+
+/** The stand-in's weight and CPU 0's re-arm window, for the timer `requested_hz` starts and the
+ *  averaging `rate_hz` gets (src/energy_pairs.h, src/main.c). The
+ *  re-arm comes in the first half of the time between a pair's end and the next trigger, which
+ *  leaves the switch at least as long to settle as it had to land; a rate with under
+ *  ENERGY_REARM_MIN_GAP_TICKS of it re-arms anywhere. */
+static void switch_timing(struct energy_integration* energy, uint32_t requested_hz, uint32_t rate_hz) {
+    uint32_t const ticks = timer_ticks(requested_hz);
+    uint32_t const window = target_sense_monitor_window_adck(rate_hz) * TARGET_SENSE_ADC_DIVIDER;
+    uint64_t const weight = (((uint64_t)window << 16U) + 2U * ticks) / (4U * ticks);
+    energy->switch_weight_q16 = weight < 32768U ? (uint32_t)weight : 32768U;
+    uint32_t const busy = (target_sense_monitor_pair_adck(rate_hz) + ENERGY_TRIGGER_LATENCY_ADCK) * TARGET_SENSE_ADC_DIVIDER;
+    uint32_t const gap = (2U * ticks > busy) ? (2U * ticks - busy) : 0U;
+    energy->trigger_ticks = ticks;
+    energy->rearm_between_pairs = gap >= ENERGY_REARM_MIN_GAP_TICKS;
+    energy->rearm_from_ticks = busy;
+    energy->rearm_until_ticks = busy + gap / 2U;
 }
 
 /** Returns CTIMER4 as the timer starts; the first conversion comes `*ticks` later. */
 static uint32_t timer_start(uint32_t rate_hz, uint32_t* ticks_out) {
     uint32_t const clock_hz = CLOCK_GetFroHfFreq();
-    uint32_t const ticks = (clock_hz + rate_hz) / (2U * rate_hz);
+    uint32_t const ticks = timer_ticks(rate_hz);
     actual_rate_hz = clock_hz / (2U * ticks);
     trigger_ticks = ticks;
     *ticks_out = ticks;
@@ -557,6 +584,8 @@ static void capture_stream_begin(struct energy_integration* energy, bool identif
         .dio_stamp = CTIMER4->TC,
         .edge_resolution_ns = (pins != 0U) ? energy_stream_edge_resolution(CLOCK_GetFroHfFreq()) : 0U,
         .capture_id = identified ? &next_identity : nullptr,
+        .switch_weight_q16 = energy->switch_weight_q16,
+        .rearm_between_pairs = energy->rearm_between_pairs,
     };
     (void)energy_stream_begin(stream, &header);
 }
@@ -577,6 +606,8 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     energy->rearm_blocked = false;
     energy->previous_low = true;
     energy->held = false;
+    energy->previous_known = false;
+    switch_timing(energy, requested_rate_hz, actual_rate_hz);
     energy->decoder.phase = ENERGY_EXPECT_VOLTAGE;
     energy->consumed_bytes = 0U;
     LPADC_DoResetFIFO0(ADC0);

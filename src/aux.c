@@ -185,6 +185,10 @@ __attribute__((section(".ramfunc"))) static bool stream_command(void) {
             .dio_stamp = stamp,
             .edge_resolution_ns = (pins != 0U) ? energy_stream_edge_resolution(stream->clock_hz) : 0U,
             .capture_id = identified ? &energy->capture_id : nullptr,
+            .switch_weight_q16 = energy->switch_weight_q16,
+            .rearm_between_pairs = energy->rearm_between_pairs,
+            .previous_known = energy->previous_known,
+            .previous_na = energy->previous_na,
         };
         // A full ring: the host is not reading, and the header would be lost too.
         result = energy_stream_begin(stream, &header) ? 0U : 7U;
