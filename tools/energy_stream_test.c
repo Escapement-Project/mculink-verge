@@ -301,6 +301,54 @@ static void test_full(void) {
     assert(first != NULL && first[0] == 0xA0U && first[1] == ENERGY_STREAM_FLAG_PAUSED && u32(first + 2) == s);
 }
 
+/** A ring the host stops reading after a hold: one dropped message stays open rather than closing
+ *  at every pair, and the first pair once there is room starts a message that leaves, flagged. */
+static void test_full_after_hold(void) {
+    static struct energy_stream stream;
+    start(&stream, 0U, true);
+    uint16_t length = 0U;
+    (void)take(&stream, &length);
+    stream.period = 960U;
+    uint32_t s = 1U;
+    for (; s <= 99U * 14U; s++) {
+        energy_stream_pair(&stream, s, 1U, 1U, true);
+    }
+    assert(energy_stream_free(&stream) == ENERGY_STREAM_CONTROL_SLOTS && stream.open_pairs == 0U);
+    // Pair s comes out of step, as after a hold: the gap waits for a message that leaves.
+    s++;
+    for (uint32_t i = 0U; i < 50U; i++, s++) {
+        energy_stream_pair(&stream, s, 1U, 1U, true);
+    }
+    assert(stream.open_dropped && stream.open_pairs == 50U && stream.gap == ENERGY_STREAM_FLAG_HELD);
+    while (take(&stream, &length) != NULL) {
+    }
+    energy_stream_pair(&stream, s, 1U, 1U, true);
+    energy_stream_end(&stream, 2U, s);
+    uint8_t const* const first = take(&stream, &length);
+    assert(first != NULL && first[0] == 0xA0U && first[1] == ENERGY_STREAM_FLAG_HELD && u32(first + 2) == s &&
+           u16(first + 14) == 1U);
+}
+
+/** Without a gap too, a dropped message ends at the first pair that finds room. */
+static void test_full_recovers(void) {
+    static struct energy_stream stream;
+    start(&stream, 0U, true);
+    uint16_t length = 0U;
+    (void)take(&stream, &length);
+    stream.period = 960U;
+    uint32_t s = 1U;
+    for (; s <= 99U * 14U + 20U; s++) {
+        energy_stream_pair(&stream, s, 1U, 1U, true);
+    }
+    assert(stream.open_dropped && stream.open_pairs == 20U);
+    while (take(&stream, &length) != NULL) {
+    }
+    energy_stream_pair(&stream, s, 1U, 1U, true);
+    energy_stream_end(&stream, 2U, s);
+    uint8_t const* const first = take(&stream, &length);
+    assert(first != NULL && first[0] == 0xA0U && first[1] == 0U && u32(first + 2) == s && u16(first + 14) == 1U);
+}
+
 /** Without a stream, pairs are timed and nothing is sent. */
 static void test_idle(void) {
     static struct energy_stream stream;
@@ -789,6 +837,8 @@ int main(void) {
     test_out_of_step();
     test_resume();
     test_full();
+    test_full_after_hold();
+    test_full_recovers();
     test_idle();
     test_edges();
     test_edges_messages();

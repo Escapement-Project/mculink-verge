@@ -556,9 +556,15 @@ ENERGY_STREAM_INLINE void energy_stream_pair(struct energy_stream* stream, uint3
     if (!stream->active) {
         return;
     }
-    // A message never spans a pause or a hold, nor more than 10 ms of pairs.
-    if ((stream->open_pairs != 0U) && ((stream->gap != 0U) || ((counts - stream->open_counts) >= stream->clock_hz / 100U))) {
-        energy_stream_close(stream);
+    // A message never spans a pause or a hold, nor more than 10 ms of pairs. One the full ring
+    // dropped gives way as soon as there is room, and a gap does not end it: its flags wait for the
+    // next message that leaves. Closing it at every pair while a gap waited cost CPU 0 a close a pair.
+    if (stream->open_pairs != 0U) {
+        bool const ends = stream->open_dropped ? (energy_stream_free(stream) > ENERGY_STREAM_CONTROL_SLOTS)
+                                               : (stream->gap != 0U);
+        if (ends || ((counts - stream->open_counts) >= stream->clock_hz / 100U)) {
+            energy_stream_close(stream);
+        }
     }
     if (stream->open_pairs == 0U) {
         stream->open_dropped = energy_stream_free(stream) <= ENERGY_STREAM_CONTROL_SLOTS;
