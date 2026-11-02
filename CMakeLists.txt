@@ -345,8 +345,9 @@ else()
 endif()
 
 # CPU0 owns SRAM0. CPU1's full 16 KiB stack occupies the bottom of SRAM1, followed by its
-# data/code, which may run up to dap_stage's top 8 KiB of SRAM3. Stream slots use SRAM4; CPU0
-# reaches no timed CPU1 port for them. USB SRAM holds TinyUSB and dap_shared.
+# data/code, which may run up to dap_stage's top 8 KiB of SRAM3 (a product image's hot part may not
+# reach SRAM3: tools/image.py). Stream slots use SRAM4; CPU0 reaches
+# no timed CPU1 port for them. USB SRAM holds TinyUSB and dap_shared.
 set(CORE1_FLASH_ORIGIN 0x00040000)
 set(CORE1_FLASH_END    0x0009D800)  # where the SDK's own reservation for CPU 1 ends
 set(CORE0_RAM_LENGTH   0x00010000)

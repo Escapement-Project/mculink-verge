@@ -58,8 +58,8 @@
 #endif
 
 /** Zeroed data touched only off the command path, placed after the rest of CPU 1's .bss
- *  (src/core1.ld.in) so that its size does not push the statics every command reads out of SRAM2
- *  and into SRAM3, beside the buffers CPU 0 writes (BUSES.md). */
+ *  (src/core1.ld.in) so that its size cannot push the statics every command reads into SRAM3,
+ *  beside the buffers CPU 0 writes (BUSES.md). tools/image.py checks a product image for it. */
 #ifdef RAMFUNC_BIT_PATHS
 #define COLD_BSS __attribute__((section(".cold_bss")))
 #else

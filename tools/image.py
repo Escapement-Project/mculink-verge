@@ -1246,6 +1246,22 @@ ARM_TRANSFER_PATHS = re.compile(r"(arm_SWD_Transfer|arm_jtag4_Transfer|jtag4_[A-
                                 r"|JTAG_TransferBlock(Fast|Slow)?|SWD_Transfer(Block|Command)?(Fast|Slow))")
 
 
+def check_core1_placement(c: Checker, elf: str) -> None:
+    """A product image keeps everything CPU 1 touches inside a wire window off SRAM3: its RAM code
+    and all its data but `.cold_bss`, which only a wire or configuration switch reaches. The ARM
+    reference is a test build and may spill."""
+    sym = symbols_with_size(elf)
+    if "swd_gen_clock_hz" not in sym:
+        c.note("ARM reference: CPU 1 placement not held to SRAM1 and SRAM2")
+        return
+    # SRAM3 is port 5, where CPU 0 copies dap_stage while CPU 1's wire windows run (BUSES.md).
+    linked = symbols(elf)
+    start, end = linked["__data_start__"], linked["__cold_bss_start__"]
+    c.check(end <= SRAM3[0], f"CPU 1's RAM code and data run to {end:#x}, into SRAM3 from {SRAM3[0]:#x}")
+    if end <= SRAM3[0]:
+        c.note(f"CPU 1's RAM code and hot data {start:#x}..{end:#x}, {SRAM3[0] - end} bytes below SRAM3")
+
+
 def check_generation_refusals(c: Checker, elf: str) -> None:
     """A product image runs every transfer on generated code, with no ARM path behind it. A clock
     the generators cannot serve is refused and the clock kept; and where nothing could be
@@ -2424,6 +2440,7 @@ def main() -> int:
     check_straps(c, args.elf, args.core1, slots)
     check_unconnected_block(c, args.core1)
     check_generation_refusals(c, args.core1)
+    check_core1_placement(c, args.core1)
     check_image_boards(c, args.elf)
     check_sample_probe(c, args.core1)
     check_timestamp(c, args.core1)

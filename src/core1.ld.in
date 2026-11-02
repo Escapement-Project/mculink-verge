@@ -47,6 +47,7 @@ SECTIONS
   {
     __bss_start__ = .;
     *(.bss .bss* COMMON)
+    __cold_bss_start__ = .;
     *(.cold_bss)
     . = ALIGN(4);
     __bss_end__ = .;
