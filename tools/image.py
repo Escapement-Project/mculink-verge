@@ -759,12 +759,15 @@ def check_energy_descriptors(c: Checker, elf: str, slots: int) -> None:
                 if i != 0:
                     c.check((config >> 16) & 0x3ff == words - 1 and (config >> 8) & 3 == 2,
                             f"{words}-word segments: energy descriptor count/word width mismatch")
+                    # The half it fills raises its own flag: SETINTA (bit 4) the first, SETINTB (bit 5) the second.
+                    c.check((config >> 4) & 3 == (1 if i % 2 == 0 else 2),
+                            f"{words}-word segments: step {i} fills half {i % 2} and raises flags {(config >> 4) & 3}")
                 c.check(link in (descriptors, descriptors + 16) and link % 16 == 0,
                         f"energy descriptor link {link:#x} outside the ring or off 16 bytes")
                 at = link
             c.check(destinations == [0, 1, 0, 1, 0], f"{words}-word energy startup/restart {restart}: {destinations}")
     c.note("actual energy descriptor links alternate segments from the first transfer, including restart, at"
-           " 512-, 64- and 16-word segments")
+           " 512-, 64- and 16-word segments, each half raising its own flag")
 
 
 def check_allocator_trap(c: Checker, elf: str) -> None:

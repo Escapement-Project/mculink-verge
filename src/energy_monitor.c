@@ -28,11 +28,14 @@
 
 #define ENERGY_DMA_SOURCE (&ADC0->RESFIFO[0])
 
-#define ENERGY_SEGMENT_XFERCFG(words)                                                                \
+/** The ring's first half raises INTA as it completes and the second INTB, so a completion CPU 0 has
+ *  not taken when the next one comes is not lost in one flag (energy_segment_flag). */
+#define ENERGY_SEGMENT_XFERCFG(words, half)                                                          \
     (DMA_CHANNEL_XFERCFG_CFGVALID_MASK | DMA_CHANNEL_XFERCFG_RELOAD_MASK |                           \
-     DMA_CHANNEL_XFERCFG_SETINTA_MASK | DMA_CHANNEL_XFERCFG_WIDTH(2U) |                               \
-     DMA_CHANNEL_XFERCFG_SRCINC(0U) | DMA_CHANNEL_XFERCFG_DSTINC(1U) |                                \
+     (((half) == 0U) ? DMA_CHANNEL_XFERCFG_SETINTA_MASK : DMA_CHANNEL_XFERCFG_SETINTB_MASK) |         \
+     DMA_CHANNEL_XFERCFG_WIDTH(2U) | DMA_CHANNEL_XFERCFG_SRCINC(0U) | DMA_CHANNEL_XFERCFG_DSTINC(1U) | \
      DMA_CHANNEL_XFERCFG_XFERCOUNT((words) - 1U))
+static_assert(ENERGY_SEGMENTS == 2U, "a completion flag for each half");
 
 /** Ring words a pair takes on average: its three results, and the empty reads after them. The
  *  watermark request is still raised for two reads after the one that empties the FIFO, and those
@@ -42,8 +45,8 @@
  *  regardless: at 2 the request sometimes stops one result short, so a pair's last results wait in
  *  the FIFO for the next pair's and the latest reply runs a pair behind. */
 #define ENERGY_WORDS_PER_PAIR 7U
-/** DMA0 has one completion flag a channel, so two segment ends must not come closer together than
- *  CPU 0's interrupt takes. Any 16 words span a gap between pairs. */
+/** CPU 0's interrupt has to integrate a segment before the next one completes, so two segment ends
+ *  must not come closer together than that takes. Any 16 words span a gap between pairs. */
 #define ENERGY_SEGMENT_MIN_WORDS 16U
 
 /** Cycles a DMA0 read of ADC0 can hold a load from the secure GPIO, which shares its AHB port
@@ -394,9 +397,9 @@ static uint32_t rearm_below_na(void) {
  *  longer, as a power of two. With 10 ms, the re-arm took 7 to 15 ms at 20,000 pairs/s and 1.5 to
  *  3 ms at 100,000, so the range a short low phase was read on depended on the rate.
  *
- *  CPU 0's DMA interrupt has to take each segment before the next one completes, so within about
- *  0.5 ms at the shortest. Two completions would share one flag, and CPU 0 would then read the half
- *  DMA0 is writing, with nothing to tell it. */
+ *  CPU 0's DMA interrupt has to integrate each segment before the next one completes, so within
+ *  about 0.5 ms at the shortest: the next completion is DMA0 starting on that half again. A capture
+ *  whose interrupt comes later fails (energy_integrate). */
 static uint32_t segment_words(uint32_t rate_hz) {
     uint32_t const words_in_1_ms = (rate_hz * ENERGY_WORDS_PER_PAIR) / 1000U;
     uint32_t words = ENERGY_SEGMENT_MAX_WORDS;
@@ -417,12 +420,20 @@ static uint32_t ring_written(void) {
         }
         uint32_t const counted = dap_shared.energy_segments - integration()->segments_at_start;
         __DMB();
-        bool const pending = (DMA0->COMMON[0].INTA & mask) != 0U;
+        volatile uint32_t const* const flag = energy_segment_flag(counted);
+        bool const pending = (*flag & mask) != 0U;
         uint32_t const xfercfg = DMA0->CHANNEL[ENERGY_DMA_CHANNEL].XFERCFG;
-        bool const still_pending = (DMA0->COMMON[0].INTA & mask) != 0U;
+        bool const still_pending = (*flag & mask) != 0U;
+        bool const overtaken = (*energy_segment_flag(counted + 1U) & mask) != 0U;
         __DMB();
         if ((pending == still_pending) && (counted == (dap_shared.energy_segments - integration()->segments_at_start)) &&
             (sequence == dap_shared.energy_dma_sequence)) {
+            // A segment CPU 0 has not taken, and the next one completed: the ring this position
+            // counts as unread may be under rewrite. Failed here, so a caller's next
+            // capture_failed() sees it even if CPU 0 clears both flags before storing its own.
+            if (overtaken) {
+                dap_shared.energy_dma_error = 1U;
+            }
             uint32_t const left = ((xfercfg >> DMA_XFERCOUNT_SHIFT) & DMA_XFERCOUNT_MASK) + 1U;
             // A descriptor that has run out reads 1024 to go (src/dma_ring.h), which is the next
             // segment's start at every size a capture uses.
@@ -529,7 +540,7 @@ __attribute__((noinline)) static void capture_ring_init(uint32_t words) {
     uint32_t const source = (uint32_t)ENERGY_DMA_SOURCE;
     energy->segment_words = words;
     for (uint32_t i = 0U; i < ENERGY_SEGMENTS; i++) {
-        energy->descriptors[i].xfercfg = ENERGY_SEGMENT_XFERCFG(words);
+        energy->descriptors[i].xfercfg = ENERGY_SEGMENT_XFERCFG(words, i);
         energy->descriptors[i].source_end = source;
         energy->descriptors[i].destination_end = (uint32_t)&energy->ring[((i + 1U) * words) - 1U];
         energy->descriptors[i].link = (uint32_t)&energy->descriptors[(i + 1U) % ENERGY_SEGMENTS];
@@ -599,6 +610,7 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     DMA0->COMMON[0].INTENCLR = ENERGY_DMA_MASK;
     DMA0->COMMON[0].ERRINT = ENERGY_DMA_MASK;
     DMA0->COMMON[0].INTA = ENERGY_DMA_MASK;
+    DMA0->COMMON[0].INTB = ENERGY_DMA_MASK;
     energy->segments_at_start = dap_shared.energy_segments;
     dap_shared.energy_range_retry_pending = 0U;
     dap_shared.energy_range_retry_enabled = 1U;
@@ -672,7 +684,7 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     DMA0->COMMON[0].INTENSET = ENERGY_DMA_MASK;
     DMA0->COMMON[0].ENABLESET = ENERGY_DMA_MASK;
     DMA0->CHANNEL[ENERGY_DMA_CHANNEL].XFERCFG =
-        ENERGY_SEGMENT_XFERCFG(energy->segment_words) | DMA_CHANNEL_XFERCFG_SWTRIG_MASK;
+        ENERGY_SEGMENT_XFERCFG(energy->segment_words, 0U) | DMA_CHANNEL_XFERCFG_SWTRIG_MASK;
     // An edge whatever P0_17 was left at: CPU 0's re-arm can raise it after a pause lowered it.
     energy_latch_clock();
     uint32_t ticks = 0U;
@@ -728,6 +740,7 @@ __attribute__((noinline)) bool energy_monitor_pause(void) {
     integration()->decoder.phase = ENERGY_EXPECT_VOLTAGE;
     DMA0->COMMON[0].ABORT = ENERGY_DMA_MASK;
     DMA0->COMMON[0].INTA = ENERGY_DMA_MASK;
+    DMA0->COMMON[0].INTB = ENERGY_DMA_MASK;
     DMA0->COMMON[0].ERRINT = ENERGY_DMA_MASK;
     INPUTMUX->DMA0_REQ_ENA_CLR = ENERGY_DMA_MASK;
     LPADC_DoResetFIFO0(ADC0);

@@ -9,6 +9,7 @@ from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_PRIMASK, 
 
 DMA_BASE = 0x40082000
 ENERGY_MASK = 1 << 21
+XFERCFG_21 = 0x408 + 21 * 16
 SWO_MASK = 1 << 8
 ADC_BASE = 0x400A0000
 
@@ -17,6 +18,8 @@ class Dma:
     def __init__(self, probe):
         self.page = bytearray(4096)
         self.writes = []
+        # Called with each read's offset before it is answered, to change state at a chosen read.
+        self.on_read = None
         probe.uc.mem_unmap(DMA_BASE, 4096)
         probe.uc.mmio_map(DMA_BASE, 4096, self.read, None, self.write, None)
 
@@ -27,6 +30,8 @@ class Dma:
         self.page[offset:offset + 4] = u32(value)
 
     def read(self, uc, offset, size, data):
+        if self.on_read is not None:
+            self.on_read(offset)
         return int.from_bytes(self.page[offset:offset + size], "little")
 
     def write(self, uc, offset, size, value, data):
@@ -346,12 +351,14 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1, layout)
         probe.call("energy_control_task")
         c.check(get("energy_control_ack") == 3, "main loop did not acknowledge quiet generation")
         dma.set(0x58, ENERGY_MASK | SWO_MASK)
+        dma.set(0x60, ENERGY_MASK)
         dma.set(0x40, ENERGY_MASK)
         probe.call("DMA0_IRQHandler")
         c.check(get("energy_segments") == 1 and get("swo_segments") == 2,
                 "quiet energy completion changed its count or blocked SWO")
-        c.check(dma.get(0x58) == ENERGY_MASK and dma.get(0x40) == ENERGY_MASK,
+        c.check(dma.get(0x58) == ENERGY_MASK and dma.get(0x60) == ENERGY_MASK and dma.get(0x40) == ENERGY_MASK,
                 "quiet ISR consumed energy status owned by CPU1")
+        dma.set(0x60, 0)
         put("energy_control_request", 4)
         probe.call("energy_control_task")
         c.check(get("energy_control_ack") == 4, "resume generation not acknowledged")
@@ -624,13 +631,21 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         energy = attach_integration(probe, offsets, layout, symbols0["energy_integration"][0])
         probe.energy = energy
 
+        def flag(counted=None):
+            """The offset of the flag DMA0 raises for segment `counted` of the capture, by default the
+            next one CPU 0 has not counted: INTA for the ring's first half, INTB for the second."""
+            if counted is None:
+                counted = get("energy_segments") - energy.get("segments_at_start", 4)
+            return 0x58 if counted % 2 == 0 else 0x60
+
         def integrate():
             """A completed segment, through CPU 0's whole interrupt, which integrates it and then
             counts it."""
-            dma.set(0x58, dma.get(0x58) | ENERGY_MASK)
+            dma.set(flag(), dma.get(flag()) | ENERGY_MASK)
             probe.call("cpu0:DMA0_IRQHandler")
 
         probe.integrate = integrate
+        probe.flag = flag
         for name, value in (("current_calibrated", 1), ("accumulator_started", 1), ("actual_rate_hz", FIXTURE_RATE),
                             ("requested_rate_hz", FIXTURE_RATE), ("current_range", 1), ("adc_ready", 1),
                             ("inputmux_ready", 1)):
@@ -663,7 +678,9 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
             """run_out: at a segment's end, the descriptor that has just run out, whose XFERCOUNT
             reads 0x3FF, rather than the next one loaded."""
             segment = energy.get("segment_words", 4)
-            dma.set(0x58, ENERGY_MASK if pending else 0)
+            dma.set(0x58, 0)
+            dma.set(0x60, 0)
+            dma.set(flag(), ENERGY_MASK if pending else 0)
             left = 1024 if run_out and words % segment == 0 else segment - words % segment
             dma.set(0x408 + 21 * 16, (left - 1) << 16)
 
@@ -735,6 +752,10 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
                 (segment * 1000 <= actual * 7 or segment == 16) and (segment * 2000 > actual * 7 or segment == SEGMENT) and
                 counts == [segment - 1] * 2 and dma.get(0x408 + 21 * 16) >> 16 & 0x3ff == segment - 1,
                 f"{actual} pairs/s: segments of {segment} words, descriptors count {counts}")
+        # The first transfer and descriptor 0 fill the ring's first half and raise INTA (bit 4); descriptor 1
+        # fills the second and raises INTB (bit 5).
+        flags = [dma.get(0x408 + 21 * 16) >> 4 & 3] + [probe.energy.get("descriptors", 4, 16 * i) >> 4 & 3 for i in range(2)]
+        c.check(flags == [1, 1, 2], f"{actual} pairs/s: the halves' interrupt flags are {flags}, not A, A, B")
         probe.uc.hook_del(hook)
     c.note("ADC monitor command registers at averaging boundaries use the actual timer rate; segments hold"
            " about 1 ms of pairs")
@@ -977,10 +998,11 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         c.check(reply[2] == 0 and int.from_bytes(reply[3:5], "little") == codes[-1] and
                 int.from_bytes(reply[7:11], "little") == len(codes),
                 f"{size}-word segments, {counted} through CPU 0: latest {reply.hex()}")
-        dma.set(0x58, ENERGY_MASK | SWO_MASK)
+        dma.set(0x58, SWO_MASK)
+        dma.set(probe.flag(), dma.get(probe.flag()) | ENERGY_MASK)
         pause()
         total(codes, (1 << 32) // rate)
-        c.check(dma.get(0x58) == SWO_MASK, "tail drain cleared another channel's completion")
+        c.check(dma.get(0x58) == SWO_MASK and dma.get(0x60) == 0, "tail drain cleared another channel's completion")
         # Repeated pauses do not consume the settled extent again.
         pause()
         total(codes, (1 << 32) // rate)
@@ -1233,7 +1255,9 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC and value == 0 and adc.resets == 0,
             "stuck ADC did not fail without discarding pending data")
     probe.uc.hook_del(hook)
-    for fault in ("IRQ error", "pending error", "FIFO overflow"):
+    # "late": the second half's segment and the first's after it completed before CPU 0 took the first,
+    # so both flags are up. "out of turn": CPU 0 takes the first half's flag when the second's is due.
+    for fault in ("IRQ error", "pending error", "FIFO overflow", "late", "out of turn"):
         probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
         words = [result(1, 32768), result(1, 1), result(2, 0)] + [0] * (SEGMENT - 3)
         feed(words)
@@ -1245,6 +1269,14 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
             put("energy_dma_error", 1, 1)
         elif fault == "pending error":
             dma.set(0x40, ENERGY_MASK)
+        elif fault == "late":
+            dma.set(0x58, ENERGY_MASK)
+            dma.set(0x60, ENERGY_MASK)
+        elif fault == "out of turn":
+            dma.set(0x58, ENERGY_MASK)
+            probe.call("cpu0:DMA0_IRQHandler")
+            c.check(dma.get(0x58) == 0 and get("energy_segments") == 2,
+                    f"{fault}: CPU 0 left the flag up or did not count it")
         else:
             adc.page[0x14:0x18] = u32(2)
         reply = probe.command(bytes([0x90, 1]))
@@ -1263,12 +1295,95 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         c.check(reply[2] == 4 and probe.command(bytes([0x90, 3]))[2] == 7,
                 f"{fault}: failed start cleared sticky status")
         local("requested_rate_hz", FIXTURE_RATE)
+        # Both halves' flags, as a capture that failed can leave them.
+        dma.set(0x58, dma.get(0x58) | ENERGY_MASK)
+        dma.set(0x60, ENERGY_MASK)
         c.check(probe.call("energy_capture_start", 1) == 1, f"{fault}: new-session recovery failed")
+        c.check(dma.get(0x58) & ENERGY_MASK == 0 and dma.get(0x60) == 0, f"{fault}: a start left a flag up")
         total([])
         c.check(probe.command(bytes([0x90, 1]))[2] == 2 and probe.command(bytes([0x90, 3]))[2] == 2,
                 f"{fault}: successful start did not clear failure")
         probe.uc.hook_del(hook)
-    c.note("energy partial/full/pending segments, FIFO tail, split tuples, Q32 carry and session resume/reset")
+    # CPU 0's own checks of the flags it takes, at an even count and an odd one: both halves' (a
+    # segment and the next completed before the interrupt ran), or the other half's alone. The
+    # capture fails, the segment is not integrated, and the flags are cleared.
+    for counted, flags, label in ((0, (0x58, 0x60), "both"), (1, (0x58, 0x60), "both"), (0, (0x60,), "INTB")):
+        probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+        words = [result(1, 32768), result(1, 1), result(2, 0)] + [0] * (SEGMENT - 3)
+        feed(words)
+        feed(words, SEGMENT)
+        if counted:
+            probe.integrate()
+        pairs = get("energy_accumulator_pairs", 8)
+        for offset in flags:
+            dma.set(offset, dma.get(offset) | ENERGY_MASK)
+        probe.call("cpu0:DMA0_IRQHandler")
+        c.check(get("energy_dma_error", 1) == 1 and get("energy_accumulator_pairs", 8) == pairs and
+                dma.get(0x58) == 0 and dma.get(0x60) == 0 and get("energy_segments") == counted + 1,
+                f"CPU 0 took {label} at count {counted}: error {get('energy_dma_error', 1)}, pairs"
+                f" {get('energy_accumulator_pairs', 8)} from {pairs}, flags {dma.get(0x58):#x} {dma.get(0x60):#x}")
+        probe.uc.hook_del(hook)
+
+    # CPU 1's latest pair while CPU 0 is late: the second half completes just before CPU 1 reads the
+    # ring's position, so the half it then decodes is being rewritten; CPU 0 takes and clears both
+    # flags before CPU 1's last check, and has not stored its error yet. The reply is a failure.
+    probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+    words = [result(1, 32768), result(1, 1), result(2, 0)] + [0] * (SEGMENT - 3)
+    feed(words)
+    written(SEGMENT // 2, pending=True)
+    reads = {0x40: 0, XFERCFG_21: 0}
+
+    def race(offset):
+        if offset in reads:
+            reads[offset] += 1
+        if offset == XFERCFG_21 and reads[offset] == 1:
+            dma.set(0x60, ENERGY_MASK)
+        if offset == 0x40 and reads[offset] == 2:
+            dma.set(0x58, 0)
+            dma.set(0x60, 0)
+
+    dma.on_read = race
+    reply = probe.command(bytes([0x90, 1]))
+    dma.on_read = None
+    c.check(reads[0x40] >= 2 and reply[2] == 7, f"latest beside a late CPU 0 answered {reply[:3].hex()}, "
+                                               f"ERRINT read {reads[0x40]} times")
+    probe.uc.hook_del(hook)
+
+    # DMA0 completes the next segment halfway through CPU 0's integration of this one: DMA0 was filling
+    # this half again, so the capture fails. Completed just after, it is the next segment's to take. A
+    # code hook paces it: AGENTS.md's unicorn trap rules out a memory hook on the ring.
+    steps = 0
+    for during in (False, True):
+        label = "next segment completed during the read" if during else "next segment completed after the read"
+        probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+        words = [result(1, 32768), result(1, 1), result(2, 0)] + [0] * (SEGMENT - 3)
+        feed(words)
+        feed(words, SEGMENT)
+        executed = 0
+
+        def step(uc, at, size, data):
+            nonlocal executed
+            executed += 1
+            if during and executed == steps // 2:
+                dma.set(0x60, dma.get(0x60) | ENERGY_MASK)
+
+        counter = probe.uc.hook_add(UC_HOOK_CODE, step)
+        probe.uc.ctl_flush_tb()
+        probe.integrate()
+        probe.uc.hook_del(counter)
+        probe.uc.ctl_flush_tb()
+        if not during:
+            steps = executed
+            dma.set(0x60, ENERGY_MASK)
+        c.check(get("energy_dma_error", 1) == (1 if during else 0) and get("energy_segments") == 1,
+                f"{label}: error {get('energy_dma_error', 1)}, {get('energy_segments')} segments counted")
+        probe.call("cpu0:DMA0_IRQHandler")
+        reply = probe.command(bytes([0x90, 3]))
+        c.check(reply[2] == (7 if during else 0) and int.from_bytes(reply[11:19], "little") == (1 if during else 2) and
+                dma.get(0x60) == 0, f"{label}: mode 3 answered {reply.hex()}")
+        probe.uc.hook_del(hook)
+    c.note("energy partial/full/pending segments, FIFO tail, split tuples, Q32 carry and session resume/reset;"
+           " each half's own flag, and a segment taken late, out of turn or overtaken during its read fails")
     check_stream(c, setup, result, local_symbols=symbols)
     check_identity(c, setup, offsets)
     from energy_lifecycle import check_sequences

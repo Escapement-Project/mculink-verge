@@ -9,7 +9,7 @@
  * tables, constants, descriptors and the position for the next capture. The start then releases
  * quiet, and only after that does a new session reset the accumulator, the decoder and the
  * position, and does the start set `running`. No completion can come meanwhile: the channel stays
- * disabled, its INTA bit cleared, until the start enables it last. From then on only CPU 0's DMA
+ * disabled, its flags cleared, until the start enables it last. From then on only CPU 0's DMA
  * interrupt advances the state, and CPU 1 reads it under energy_accumulator_sequence.
  */
 #ifndef ENERGY_INTEGRATION_H
@@ -26,11 +26,19 @@
 #include "energy_samples.h"
 
 
-/** Records a DMA error or an ADC FIFO overflow in dap_shared.energy_dma_error, which stays set
- *  until a new session starts; returns whether one is set. */
+/** The flag DMA0 raises as it completes segment `counted` of a capture: INTA for the ring's first
+ *  half, INTB for the second (src/energy_monitor.c). */
+static inline volatile uint32_t* energy_segment_flag(uint32_t counted) {
+    return ((counted & 1U) == 0U) ? &DMA0->COMMON[0].INTA : &DMA0->COMMON[0].INTB;
+}
+
+/** Records a DMA error, an ADC FIFO overflow or a segment CPU 0 has not taken by the time the next
+ *  completes (both halves' flags up) in dap_shared.energy_dma_error, which stays set until a new
+ *  session starts; returns whether one is set. */
 static inline bool energy_capture_failed(const struct energy_integration* energy) {
     if (((DMA0->COMMON[0].ERRINT & ENERGY_DMA_MASK) != 0U) ||
-        (energy->running && ((ADC0->STAT & ADC_STAT_FOF0_MASK) != 0U))) {
+        (energy->running && ((ADC0->STAT & ADC_STAT_FOF0_MASK) != 0U)) ||
+        ((DMA0->COMMON[0].INTA & DMA0->COMMON[0].INTB & ENERGY_DMA_MASK) != 0U)) {
         dap_shared.energy_dma_error = 1U;
     }
     return dap_shared.energy_dma_error != 0U;
@@ -99,24 +107,37 @@ static inline bool energy_consume_until(struct energy_integration* energy, uint3
     return true;
 }
 
-/** CPU 0's DMA interrupt, for each completed segment before it counts it: integrates the segment,
- *  and asks for the low range back when every sample in it stayed on the high range under the
- *  setting's limit. A segment that completed no pair says nothing either way. */
-static inline void energy_integrate(struct energy_integration* energy) {
+/** CPU 0's DMA interrupt, for each completed segment before it counts it, with the channel's INTA
+ *  and INTB as it took and cleared them: integrates the segment, and asks for the low range back
+ *  when every sample in it stayed on the high range under the setting's limit. A segment that
+ *  completed no pair says nothing either way.
+ *
+ *  The flag taken has to be this segment's alone, and the next segment's still down once this one
+ *  is integrated: that completion is DMA0 starting on this half again. Either fails the capture. */
+static inline void energy_integrate(struct energy_integration* energy, bool took_a, bool took_b) {
     if (!energy->running) {
         return;
     }
-    if (energy_capture_failed(energy)) {
+    uint32_t const counted = dap_shared.energy_segments - energy->segments_at_start;
+    bool const first_half = (counted & 1U) == 0U;
+    if ((took_a != first_half) || (took_b == first_half)) {
+        dap_shared.energy_dma_error = 1U;
+    }
+    if (!energy_capture_failed(energy)) {
+        uint32_t const segment_bytes = (energy_ring_words(energy) / ENERGY_SEGMENTS) * sizeof(uint32_t);
+        if (energy_consume_until(energy, (counted + 1U) * segment_bytes) && energy->on_high_range &&
+            !energy->rearm_blocked) {
+            dap_shared.energy_range_retry_pending = 1U;
+        }
+        energy->on_high_range = false;
+        energy->rearm_blocked = false;
+        if ((*energy_segment_flag(counted + 1U) & ENERGY_DMA_MASK) != 0U) {
+            dap_shared.energy_dma_error = 1U;
+        }
+    }
+    if (dap_shared.energy_dma_error != 0U) {
         energy_stream_end(&energy->stream, ENERGY_STREAM_END_FAULT, energy->decoder.sequence);
-        return;
     }
-    uint32_t const completed = dap_shared.energy_segments - energy->segments_at_start + 1U;
-    uint32_t const segment_bytes = (energy_ring_words(energy) / ENERGY_SEGMENTS) * sizeof(uint32_t);
-    if (energy_consume_until(energy, completed * segment_bytes) && energy->on_high_range && !energy->rearm_blocked) {
-        dap_shared.energy_range_retry_pending = 1U;
-    }
-    energy->on_high_range = false;
-    energy->rearm_blocked = false;
 }
 
 #endif

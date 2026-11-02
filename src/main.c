@@ -446,9 +446,9 @@ __attribute__((section(".ramfunc"))) static void idle(void) {
 
 /** One completed energy segment, integrated from SRAM. Out of line, so tools/energy_checks.py can
  *  call it. */
-__attribute__((section(".ramfunc"), noinline)) void energy_integrate_segment(void);
-__attribute__((section(".ramfunc"), noinline)) void energy_integrate_segment(void) {
-    energy_integrate(&energy_integration);
+__attribute__((section(".ramfunc"), noinline)) void energy_integrate_segment(bool took_a, bool took_b);
+__attribute__((section(".ramfunc"), noinline)) void energy_integrate_segment(bool took_a, bool took_b) {
+    energy_integrate(&energy_integration, took_a, took_b);
 }
 
 /** The startup file's vector table names it, weakly; this is the strong definition. */
@@ -477,22 +477,28 @@ __attribute__((section(".ramfunc"))) void DMA0_IRQHandler(void) {
     uint32_t const primask = __get_PRIMASK();
     __disable_irq();
     uint32_t const done = DMA0->COMMON[0].INTA & (SWO_DMA_MASK | VCOM_DMA_MASK | energy_mask);
-    if (done == 0U) {
+    // Energy capture's second half raises INTB (src/energy_monitor.c).
+    uint32_t const done_b = DMA0->COMMON[0].INTB & energy_mask;
+    if ((done | done_b) == 0U) {
         __set_PRIMASK(primask);
         return;
     }
-    if ((done & ENERGY_DMA_MASK) != 0U) {
+    bool const energy = ((done | done_b) & ENERGY_DMA_MASK) != 0U;
+    if (energy) {
         dap_shared.energy_dma_sequence++;
         __DMB();
     }
     DMA0->COMMON[0].INTA = done;
+    if (done_b != 0U) {
+        DMA0->COMMON[0].INTB = done_b;
+    }
     __DMB();
     if ((done & SWO_DMA_MASK) != 0U) {
         dap_shared.swo_segments++;
     }
     __set_PRIMASK(primask);
-    if ((done & ENERGY_DMA_MASK) != 0U) {
-        energy_integrate_segment();
+    if (energy) {
+        energy_integrate_segment((done & ENERGY_DMA_MASK) != 0U, done_b != 0U);
         dap_shared.energy_segments++;
         __DMB();
         dap_shared.energy_dma_sequence++;

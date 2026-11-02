@@ -181,7 +181,7 @@ measurement", has the details.
 | 4 | Requested rate is zero or above 100,000 pairs/s |
 | 5 | Invalid argument |
 | 6 | Calibration failed: the ADC did not answer, or a range kept fewer than two usable points |
-| 7 | DMA failed or the ADC FIFO overflowed |
+| 7 | DMA failed, the ADC FIFO overflowed, or the probe fell behind reading the samples |
 | 8 | Capture identity does not match; nothing changed (modes 11 and 13) |
 | 9 | Identity unavailable: entropy initialization failed or the capture counter is exhausted. Any start can return it, legacy modes 0 and 5 included |
 
@@ -259,7 +259,7 @@ Modes 11 and 13 return `[0x90,DAP_OK,result]` in three bytes. Mode 11 checks ide
 pauses the ADC or changes capture/stream state. Mode 13 checks before ending the stream. A stale
 request leaves acquisition, stream, total, fault and retained identity untouched. It emits no
 stream-end message. A nonzero matching retained identity can be stopped repeatedly: return 0
-when already stopped normally, or retained result 7 after a DMA/FIFO fault. Ending an already
+when already stopped normally, or retained result 7 after a capture fault. Ending an already
 ended stream with the matching identity returns 0. All-zero or nonmatching identities return 8.
 
 Mode 12 returns 32 bytes:
@@ -278,7 +278,7 @@ not combine one capture's identity with its replacement's running state. A captu
 yet reports running (0), with its identity. Its latest sample may still report NO_SAMPLE (2).
 Running is 1 only with result 0; it is 0 with every other result. A healthy never-started probe
 returns result 1, running 0, rate 0 and the zero identity. A first-start rate or calibration
-refusal leaves stopped state. A latched DMA/FIFO/control fault reports 7, with zero identity if
+refusal leaves stopped state. A latched capture or control fault reports 7, with zero identity if
 no start succeeded. Result 9 is used only after entropy initialization actually failed, not merely
 because it has not been attempted. Unavailable hardware takes precedence and returns 3.
 
