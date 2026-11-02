@@ -656,8 +656,8 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
 
     limits = ((3323, 7), (6596, 6), (13001, 5), (25263, 4), (47808, 3), (86330, 2), (100000, 1))
     # Each limit's last request and the next, and the segment sizes' boundaries.
-    rates = (1, 10, 228, 229, 457, 458, 1000, 3323, 3324, 6596, 6597, 6598, 13002, 13003, 14628, 14629, 25269, 25270,
-             47832, 47833, 86408, 86409, 100000)
+    rates = (1, 10, 1000, 3323, 3324, 4572, 4573, 6596, 6597, 6598, 9143, 9144, 13002, 13003, 18289, 18290, 25269,
+             25270, 36571, 36572, 47832, 47833, 73115, 73116, 86408, 86409, 100000)
 
     def check_commands(words, average, calibration):
         tail = 0 if calibration else 2
@@ -684,17 +684,17 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
                 f"{rate} pairs/s: {1 << average} averages overrun a period of {ticks} ticks a half")
         c.check(int.from_bytes(adc.page[0xBC:0xC0], "little") == 0x01000001,
                 "ADC monitor is not hardware trigger 7 starting at command 1")
-        # About 10 ms of the ring's seven words a pair: a power of two, no longer than 10 ms and over
-        # 5, within 16 to 1024 words.
+        # About 1 ms of the ring's seven words a pair: a power of two, no longer than 1 ms and over
+        # 0.5, within 16 to 1024 words.
         segment = probe.energy.get("segment_words", 4)
         counts = [probe.energy.get("descriptors", 4, 16 * i) >> 16 & 0x3ff for i in range(2)]
         c.check(segment & (segment - 1) == 0 and 16 <= segment <= 1024 and
-                (segment * 100 <= actual * 7 or segment == 16) and (segment * 200 > actual * 7 or segment == 1024) and
+                (segment * 1000 <= actual * 7 or segment == 16) and (segment * 2000 > actual * 7 or segment == 1024) and
                 counts == [segment - 1] * 2 and dma.get(0x408 + 21 * 16) >> 16 & 0x3ff == segment - 1,
                 f"{actual} pairs/s: segments of {segment} words, descriptors count {counts}")
         probe.uc.hook_del(hook)
     c.note("ADC monitor command registers at averaging boundaries use the actual timer rate; segments hold"
-           " about 10 ms of pairs")
+           " about 1 ms of pairs")
 
     # A start hands CPU 0 what CPU 1 holds, whatever the struct held before: the tables, whether
     # they are good, the rate's scale, the board's full scale and the setting's re-arm limit.
@@ -714,7 +714,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
                  probe.energy.get("calibrated", 1), probe.energy.get("scale_q32", 8),
                  probe.energy.get("full_scale_mv", 4), probe.energy.get("rearm_below_na", 4),
                  probe.energy.get("segment_words", 4))
-    c.check(value == 1 and published == (low, high, 1, (1 << 32) // actual, 3300, 400000, 64),
+    c.check(value == 1 and published == (low, high, 1, (1 << 32) // actual, 3300, 400000, 16),
             f"a start published {published[2:]} and {'the' if published[:2] == (low, high) else 'other'} tables")
     probe.uc.hook_del(hook)
     c.note("a start publishes CPU 1's tables and constants to CPU 0's integration")
@@ -887,9 +887,10 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     total([])
     probe.uc.hook_del(hook)
 
-    # The fixture's full-size segments, and the sizes a start picks at 1,000 and 10 pairs/s. After an
-    # odd number of segments through CPU 0, the drain runs past the ring's end.
-    for (rate, size), counted in itertools.product(((FIXTURE_RATE, 1024), (1000, 64), (10, 16)), (3, 4)):
+    # The fixture's full-size segments, and the sizes a start picks at 100,000, 5,000 and 1,000 pairs/s.
+    # After an odd number of segments through CPU 0, the drain runs past the ring's end.
+    for (rate, size), counted in itertools.product(((FIXTURE_RATE, 1024), (100000, 512), (5000, 32), (1000, 16)),
+                                                   (3, 4)):
         probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
         if rate != FIXTURE_RATE:
             local("requested_rate_hz", rate)
@@ -1036,6 +1037,40 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     c.note("a high-range segment under the low range's limit re-arms it; one over, a low-range end or no pair"
            " does not")
 
+    # The same at sizes a start picks, with pairs running on across segment ends as in a capture: a
+    # pair counts in the segment its range word lands in. One over the limit has its current at the
+    # end of one segment and its range at the start of the next; a later one on the low range ends
+    # a segment.
+    for rate, size in ((1000, 16), (FIXTURE_RATE, 64)):
+        probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+        local("requested_rate_hz", rate)
+        c.check(probe.call("energy_capture_start", 1) == 1 and probe.energy.get("segment_words", 4) == size,
+                f"{rate} pairs/s: start or segment size for the re-arm check")
+        probe.energy.write("high_range", struct.pack("<4H7IB3x", 0, 65535, 0, 0, 0, 6553500, 0, 0, 100 << 16, 0, 0, 2))
+        pairs = [(10000, False)] * 200
+        straddle = next(i for i in range(len(pairs)) if (3 * i + 2) % size == 0)
+        pairs[straddle] = (20000, False)
+        ends_low = next(i for i in range(len(pairs))
+                        if (3 * i + 2) % size == size - 1 and (3 * i + 2) // size > (3 * straddle + 2) // size)
+        pairs[ends_low] = (10000, True)
+        words = [word for current, low in pairs
+                 for word in (result(1, 32768), result(1, current), result(2, 65535 if low else 0))]
+        base = get("energy_segments")
+        got, want = [], []
+        for index in range(len(words) // size):
+            put("energy_range_retry_pending", 0, 1)
+            feed(words[index * size:(index + 1) * size], index * size)
+            put("energy_segments", base + index)
+            probe.integrate()
+            got.append(get("energy_range_retry_pending", 1))
+            done = [pair for i, pair in enumerate(pairs) if (3 * i + 2) // size == index]
+            want.append(int(bool(done) and not done[-1][1] and
+                            not any(not low and current >= 15000 for current, low in done)))
+        c.check(got == want and 0 in want and 1 in want,
+                f"{size}-word segments: re-arm by segment {got}, against {want}")
+        probe.uc.hook_del(hook)
+    c.note("re-arm by segment at 16 and 64 words, pairs straddling segment ends")
+
     # A pair whose range differs from the previous pair's takes the next pair's current, unless that
     # pair switched too; one still waiting at a pause keeps its own; a start counts as the low range.
     # Distinct tables (30 and 6000 nA a code) make the swap show: a blended code read on the high
@@ -1101,7 +1136,10 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     # A capture that fails while a pair waits drops it; the next session starts clean. CPU 0's
     # interrupt takes a segment that ends on a switch, then the failure stops the drain.
     resume("resume before a failure")
-    segment = words([(36000, 10000, True)] * 340 + [(37000, 59000, False)]) + [result(1, 36000)]
+    size = probe.energy.get("segment_words", 4)
+    pairs_in = (size - 1) // 3
+    segment = ([0] * ((size - 1) % 3) + words([(36000, 10000, True)] * (pairs_in - 1) + [(37000, 59000, False)]) +
+               [result(1, 36000)])
     feed(segment)
     probe.integrate()
     c.check(probe.energy.get("held", 1) == 1, "the segment's last pair is not waiting")
@@ -1337,8 +1375,12 @@ def check_stream(c, setup, result, local_symbols):
     c.check(probe.call("energy_capture_start", 0) == 1, "stream: resume failed")
     segment = probe.energy.get("segment_words", 4)
     whole = segment // 3
-    feed(pairs(whole, 10) + [0] * (segment - 3 * whole))
-    probe.integrate()
+    # Enough segments to fill a message, then the next one completed with nothing in it.
+    filled = -(-99 // whole)
+    for index in range(filled):
+        feed(pairs(whole, 10 + index * whole) + [0] * (segment - 3 * whole), index * segment)
+        probe.integrate()
+    feed([0] * segment, filled * segment)
     put("energy_segments", get("energy_segments") + 1)
     got = messages(probe)
     c.check(len(got) >= 1 and got[0][1] == 1 and u32_at(got[0], 2) == 11 and

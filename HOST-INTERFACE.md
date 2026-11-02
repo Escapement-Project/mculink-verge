@@ -489,8 +489,9 @@ below.
 
 A message holds at most 99 pairs and less than 10 ms of them, so it fits one 512-byte packet. The
 probe sends it once it is full, or once the pairs it has taken in reach 10 ms. It takes pairs in a
-batch every 10 ms or so; below about 230 pairs a second a batch takes longer, up to 2.3 s at one
-pair a second, and so does a message.
+batch every millisecond or so. Below 2,286 pairs a second a batch is about two and a third pairs
+and takes longer: up to 2.3 s at one pair a second. Below about 230 pairs a second a message waits
+for its batch.
 
 ### DIO edges: `0xa3`
 

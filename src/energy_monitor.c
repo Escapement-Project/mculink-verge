@@ -370,12 +370,18 @@ static uint32_t rearm_below_na(void) {
     return current_range == TARGET_SENSE_CURRENT_RANGE_350_MA ? 1500000U : 400000U;
 }
 
-/** About 10 ms of pairs, so the low range re-arms within 20 ms of the current falling (PRO.md,
- *  "Range switching"): the most words that take no longer, as a power of two. */
+/** About a millisecond of pairs, so the low range re-arms within about 2 ms of the current falling
+ *  at every rate from 2,286 pairs/s (PRO.md, "Range switching"): the most words that take no
+ *  longer, as a power of two. With 10 ms, the re-arm took 7 to 15 ms at 20,000 pairs/s and 1.5 to
+ *  3 ms at 100,000, so the range a short low phase was read on depended on the rate.
+ *
+ *  CPU 0's DMA interrupt has to take each segment before the next one completes, so within about
+ *  0.5 ms at the shortest. Two completions would share one flag, and CPU 0 would then read the half
+ *  DMA0 is writing, with nothing to tell it. */
 static uint32_t segment_words(uint32_t rate_hz) {
-    uint32_t const words_in_10_ms = (rate_hz * ENERGY_WORDS_PER_PAIR) / 100U;
+    uint32_t const words_in_1_ms = (rate_hz * ENERGY_WORDS_PER_PAIR) / 1000U;
     uint32_t words = ENERGY_SEGMENT_MAX_WORDS;
-    while ((words > ENERGY_SEGMENT_MIN_WORDS) && (words > words_in_10_ms)) {
+    while ((words > ENERGY_SEGMENT_MIN_WORDS) && (words > words_in_1_ms)) {
         words /= 2U;
     }
     return words;

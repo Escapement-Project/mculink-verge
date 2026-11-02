@@ -114,6 +114,10 @@ Sources.
   1-2, or 200 Ω at 2-3. In the high range, Q3 adds 0.24 Ω or 2.0 Ω in parallel, chosen by J17. Q3's on-resistance is part of the high range's resistance, and so is
   J17's contact. Q3's gate is at 0 V while it conducts, and its source is at the supply, so its
   on-resistance follows the supply: about 16.5 mΩ at 3.3 V (PMPB15XP, Figs. 8 and 9).
+- **The drop across them.** The sense resistor is in series with the target, so on the low range
+  the target's supply sits lower by its current times 50 Ω or 200 Ω: 54 mV at 1.08 mA, and up to
+  about 90 mV just under the switch to the high range. The voltage the probe reports is the
+  target's side, so it shows the drop.
 - **The amplifier.** A first stage turns the voltage across the sense resistor into 10 times
   itself, and a second adds a gain of 3. Its output is 30 times the voltage across the resistor,
   the sheet's own equation. It goes to ADC0_8 on PIO0_16 and to the comparator's input D on
@@ -169,12 +173,19 @@ the probe's target supply can give.
   firmware looks at the samples taken on the high range. If every one read below Table 4's limit for
   its setting, it clocks the latch. The comparator still holds the latch's reset, so a current that
   has come back above the threshold keeps the high range. Between Table 4's limit and the
-  threshold, a current stays on whichever range it is on. The firmware sizes the segments to the
-  sample rate: 5 to 10 ms of samples each, and at most 146 samples, which is under 10 ms from
-  14,629 samples a second. The first whole segment under the limit re-arms the low range: within
-  about 20 ms of the current falling from 230 samples a second up, and within 2.9 ms at 100,000.
-  Below 457 samples a second a segment is its floor of 16 words, about two and a third samples,
-  and the low range comes back within five.
+  threshold, a current stays on whichever range it is on.
+- **The re-arm's delay.** The firmware sizes the segments to about a millisecond of samples: the
+  most words that fit in 1 ms, as a power of two. The first whole segment under the limit re-arms
+  the low range, so it comes back within about 2 ms of the current falling at any rate from 2,286
+  samples a second. Below that rate a segment is its floor of 16 words, about two and a third
+  samples, and the low range comes back within five. Segments of 10 ms made the delay depend on the
+  rate, from 7 to 15 ms at 20,000 samples a second to 1.5 to 3 ms at 100,000. A target asleep for
+  8 ms in every 10 was then read on the high range for the whole of its sleep at the first rate
+  and mostly on the low range at the second, and its readings moved with the rate.
+- **What a switch down does to the target.** The low range's resistor goes back in series, and
+  the target's supply falls by the drop above. The target's decoupling gives up part of its
+  current while the supply settles, so for about a millisecond the reading dips. The next switch
+  up recharges it, and the energy total counts that charge once.
 
 ### Calibration
 
@@ -235,6 +246,8 @@ With 5 ms it read it right.
   UM11673 gives the 350 mA setting's high range 5% accuracy and the others 1%.
 - J17's contact is in the high range's resistance too. Calibration measures it, but moving the
   jumpers away and back leaves the setting as it was, so only a reset calibrates again.
+- The low range lowers the target's supply (the drop across the sense resistors), so a target
+  whose current follows its supply draws differently on the two ranges, and is read that way.
 - The calibration switches are counted at their typical on-resistance. Their spread moves the
   350 mA setting's high range by up to about 0.3%, through R4.
 - The sheet gives no tolerance for the divider. It moves the current taken off each sample, which

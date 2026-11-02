@@ -28,13 +28,15 @@ def check_sequences(c, setup, result, rate):
             words.extend(extra[:partial])
             pending = rng.choice((False, True))
             processed = 0
-            for segment in range(len(words) // 1024):
-                feed(words[segment * 1024:(segment + 1) * 1024], segment * 1024)
-                if pending and segment == len(words) // 1024 - 1:
+            # The size the last start picked for the rate, or the fixture's before the first.
+            size = probe.energy.get("segment_words", 4)
+            for segment in range(len(words) // size):
+                feed(words[segment * size:(segment + 1) * size], segment * size)
+                if pending and segment == len(words) // size - 1:
                     continue
                 probe.integrate()
-                processed += 1024
-            tail = len(words) // 1024 * 1024
+                processed += size
+            tail = len(words) // size * size
             feed(words[tail:], tail)
             written(len(words), pending=pending and tail != 0)
             accounted = min(count, (processed + 6) // 9)
