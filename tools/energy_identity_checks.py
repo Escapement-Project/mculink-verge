@@ -152,6 +152,17 @@ def check_rng(c, elf, symbols, slots):
                 f"RNG {fault}: boot bytes {bytes(probe.uc.mem_read(boot_at, 16)).hex()}")
         if fault == "health":
             c.check(shifts == list(range(1, 8)), f"RNG health: unsupported precision sequence {shifts}")
+        if late is not None:
+            # A failure must not hold for the rest of the boot: the next start tries the RNG again.
+            rng_writes = sum(1 for at, _ in writes if RNG <= at < RNG + 4096)
+            polls = 0
+            result = probe.call("energy_monitor_start", 1000, timeout_insns=640_000_000)
+            c.check(result == 9, f"RNG {fault} retry: result {result}, expected 9")
+            c.check(sum(1 for at, _ in writes if RNG <= at < RNG + 4096) > rng_writes,
+                    f"RNG {fault}: a later start did not retry initialization")
+            c.check(bytes(probe.uc.mem_read(published_at, 24)) == retained
+                    and bytes(probe.uc.mem_read(probe.sym["capture_counter"], 8)) == bytes(8),
+                    f"RNG {fault} retry: failed retry changed the published identity or counter")
     c.note("RNG linked code: four fresh words after strict health checks; delayed and wrapping-clock success;"
            " reset/statistics/health/refresh timeouts and stopped-counter poll bound;"
            " partial failures preserve boot and published identity; clock/power disabled on every exit")

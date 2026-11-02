@@ -276,6 +276,11 @@ refusal leaves stopped state. A latched DMA/FIFO/control fault reports 7, with z
 no start succeeded. Result 9 is used only after entropy initialization actually failed, not merely
 because it has not been attempted. Unavailable hardware takes precedence and returns 3.
 
+A start after a failed entropy initialization tries it again, so result 9 from that cause lasts
+until an initialization succeeds, not until the probe restarts. A start whose initialization
+succeeds can still fail for another reason; mode 12 then reports that state, not 9. Each failed
+attempt takes up to about a second.
+
 Mode 12 reports 9 with zero identity only when no identity was established. Counter exhaustion
 does not make an existing identity unreadable or prevent stopping its capture. Modes 8/9 reject
 exhaustion or entropy failure before disturbing an existing capture. Old result values keep

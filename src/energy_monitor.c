@@ -785,9 +785,11 @@ energy_monitor_status_t energy_monitor_start(uint32_t rate_hz) {
     if ((rate_hz == 0U) || (rate_hz > ENERGY_MAX_RATE_HZ)) {
         return ENERGY_MONITOR_BAD_RATE;
     }
+    // A failed initialization is retried by the next start, so one bad boot of the RNG does not
+    // take capture away until the probe restarts.
     if (!identity_initialized) {
-        identity_initialized = true;
-        identity_failed = !energy_identity_boot(identity_boot);
+        identity_initialized = energy_identity_boot(identity_boot);
+        identity_failed = !identity_initialized;
     }
     if (identity_failed || (capture_counter == UINT64_MAX)) {
         return ENERGY_MONITOR_IDENTITY_ERROR;
