@@ -919,6 +919,12 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: 
                                    struct_type="struct energy_integration")
     check_aux_stream(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets | stream_shared,
                      stream_layout)
+    from dio_edges_checks import check_edge_rest
+    edge_shared = shared_offsets(slots, "energy_control_ack", "dio_spi_turns", small_enums=short_enums(elf0))
+    edge_layout = shared_offsets(slots, "stream", "stream.active", "stream.edge_mask", "stream.timeline_pending",
+                                 "stream.edge_begins", "stream.edge_entries_written", "stream.edge_entries_read",
+                                 small_enums=short_enums(elf0), struct_type="struct energy_integration")
+    check_edge_rest(c, elf0, symbols_with_size(elf0), edge_shared, edge_layout)
 
 
 def written_before_branch(elf: str, function: str, register: str) -> int | None:

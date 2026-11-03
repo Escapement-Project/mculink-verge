@@ -142,6 +142,16 @@ __attribute__((section(".ramfunc"))) static void set_dropped(bool value) {
     __set_PRIMASK(primask);
 }
 
+/** A new stream starts with no edges lost, unless the interrupt is resting: edges until the rest
+ *  ends are lost to the new stream too. `resting` is read under the mask, so a rest that starts
+ *  meanwhile keeps its mark. */
+__attribute__((section(".ramfunc"))) static void begin_dropped(void) {
+    uint32_t const primask = __get_PRIMASK();
+    __disable_irq();
+    dropped = resting;
+    __set_PRIMASK(primask);
+}
+
 __attribute__((section(".ramfunc"), noinline)) void dio_edges_task(void) {
     if (!present) {
         return;
@@ -163,8 +173,7 @@ __attribute__((section(".ramfunc"), noinline)) void dio_edges_task(void) {
     if (reported == 0U) {
         set_dropped(false);
     } else if (began) {
-        // Edges until a rest ends are lost to the new stream too.
-        set_dropped(resting);
+        begin_dropped();
     }
     if (turns != spi_turns_seen) {
         // CPU 1 turned the interrupts off for SPI (src/dio.c).
