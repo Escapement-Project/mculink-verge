@@ -82,7 +82,7 @@ contends with any other.
 | CPU 0 | 11 | The consoles' channel entries in DMA0's table | Each send |
 | CPU 0 | 11 | `dap_shared.swo_segments`, and `swo_lost` when SWO's count is lost | Each SWO segment's interrupt |
 | CPU 0 | 7 | CTimer 3 (the status LED), and on the Pro CTimer 1 (FUNC) | 488 times a second |
-| CPU 0 | 7, 8, 2 | The DIO edge interrupt (`dio_edges.c`): CTimer 4's counter and PINT's latches on port 7, both GPIO ports' PIN registers on port 8, an entry in the edge record in SRAM0 | Each run, while a stream reports edges: at most 100,000 a second on average |
+| CPU 0 | 7, 8, 11, 2 | The DIO edge interrupt (`dio_edges.c`): CTimer 4's counter and PINT's latches on port 7, both GPIO ports' PIN registers on port 8, `dap_shared.dio_spi_turns` on port 11, an entry in the edge record in SRAM0 | Each run, while a stream reports edges: at most 100,000 a second on average |
 | CPU 0 | 7 | PINT's enables and latches, CTimer 4's counter for the 10 ms check | CPU 0's loop, while a stream reports edges |
 | CPU 0 | 7, 2 | CTimer 4's counter and the oldest marker's stamp in SRAM0, for the markers' 10 ms check | CPU 0's loop, while a stream has markers waiting |
 | CPU 0 | 7 | INPUTMUX's pin interrupt selects, PINT's reset and mode | Boot only, on the Pro |

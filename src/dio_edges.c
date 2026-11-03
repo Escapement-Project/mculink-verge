@@ -36,7 +36,8 @@ static volatile bool sync;
 static volatile uint8_t cleared;
 /** The pins whose interrupts the loop has turned on. */
 static uint8_t enabled;
-static uint32_t spi_turns_seen;
+/** dio_spi_turns as the loop last acted on it. The interrupt reads it too. */
+static volatile uint32_t spi_turns_seen;
 static uint32_t begins_seen;
 
 __attribute__((noinline)) void dio_edges_init(struct energy_stream* stream, uint8_t board, uint8_t jumpers) {
@@ -103,6 +104,16 @@ __attribute__((section(".ramfunc"))) void PIN_INT0_IRQHandler(void) {
         return;
     }
     credit -= run_cost;
+    // CPU 1 counts before SPI moves the pins (src/dio.c). A count read after the levels that is
+    // still the even one the loop turned the pins on under says the levels were read first; any
+    // other, and they may be SPI's. Such a run still pays its credit: with the pins turned on as
+    // SPI took them, every SPI clock would run it.
+    __DMB();
+    uint32_t const turns = dap_shared.dio_spi_turns;
+    if ((turns != spi_turns_seen) || ((turns & 1U) != 0U)) {
+        dropped = true;
+        return;
+    }
     energy_stream_edge_entry_t* const entry = &stream->edge_entries[at & (ENERGY_STREAM_EDGE_ENTRIES - 1U)];
     entry->stamp = stamp;
     entry->rise = (uint8_t)rise;
@@ -200,9 +211,9 @@ __attribute__((section(".ramfunc"), noinline)) void dio_edges_task(void) {
         __DMB();
         if (dap_shared.dio_spi_turns != turns) {
             // SPI took the pins meanwhile: CPU 1 counts before it turns them off, so they stay off
-            // whichever of us wrote last. The run resync asked for has already recorded the levels,
-            // before SPI moved the pins unless CPU 1 was quicker. A resting interrupt has not run,
-            // and clearing sync keeps it from recording them later. The next pass sees the count.
+            // whichever of us wrote last. The run resync asked for records nothing if it read the
+            // levels after the count (PIN_INT0_IRQHandler), and the sync goes with the pins. The
+            // next pass sees the count.
             uint32_t const primask = __get_PRIMASK();
             __disable_irq();
             PINT->CIENR = on;
@@ -247,8 +258,17 @@ __attribute__((section(".ramfunc"), noinline)) bool dio_edges_waiting(void) {
 
 __attribute__((section(".ramfunc"), noinline)) uint8_t dio_edges_pins(uint8_t requested, uint8_t* levels,
                                                                        uint32_t* stamp) {
-    uint8_t const pins = (present && ((dap_shared.dio_spi_turns & 1U) == 0U)) ? (uint8_t)(requested & DIO_PINS) : 0U;
-    *levels = (uint8_t)(dio_pins_levels(GPIO->PIN[0], GPIO->PIN[1]) & pins);
-    *stamp = CTIMER4->TC;
-    return pins;
+    // Again if SPI counted meanwhile: CPU 1 counts before it moves the pins and after it gives
+    // them back (src/dio.c), so levels read between two reads of one even count are the pins' own.
+    for (;;) {
+        uint32_t const turns = dap_shared.dio_spi_turns;
+        __DMB();
+        uint8_t const pins = (present && ((turns & 1U) == 0U)) ? (uint8_t)(requested & DIO_PINS) : 0U;
+        *levels = (uint8_t)(dio_pins_levels(GPIO->PIN[0], GPIO->PIN[1]) & pins);
+        *stamp = CTIMER4->TC;
+        __DMB();
+        if (dap_shared.dio_spi_turns == turns) {
+            return pins;
+        }
+    }
 }

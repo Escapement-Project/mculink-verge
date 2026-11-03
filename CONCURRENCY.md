@@ -271,6 +271,10 @@ through `dio_spi_turns`, which is odd while SPI has the pins.
 - When SPI gives them back, CPU 1 counts again, then raises CPU 0's mailbox (`dio_spi_end`).
 - CPU 0's loop turns the interrupts back on only when the count is even. After a barrier it reads
   the count again, and turns them off if it changed (`dio_edges_task`).
+- On CPU 0, whatever reads the pins' levels reads the count again after them. CPU 1 counts before
+  SPI moves the pins, so an unchanged even count means the levels are the pins' own. Otherwise the
+  pin interrupt records nothing and marks the edges lost, though the run still counts against its
+  rate (`PIN_INT0_IRQHandler`), and a stream's header reads them again (`dio_edges_pins`).
 
 The pin interrupt can also rest: past a rate of edges it turns itself off for a while and marks the
 edges lost (`resting`). The loop turns it back on once the rest is over.
