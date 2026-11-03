@@ -16,6 +16,8 @@ block's last read fail at 16.67 MHz while the loop's reads passed.
 
 ## What an instruction costs from SRAMX
 
+An instruction issues when it enters execute.
+
 | instruction | cost |
 | --- | --- |
 | any 16- or 32-bit instruction, including a GPIO or SRAM load or store | 1 cycle |
@@ -27,8 +29,10 @@ block's last read fail at 16.67 MHz while the loop's reads passed.
 | a 16-bit NOP | 0 when it pairs, 1 otherwise |
 | a data access over S-AHB right after one through the PPB, or the reverse | waits until 2 cycles after the other |
 | `push`, `pop`, `ldm`, `stm` | 1 cycle a register |
+| `ldrd`, `strd` | two accesses |
+| `cpsid`, `cpsie`, and `mrs` or `msr` of PRIMASK | 1 cycle each |
 | an instruction that uses a multiply's result | issues 2 cycles after the multiply |
-| `udiv` | 5 cycles at 100 / 7; the core stops early by operand size |
+| `udiv` | 5 cycles at 100 / 7; the core stops early by operand size, so keep it out of timed code |
 | `it` | 0 cycles; an instruction its block skips still costs its cycle |
 | `bl`, `blx`, `bx lr` | as a taken branch |
 
@@ -44,7 +48,8 @@ Use `mov.w rN, rN` as filler. It costs one cycle at every alignment. A NOP does 
 Prefer `movw` and `movt` for constants. A literal-pool load is a data access on the bus the code
 is fetched over, so it holds back the instruction behind it by a cycle unless a taken branch
 follows. The model has that, but it is a cost a generator need not pay. A counted loop of `subs.w` and `bne.w` costs 3 cycles an iteration plus
-its body when its first instruction is word-aligned, and 4 when it straddles a word.
+its body when its first instruction is word-aligned, and 4 when it straddles a word. The last
+iteration, which falls through, costs 2 plus its body.
 
 The PPB is the bus the cycle counter sits on. No bit path reads it, but every timing measurement
 does, so the last rule matters to anyone reading a count.
@@ -79,7 +84,9 @@ The window's ends are sharp. No sample position on the bench ever gave a mixture
 A read clock needs four instructions: the falling edge, the rising edge, the sample and a store of
 the sample. At 150 MHz the shortest read period is therefore 4 cycles, 37.5 MHz. Above that, the
 period can be any whole number of cycles, and the split between the high and low phases is free.
-A generator picks the shortest period that does not exceed the rate asked for:
+Finer steps at the top would need another core clock, which was not explored: USB has a clock of its
+own, but SWO's rates and the timers follow the core's. A generator picks the shortest period that
+does not exceed the rate asked for:
 
 | asked | ARM's paths | generated |
 | --- | --- | --- |
@@ -138,7 +145,8 @@ register. The data then has half a period before the rising edge and half a peri
   next rising edge is safe: an interrupt there stretches the clock and nothing else. With A = 7
   that is possible only from P = 8 up, at d from 7 to P - 1.
 - **Keep a load two cycles from anything that computes with it.** A store of the sample needs one.
-- **Measure A for each target,** and recompute the placement when the clock changes. Sweep the
+- **Measure A for each target,** and recompute the placement when the clock changes. A counts core
+  cycles, so a new core clock needs a new measurement. Sweep the
   sample delay on DPIDR reads at a period of 8 or more: A is the shortest delay that reads
   correctly, and the window is P cycles wide from there. The bench found A = 7 at P = 8, 12 and 16.
   The probe now does this itself for SWD (src/swd_sweep.c), with generated reads whose windows the
@@ -156,12 +164,15 @@ it, and from the bus slots data has already taken. `tools/cycles.py --engine` ru
 ends of its window.
 
 From SRAMX it matches 692 instruction sequences timed in isolation at four alignments, plus all 144
-covering calls, stack, masking, multiplies, divides, IT blocks and literal loads. It matches 29 pulse trains, every generated read, and every scheduled sequence. It
-is a cycle slow on an unconditional branch straight after a read of the cycle counter, which no
-bit path does.
+covering calls, stack, masking, multiplies, divides, IT blocks and literal loads. It matches 29
+pulse trains, every generated read, and every scheduled sequence. It is a cycle slow on an
+unconditional branch straight after a read of the cycle counter, which no bit path does. It counts
+the prefetch buffer in halfwords, five of them, released at issue (`Params.queue_halfwords`).
+Unicorn does not run an instruction an IT block skips, so `tools/cycles.py` issues it.
 
 From SRAM it is a cycle fast at the alignment where 32-bit instructions straddle words, from the
-cycle-counter read onwards. It still reproduces every SWD result the bench has for the current
+cycle-counter read onwards. Two fixes were tried and rejected: a separate SRAM buffer depth, and the
+PPB ordering applied to fetch. It still reproduces every SWD result the bench has for the current
 firmware. Flash is not modelled, and part of the command layer still runs from there. The JTAG and
 cJTAG paths have timed targets of their own (`TimedJtagTarget` and `TimedCjtagTarget` in
 `tools/cycles.py`, checked by `tools/jtagcheck.py`).

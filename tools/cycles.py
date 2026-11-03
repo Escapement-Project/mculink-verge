@@ -474,7 +474,7 @@ class TimedCjtagTarget:
     in it, the first after entering Shift with a PAD packet between nTDI and TDO. The target reads nTDI and TMS on the rising edges of the
     first two (the activation sets SEDGE=1), and drives TDO in the third: on the probe's pin from
     `latency` cycles after the falling edge that starts that packet, until `hold` cycles after the
-    falling edge that ends it (CJTAGGEN.md, measured on a CC1312R1). A read outside that sees
+    falling edge that ends it (CJTAG.md, measured on a CC1312R1). A read outside that sees
     what the released wire held, which is the TMS level the probe drove last.
 
     It also records what hardware punishes and the order-only model cannot see: a probe still

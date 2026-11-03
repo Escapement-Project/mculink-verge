@@ -20,8 +20,8 @@ Code that predates the rule and breaks it, which is the work list:
   likewise the ARM reference build's alone.
 - The sequence commands `DAP_SWJ_Sequence` and `DAP_SWD_Sequence`, which every build runs on ARM's
   C. `DAP_JTAG_Sequence` runs on the generated scans.
-- `cJTAG_FrameTap` (`src/cjtag.c`), C paced by `DAP_Data.clock_delay`: the OScan2 and OScan6 frames
-  vendor 0x83's activation sends, in every build.
+- `cJTAG_FrameTap` (`src/cjtag.c`), C paced by `DAP_Data.clock_delay`: the trailing OScan2 or
+  OScan6 frame vendor 0x83 mode 0 sends when it leaves those formats, in every build.
 
 **Gate on both compilers.** `uv run tools/gate.py` before committing firmware or tool changes. It
 runs the host checks, then builds gcc and clang, each in the default configuration and as the ARM

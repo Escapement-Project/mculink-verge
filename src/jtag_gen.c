@@ -1,7 +1,7 @@
 /** Generate the JTAG and cJTAG wire paths at run time, placed to the cycle, with cJTAG in
  * IEEE 1149.7 OScan1, OScan2, OScan5 and OScan6.
  *
- * CJTAGGEN.md has the wire this places by, measured on a CC1312R1. TIMING.md has the cycle rules,
+ * CJTAG.md has the wire this places by, measured on a CC1312R1. TIMING.md has the cycle rules,
  * and src/swd_gen.c is the SWD counterpart. In brief:
  *
  * - The generated function is 32 blocks of straight-line code, one JTAG clock each, entered at the

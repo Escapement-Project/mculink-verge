@@ -253,7 +253,7 @@ share one region of SRAMX, and each generates its code again when it finds the o
 
 CPU 1 generates the code again whenever a setting it depends on changes: as the command that
 changes it runs, or at the start of the next transfer command. Either way the wire waits while the
-code is generated. CODEGEN.md and CJTAGGEN.md list what triggers it.
+code is generated. CODEGEN.md lists what triggers it.
 
 ARM's command logic stays in C around the generated code: posted reads, WAIT retries, value
 matching and timestamps. The sequence commands `DAP_SWJ_Sequence` and `DAP_SWD_Sequence` still run
@@ -265,8 +265,8 @@ at a fast clock, when its first read fails, and on a Pro when a capture changes 
 code serves. It measures only while the latency is automatic; `0x89` and `0x8A` can pin one, and
 report the generated code.
 
-TIMING.md has the timing rules the code is placed by, CODEGEN.md the SWD generator and CJTAGGEN.md
-the JTAG and cJTAG one.
+TIMING.md has the timing rules the code is placed by, CODEGEN.md the generators, and CJTAG.md the
+cJTAG wire.
 
 ## LEDs
 

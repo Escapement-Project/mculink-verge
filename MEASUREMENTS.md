@@ -5,6 +5,106 @@ paths it ran on. A product image generates its transfers at runtime (README.md, 
 on ARM's paths describe what the `+armwire` reference build still runs. BENCH.md has the bench
 itself, and mculink-bench the comparisons with stock.
 
+## cJTAG, from ARM's paths to every generated format
+
+Measured 2026-10-16 to 2026-10-22 on a CC1312R1 LaunchPad, first on ARM's paths and then on the
+generated ones. CJTAG.md has the wire these ran on, and CODEGEN.md the generator.
+
+### ARM's paths (2026-10-16 and 17)
+
+- **Rates seen through the firmware**: paced frames at 1 MHz clean; the unpaced fast path at
+  "25 MHz" runs an irregular ~11 MHz (period 50-160 ns) and is clean, 20/20 64-word ROM blocks;
+  at "37.5 MHz" every transfer fails (TDO sampled too early, below).
+- **Throughput on 2026-10-17**: ~230 KiB/s through `dap.py`, 64-word blocks, USB included, flat from
+  15 MHz up because the fast path is unpaced C.
+- **Why the fast path fails at 37.5 MHz requested**: its TDO sample comes a couple of cycles
+  after the release, inside the 8-cycle latency; at 25 MHz the C between packets happened to
+  delay it enough.
+
+### Learned pacing (2026-10-17)
+
+- Bench, 400 queued 127-word reads, host idle 0, pacing off -> on (learned clocks): JTAG 50 MHz
+  156.9 -> 128.4 ms (5), 25 MHz 156.8 -> 128.5 (5), 10 MHz 294.1 -> 252.0 (2); cJTAG 50 MHz 350.7 ->
+  301.5 (2), 25 MHz 430.3 -> 367.7 (1), 15 MHz 530.6 -> 470.5 (1), 10 MHz 656.0 -> 657.8 (0: no
+  WAITs there). Fixed idle 6 JTAG 50 MHz was 129.7: pacing finds it. Data checked against the 1 MHz
+  read at every clock with JTAG and cJTAG.
+- probe-rs end to end, 256 KiB read at 50 MHz: JTAG 0.33 s, cJTAG 0.56 s (0.37 and 0.62
+  without pacing); 10 MHz 0.47 / 1.08 s. 64 KiB flash and verify 0.67 / 0.76 s.
+
+### OScan2 (2026-10-21 and 22)
+
+- Bench (CC1312R1, plain probe, 127-word ROM blocks, dap.py, 300 per clock after 30 to let
+  pacing learn; two rounds agree within 1.5%):
+
+  | MHz | OScan1 | OScan2 | OScan1 unpaced | OScan2 unpaced |
+  | --- | --- | --- | --- | --- |
+  | 12.5 | 330 KiB/s | 352 | 295 | 292 |
+  | 25 | 464-468 | 481 | 420 | 408 |
+  | 50 | 565-566 | 577-586 | 505-506 | 487-491 |
+
+  Every block matched at 1 to 50 MHz in both formats. OScan2 is 2 to 7% faster with pacing, about
+  what its packet count predicts. Pacing learns 5 idle clocks in OScan2 against 2 in OScan1: the
+  CC1312's AP WAITs when a Capture-DR follows the last Update-DR too closely, and OScan2 sends
+  those states in a third of the packets. Without pacing OScan2 is slower than OScan1, from the
+  extra WAITs. Each learned clock regenerates the code, which costs a short run: 50 blocks right
+  after a clock change put OScan2 at 323 KiB/s against OScan1's 423.
+- Attach cost (2026-10-22). probe-rs found an OScan2 attach 13-38 ms slower than
+  OScan1 (115-122 against 83 ms at 12.5 MHz) while its 256 KiB reads ran 1.5-3.3% faster. Every
+  framing switch regenerated scans and transfers: 16.2-17.5 ms at 12.5 MHz, 5.9-6.3 at 50. An
+  OScan2 attach frames OScan1 first and switches, and its learned idle clocks restarted with every
+  configuration change, so it relearned them each session, a regeneration a clock. Two changes:
+  `jtag_gen_ready` builds the scans alone, and `jtag_gen_ready_transfers` the transfers when a
+  transfer command needs them (a switch now costs 0.6-0.8 ms); learned clocks are kept per wire
+  for the configuration they were learned for, and come back when the host does. A dap.py attach
+  at 12.5 MHz now pays one generation in either format, at its first transfer (17.1 ms OScan2,
+  18.5 ms OScan1), where it paid four in OScan2 and two in OScan1 before; the first OScan2 session
+  after power-up still learns its clocks. Through probe-rs (its CLI, 256 KiB, 5 interleaved reps): attach OScan1/OScan2 78.2/73.7 ms at 12.5 MHz (was 79.9/117.8),
+  80.2/81.8 at 25, 81.7/80.7 at 50; reads 774/737, 563/540, 473/444 ms, OScan2 +5.1, +4.3 and
+  +6.7% (577 KiB/s at 50 MHz); all 30 reads matched JTAG. A session's first transfer still pays one
+  generation, in both formats.
+- Before generating OScan5/6: the clock sweep 2026-10-21 put OScan1 at 7.8 us a word at 50 MHz
+  and 9.2 at 25 (127-word blocks), so about 1.3 us of a word at 50 MHz scales with the clock.
+
+### OScan5 (2026-10-22)
+
+- Decoded on the wire, on ARM's path (escape edges counted inside each TCKC high phase): every rise of the capture accounted for, 30 EOT escapes for
+  30 Shift exits, no TMSC edge with TCKC high anywhere else, the TAP back in Run-Test/Idle.
+- Bench (plain MCU-Link, CC1312R1, dap.py robust attach then STFMT 13): the capture decodes as
+  intended (926 frames, every rise used, 30 escapes for 30 Shift exits, no stray edge), CPUID,
+  64-word blocks 20/20 at 1 to 50 MHz. Rates, 127-word ROM blocks, 300 a clock after 300 to let
+  pacing learn, two rounds within 1%:
+
+  | MHz | OScan1 | OScan2 | OScan5 |
+  | --- | --- | --- | --- |
+  | 12.5 | 327-329 KiB/s | 349-350 | 415-419 |
+  | 25 | 471 | 477-482 | 542-546 |
+  | 50 | 551-556 | 567-569 | 588-592 |
+
+  OScan5 is 27% faster than OScan1 at 12.5 MHz, where the packets set the rate (two a Shift clock
+  against three), and 6% at 50 MHz, where the TDO latency sets most of a Shift frame (16 core cycles
+  against OScan1's 18 at latency 8) and USB starts to bound the rest.
+
+### OScan6, and the four formats in one run (2026-10-22)
+
+- Bench, on ARM's path (plain MCU-Link, robust attach): CPUID, the 96-bit DR pattern, 64-word blocks 20/20 at 1 to 50
+  MHz. Decoded: 927 frames using all 2125 rises,
+  30 EOT escapes for 30 Shift exits, 30 PAD packets for 30 Shift entries, no stray edge.
+- Rates, all four formats in one run on one image (127-word blocks, 300 after 300; two rounds within
+  1%):
+
+  | MHz | OScan1 | OScan2 | OScan5 | OScan6 |
+  | --- | --- | --- | --- | --- |
+  | 12.5 | 306 KiB/s | 304-305 | 392-394 | 397-398 |
+  | 25 | 454-456 | 427-433 | 510-514 | 438 |
+  | 50 | 519-523 | 502-511 | 560 | 547-548 |
+
+  OScan5 is the fastest on this target from 25 MHz up and level with OScan6 at 12.5. OScan6 and
+  OScan2 send the clocks outside Shift as one packet, and the CC1312's AP answers WAIT when a
+  Capture-DR comes too soon after an Update-DR, so pacing adds idle clocks there. Every figure here
+  is 5-12% below the afternoon's (OScan5 table): the afternoon's image, measured again in
+  this run, matched these within 2%, so the bench changed, not the firmware. OScan2 fell most, which
+  points at the target answering WAIT more (not measured).
+
 ## SWO capture
 
 Measured 2026-10-19 to 2026-10-21, on the dual-core image's DMA capture.
@@ -382,6 +482,14 @@ number of cycles: the furthest a request falls short is 20% at the top of the ra
 today, and nothing runs faster than asked.
 
 TIMING.md has the rules these give a generator. CODEGEN.md is the context for implementing it.
+
+Detail: the read-window prediction held at every non-colliding sample delay
+of `tools/lab.py swd_read_pipelined` at P = 4..8 on the U575. Soak: 200 reads each at P=4 d=9
+(margin 1), P=4 d=7 (margin 0, window edge), P=5 d=9, P=8 d=10: all clean, 7,200 target bits each.
+Writes (`tools/lab.py swd_write_asm`): AP TAR writes with the SWDIO store `lead` cycles before the
+rising edge, lead 1..P-1, P = 3,4,5,6,8,10, 10 writes each, read back at 1 MHz: all land. So setup
+and hold at the target are each under one cycle; any placement off the edge cycles works. 50 MHz
+writes (P = 3) work on this harness, request phase included.
 
 ## The last read of a block at 16.67 MHz
 

@@ -85,7 +85,8 @@ so whoever runs the probe decides whether to use them.
 
 SWD rates come from wire captures in mculink-bench's `results/wireclock/2026-10-21.md`. JTAG and
 cJTAG rates come from the firmware's timing report (vendor 0x8A, run in the emulator); JTAG at
-30 MHz was also measured on hardware (CJTAGGEN.md). Console loopbacks and SWO captures are
+30 MHz was also measured on hardware (MEASUREMENTS.md, "cJTAG, from ARM's paths to every generated
+format"). Console loopbacks and SWO captures are
 recorded in MEASUREMENTS.md. Stock SWD captures are in mculink-stock-notes' `wire.md` and
 mculink-bench's `results/wireclock/2026-10-21.md`. Other stock figures are in MEASUREMENTS.md under
 "The console" and in mculink-bench's `results/throughput/2026-10-21-stock.json`.
@@ -289,7 +290,8 @@ NXP's SDK drivers (BSD-3-Clause) and newlib-nano: `THIRD-PARTY-NOTICES.md` has t
   [mculink-stock-notes](https://github.com/Escapement-Project/mculink-stock-notes): throughput and
   the wire clock against stock, and what stock does as seen from outside.
 - `TIMING.md`: measured timing rules for the generated paths.
-- `CODEGEN.md` and `CJTAGGEN.md`: runtime generation of SWD and JTAG paths.
+- `CODEGEN.md`: runtime generation of the SWD, JTAG and cJTAG paths.
+- `CJTAG.md`: cJTAG as the firmware uses it, and the CC1312R1 it was built against.
 - `BOARDS.md`: both boards' pins and straps, and the Pro's circuits.
 - `BUSES.md`: which code uses which bus port, and when.
 - `AGENTS.md`: rules for changing this code.

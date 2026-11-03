@@ -1,10 +1,45 @@
-# Runtime code generation of the bit paths
+# Runtime code generation
 
-A companion to TIMING.md, which has the rules in prose: read it first. Dense on purpose.
-Everything here was measured on the bench 2026-10-16 unless marked otherwise. MEASUREMENTS.md,
-"The cost model times the bus", has the evidence.
+Every SWD, JTAG and cJTAG transfer runs on code the probe generates at run time. This file is how:
+what the two generators share, the SWD generator, and the JTAG generator, which draws both JTAG and
+cJTAG. TIMING.md has the timing rules they place instructions by: read it first. CJTAG.md has the
+cJTAG wire, and MEASUREMENTS.md the evidence. Dense on purpose. The SWD notes were measured on the
+bench 2026-10-16 unless marked otherwise.
 
-## The generator as built (src/swd_gen.c, behind SWD_CODEGEN, on by default since 2026-10-20)
+## What the generators share
+
+- `src/gen.c` holds the schedule, instructions placed on core cycles, sorted, at most one a cycle,
+  and the emitter that writes a schedule out as code with a filler or a counted loop in every gap
+  (`src/gen.h`). Each generator decides where its own instructions go; they run one at a time and
+  share one event workspace.
+- SWD and JTAG share SRAMX's lower 16 KB, 0x0400_0000..0x0400_3FFF; the code lab's arena is the
+  upper 16 KB. They are never in use at once, so each generates again when it finds the other's
+  code there (`gen_owner`).
+- When: most settings arrive in a command of their own: `DAP_SWJ_Clock`, `DAP_SWD_Configure`,
+  `DAP_TransferConfigure`, `DAP_JTAG_Configure`, cJTAG framing (`0x83`), a read latency set or
+  measured through `0x89` or `0x8A`, and pacing turned on or off through `0x8B`. CPU 1 generates the
+  new code as that command runs, for the wire in use (`0x89` and `0x8A` for their own wire). For
+  JTAG it builds only the scans then, since a host often changes the chain or the framing again
+  before it transfers, and the first transfer command builds the transfers. Other changes take
+  effect at the next transfer command, which checks its code before the first transfer and generates
+  it again if needed: an energy capture starting or stopping, and the device on the JTAG chain a
+  transfer addresses. Each idle clock JTAG's learned pacing adds is generated at the end of the
+  command that met the WAIT. Either way the wire waits while the code is generated.
+- Stall (`gen_stall`, `src/gen.h`): the cycles another master can hold a load on the bit paths'
+  AHB port. A sample placed after the edge that ends its bit's window reads the next bit if held
+  past the window, so both generators keep this many cycles clear at such a window's end.
+  `src/energy_monitor.c` sets it while a capture is asked for.
+- Latency: a connection measures the target's read latency on the wire (`src/swd_sweep.c`,
+  `src/jtag_sweep.c`, the search in `src/latency.h`): at a fast clock, when its first read fails,
+  and on a capture board when a capture changes which latencies the code serves. It measures only
+  while the latency is automatic; vendor `0x89` and `0x8A` set, pin or measure it.
+- A product image has no ARM path to fall back to. When generation fails, a transfer reports a
+  protocol error with no transfer done, and `DAP_JTAG_Sequence`, `DAP_JTAG_IDCODE` and
+  `DAP_WriteABORT` answer `DAP_ERROR`, before the wire moves (HOST-INTERFACE.md).
+- `tools/gen_host.py` builds the generators away from the firmware, under ASan and UBSan with gcc
+  and clang and for QEMU's Cortex-M33, and requires every build to generate identical code.
+
+## The SWD generator (src/swd_gen.c, behind SWD_CODEGEN, on by default since 2026-10-20)
 
 - `swd_gen_build(config)` writes two functions into SRAMX 0x0400_0000..0x0400_3FFF (lab arena is
   the upper 16 KB): read and write, each `uint64_t fn(packet, words, count)`. Runs `count`
@@ -37,13 +72,6 @@ Everything here was measured on the bench 2026-10-16 unless marked otherwise. ME
   The latency measurement builds without a stall: it holds the conversions. On a board that can
   capture, a connection measures an unmeasured target at every masked period: a capture starting
   or stopping changes which latencies the build serves, and only a measured one is served by both.
-- The JTAG generator honours the same stall on JTAG: a sample after the next fall keeps it
-  clear of TDO's hold (next fall + 6, less MARGIN), and the clock lengthens where nothing fits.
-  `jtag_gen_info.stall_moves` says a build may change. A JTAG connection starts from the default
-  latency, where every such build already leaves under CONNECT_MARGIN, so it measures there
-  (tools/jtag_latency_test.c, test_stall_connect). cJTAG layouts ignore the stall: their samples
-  come before the fall that ends their window, which the gate's `jtagcheck --stall 2` checks on
-  every cJTAG format.
 - Clock = fall store + rise store `str r5, [r9, #SET]`. Probe-driven falls are MPIN stores
   carrying SWDIO (MASK0 = ~(SWCLK|SWDIO), set at build; nothing else uses MPIN), so data changes
   with the fall: trace order W-then-v matches ARM's, and setup = low, hold = high. Target-driven
@@ -56,7 +84,8 @@ Everything here was measured on the bench 2026-10-16 unless marked otherwise. ME
   CLR +0x100, DIRSET +0x200, DIRCLR +0x280), r10 word, r11 ack/temp, r12 + lr samples/temps.
   Packet extraction temps alternate r11/r12 (never overwrite a register a store read the cycle
   before); write data temps r12/r11, parity folded into lr in free slots.
-- Scheduler: sorted (cycle, insn) events (256 max, static 2 KB); `clock()` bumps a clock until
+- Scheduler: sorted (cycle, insn) events (the shared workspace: 256 in a SWD-only build, 1280 with
+  JTAG); `clock()` bumps a clock until
   both edge cycles are free; `op()` = before the next clock (pushes `t`); `side()` = must not
   delay a clock (avoids the grid of the clocks still to come); `sample()` picks the max-margin
   free cycle. Emission fills gaps with `mov.w r6, r6` or `movw r7,#n; subs.w; bne.w` (3n cycles).
@@ -72,81 +101,98 @@ Everything here was measured on the bench 2026-10-16 unless marked otherwise. ME
   images run on the engine against `tools/baseline`, ARM's against `tools/baseline-armwire` (S
   positions differ).
 
-## The timing model (exact from SRAMX; see TIMING.md for prose)
+## The JTAG generator (src/jtag_gen.c, behind JTAG_CODEGEN)
 
-All costs in core cycles at 150 MHz (6.67 ns). Issue cycle = cycle an instruction enters execute.
+One generator draws both JTAG and cJTAG; `src/jtag_gen.c`'s opening comment has the design in brief.
 
-- Every instruction 1 cycle (16- or 32-bit, ALU, `ldr*`/`str*` to GPIO or SRAM).
-- GPIO/SRAM loads and stores pipeline back to back, any mix, no stalls between them.
-- Load result: ALU consumer issues >= load + 2; a store of the loaded register (store-data
-  operand) issues >= load + 1.
-- Taken branch (b, b<cc>, cbz/cbnz, any encoding): target issues at branch + 2, + 1 more if the
-  target is a 32-bit instruction at an address = 2 mod 4.
-- Not-taken conditional branch: 1 cycle; 0 when a 16-bit b<cc> pairs (below).
-- Pairing: a 16-bit NOP or 16-bit b<cc> issues with the preceding 16-bit instruction, unless that
-  one already paired. cbz/cbnz never pair; nothing pairs after a 32-bit instruction. A paired
-  b<cc> that is taken redirects 1 cycle later (target at pair cycle + 3).
-- PPB (0xE000_0000+, DWT->CYCCNT) vs S-AHB data: an access on one waits until 2 cycles after the
-  last access on the other. Bit paths never touch PPB; only timing instrumentation does.
-- Filler: `mov.w rN, rN` (1 cycle anywhere). Never NOP.
-- push/pop/ldm/stm: 1 cycle per register. ldrd/strd: 2 accesses. mul: result usable at +2.
-  udiv: 5 at 100/7 (early termination by operand size; keep out of timed code). `it`: 0 cycles;
-  an IT-skipped instruction still costs its cycle (unicorn does not run it; cycles.py issues it).
-  bl/blx/bx: as a taken branch. cpsid/cpsie, mrs/msr primask: 1 cycle each.
-- Literal-pool loads (C-AHB data access from SRAMX) cost +1 cycle each unless a taken branch
-  follows; modelled exactly since the prefetch buffer is counted in halfwords (5 halfwords,
-  release at issue: `Params.queue_halfwords`). Still prefer movw/movt: no cost at all.
-- Loop `subs.w rX, rX, #1; bne.w head`: 3 cycles/iteration + body if `head` is word-aligned
-  (4 if the head is a 32-bit instruction at 2 mod 4). Last iteration (fall-through): 2 + body.
-- Store -> pin: identical delay for SET (GPIO+0x2200+4*port), CLR (+0x2280), NOT (+0x2300),
-  B byte (GPIO + 32*port + pin), W word (GPIO + 0x1000 + 128*port + 4*pin), and MPIN (+0x2180;
-  low phases of MPIN-fall and CLR-fall clocks agree to 0.2 ns over 2.4 M clocks, L1306, P=20). Edge spacing on the
-  wire = store issue spacing (analyser, to 0.1 cycle; ~1.7 ns analog rise/fall skew at J6).
-- **Read window:** target launches bit k on rising-edge store R_k. A load issued at R_k + d reads
-  bit k iff `A <= d <= P + A - 1` (P = period in cycles, assuming uniform period; in general
-  `A <= d < (R_{k+1} - R_k) + A`). d < A reads bit k-1 ("behind"), d >= next + A reads k+1
-  ("ahead"). Boundaries sharp, deterministic, no mixtures seen in thousands of reads.
-- **A = 7 against the U575 and the MSPM0L1306**, at P = 8..30. Internal self-loop 3 (store to B[SWDIO], load sees it 3 cycles later)
-  + 4 external (buffers, cable, target). Calibrate at connect anyway (sweep d on DPIDR reads,
-  A = smallest passing d); A is in core cycles: recompute if the core clock changes.
-- **The L1306's "fails above 10 MHz" was the probe's sampling.** With model placement it reads
-  and writes clean at P = 4 (37.5 MHz) and every P up to 40.
-- From SRAM (not where generated code goes) the model is approximate: fetch and data share S-AHB
-  one transaction a cycle; misses are -1 at the straddling alignment after a CYCCNT read (tried
-  and rejected: a separate SRAM buffer depth, PPB ordering applied to fetch). Irrelevant to the
-  generator except for comparing against the old C paths.
+- The generated scan function is 32 blocks of straight-line code, one JTAG clock each, entered at
+  the block that leaves `count` of them to run. Every block has the same instructions in the same
+  cycles, so the entry is a multiply away and no clock pays for a loop. OScan5's and OScan6's EOT
+  frames are functions of one block. A transfer function runs `count` transfers of one request.
+- JTAG: a clock is a store to the masked port register that lowers TCK and sets TDI together, then
+  a rising-edge store; TMS is set once for the call. TDO is readable from `latency` cycles after the
+  fall that launched it until a few cycles past the next fall, so a short clock samples it after
+  that next fall and runs masked.
+- cJTAG: a clock is a frame of three TCKC packets, nTDI and TMS from the probe, then TDO from the
+  target, and TMSC moves only while TCKC is low (CJTAG.md). The probe lets go right after the fall
+  that starts the TDO packet, buffer first, and takes the wire back right after the next fall, pin
+  first. The sample goes just before that fall. Interrupts are masked only around the release, or
+  for the whole call where a frame has no cycle to spare.
+- No clock or packet is shorter than the period, and neither phase shorter than its share.
+- The JTAG generator honours the same stall on JTAG: a sample after the next fall keeps it
+  clear of TDO's hold (next fall + 6, less MARGIN), and the clock lengthens where nothing fits.
+  `jtag_gen_info.stall_moves` says a build may change. A JTAG connection starts from the default
+  latency, where every such build already leaves under CONNECT_MARGIN, so it measures there
+  (tools/jtag_latency_test.c, test_stall_connect). cJTAG layouts ignore the stall: their samples
+  come before the fall that ends their window, which the gate's `jtagcheck --stall 2` checks on
+  every cJTAG format.
+- Learned clocks are kept per wire, for the configuration they were learned for, and come back
+  when the host does.
 
-Verified end to end: `tools/lab.py swd_read_pipelined` at P = 4..8 (37.5..18.75 MHz), all
-non-colliding sample delays, 45/45 configurations predicted exactly (verdict and cycle count) on
-the U575. Soak: 200 reads each at P=4 d=9 (margin 1),
-P=4 d=7 (margin 0, window edge), P=5 d=9, P=8 d=10: all clean, 7,200 target bits each.
+### OScan2 (2026-10-21/22)
 
-## Throughput limits implied
+- Wire `JTAG_GEN_OSCAN2` (2) beside JTAG and OScan1; `jtag_gen_wire()` (src/cjtag_dp.c) picks it
+  from the framing, `JTAG_GEN_PINS(wire)` indexes the latency (both cJTAG formats read the same TDO
+  packet). `emit_tms` generates `jtag_gen_tms`, `count` one-packet frames with TMS held (fall, TMS
+  store, rise; never masked, since nothing is released), after the scan function, for OScan2 only,
+  so OScan1's SRAMX layout is unchanged. `frames_oscan2` (src/jtag_gen_dp.c) splits a held-TMS run
+  where the tracked TAP enters or leaves Shift. Transfers lay Select-DR, Capture-DR, the
+  Capture-to-Shift clock, Update-DR, Run-Test/Idle and the idle clocks as one-packet frames
+  (`cx_tms_frame`, with the take-back after a released frame); their failure path and the idle loop
+  too. The connect-time latency sweep and vendor 0x8A's measurement run in OScan2 again.
+- Checks: gen_host 6282 configurations, 1134 of them OScan2, all with transfers, four builds
+  agree; `jtagcheck.py --wire cjtag2` clean at all 41 clocks on `TimedCjtagTarget(oscan2=True)`;
+  `equiv.py --wire cjtag2` against ARM's OScan2 copy; the gate runs `cjtag2` in both.
 
-- Read clock needs: fall store, rise store, sample load, sample consume (store to buffer or
-  accumulate) = 4 instructions -> P >= 4 (37.5 MHz) at 150 MHz.
-- Write clock: fall store, data store (`strb` of a register holding 0/1 to B[SWDIO]), rise
-  store = 3 if the data bit is already in a register -> P >= 3 (50 MHz). Extracting bits from a
-  word costs an extra instruction per bit (`lsr`/`ubfx`) unless precomputed.
-- **Write window (measured, `tools/lab.py swd_write_asm`):** AP TAR writes with the SWDIO store `lead` cycles before the rising
-  edge, lead 1..P-1, P = 3,4,5,6,8,10, 10 writes each, read back at 1 MHz: all land. So setup
-  and hold at the target are each under one cycle; any placement off the edge cycles works.
-  50 MHz writes (P = 3) work on this harness, request phase included.
-- Idle clocks after a transfer must drive SWDIO low: high on a rising edge is a start bit, the
-  target reads a malformed packet and needs a line reset.
-- Packet request bits are constant per request byte: emit them as stores of two constant
-  registers (0 and 1), or specialise per request.
-- Sample consume options: `strb.w rS, [rBuf, #k]` (no stall after the load; unpack and check
-  parity in C afterwards, outside the timed region) or `orr.w rAcc, rAcc, rS, lsl #k` /
-  `bfi rAcc, rS, #k, #1` (needs load + 2). Rotating sample registers (lab uses r0, r12, lr) let
-  the consume lag the load.
-- Rate table at 150 MHz: P=4 37.5, 5 30, 6 25, 7 21.43, 8 18.75, 9 16.67, 10 15, 12 12.5,
-  15 10 ... Any P; high/low split free. CMSIS-DAP clock is a ceiling: never let any period run
-  shorter than requested (the old gate's "overshoot" check). Finer steps at the top would need a
-  different core clock (PLL) - not explored; USB has its own PHY clock but SWO baud/timers derive
-  from the core.
+### OScan5 (2026-10-22)
 
-## CMSIS-DAP semantics the generated paths must keep (from src/swd_dp.c, ARM's SW_DP.c/DAP.c)
+- Wire `JTAG_GEN_OSCAN5` (3). Outside Shift a frame is OScan1's three packets, so the scan function
+  is OScan1's. In Shift, `jtag_gen_shift` frames nTDI and TDO alone (TMS 0), and `jtag_gen_eot`, one
+  block, the frame that leaves with an EOT escape: two stores of TMSC's mask to the GPIO NOT
+  register with TCKC high, each a period after the rise or the last edge, the fall a period after
+  that. No data-dependent register is needed for the escape. `layout_two_pin` and the transfers'
+  `cx_shaped` take the frame's shape (three packets, Shift, EOT); `frames_oscan5`
+  (src/jtag_gen_dp.c) splits scans by the tracked TAP as OScan2's does. Transfers walk from
+  Run-Test/Idle: bypass, request and data bits in Shift as two-packet frames, the last with the
+  escape; a failing acknowledge leaves by `slow_eot_frame`.
+- Checks: gen_host 7416 configurations, 1134 OScan5, all with transfers, four builds agree;
+  `jtagcheck.py --wire cjtag5` clean at all 41 clocks (escape spacing included; a second escape
+  edge one cycle after the first fails it at every clock); equiv against ARM's OScan5 path: block
+  128/128, transfer 1080/1080, sequence 840/840 (including a command part's one-bit Shift entered
+  from Exit2-DR); the gate runs cjtag5 for both compilers.
+
+### OScan6 (2026-10-22)
+
+- Wire `JTAG_GEN_OSCAN6` (4) takes OScan2's TMS packets (`jtag_gen_tms`) outside Shift and OScan5's
+  `jtag_gen_shift` and `jtag_gen_eot` in it. The first Shift frame after one outside it has the PAD:
+  `frames_oscan6` (src/jtag_gen_dp.c) frames it through the scan function, OScan1's three packets
+  with the PAD in the TMS packet's place, or through `jtag_gen_eot_pad` (one block, the escape then
+  the PAD) where it also leaves. The PAD goes out at the frame's nTDI level, as ARM's path sends it.
+  Transfers send their first Shift frame the same way; `x->d1` became the last store that reads the
+  nTDI register, so that the next frame's nTDI is not computed into it before the PAD is sent (the
+  first equiv run caught that: the PAD carried the next bit's level). `frames()` and `hold()` are
+  `COMMAND_PATH` now: each grew past gcc's inlining with another format's branch, and the image
+  check caught the veneer into flash.
+- Checks: gen_host 8550 configurations, 1134 OScan6, all with transfers, four builds agree;
+  `jtagcheck.py --wire cjtag6` clean at all 41 clocks; equiv against ARM's path 128/128, 1080/1080,
+  840/840; the gate runs cjtag6. Bench: decode clean (927 frames, every rise, 30 escapes, 30 PADs),
+  blocks 20/20 at 1 to 50 MHz.
+
+### Learned pacing (2026-10-17)
+
+- After each DAP_Transfer or DAP_TransferBlock that met a WAIT, the generated transfers get one
+  more Run-Test/Idle clock after every transfer (`jtag_gen_paced`, up to 32), regenerated between
+  commands; a change of clock, latency, chain position or host idle starts again from none.
+  A target that never answers WAIT sees ARM's wire. Vendor 0x8B `mode` (0 off, 1 on, else query)
+  answers `status, on, paced`; equiv.py turns it off.
+- Emulator: against a target that always answers WAIT, one clock per command with JTAG and cJTAG,
+  and none after a clock change (a throwaway script, not kept).
+- A WAIT retry inside the generated code was tried and set aside: with pacing there is next to
+  nothing left for it to speed up.
+
+## CMSIS-DAP semantics the generated paths must keep
+
+### SWD (from src/swd_dp.c, ARM's SW_DP.c/DAP.c)
 
 - Request byte: bit0 APnDP, bit1 RnW, bit2 A2, bit3 A3, bit4 MATCH_VALUE, bit5 MATCH_MASK,
   bit7 TIMESTAMP. Packet: start 1, APnDP, RnW, A2, A3, parity(bits0-3), stop 0, park 1.
@@ -171,12 +217,23 @@ P=4 d=7 (margin 0, window edge), P=5 d=9, P=8 d=10: all clean, 7,200 target bits
 - Equivalence: `tools/equiv.py` drives two builds over 536 SWD block cases (every ack, turnaround, data
   phase, idle cycles) and requires identical wire events and replies. A generated path must
   pass it against ARM's build; it is how the current C paths were proven.
+- Idle clocks after a transfer must drive SWDIO low: high on a rising edge is a start bit, the
+  target reads a malformed packet and needs a line reset.
+
+### JTAG and cJTAG (ARM's JTAG_DP.c, JTAG_Transfer)
+
+- Posted reads (the DR
+  returns the previous read's data; RDBUFF ends a block), JTAG ack encoding (OK/FAULT 0b010,
+  WAIT 0b001, mapped to DAP's), WAIT retry, match retry, `idle_cycles` in Run-Test/Idle,
+  timestamps, `DAP_TransferAbort`. C keeps these, as for SWD; the generated function runs
+  `count` transfers of one request and stops at the first non-OK ack.
 
 ## Pins and addresses (LPC55S69, non-secure aliases as the image uses)
 
 - GPIO base 0x4008_C000. Port 0 only for debug pins. B (byte) regs at base + pin; W (word) at
   base+0x1000+4*pin; DIR +0x2000; MASK +0x2080; PIN +0x2100; MPIN +0x2180; SET +0x2200;
-  CLR +0x2280; NOT +0x2300; DIRSET +0x2380; DIRCLR +0x2400.
+  CLR +0x2280; NOT +0x2300; DIRSET +0x2380; DIRCLR +0x2400. For port n, B regs at base + 32n + pin,
+  W at base + 0x1000 + 128n + 4*pin, and SET, CLR and NOT 4n further on.
 - Pins: BOARDS.md. P0_28 SWDIO TXEN is high while the probe drives. J8 marker pins: port 1,
   pins 0-3.
 - SRAMX 0x0400_0000-0x0400_7FFF: executable, always clocked; nothing in the image uses it.
@@ -199,4 +256,3 @@ P=4 d=7 (margin 0, window edge), P=5 d=9, P=8 d=10: all clean, 7,200 target bits
   boundary); `swd_read_asm` (sample within its clock) and `swd_read_pipelined` (sample at a delay
   from the launching edge, stored to a buffer) are working generator prototypes.
 - `tools/dap.py`: `swd_reset` (line reset + DPIDR), `limit`, `block`, `sample` (vendor 0x87).
-

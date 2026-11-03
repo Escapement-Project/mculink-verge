@@ -31,7 +31,7 @@
 /** Cycles from the falling edge that launches TDO to the first load that sees it: with cJTAG the
  * fall that starts the TDO packet, with JTAG the clock's own fall. On a CC1312R1 cJTAG
  * measured 8 after either reset; the Cortex-M DAP behind its ICEPick sends JTAG's TDO at 7
- * after a pin reset and 11 after a system reset (CJTAGGEN.md), so JTAG defaults to 10, which
+ * after a pin reset and 11 after a system reset (CJTAG.md), so JTAG defaults to 10, which
  * read both on the bench. The probe measures from these at every DAP_JTAG_Configure where they
  * leave too little margin (src/jtag_sweep.h). */
 #define JTAG_GEN_LATENCY_DEFAULT 8U
