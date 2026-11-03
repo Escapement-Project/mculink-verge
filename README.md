@@ -281,6 +281,7 @@ NXP's SDK drivers (BSD-3-Clause) and newlib-nano: `THIRD-PARTY-NOTICES.md` has t
 
 ## Where to read next
 
+- `ARCHITECTURE.md`: what each core runs, and the path from each USB interface to its feature.
 - `DESIGN.md`: design rationale, cJTAG support in ARM's code, and the board.
 - `BENCH.md`: reading the target's supply, bench hazards, the marker header and failure modes.
 - `MEASUREMENTS.md`: what the bench measured, newest first.
