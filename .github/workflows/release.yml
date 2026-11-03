@@ -13,7 +13,8 @@
 # The secret key never shares a machine with code the build fetched and ran. `build` has no
 # secret, and hands the image and its checksum on as an artifact. `sign` runs only minisign, in
 # the `release` environment, which holds the key and waits for a required reviewer. `publish`
-# attaches the three files, without the key.
+# attaches the three files, without the key. No build cache, so nothing another workflow wrote can
+# reach a release.
 #
 # The `release` environment needs a required reviewer, which `sign` checks first, and the secret
 # MINISIGN_SECRET_KEY: the whole secret key file from `minisign -G -W`, which has no password. Its
@@ -33,8 +34,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      UV_CACHE_DIR: ${{ github.workspace }}/.cache/uv
     # Arch's arm-none-eabi-gcc is the compiler the bench builds with, and `ninja check` holds the
     # image to baselines it made. The container and Arch's archive are both pinned to a day, so
     # the compiler changes only in a commit that moves both.
@@ -58,46 +57,8 @@ jobs:
       - name: Let git work in a checkout another user owns
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: Identify uv script dependency inputs
-        id: uv-key
-        run: echo "hash=$(python tools/uv_cache_key.py)" >> "$GITHUB_OUTPUT"
-
       - name: Fetch pinned submodules with shallow history
         run: git -c protocol.version=2 submodule update --init --recursive --depth 1 --jobs 2
-
-      - name: Cache uv packages and interpreters
-        uses: actions/cache@v6
-        with:
-          path: .cache/uv
-          key: ${{ runner.os }}-uv-arch-2026-10-20-${{ steps.uv-key.outputs.hash }}
-          restore-keys: |
-            ${{ runner.os }}-uv-arch-2026-10-20-
-            ${{ runner.os }}-uv-arch-2026-10-20
-
-      - name: Identify TinyUSB dependency inputs
-        id: tinyusb
-        run: echo "revision=$(git -C external/tinyusb rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Cache TinyUSB LPC55 dependencies
-        uses: actions/cache@v6
-        with:
-          path: |
-            external/tinyusb/hw/mcu/nxp/mcux-devices-lpc
-            external/tinyusb/hw/mcu/nxp/mcuxsdk-core
-            external/tinyusb/lib/CMSIS_6
-            external/tinyusb/lib/sct_neopixel
-          key: ${{ runner.os }}-tinyusb-lpc55-${{ steps.tinyusb.outputs.revision }}-${{ hashFiles('external/tinyusb/tools/get_deps.py') }}
-
-      - name: Cache TinyUSB mandatory dependencies
-        uses: actions/cache@v6
-        with:
-          path: |
-            external/tinyusb/lib/fatfs
-            external/tinyusb/lib/FreeRTOS-Kernel
-            external/tinyusb/lib/lwip
-            external/tinyusb/lib/threadx
-            external/tinyusb/tools/uf2
-          key: ${{ runner.os }}-tinyusb-mandatory-${{ steps.tinyusb.outputs.revision }}-${{ hashFiles('external/tinyusb/tools/get_deps.py') }}
 
       - name: Fetch TinyUSB's NXP dependencies
         run: python external/tinyusb/tools/get_deps.py lpc55
