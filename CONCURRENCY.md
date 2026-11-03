@@ -147,10 +147,10 @@ state away. While the quiet flag stands, the interrupt leaves energy completions
 stream commands stand aside too.
 
 While CPU 1 holds the state it drains what is left in the ring at a pause or stop, writes a
-stream's end, and for a start writes the tables, the DMA descriptors, the position and an
-unidentified stream's header. Then the start hands the state back, but it is not finished: it goes
-on to write a new session's identity, reset the total and the decoder, clear the last failure,
-write an identified stream's header, mark the capture running, and start the timeline. CPU 0 stays
+stream's end, and for a start clears the last failure and writes the tables, the DMA descriptors,
+the position and an unidentified stream's header. Then the start hands the state back, but it is
+not finished: it goes on to write a new session's identity, reset the total and the decoder, write
+an identified stream's header, mark the capture running, and start the timeline. CPU 0 stays
 off all of that for three reasons. The DMA channel is still off, and enabled last, so no completion
 can reach the interrupt; the interrupt also integrates nothing while `running` is clear. The loop
 treats the stream as CPU 1's while `timeline_pending` is set. And the identity has its own
@@ -202,7 +202,9 @@ its messages back until the start's reply has gone (`stream_held`).
 `energy_dma_error` records that a capture failed: a DMA error, an ADC overflow, a segment not
 taken in time, or a handover that timed out. CPU 0's DMA interrupt and CPU 1 both set it; only a
 new session's start clears it, on CPU 1. CPU 0's loop reads it to answer stream commands and to end
-a stream whose capture failed (`stream_fault` in `aux.c`).
+a stream whose capture failed (`stream_fault` in `aux.c`). So the start clears it before it hands
+the state back. Cleared any later, the loop could find the old failure beside the new stream, and
+end a capture that runs.
 
 ### The range re-arm
 

@@ -1385,7 +1385,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         probe.uc.hook_del(hook)
     c.note("energy partial/full/pending segments, FIFO tail, split tuples, Q32 carry and session resume/reset;"
            " each half's own flag, and a segment taken late, out of turn or overtaken during its read fails")
-    check_stream(c, setup, result, local_symbols=symbols)
+    check_stream(c, setup, result, offsets, local_symbols=symbols)
     check_identity(c, setup, offsets)
     from energy_lifecycle import check_sequences
     check_sequences(c, setup, result, FIXTURE_RATE)
@@ -1503,7 +1503,7 @@ def check_calibration(c, elf, symbols, offsets, model_syscon):
 CTIMER4_TC = 0x4002A008
 
 
-def check_stream(c, setup, result, local_symbols):
+def check_stream(c, setup, result, offsets, local_symbols):
     """Verge Aux's stream (src/energy_stream.h) through both cores' integration and CPU 1's starts,
     pauses, holds and stops: the messages each produces, and each pair's time from the stamps."""
 
@@ -1631,14 +1631,31 @@ def check_stream(c, setup, result, local_symbols):
     probe.integrate()
     got = messages(probe)
     c.check(got == [bytes([0xA2, 4]) + u32(0)], f"stream: fault sent {[m.hex() for m in got]}")
-    put("energy_dma_error", 0, 1)
+    # A start after that failure. Once it hands the state back, CPU 0's loop ends a stream it finds
+    # with a failure recorded (stream_fault, src/aux.c), so the failure has to be gone by then.
+    released = []
+
+    def release(uc, access, at, size, value, data):
+        if value & 1 == 0:
+            released.append((probe.energy.get("stream.active", 1), get("energy_dma_error", 1)))
+
+    request = probe.sym["dap_shared"] + offsets["energy_control_request"]
+    release_hook = probe.uc.hook_add(UC_HOOK_MEM_WRITE, release, begin=request, end=request + 3)
+    probe.uc.ctl_flush_tb()
+    c.check(start(probe, local, 0), "stream: a start after a fault failed")
+    probe.uc.hook_del(release_hook)
+    probe.uc.ctl_flush_tb()
+    c.check(released == [(1, 0)], f"stream: at the handback after a fault, (active, failure) {released}")
+    got = messages(probe)
+    c.check(len(got) == 1 and got[0][0] == 0xA1 and get("energy_dma_error", 1) == 0,
+            f"stream: a start after a fault sent {[m[:2].hex() for m in got]}")
     # Mode 5 belongs to Verge Aux: on CMSIS-DAP it is refused and starts nothing.
     local("dap_vendor_on_aux", 0)
     reply = probe.command(bytes([0x90, 5]) + u32(FIXTURE_RATE) + b"\x00")
     c.check(reply == b"\x90\xff" and not messages(probe), f"stream: CMSIS-DAP mode 5 answered {reply.hex()}")
     probe.uc.hook_del(hook)
     c.note("energy stream: header, pairs drained by CPU 1 and integrated by CPU 0, times across a resume, a hold's"
-           " record, ends at a restart, a stop and a fault, mode 5 refused on CMSIS-DAP")
+           " record, ends at a restart, a stop and a fault, a start after a fault, mode 5 refused on CMSIS-DAP")
 
 
 def check_identity(c, setup, offsets):

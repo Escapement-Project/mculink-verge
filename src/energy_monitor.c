@@ -635,6 +635,10 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     stamp_init();
     struct energy_stream* const stream = &energy->stream;
     if (new_session) {
+        // CPU 0's loop ends a stream it finds with a failure recorded, so the last capture's has to
+        // go before the handback. A handback that fails records its own.
+        dap_shared.energy_dma_error = 0U;
+        __DMB();
         energy_stream_end(stream, ENERGY_STREAM_END_RESTARTED, energy->decoder.sequence);
         energy_stream_timeline_prepare(stream, 1U);
         if (stream_on_start) {
@@ -656,7 +660,10 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
 
     if (!capture_quiet(false)) {
         // The release stays asked for, so CPU 0 may take the state at any moment: take it back
-        // first. If that fails too, CPU 0 has it, and its loop ends the stream (src/aux.c).
+        // first. If that fails too and CPU 0 took the release, its loop ends the stream
+        // (src/aux.c). If its loop stalled through both requests, it acknowledges the quiet one
+        // when it comes back and never takes the state, and the stream stays open until the next
+        // start or stop.
         if (capture_quiet(true)) {
             stream->timeline_pending = false;
             // The capture never ran, so its edges have no times.
@@ -674,7 +681,6 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
         accumulator_reset();
         accumulator_started = true;
         ADC0->STAT = ADC_STAT_FOF0_MASK;
-        dap_shared.energy_dma_error = 0U;
         if (stream_on_start && stream_identified) {
             capture_stream_begin(energy, true);
         }
