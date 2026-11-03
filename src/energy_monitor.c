@@ -185,7 +185,6 @@ void energy_monitor_init(void) {
     dap_shared.energy_accumulator_pairs = 0U;
     dap_shared.energy_accumulator_fraction_q32 = 0U;
     dap_shared.energy_range_retry_pending = 0U;
-    dap_shared.energy_range_retry_active = 0U;
     dap_shared.energy_range_retry_enabled = 0U;
     dap_shared.energy_control_request = 0U;
     dap_shared.energy_control_ack = 0U;

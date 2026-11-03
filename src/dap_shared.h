@@ -247,7 +247,6 @@ typedef struct {
     struct energy_integration* volatile energy_integration;
     /** The Pro range latch needs a pulse; CPU 0 defers it out of the DMA interrupt. */
     volatile uint8_t energy_range_retry_pending;
-    volatile uint8_t energy_range_retry_active;
     volatile uint8_t energy_range_retry_enabled;
     /** Generation plus QUIET_FLAG; CPU 0 echoes the request from its main loop. */
     volatile uint32_t energy_control_request;

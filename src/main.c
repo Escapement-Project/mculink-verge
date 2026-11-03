@@ -291,19 +291,11 @@ __attribute__((section(".ramfunc"))) static bool energy_between_pairs(struct ene
  *  range's alone (src/energy_pairs.h); the loop keeps coming back while it waits. */
 __attribute__((section(".ramfunc"), noinline)) static void energy_range_retry_task(void) {
     if ((dap_shared.energy_control_ack & DAP_ENERGY_QUIET_FLAG) != 0U ||
-        dap_shared.energy_range_retry_pending == 0U) {
-        return;
-    }
-    dap_shared.energy_range_retry_active = 1U;
-    __DMB();
-    if ((dap_shared.energy_range_retry_enabled == 0U) ||
-        (dap_shared.energy_range_retry_pending == 0U)) {
-        dap_shared.energy_range_retry_active = 0U;
+        dap_shared.energy_range_retry_pending == 0U || dap_shared.energy_range_retry_enabled == 0U) {
         return;
     }
     bool const between = energy_integration.rearm_between_pairs;
     if (between && !energy_between_pairs(&energy_integration)) {
-        dap_shared.energy_range_retry_active = 0U;
         return;
     }
     // Nothing may come between the check and the edge, the pin interrupts included.
@@ -318,7 +310,6 @@ __attribute__((section(".ramfunc"), noinline)) static void energy_range_retry_ta
         }
     }
     __set_PRIMASK(primask);
-    dap_shared.energy_range_retry_active = 0U;
 }
 
 /** Main-loop acknowledgement follows the previous handler's segment-count publication. */

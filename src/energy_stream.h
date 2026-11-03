@@ -199,9 +199,10 @@ struct energy_stream {
     volatile bool mark_busy;
     volatile uint32_t marks_written;
     volatile uint32_t marks_read;
-    /** Counted by each start of a stream. CPU 1's own: that it refused a marker for a full record,
-     *  and in which stream, so only the next marker of that stream says so. */
+    /** Counted by each start of a stream, on whichever core starts it. */
     volatile uint32_t mark_streams;
+    /** CPU 1's own: that it refused a marker for a full record, and in which stream, so only the
+     *  next marker of that stream says so. */
     bool mark_dropped;
     uint32_t mark_dropped_stream;
     /** ENERGY_STREAM_MARKS_LOST for the next markers message. */
