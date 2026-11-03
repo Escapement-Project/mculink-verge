@@ -92,11 +92,7 @@ contends with any other.
 | CPU 0 | 7 | SYSCON (CPU 1 start), PMC (reboot) | Boot and reboot only |
 | CPU 0 | 8 | Ordinary GPIO (the board straps) | Boot only |
 
-CPU 1 stops energy DMA and waits for a generation acknowledgement from CPU 0's main loop before
-resetting capture state. The acknowledgement follows the last handler and range-latch task.
-While quiet, CPU 0 leaves energy completion/error bits to CPU 1. SWO and VCOM continue normally.
-An energy position sequence spans completion clearing through count publication, so readers wait
-for the whole update before using the DMA position. Pause drains the settled ring and FIFO before reuse.
+CONCURRENCY.md has how the cores, the interrupts and DMA order their accesses to this state.
 
 ## Timed windows and their exposure
 
@@ -143,12 +139,6 @@ of 1,100 bodies lost a cycle, with CPU 0 copying word by word or with `memcpy`.
 The same lab found SRAM4 slower than SRAM2 and SRAM3 with nothing else running: a load next to a
 store costs an extra cycle (386 cycles against 259 for 128 load-store pairs). That is why
 `dap_stage` is in SRAM3 and not SRAM4. SRAMX through the data side costs two cycles an access.
-
-Capture identity publication uses an odd/even sequence around the 24-byte copy. CPU 0 retries
-its conditional stream-end comparison if the sequence is odd or changes across its snapshot.
-Acquisition start and conditional acquisition stop run on CPU 1. CPU 0's quiet acknowledgement
-serializes its stream mutation with a start. DMA remains masked while CPU 0 attaches or ends a
-stream. A stale acquisition stop compares before requesting quiet.
 
 CPU 1 reserves its full 16 KiB stack at 0x20010000..0x20013fff, in SRAM1 on port 3.
 Its data/code starts at 0x20014000. CPU 0 reaches SRAM1/2 only to set `DAP_TransferAbort`.
