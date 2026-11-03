@@ -7,7 +7,7 @@ from unicorn import UC_HOOK_CODE
 from unicorn.arm_const import UC_ARM_REG_BASEPRI, UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_PRIMASK, UC_ARM_REG_R0
 
 
-def check_idle(c, elf, symbols, reboot_mode, code_lab=False):
+def check_idle(c, elf, symbols, code_lab=False):
     wakes = ["usb-before-mask", "irq-in-wait", "mailbox-in-wait", "vcom-in-wait", "edges-in-wait"]
     if code_lab:
         wakes.append("aux-before-hammer")
@@ -64,8 +64,7 @@ def check_idle(c, elf, symbols, reboot_mode, code_lab=False):
         if wake == "aux-before-hammer":
             probe.uc.mem_write(0x4008b010, u32(SCRATCH | 2))
             state["injected"] = True
-        probe.uc.mem_write(symbols["dap_shared"][0] + reboot_mode, b"\xff")
-        # Startup initializes the private sentinels; CPU 1 publishes the shared one.
+        # Startup initializes the reboot sentinels.
         for name in ("usb_pending", "active_mode"):
             if name in probe.sym:
                 probe.uc.mem_write(probe.sym[name], b"\xff")
@@ -84,7 +83,6 @@ def check_idle_rearm(c, elf, symbols, offsets):
     for running in (True, False):
         probe = machine(elf, symbols)
         shared = symbols["dap_shared"][0]
-        probe.uc.mem_write(shared + offsets["reboot_mode"], b"\xff")
         for name in ("usb_pending", "active_mode"):
             if name in probe.sym:
                 probe.uc.mem_write(probe.sym[name], b"\xff")

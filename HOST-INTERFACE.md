@@ -368,6 +368,17 @@ CMSIS-DAP and on Verge Aux. A marker sent through Aux lands between two CMSIS-DA
 
 The probe keeps 16 markers waiting to be sent. A marker that finds them full gets result 3.
 
+## Reboot: vendor request `0x03` on endpoint 0
+
+A host restarts the probe with a vendor control request to the device, not with a CMSIS-DAP
+command. Send bmRequestType `0x40`, bRequest `0x03`, wIndex 0 and wLength 0. wValue 0 restarts the
+firmware and wValue 1 starts the ROM bootloader. Any other value in those fields stalls. Once the
+request is acknowledged, the probe leaves the bus for at least 20 ms and then resets.
+
+CPU 0 answers the request, so it works while a DAP command is running and when the jumpers leave no
+CMSIS-DAP interface. Earlier firmware also rebooted on vendor command `0x85`. That command is gone,
+and `0x85` now gets `[0xff]` like any unknown command.
+
 ## The auxiliary interface: Verge Aux
 
 On the MCU-Link Pro, the DIO, supply and energy commands are also on a second USB interface,

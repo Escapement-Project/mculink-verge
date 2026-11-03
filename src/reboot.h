@@ -23,11 +23,8 @@
  */
 void reboot_clear_boot_mode(void);
 
-/** CPU 1: ask for a reset from inside a command. CPU 1 publishes it once that command's reply is
- *  READY, and CPU 0's reboot_poll resets after the reply has reached the host. */
-void reboot_request(uint8_t mode);
-
-/** Request a reset from CPU 0's USB control path, independent of DAP execution on CPU 1. */
+/** Request a reset from CPU 0's USB control path (src/reboot_usb.h), independent of DAP execution
+ *  on CPU 1. */
 void reboot_request_from_usb(uint8_t mode);
 
 /** Carry out a pending request. Call from the main loop, below the command and USB tasks. */

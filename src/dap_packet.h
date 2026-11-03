@@ -190,9 +190,6 @@ static inline bool dap_packet_plan(const uint8_t* p, uint32_t length, uint32_t c
         out = 3U;
         break;
 #endif
-    case 0x85:
-        in = 2U;
-        break;
     case 0x86:
         in = 3U;
         out = 7U;

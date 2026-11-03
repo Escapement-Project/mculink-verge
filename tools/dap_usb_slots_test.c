@@ -263,7 +263,7 @@ static void test_shared_state_initialization(void) {
 
     size_t const pointer = offsetof(dap_shared_t, energy_integration);
     for (size_t i = 0U; i < offsetof(dap_shared_t, request); i++) {
-        if ((i != offsetof(dap_shared_t, reboot_mode)) && (i != offsetof(dap_shared_t, stage_commands)) &&
+        if ((i != offsetof(dap_shared_t, stage_commands)) &&
             ((i < pointer) || (i >= pointer + sizeof(state.energy_integration)))) {
             assert(bytes[i] == 0U);
         }
@@ -275,7 +275,6 @@ static void test_shared_state_initialization(void) {
     }
     assert(state.response_head == 0U && state.response_tail == 0U);
     assert(state.transfer_abort == nullptr);
-    assert(state.reboot_mode == REBOOT_NONE);
     assert(state.stage_commands == 1U);
 }
 
@@ -296,11 +295,6 @@ static void test_cpu0_usb_reboot_request(void) {
     assert(!reboot_usb_control_request_valid(REBOOT_USB_REQUEST_TYPE, REBOOT_USB_VENDOR_REQUEST, 1U, 1U, 0U));
     assert(!reboot_usb_control_request_valid(REBOOT_USB_REQUEST_TYPE, REBOOT_USB_VENDOR_REQUEST, 1U, 0U, 1U));
     assert(!reboot_usb_control_request_valid(REBOOT_USB_REQUEST_TYPE, 2U, 1U, 0U, 0U));
-
-    assert(!reboot_wait_for_response(true, false));
-    assert(!reboot_wait_for_response(true, true));
-    assert(reboot_wait_for_response(false, false));
-    assert(!reboot_wait_for_response(false, true));
 }
 
 static void test_hid_padding(void) {

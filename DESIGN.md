@@ -72,7 +72,6 @@ the same three packets the same way, with TCK resting low between them.
 | 0x83 | `CJTAG_CONTROL` | a mode byte: 0 returns to four-wire framing, 2 frames as OScan1 after an activation the host drove, 3 with two more bytes frames scan format `f` from TAP state `s`, and 4 with a u32 mask limits the formats offered. Anything else answers `DAP_ERROR`. |
 
 | 0x84 | `J8` | hands J8's four pins to the host, on the plain MCU-Link |
-| 0x85 | `REBOOT` | resets the probe, optionally into the ROM bootloader |
 | 0x86 | `TARGET` | reads the target's supply and J6 pin 9's detect line |
 | 0x87 | `SAMPLE` | DPIDR reads with the SWDIO sample placed by the host; an instrument |
 | 0x88 | `LAB` | runs host-supplied code from RAM; built only with `CODE_LAB` |

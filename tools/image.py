@@ -309,11 +309,6 @@ DAP_COMMANDS = {
     0x82: b"",  # our CJTAG_INFO
     0x83: b"\x00",  # our CJTAG_CONTROL, off
     0x84: b"\x00\x00",  # our J8, taking no pins, which hands all four back to the marker
-    # Our REBOOT, asking for the firmware rather than the bootloader. Safe to run here because the
-    # command only arms the request and reboot_poll carries it out from the main loop, which
-    # nothing in this harness runs. A build that moved the reset into the command would hang here,
-    # which is the right thing for this check to do.
-    0x85: b"\x00",
     # Our TARGET, reading the supply. The emulator's ADC never finishes calibrating, so this takes
     # the timeout path and answers DAP_ERROR: what is checked is that it answers at all, which is
     # the property that matters on hardware too.
@@ -491,8 +486,9 @@ def check_commands(c: Checker, elf: str, code_lab: bool, swo: bool) -> None:
             c.problems.append(f"command {cmd:#04x} echoed {reply[0]:#04x}")
         else:
             answered += 1
-    # Anything we do not implement has to say so rather than echo itself back.
-    for cmd in (0x07, 0x88, 0x9F):
+    # Anything we do not implement has to say so rather than echo itself back. 0x85 was a reboot;
+    # the EP0 request (src/reboot_usb.h) is the only one now, so a stray 0x85 must not reset.
+    for cmd in (0x07, 0x85, 0x88, 0x9F):
         reply = probe.command(bytes([cmd, 0, 0, 0]))
         if cmd == 0x07:
             continue  # TransferAbort is handled out of band and answers nothing
@@ -886,10 +882,9 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: 
     from usb_lifecycle import check_sequences
 
     fields = ("transfer_abort", "request", "request_tail", "rx_armed_slot", "next_request_seq", "first_live_seq",
-              "response_len", "response_tail", "response_seq", "response_transport", "response_head", "reboot_mode",
-              "board", "jumpers", "energy_range_retry_pending", "energy_range_retry_enabled")
+              "response_len", "response_tail", "response_seq", "response_transport", "response_head", "board", "jumpers", "energy_range_retry_pending", "energy_range_retry_enabled")
     offsets = shared_offsets(slots, *fields, small_enums=short_enums(elf0))
-    check_idle(c, elf0, symbols_with_size(elf0), offsets["reboot_mode"], code_lab)
+    check_idle(c, elf0, symbols_with_size(elf0), code_lab)
     check_idle_rearm(c, elf0, symbols_with_size(elf0), offsets)
     check_unconfigured(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_transport(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
@@ -1060,12 +1055,6 @@ def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
             c.note("vendor 0x88 code lab: two arenas reported")
     elif not lab or lab[0] != ID_DAP_INVALID:
         c.problems.append("vendor 0x88 should answer ID_DAP_Invalid until something implements it")
-
-    # A mode the firmware does not define has to be refused, not guessed at: getting it wrong
-    # costs the probe until someone replugs it.
-    refused = probe.command(bytes([0x85, 0x7F]))
-    if len(refused) < 2 or refused[0] != 0x85 or refused[1] == 0x00:
-        c.problems.append(f"vendor 0x85 accepted an undefined reboot mode: {refused.hex()}")
 
     # J8 hands the marker's pins to the host. Taking all four and giving them back has to work,
     # because that is the sequence that identifies which pad an analyser is clipped to.

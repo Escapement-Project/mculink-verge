@@ -2,8 +2,6 @@
 
 #include "bsp/board_api.h"
 #include "fsl_device_registers.h"
-#include "dap_shared.h"
-#include "reboot_usb.h"
 #include "usb_transport.h"
 
 /** The ROM reads AOREG1's boot mode field out of reset, and 0x0A there means auto ISP.
@@ -23,7 +21,6 @@ extern volatile uint32_t system_ticks;
 
 static volatile uint8_t usb_pending = REBOOT_NONE;
 static uint8_t active_mode = REBOOT_NONE;
-static bool active_from_usb;
 static uint32_t disconnect_started;
 static bool disconnect_requested;
 
@@ -39,22 +36,8 @@ __attribute__((section(".ramfunc"))) void reboot_poll(void) {
     if (usb_pending != REBOOT_NONE) {
         active_mode = usb_pending;
         usb_pending = REBOOT_NONE;
-        active_from_usb = true;
-    } else if (active_mode == REBOOT_NONE) {
-        // CPU 1 publishes the mode after its reply is READY, so the wait below sees that reply.
-        // A faulting CPU 1 can leave anything here, and only the two modes may reset the probe.
-        uint8_t const mode = dap_shared.reboot_mode;
-        if ((mode == REBOOT_FIRMWARE) || (mode == REBOOT_BOOTLOADER)) {
-            active_mode = mode;
-            active_from_usb = false;
-        }
-        if (mode != REBOOT_NONE) {
-            dap_shared.reboot_mode = REBOOT_NONE;
-        }
     }
-
-    if (active_mode == REBOOT_NONE ||
-        reboot_wait_for_response(active_from_usb, usb_transport_response_idle())) {
+    if (active_mode == REBOOT_NONE) {
         return;
     }
 

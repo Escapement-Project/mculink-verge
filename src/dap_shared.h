@@ -22,7 +22,6 @@
 #include "dma_ring.h"
 #include "energy_samples.h"
 #include "energy_stream.h"
-#include "reboot.h"
 #include "swo_ring.h"
 
 #ifndef REQUEST_SLOTS
@@ -211,9 +210,6 @@ typedef struct {
      *  command; CPU 0 sets it the moment an abort arrives. */
     volatile uint8_t* volatile transfer_abort;
 
-    /** A reboot ID_VENDOR_REBOOT asked for, published only once its reply is READY. */
-    volatile uint8_t reboot_mode;
-
     /** The LEDs' inputs, written by CPU 1 and read by CPU 0's LED tick. */
     volatile uint8_t led_activity;
     volatile uint8_t led_connected;
@@ -312,7 +308,6 @@ static inline void dap_shared_init(volatile dap_shared_t* state, dap_stage_t* st
     for (size_t i = 0U; i < offsetof(dap_shared_t, request); i++) {
         bytes[i] = 0U;
     }
-    state->reboot_mode = REBOOT_NONE;
     state->stage_commands = 1U;
     state->energy_integration = energy;
     stage->aux.state = AUX_SLOT_FREE;

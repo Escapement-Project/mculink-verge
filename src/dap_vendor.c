@@ -18,7 +18,6 @@
 #include "dap_shared.h"
 #include "dio.h"
 #include "marker.h"
-#include "reboot.h"
 #include "sample_probe.h"
 #ifdef CODE_LAB
 #include "code_lab.h"
@@ -42,8 +41,6 @@
 #define ID_VENDOR_CJTAG_CONTROL ID_DAP_Vendor3
 /// Hands J8's four pins to the host, so a pad can be identified and a trigger can be placed.
 #define ID_VENDOR_J8 ID_DAP_Vendor4
-/// Resets the probe, optionally into the ROM bootloader, so a reflash costs no hands.
-#define ID_VENDOR_REBOOT ID_DAP_Vendor5
 /// Reads the target's supply and J6 pin 9's detect line. See TARGET_* below.
 #define ID_VENDOR_TARGET ID_DAP_Vendor6
 /// DPIDR reads with the SWDIO sample placed by the host. An instrument; see sample_probe.c.
@@ -415,17 +412,6 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         memcpy(response + DIO_REPLY_FIXED, state.group, state.groups);
         return (4U << 16) | (DIO_REPLY_FIXED + state.groups);
     }
-
-    case ID_VENDOR_REBOOT:
-        // Only the two defined modes act. Anything else is refused rather than guessed at,
-        // because the failure costs the probe until someone replugs it.
-        if (request[1] == REBOOT_FIRMWARE || request[1] == REBOOT_BOOTLOADER) {
-            reboot_request(request[1]);
-            response[1] = DAP_OK;
-        } else {
-            response[1] = DAP_ERROR;
-        }
-        return (2U << 16) | 2U;
 
     case ID_VENDOR_STAGE:
         if (request[1] <= 1U) {

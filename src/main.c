@@ -424,7 +424,7 @@ __attribute__((section(".ramfunc"))) static bool queued_work(void) {
 }
 
 /** Everything that gives the loop work wakes it: USB and the LED tick by interrupt, CPU 1 through
- *  the mailbox when it frees a request slot, publishes a reply or asks for a reboot, the console
+ *  the mailbox when it frees a request slot, or publishes a reply, the console
  *  through vcom_ready, and DIO edges half filling their record. The mailbox is cleared before the
  *  checks, so a write CPU 1 makes after them still ends the wait. */
 __attribute__((section(".ramfunc"))) static void idle(void) {
@@ -526,11 +526,6 @@ __attribute__((noinline)) void dma0_init(void) {
 }
 
 bool usb_transport_reply_in_flight(void) { return response_in_flight; }
-
-bool usb_transport_response_idle(void) {
-    __DMB();
-    return !response_in_flight && dap_usb_slot_free(dap_shared.response_len, dap_shared.response_head);
-}
 
 void usb_transport_request_disconnect(void) {
     disconnect_complete = false;

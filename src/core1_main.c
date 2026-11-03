@@ -25,7 +25,6 @@
 #include "hot.h"
 #include "led.h"
 #include "marker.h"
-#include "reboot.h"
 #include "target_power.h"
 #include "target_sense.h"
 
@@ -56,14 +55,6 @@ alignas(DAP_USB_BUFFER_ALIGN) static uint8_t response_copy[DAP_PACKET_SIZE];
  *  their own, and what they check has to be the code that ships. */
 static uint8_t* const volatile request_buffer = request_copy;
 static uint8_t* const volatile response_buffer = response_copy;
-
-/** What ID_VENDOR_REBOOT asked for, held until the command's reply is READY. Published any
- *  earlier, CPU 0 would find no reply pending and reset before sending it. */
-static uint8_t reboot_after_reply = REBOOT_NONE;
-
-void reboot_request(uint8_t mode) {
-    reboot_after_reply = mode;
-}
 
 /** CPU 0 waits for work off flash (src/main.c), and this is how it hears of CPU 1's. */
 static void wake_core0(void) {
@@ -223,12 +214,6 @@ COMMAND_PATH static bool dap_task(void) {
 #endif
     }
     dap_shared.core1.commands++;
-    if (reboot_after_reply != REBOOT_NONE) {
-        __DMB();
-        dap_shared.reboot_mode = reboot_after_reply;
-        reboot_after_reply = REBOOT_NONE;
-        wake_core0();
-    }
     return true;
 }
 

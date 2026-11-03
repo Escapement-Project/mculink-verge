@@ -13,8 +13,4 @@ static inline bool reboot_usb_control_request_valid(uint8_t request_type, uint8_
            index == 0U && length == 0U;
 }
 
-static inline bool reboot_wait_for_response(bool from_usb_control, bool response_idle) {
-    return !from_usb_control && !response_idle;
-}
-
 #endif
