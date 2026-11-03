@@ -139,8 +139,12 @@ whole of it when it needs it (`energy_integration.h`):
 2. CPU 0 copies the request into `energy_control_ack`, from its loop only, with BASEPRI raised
    (`energy_control_task`).
 3. CPU 1 waits for the copy, a bounded number of polls (`capture_quiet`). If none comes, it records
-   the capture as failed. At boot, on a Pro that can measure energy, it waits without a bound, so
-   CPU 1 cannot finish starting until CPU 0's loop runs.
+   the capture as failed. CPU 1 asks for the state only when CPU 0 has it, not for a pause it makes
+   while holding it already: inside a start, calibrating at boot, or reading the supply after a
+   stop. So a request for the state that timed out is withdrawn by a new one that leaves the state
+   with CPU 0, and a loop that comes back late keeps it and ends the stream (`stream_fault` in
+   `aux.c`). At boot, on a Pro that can measure energy, CPU 1 waits without a bound, so it cannot
+   finish starting until CPU 0's loop runs.
 
 The acknowledgement comes from the loop, so the DMA interrupt is not running when CPU 0 gives the
 state away. While the quiet flag stands, the interrupt leaves energy completions alone

@@ -221,8 +221,9 @@ __attribute__((section(".ramfunc"))) static bool stream_command(void) {
 }
 
 /** A capture failure ends its stream wherever the failure is found, but some leave no owner to
- *  write the end: a DMA error with no completion behind it, a pause that timed out with CPU 0
- *  still owning the state. CPU 0's loop ends it then. */
+ *  write the end: a DMA error with no completion behind it, a pause or a start whose handover
+ *  timed out, which leaves the state with CPU 0 (capture_quiet in src/energy_monitor.c). CPU 0's
+ *  loop ends it then. */
 __attribute__((section(".ramfunc"))) static void stream_fault(void) {
     struct energy_integration* const energy = dap_shared.energy_integration;
     if ((energy == nullptr) || !energy->stream.active || (dap_shared.energy_dma_error == 0U) ||

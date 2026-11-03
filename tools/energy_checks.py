@@ -443,6 +443,7 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1, layout)
         energy = attach_integration(cpu1, offsets1, layout)
         energy.put("running", 1, 1)
         energy.put("decoder", 2, 1)  # the phase
+        energy.put("stream.active", 1, 1)
         for name, value, size in (("energy_available", 1, 1), ("energy_control_request", request, 4),
                                   ("energy_control_ack", ack, 4), ("energy_accumulator_pj", 12345, 8),
                                   ("energy_accumulator_pairs", 123, 8)):
@@ -462,6 +463,11 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1, layout)
                 f"{label}: old total lost")
         c.check(bytes(cpu1.uc.mem_read(base + offsets1["energy_dma_error"], 1)) == b"\x01",
                 f"{label}: failure not latched")
+        # A loop that comes back late echoes the last request (energy_control_task). That has to
+        # leave the state with CPU 0, whose loop then ends the stream (stream_fault, src/aux.c).
+        last = int.from_bytes(cpu1.uc.mem_read(base + offsets1["energy_control_request"], 4), "little")
+        c.check(last & 1 == 0, f"{label}: a failed pause left quiet asked for ({last:#x}); a late loop would hand"
+                               " the state, and its open stream, to a core that has given up")
         if label == "absent ack":
             reply = cpu1.command(bytes([0x90, 0]) + u32(1000))
             c.check(len(reply) == 7 and reply[2] == 7, "start did not report missing ownership")
@@ -469,6 +475,20 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1, layout)
             c.check(len(reply) == 3 and reply[2] == 7, "stop did not report missing ownership")
             c.check(bytes(cpu1.uc.mem_read(base + offsets1["energy_accumulator_pj"], 8)) == struct.pack("<Q", 12345),
                     "failed start/stop reset the retained total")
+
+    # A pause while CPU 1 holds the state already, as a start's calibration makes after the start's
+    # own pause: it must not ask again. Unanswered, a second request would time out and be
+    # withdrawn, handing CPU 0 the state and the stream CPU 1 goes on writing.
+    held = machine(elf1, symbols1)
+    Dma(held)
+    held_base = held.sym["dap_shared"]
+    attach_integration(held, offsets1, layout).put("stream.active", 1, 1)
+    for name, value, size in (("energy_available", 1, 1), ("energy_control_request", 3, 4),
+                              ("energy_control_ack", 3, 4)):
+        held.uc.mem_write(held_base + offsets1[name], value.to_bytes(size, "little"))
+    result = held.call("energy_monitor_pause")
+    after = int.from_bytes(held.uc.mem_read(held_base + offsets1["energy_control_request"], 4), "little")
+    c.check(result == 1 and after == 3, f"a pause with the state held already returned {result}, left request {after:#x}")
 
     cpu1 = machine(elf1, symbols1)
     dma1 = Dma(cpu1)
@@ -1649,13 +1669,26 @@ def check_stream(c, setup, result, offsets, local_symbols):
     got = messages(probe)
     c.check(len(got) == 1 and got[0][0] == 0xA1 and get("energy_dma_error", 1) == 0,
             f"stream: a start after a fault sent {[m[:2].hex() for m in got]}")
+    # A start whose handback and retake both time out, as when CPU 0's loop stalls through both.
+    # When the loop comes back it echoes the last request (energy_control_task); it has to keep the
+    # state then, so that its loop ends the stream the start began (stream_fault, src/aux.c).
+    stalled, _, _, stalled_put, stalled_get, stalled_local, _, _, _, _, stalled_hook = setup()
+    stalled.uc.hook_del(stalled_hook)
+    stalled.uc.ctl_flush_tb()
+    c.check(not start(stalled, stalled_local, 0), "stream: a start with no acknowledgement succeeded")
+    stalled_put("energy_control_ack", stalled_get("energy_control_request"))
+    left = (stalled.energy.get("stream.active", 1), stalled_get("energy_dma_error", 1),
+            stalled_get("energy_control_ack") & 1)
+    c.check(left[0] == 0 or left[1:] == (1, 0),
+            f"stream: after a start's handback and retake timed out, (active, failure, quiet) {left}: nothing ends it")
     # Mode 5 belongs to Verge Aux: on CMSIS-DAP it is refused and starts nothing.
     local("dap_vendor_on_aux", 0)
     reply = probe.command(bytes([0x90, 5]) + u32(FIXTURE_RATE) + b"\x00")
     c.check(reply == b"\x90\xff" and not messages(probe), f"stream: CMSIS-DAP mode 5 answered {reply.hex()}")
     probe.uc.hook_del(hook)
     c.note("energy stream: header, pairs drained by CPU 1 and integrated by CPU 0, times across a resume, a hold's"
-           " record, ends at a restart, a stop and a fault, a start after a fault, mode 5 refused on CMSIS-DAP")
+           " record, ends at a restart, a stop and a fault, a start after a fault, a start whose handback timed out,"
+           " mode 5 refused on CMSIS-DAP")
 
 
 def check_identity(c, setup, offsets):

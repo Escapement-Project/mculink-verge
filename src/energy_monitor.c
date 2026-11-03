@@ -564,6 +564,13 @@ static uint32_t control_request(bool quiet) {
 }
 
 static bool capture_quiet(bool quiet) {
+    // A pause inside a start, calibrating at boot, or reading the supply after a stop: this core
+    // holds the state already. It asks only when CPU 0 has it, so a request withdrawn below goes
+    // back to where the state was.
+    uint32_t const current = dap_shared.energy_control_request;
+    if (quiet && ((current & DAP_ENERGY_QUIET_FLAG) != 0U) && (dap_shared.energy_control_ack == current)) {
+        return true;
+    }
     uint32_t const requested = control_request(quiet);
     for (uint32_t i = 0U; i < ENERGY_CONTROL_POLLS; i++) {
         if (dap_shared.energy_control_ack == requested) {
@@ -572,6 +579,12 @@ static bool capture_quiet(bool quiet) {
         }
     }
     dap_shared.energy_dma_error = 1U;
+    if (quiet) {
+        // Withdrawn: a loop that comes back late would echo it and leave the state, and any stream
+        // open in it, to this core, which has given up. CPU 0 keeps the state it had, and its loop
+        // ends the stream (src/aux.c).
+        (void)control_request(false);
+    }
     return false;
 }
 
@@ -659,10 +672,7 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
 
     if (!capture_quiet(false)) {
         // The release stays asked for, so CPU 0 may take the state at any moment: take it back
-        // first. If that fails too and CPU 0 took the release, its loop ends the stream
-        // (src/aux.c). If its loop stalled through both requests, it acknowledges the quiet one
-        // when it comes back and never takes the state, and the stream stays open until the next
-        // start or stop.
+        // first. If that fails too, CPU 0 keeps it, and its loop ends the stream (src/aux.c).
         if (capture_quiet(true)) {
             stream->timeline_pending = false;
             // The capture never ran, so its edges have no times.
@@ -820,8 +830,8 @@ __attribute__((noinline)) void energy_monitor_calibrate(void) {
     if (!dap_shared.energy_available) {
         return;
     }
-    // CPU 1 starts before CPU 0 brings USB up and enters its loop. Each conversion's pause allows
-    // CPU 0 a bounded time to acknowledge, so wait for the loop first, without a bound.
+    // CPU 1 starts before CPU 0 brings USB up and enters its loop, so take the state with no bound
+    // on the wait. Each conversion's pause then finds it held and asks nothing (capture_quiet).
     uint32_t const requested = control_request(true);
     while (dap_shared.energy_control_ack != requested) {
     }
