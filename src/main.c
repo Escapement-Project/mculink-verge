@@ -30,6 +30,7 @@
 #include "dap_usb_slots.h"
 #include "led.h"
 #include "reboot.h"
+#include "usb_speed.h"
 #include "usb_descriptors.h"
 #include "usb_transport.h"
 #include "vcom.h"
@@ -172,6 +173,7 @@ __attribute__((section(".ramfunc"))) void tud_vendor_rx_cb(uint8_t index, const 
  *  CPU 1 may be running. A command CPU 1 had already found live when the abort landed runs to its
  *  end, because starting a transfer clears the flag. */
 void tud_mount_cb(void) {
+    dap_shared.bulk_packet_size = usb_bulk_packet_size();
     dap_shared.first_live_seq = dap_shared.next_request_seq;
     response_in_flight = false;
     aux_mount();

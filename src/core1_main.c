@@ -109,7 +109,7 @@ COMMAND_PATH static bool dap_task(void) {
     uint8_t const stage = use_hid ? dap_shared.hid_request_stage[hid] : dap_shared.request_stage[bulk];
     bool const staged = stage != 0U;
     uint16_t const request_length = use_hid ? dap_shared.hid_request_len[hid] : dap_shared.request_len[bulk];
-    uint32_t const packet_size = use_hid ? DAP_SHARED_HID_REPORT_SIZE : DAP_PACKET_SIZE;
+    uint32_t const packet_size = use_hid ? DAP_SHARED_HID_REPORT_SIZE : dap_shared.bulk_packet_size;
     uint8_t* request = request_buffer;
     uint8_t* response = response_buffer;
     if (staged) {
@@ -183,7 +183,7 @@ COMMAND_PATH static bool dap_task(void) {
     }
 
     if (use_hid) {
-        produced = dap_hid_reply(request, request_length, response, produced);
+        produced = dap_hid_reply(response, produced);
     }
     if (produced != 0U) {
         if (!staged) {

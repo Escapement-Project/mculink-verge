@@ -107,7 +107,7 @@ def campaign(c, elf, symbols, *, seed, steps, capacity):
             execute(bytes([rng.choice((0x20, 0x40, 0x7e, 0xa0, 0xfe))]) + rng.randbytes(rng.randrange(16)),
                     expected=b"\xff")
         assert bytes(probe.uc.mem_read(state, 1)) == bytes([expected_port]), f"port changed: seed={seed} history={history[-8:]}"
-        execute(b"\x00\xff", expected=b"\x00\x02\x00\x02")
+        execute(b"\x00\xff", expected=b"\x00\x02" + u16(capacity))
     c.note(f"dispatcher mutation sequence: seed={seed}, {steps} steps, {capacity}-byte transport, recovery after every step")
 
 

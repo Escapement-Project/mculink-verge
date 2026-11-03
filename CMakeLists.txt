@@ -127,6 +127,7 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/board_straps.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/board_clocks.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/reboot.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/usb_speed.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/led.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/vcom.c
   )

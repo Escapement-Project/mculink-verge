@@ -26,7 +26,7 @@ record the builds and methods.
 | cJTAG, two pins (reads and writes) | 50 MHz per wire packet; per JTAG clock in Shift, 7.9 MHz in OScan1 and OScan2, 9.4 MHz in OScan5 and OScan6 | Firmware timing report; target-dependent | The target's TDO delay | Not supported |
 | Console (VCOM) | 19.2 Mbaud | Bench loopback | Nothing | 3 Mbaud or more; its limit not measured yet |
 | SWO | 30 Mbaud, UART encoding only | Bench capture | Nothing | Not measured yet |
-| USB | High speed, 512-byte packets, 3 commands held | Firmware report | Nothing | 512-byte packets, 8 commands reported |
+| USB | High speed, 512-byte packets, 3 commands held | Firmware report | The host's port: 64-byte packets on a full-speed one (bench, 2026-11-03) | 512-byte packets, 8 commands reported |
 
 The core runs at 150 MHz. Each wire period is a whole number of core cycles, so the firmware
 rounds a requested rate down to the next available step: 30 MHz is 5 cycles, 18.75 MHz is 8.

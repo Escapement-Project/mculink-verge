@@ -248,7 +248,7 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
 
 /** The parser owns framing even when a handler exits early on an invalid TAP or transfer fault. */
 COMMAND_PATH static uint32_t execute_one(const uint8_t* request, uint32_t length, uint32_t capacity,
-                                         uint8_t* response) {
+                                         uint32_t packet_size, uint8_t* response) {
     dap_packet_plan_t plan;
     if (length == 0U) {
         return 0U;
@@ -259,6 +259,12 @@ COMMAND_PATH static uint32_t execute_one(const uint8_t* request, uint32_t length
         }
         uint8_t info[257];
         uint32_t const size = arm_DAP_ProcessCommand(request, info) & 0xffffU;
+        // ARM's answer is DAP_PACKET_SIZE on every transport. A host sizes its commands and reads
+        // by it, so it has to be this transport's: a HID report, or a bulk packet at this speed.
+        if ((request[1] == DAP_ID_PACKET_SIZE) && (size == 4U)) {
+            info[2] = (uint8_t)packet_size;
+            info[3] = (uint8_t)(packet_size >> 8U);
+        }
         if (size > capacity) {
             return 0U;
         }
@@ -292,7 +298,7 @@ COMMAND_PATH uint32_t DAP_ExecuteCommandSized(const uint8_t* request, uint32_t r
         return (request_length << 16U) | 1U;
     }
     if (request[0] != ID_DAP_ExecuteCommands) {
-        uint32_t const result = execute_one(request, request_length, packet_size, response);
+        uint32_t const result = execute_one(request, request_length, packet_size, packet_size, response);
         if (result != 0U) {
             return result;
         }
@@ -316,7 +322,7 @@ COMMAND_PATH uint32_t DAP_ExecuteCommandSized(const uint8_t* request, uint32_t r
     response[1] = 0U;
     for (uint32_t i = 0U; i < request[1]; i++) {
         uint32_t const result =
-            execute_one(request + input, request_length - input, packet_size - output, response + output);
+            execute_one(request + input, request_length - input, packet_size - output, packet_size, response + output);
         if (result == 0U) {
             break;
         }

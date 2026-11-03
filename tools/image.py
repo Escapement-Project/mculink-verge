@@ -51,7 +51,8 @@ from cycles import (  # noqa: E402
     u16,
     u32,
 )
-from unicorn.arm_const import UC_ARM_REG_PC, UC_ARM_REG_R0  # noqa: E402
+from unicorn import UC_HOOK_CODE  # noqa: E402
+from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0  # noqa: E402
 
 UUID_ADDRESS = 0x0009FC70
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -179,6 +180,19 @@ def check_device(c: Checker, d: bytes, bos: bool = True) -> None:
     for name, index in (("iManufacturer", d[14]), ("iProduct", d[15]), ("iSerialNumber", d[16])):
         c.check(index != 0, f"{name} is 0, so the host has no string to read")
     c.note(f"device {vid:#06x}:{pid:#06x}, USB {bcd_usb >> 8:x}.{(bcd_usb >> 4) & 0xF:x}, EP0 {d[7]}")
+
+
+def at_high_speed(probe: Machine) -> None:
+    """Make tud_speed_get answer high speed. TinyUSB says full until a bus reset says otherwise, and
+    the configuration is built for the speed it says (usb_checks.py covers full speed)."""
+    entry = probe.sym["tud_speed_get"]
+
+    def answer(uc, at, size, data):
+        uc.reg_write(UC_ARM_REG_R0, 2)
+        uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+
+    probe.uc.hook_add(UC_HOOK_CODE, answer, begin=entry, end=entry)
+    probe.uc.ctl_flush_tb()
 
 
 def check_configuration(c: Checker, d: bytes) -> dict[int, str]:
@@ -690,7 +704,7 @@ def check_bounded_commands(c: Checker, elf: str, slots: int) -> None:
         disconnects = (capacity - 6) // 2
         payload = bytes([0x7f, disconnects + 2]) + bytes([3]) * disconnects + bytes([0, 0xff, 2, 1])
         reply = execute(payload)
-        c.check(reply == bytes([0x7f, disconnects + 1]) + bytes([3, 0]) * disconnects + bytes([0, 2, 0, 2]),
+        c.check(reply == bytes([0x7f, disconnects + 1]) + bytes([3, 0]) * disconnects + bytes([0, 2]) + u16(capacity),
                 "exact-capacity batch reply or executed count changed")
         c.check(bytes(probe.uc.mem_read(state, 1)) == b"\x00", "command after full batch reply executed")
         c.check(execute(bytes([2, 1])) == bytes([2, 1]), "short reply after full batch failed")
@@ -877,17 +891,20 @@ def check_hid_padding(c: Checker, elf: str, slots: int) -> None:
 
 
 def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: bool = False) -> None:
-    from usb_checks import check_aux, check_aux_stream, check_transport, check_unconfigured
+    from usb_checks import (check_aux, check_aux_stream, check_descriptors, check_full_speed, check_transport,
+                            check_unconfigured)
     from usb_idle_checks import check_idle, check_idle_rearm
     from usb_lifecycle import check_sequences
 
     fields = ("transfer_abort", "request", "request_tail", "rx_armed_slot", "next_request_seq", "first_live_seq",
-              "response_len", "response_tail", "response_seq", "response_transport", "response_head", "board", "jumpers", "energy_range_retry_pending", "energy_range_retry_enabled")
+              "response_len", "response_tail", "response_seq", "response_transport", "response_head", "board", "jumpers", "bulk_packet_size", "energy_range_retry_pending", "energy_range_retry_enabled")
     offsets = shared_offsets(slots, *fields, small_enums=short_enums(elf0))
     check_idle(c, elf0, symbols_with_size(elf0), code_lab)
     check_idle_rearm(c, elf0, symbols_with_size(elf0), offsets)
     check_unconfigured(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_transport(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
+    check_full_speed(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
+    check_descriptors(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
     check_sequences(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_aux(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
     stream_shared = shared_offsets(slots, "energy_integration", "energy_available", "energy_dma_error",
@@ -1178,6 +1195,7 @@ def check_straps(c: Checker, elf: str, core1: str, request_slots: int) -> None:
     numbers the controller does not have, declared and never opened, polled every 2^15 microframes.
     """
     probe = Machine(elf, Target([]), restart_at=set(), model=Model())
+    at_high_speed(probe)
     ms_os_size = next((size for name, (_, size) in symbols_with_size(elf).items() if name.split(".")[0] == "desc_ms_os_20"), 0)
     for name in ("board_read_straps", "tud_descriptor_configuration_cb", "tud_descriptor_string_cb"):
         if name not in probe.sym:

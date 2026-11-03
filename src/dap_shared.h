@@ -210,6 +210,10 @@ typedef struct {
      *  command; CPU 0 sets it the moment an abort arrives. */
     volatile uint8_t* volatile transfer_abort;
 
+    /** CMSIS-DAP v2's packet size at the speed the host chose: 512, or 64 at full speed. CPU 0
+     *  sets it at each configuration, before a command of that configuration arrives. */
+    volatile uint16_t bulk_packet_size;
+
     /** The LEDs' inputs, written by CPU 1 and read by CPU 0's LED tick. */
     volatile uint8_t led_activity;
     volatile uint8_t led_connected;
@@ -309,6 +313,7 @@ static inline void dap_shared_init(volatile dap_shared_t* state, dap_stage_t* st
         bytes[i] = 0U;
     }
     state->stage_commands = 1U;
+    state->bulk_packet_size = DAP_SHARED_PACKET_SIZE;
     state->energy_integration = energy;
     stage->aux.state = AUX_SLOT_FREE;
 }

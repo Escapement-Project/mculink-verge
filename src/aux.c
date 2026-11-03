@@ -14,8 +14,10 @@
 #include "DAP_config.h"
 
 #include "DAP.h"
+#include "usb_speed.h"
 
-/** USB1 reaches no memory but USB SRAM. Every message fits one packet, so one buffer each way. */
+/** USB1 reaches no memory but USB SRAM. Every message fits one high-speed packet, so one buffer
+ *  each way; at full speed a stream message spans several. */
 CFG_TUD_MEM_SECTION CFG_TUSB_MEM_ALIGN static uint8_t aux_out[512];
 CFG_TUD_MEM_SECTION CFG_TUSB_MEM_ALIGN static uint8_t aux_in[512];
 
@@ -26,6 +28,12 @@ static volatile bool out_armed;
 /** aux_in holds a reply or a stream message of this length, to send or on its way while in_busy. */
 static volatile uint16_t in_length;
 static volatile bool in_busy;
+/** The bulk packet size of this configuration. */
+static uint16_t in_packet = USB_BULK_HIGH_SPEED;
+/** The message on its way is a whole number of packets, so nothing marks its end: a zero-length
+ *  packet follows it. Only at full speed, where a 48-pair message is 256 bytes; at high speed every
+ *  message is shorter than a packet. */
+static volatile bool zlp_due;
 /** Counts USB configurations, for the slot's `generation`. */
 static uint32_t generation;
 /** A stream command (0x90 mode 6, 7, 10 or 13) CPU 0 answers itself, waiting for the capture
@@ -82,6 +90,13 @@ __attribute__((section(".ramfunc"))) void aux_received(const uint8_t* buffer, ui
 }
 
 __attribute__((section(".ramfunc"))) void aux_sent(void) {
+    if (zlp_due) {
+        zlp_due = false;
+        // in_busy holds until this completes. If it cannot start, the interface has gone, and the
+        // next configuration's aux_mount clears in_busy.
+        (void)tud_vendor_n_write_xfer(instance, aux_in, 0U);
+        return;
+    }
     in_busy = false;
     in_length = 0U;
     aux_task();
@@ -92,6 +107,8 @@ __attribute__((section(".ramfunc"))) void aux_mount(void) {
     out_armed = false;
     in_busy = false;
     in_length = 0U;
+    in_packet = usb_bulk_packet_size();
+    zlp_due = false;
     local_length = 0U;
     stream_synced = false;
     stream_expected = false;
@@ -315,8 +332,10 @@ __attribute__((section(".ramfunc"), noinline)) void aux_task(void) {
             in_length = 0U;
         } else {
             in_busy = true;
+            zlp_due = (in_length & (in_packet - 1U)) == 0U;
             if (tud_vendor_n_write_xfer(instance, aux_in, in_length) != in_length) {
                 in_busy = false;
+                zlp_due = false;
             }
         }
     }

@@ -23,6 +23,12 @@ command. The reply retains the preceding subreplies and reports the number of co
 A command that executes and returns an error still counts. This is the firmware's defensive
 handling of malformed batches; it does not add nested batches or queued commands.
 
+## Full speed
+
+The probe is a high-speed device, and works at full speed too. At full speed every bulk endpoint
+is 64 bytes, and CMSIS-DAP v2's packet size in `DAP_Info` (`0xFF`) is 64, so each command and each
+reply fits one packet. On the HID interface the packet size is 64 at either speed.
+
 ## Identify firmware: `0x82`
 
 Send `[0x82]`. The reply contains:
@@ -305,7 +311,7 @@ cleanup must not read the current identity and adopt it.
 SPI is available when `0x82` format 6 sets extended-capability bit 3. It uses the CMSIS-DAP vendor
 command path, not a separate USB-SIO endpoint. The command runs on CMSIS-DAP bulk and HID transports;
 the request and reply must each fit that transport's packet size. A standalone command allows up to
-504 TX bytes on bulk or 56 on HID. A `DAP_ExecuteCommands` batch has less room for each command
+504 TX bytes on bulk at high speed, or 56 on HID and on bulk at full speed. A `DAP_ExecuteCommands` batch has less room for each command
 because its header and neighboring requests or replies share the packet.
 
 Send `[0x91, mode, clock_hz:u32LE, count:u16LE, tx[count]]`. Mode bit 0 sets CPOL, bit 1 sets CPHA,
@@ -323,7 +329,7 @@ A zero transfer length is rejected.
 
 I2C is available when `0x82` format 6 sets extended-capability bit 4. It uses the same CMSIS-DAP
 vendor command path and packet-size limits as SPI. A standalone command allows up to 502 TX bytes or
-508 RX bytes on bulk, and 54 TX bytes or 60 RX bytes on HID. Batches have less room because their
+508 RX bytes on bulk at high speed, and 54 TX bytes or 60 RX bytes on HID and on bulk at full speed. Batches have less room because their
 header and neighboring requests or replies share the packet.
 
 Send `[0x92, address, clock_hz:u32LE, tx_count:u16LE, rx_count:u16LE, tx[tx_count]]`. `address` is
@@ -388,7 +394,7 @@ Verge Aux. A host can use it while a debugger holds the CMSIS-DAP interface.
 | --- | --- |
 | Interface class | `0xff`, subclass `0x00`, protocol `0x00` |
 | Interface string | `Verge Aux` |
-| Endpoints | EP5 OUT and EP5 IN, bulk, 512 bytes |
+| Endpoints | EP5 OUT and EP5 IN, bulk, 512 bytes at high speed and 64 at full speed |
 | Windows | WinUSB, DeviceInterfaceGUID `{A297EA18-39D8-41BE-B2E8-884CEC8FE819}` |
 
 Every Pro has it, whatever its jumpers, and no other board does. Its interface number depends on
@@ -396,7 +402,9 @@ which other interfaces the jumpers leave, so find it by class and string, or on 
 The string doesn't contain `CMSIS-DAP`, so debuggers pass it by.
 
 A request is one transfer on EP5 OUT, in the format of the CMSIS-DAP command it names. The reply is
-one transfer on EP5 IN, in the format of that command's reply on CMSIS-DAP. The interface carries
+one transfer on EP5 IN, in the format of that command's reply on CMSIS-DAP. A stream message can be
+up to 512 bytes, so read EP5 IN with a 512-byte buffer. At full speed a message can fill a whole
+number of 64-byte packets; the probe then ends it with a zero-length packet. The interface carries
 `0x82`, `0x8E`, `0x8F`, `0x90` and `0x94`. Any other command gets `[0xff]`, and so does a request
 too short for its command. Firmware from before `0x8E` was carried leaves extended capability bit 6
 clear and answers it with `[0xff]`. Firmware from before `0x94` leaves bit 7 clear.
@@ -505,7 +513,7 @@ measures a read latency, as a debugger connects at a fast clock, and the next me
 Either way the message's time shows how long it took. Only a pause ends the pairs' run for step 5
 below.
 
-A message holds at most 99 pairs and less than 10 ms of them, so it fits one 512-byte packet. The
+A message holds at most 99 pairs and less than 10 ms of them, so it is shorter than 512 bytes. The
 probe sends it once it is full, or once the pairs it has taken in reach 10 ms. It takes pairs in a
 batch every millisecond or so. Below 2,286 pairs a second a batch is about two and a third pairs
 and takes longer: up to 2.3 s at one pair a second. Below about 230 pairs a second a message waits

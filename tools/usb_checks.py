@@ -6,6 +6,9 @@ from unicorn import UC_HOOK_CODE
 from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3
 
 
+TUSB_SPEED_FULL, TUSB_SPEED_HIGH = 0, 2
+
+
 class Usb:
     def __init__(self, elf0, elf1, symbols0, symbols1, fields):
         self.cpu0 = machine(elf0, symbols0)
@@ -20,7 +23,12 @@ class Usb:
         self.aux_configured = False
         self.aux_sent = []
         self.aux_arms = []
+        # Aux IN as the controller sees it: a write while one is in flight would be refused.
+        self.aux_in_flight = False
+        self.aux_overlaps = 0
         self.accept_tx = True
+        # What tud_speed_get answers.
+        self.speed = TUSB_SPEED_HIGH
         self.shared = symbols0["dap_shared"]
         self.staging = symbols0["dap_stage"]
         assert self.shared == symbols1["dap_shared"]
@@ -32,6 +40,12 @@ class Usb:
                 result = int(self.aux_configured if index == self.aux_index else self.configured)
             elif at == self.cpu0.sym["tud_mounted"]:
                 result = int(self.configured)
+            elif at == self.cpu0.sym["tud_speed_get"]:
+                result = self.speed
+            elif at == self.cpu0.sym["tud_vendor_tx_cb"]:
+                if uc.reg_read(UC_ARM_REG_R0) == self.aux_index:
+                    self.aux_in_flight = False
+                return
             elif at == self.cpu0.sym["tud_vendor_n_read_xfer_buf"]:
                 self.aux_arms.append((uc.reg_read(UC_ARM_REG_R0), uc.reg_read(UC_ARM_REG_R1)))
                 result = 1
@@ -39,6 +53,9 @@ class Usb:
                 index, address, length = (uc.reg_read(r) for r in (UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2))
                 self.tx_attempts += 1
                 accepted = self.accept_tx and (self.aux_configured if index == self.aux_index else self.configured)
+                if accepted and index == self.aux_index:
+                    self.aux_overlaps += int(self.aux_in_flight)
+                    self.aux_in_flight = True
                 if accepted:
                     (self.aux_sent if index == self.aux_index else self.sent).append(bytes(uc.mem_read(address, length)))
                 result = length if accepted else 0
@@ -56,6 +73,8 @@ class Usb:
         self.hook = self.cpu0.uc.hook_add(UC_HOOK_CODE, endpoints)
         self.cpu0.uc.ctl_flush_tb()
         self.put("transfer_abort", self.cpu1.sym["DAP_TransferAbort"])
+        # As dap_shared_init leaves it, until a configuration sets the speed's.
+        self.put("bulk_packet_size", 512, 2)
 
     def put(self, field, value, size=4):
         self.cpu0.uc.mem_write(self.shared[0] + self.fields[field], value.to_bytes(size, "little"))
@@ -181,6 +200,77 @@ def check_transport(c, elf0, elf1, symbols0, symbols1, fields, slots):
         c.check(counts == [8, 1], f"abort did not terminate SWD retries: {counts}")
     c.note("linked USB callbacks: full-queue abort, pointer guard, host-generation wrap, transport ordering and reply retry")
     c.note("HID/bulk callback abort stops a running SWD WAIT loop; the next transfer recovers")
+
+
+def check_full_speed(c, elf0, elf1, symbols0, symbols1, fields):
+    """A configuration at full speed: DAP_Info gives the 64-byte packet, and a batch stops at it."""
+    usb = Usb(elf0, elf1, symbols0, symbols1, fields)
+    usb.speed = TUSB_SPEED_FULL
+    usb.call0("tud_mount_cb")
+    usb.receive(b"\x00\xff")
+    usb.dispatch()
+    usb.call0("send_head")
+    c.check(usb.sent == [b"\x00\x02\x40\x00"], f"full speed: DAP_Info packet size {[m.hex() for m in usb.sent]}")
+    usb.call0("tud_vendor_tx_cb", 0, len(usb.sent[-1]) if usb.sent else 0)
+    usb.receive(bytes([0x7F, 20]) + b"\x00\xff" * 20)
+    usb.dispatch()
+    usb.call0("send_head")
+    reply = usb.sent[-1] if len(usb.sent) == 2 else b""
+    c.check(reply == bytes([0x7F, 15]) + b"\x00\x02\x40\x00" * 15,
+            f"full speed: a batch of 20 DAP_Info answered {reply[:8].hex()}, {len(reply)} bytes, wanted 15 in 62")
+    usb.call0("tud_vendor_tx_cb", 0, len(reply))
+    usb.speed = TUSB_SPEED_HIGH
+    usb.call0("tud_mount_cb")
+    usb.receive(b"\x00\xff")
+    usb.dispatch()
+    usb.call0("send_head")
+    c.check(usb.sent[2:] == [b"\x00\x02\x00\x02"], f"high speed after full: DAP_Info {[m.hex() for m in usb.sent[2:]]}")
+    c.note("full speed: DAP_Info packet size 64, a batch stops at 64 bytes, 512 again at high speed")
+
+
+def descriptor_endpoints(config):
+    """(address, transfer type, wMaxPacketSize) of each endpoint in a configuration descriptor."""
+    found, i = [], 0
+    while i + 1 < len(config) and config[i] > 0:
+        if config[i + 1] == 5:
+            found.append((config[i + 2], config[i + 3] & 3, int.from_bytes(config[i + 4:i + 6], "little")))
+        i += config[i]
+    return found
+
+
+def check_descriptors(c, elf0, elf1, symbols0, symbols1, fields):
+    """Bulk endpoints are 512 bytes at high speed and 64 at full speed (USB 2.0 5.8.3), the other-speed
+    configuration is the other speed's configuration under its own type, and the qualifier says
+    what the device descriptor says."""
+    for board in (0, 1):
+        usb = Usb(elf0, elf1, symbols0, symbols1, fields)
+        usb.put("board", board, 1)
+        usb.put("jumpers", 0, 1)
+
+        def read(entry, *args):
+            at = usb.call0(entry, *args)
+            total = int.from_bytes(usb.cpu0.uc.mem_read(at + 2, 2), "little")
+            return bytes(usb.cpu0.uc.mem_read(at, total))
+
+        configs, others = {}, {}
+        for speed in (TUSB_SPEED_HIGH, TUSB_SPEED_FULL):
+            usb.speed = speed
+            configs[speed] = read("tud_descriptor_configuration_cb", 0)
+            others[speed] = read("tud_descriptor_other_speed_configuration_cb", 0)
+        for speed, other, name, bulk in ((TUSB_SPEED_HIGH, TUSB_SPEED_FULL, "high", 512),
+                                         (TUSB_SPEED_FULL, TUSB_SPEED_HIGH, "full", 64)):
+            config = configs[speed]
+            sizes = [size for _, kind, size in descriptor_endpoints(config) if kind == 2]
+            c.check(config[1] == 2 and len(sizes) >= 2 and all(size == bulk for size in sizes),
+                    f"board {board} at {name} speed: bulk endpoints {sizes}, wanted {bulk}")
+            described = others[other]
+            c.check(described[1] == 7 and described[2:] == config[2:],
+                    f"board {board}: the other-speed configuration asked at the other speed is not the {name}-speed one")
+        device = bytes(usb.cpu0.uc.mem_read(usb.call0("tud_descriptor_device_cb"), 18))
+        qualifier = bytes(usb.cpu0.uc.mem_read(usb.call0("tud_descriptor_device_qualifier_cb"), 10))
+        c.check(qualifier[:2] == b"\x0a\x06" and qualifier[2:8] == device[2:8] and qualifier[8] == device[17]
+                and qualifier[9] == 0, f"board {board}: qualifier {qualifier.hex()} against device {device.hex()}")
+    c.note("descriptors: bulk 512 at high speed and 64 at full on both boards; other-speed configurations and the qualifier agree")
 
 
 def check_unconfigured(c, elf0, elf1, symbols0, symbols1, fields, slots):
@@ -555,6 +645,22 @@ def check_aux_stream(c, elf0, elf1, symbols0, symbols1, fields, layout):
                 f"mode 6 header's step 5 fields {h[68:].hex()}")
     publish(usb, b"\xa0\x00" + bytes(14))
     c.check(drain(usb) == [b"\xa0\x00" + bytes(14)], "pairs after the header were not sent")
+    # At full speed a message of whole packets, 48 pairs in 256 bytes, needs a zero-length packet to
+    # end it. At high speed no message is a whole packet.
+    for speed, zlp in ((TUSB_SPEED_FULL, [b""]), (TUSB_SPEED_HIGH, [])):
+        usb = fresh()
+        usb.speed = speed
+        usb.call0("tud_mount_cb")
+        capture(usb)
+        arrive(usb, b"\x90\x06\x00")
+        drain(usb)
+        whole, short = b"\xa0\x00" + bytes(254), b"\xa0\x00" + bytes(14)
+        publish(usb, whole)
+        publish(usb, short)
+        sent = drain(usb)
+        c.check(sent == [whole] + zlp + [short] and usb.aux_overlaps == 0,
+                f"aux at speed {speed}: a 256-byte message then a short one went as {[len(m) for m in sent]},"
+                f" {usb.aux_overlaps} started while one was in flight")
     # Mode 7: the reply, then the end, with the last pair integrated.
     arrive(usb, b"\x90\x07")
     sent = drain(usb)

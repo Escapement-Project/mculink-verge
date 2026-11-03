@@ -23,6 +23,7 @@
 #include "ser_num.h"
 #include "reboot.h"
 #include "reboot_usb.h"
+#include "usb_speed.h"
 #include "tusb.h"
 
 #define USB_VID 0x1FC9 // NXP
@@ -66,13 +67,35 @@ static uint32_t functions(void) {
            (board_has_aux(board, jumpers) ? FUNCTION_AUX : 0U);
 }
 
+static uint16_t bcd_usb(uint32_t present) {
+    return ((present & FUNCTIONS_WINUSB) != 0U) ? USB_BCD_BOS : USB_BCD_NO_BOS;
+}
+
 /** Windows keeps what it learnt about a device by VID, PID and bcdDevice, so each set of
  *  functions gets a bcdDevice of its own, as stock's does for each jumper state. */
 uint8_t const* tud_descriptor_device_cb(void) {
     uint32_t const present = functions();
-    desc_device.bcdUSB = ((present & FUNCTIONS_WINUSB) != 0U) ? USB_BCD_BOS : USB_BCD_NO_BOS;
+    desc_device.bcdUSB = bcd_usb(present);
     desc_device.bcdDevice = (uint16_t)(0x0100U | present);
     return (uint8_t const*)&desc_device;
+}
+
+/** What a high-speed capable device says about the other speed (USB 2.0 9.6.2). Nothing in the
+ *  device descriptor depends on speed. */
+static tusb_desc_device_qualifier_t desc_qualifier = {
+    .bLength = sizeof(tusb_desc_device_qualifier_t),
+    .bDescriptorType = TUSB_DESC_DEVICE_QUALIFIER,
+    .bDeviceClass = 0x00,
+    .bDeviceSubClass = 0x00,
+    .bDeviceProtocol = 0x00,
+    .bMaxPacketSize0 = CFG_TUD_ENDPOINT0_SIZE,
+    .bNumConfigurations = 0x01,
+    .bReserved = 0x00,
+};
+
+uint8_t const* tud_descriptor_device_qualifier_cb(void) {
+    desc_qualifier.bcdUSB = bcd_usb(functions());
+    return (uint8_t const*)&desc_qualifier;
 }
 
 /** One endpoint layout for both boards: the plain MCU-Link is a Pro with
@@ -123,7 +146,7 @@ void usb_descriptors_init(void) {
 #define VCOM_NOTIF_SIZE 16
 #define VCOM_NOTIF_INTERVAL 16
 // clang-format off: one descriptor a line, as TinyUSB's own template lays it out.
-#define VCOM_DESCRIPTOR(_itfnum, _stridx, _ep_notif, _epout, _epin) \
+#define VCOM_DESCRIPTOR(_itfnum, _stridx, _ep_notif, _epout, _epin, _bulk) \
     /* Interface Associate */ \
     8, TUSB_DESC_INTERFACE_ASSOCIATION, _itfnum, 2, TUSB_CLASS_CDC, CDC_COMM_SUBCLASS_ABSTRACT_CONTROL_MODEL, CDC_COMM_PROTOCOL_NONE, 0, \
     /* CDC Control Interface */ \
@@ -141,9 +164,9 @@ void usb_descriptors_init(void) {
     /* CDC Data Interface */ \
     9, TUSB_DESC_INTERFACE, (uint8_t)((_itfnum) + 1), 0, 2, TUSB_CLASS_CDC_DATA, 0, 0, 0, \
     /* Endpoint Out */ \
-    7, TUSB_DESC_ENDPOINT, _epout, TUSB_XFER_BULK, U16_TO_U8S_LE(512), 0, \
+    7, TUSB_DESC_ENDPOINT, _epout, TUSB_XFER_BULK, U16_TO_U8S_LE(_bulk), 0, \
     /* Endpoint In */ \
-    7, TUSB_DESC_ENDPOINT, _epin, TUSB_XFER_BULK, U16_TO_U8S_LE(512), 0
+    7, TUSB_DESC_ENDPOINT, _epin, TUSB_XFER_BULK, U16_TO_U8S_LE(_bulk), 0
 // clang-format on
 
 /** A vendor-defined report pair, 64 bytes each way: what CMSIS-DAP v1 is. */
@@ -159,6 +182,7 @@ uint8_t const* tud_hid_descriptor_report_cb(uint8_t instance) {
 #define CONFIG_MAX_LEN (TUD_CONFIG_DESC_LEN + 2U * TUD_VENDOR_DESC_LEN + TUD_HID_INOUT_DESC_LEN + 2U * TUD_CDC_DESC_LEN)
 
 static uint8_t desc_configuration[CONFIG_MAX_LEN];
+static uint8_t desc_other_speed[CONFIG_MAX_LEN];
 
 static uint8_t* append(uint8_t* out, uint8_t const* descriptor, size_t length) {
     memcpy(out, descriptor, length);
@@ -169,20 +193,21 @@ static uint8_t* append(uint8_t* out, uint8_t const* descriptor, size_t length) {
 static uint8_t aux_interface;
 
 /** Built on each request from the functions present, in PRO.md's interface order: CMSIS-DAP v2,
- *  VCOM, CMSIS-DAP v1, VCOM2, then Verge Aux. src/vcom.c numbers its CDC instances by the same rule. */
-uint8_t const* tud_descriptor_configuration_cb(uint8_t index) {
-    (void)index;
+ *  VCOM, CMSIS-DAP v1, VCOM2, then Verge Aux. src/vcom.c numbers its CDC instances by the same rule.
+ *  `bulk` is every bulk endpoint's size: high speed allows only 512, full speed at most 64. TinyUSB
+ *  checks neither in a release build. */
+static uint8_t const* build_configuration(uint8_t* config, uint8_t type, uint16_t bulk) {
     uint32_t const present = functions();
-    uint8_t* out = desc_configuration + TUD_CONFIG_DESC_LEN;
+    uint8_t* out = config + TUD_CONFIG_DESC_LEN;
     uint8_t itf = 0U;
     if ((present & FUNCTION_DEBUG) != 0U) {
         uint8_t const vendor[] = {
-            TUD_VENDOR_DESCRIPTOR(ITF_NUM_VENDOR, STRID_VENDOR_ITF, EPNUM_VENDOR_OUT, EPNUM_VENDOR_IN, 512)};
+            TUD_VENDOR_DESCRIPTOR(ITF_NUM_VENDOR, STRID_VENDOR_ITF, EPNUM_VENDOR_OUT, EPNUM_VENDOR_IN, bulk)};
         out = append(out, vendor, sizeof(vendor));
         itf++;
     }
     if ((present & FUNCTION_VCOM) != 0U) {
-        uint8_t const vcom[] = {VCOM_DESCRIPTOR(itf, STRID_VCOM, EPNUM_VCOM_NOTIF, EPNUM_VCOM_OUT, EPNUM_VCOM_IN)};
+        uint8_t const vcom[] = {VCOM_DESCRIPTOR(itf, STRID_VCOM, EPNUM_VCOM_NOTIF, EPNUM_VCOM_OUT, EPNUM_VCOM_IN, bulk)};
         out = append(out, vcom, sizeof(vcom));
         itf += 2U;
     }
@@ -193,19 +218,33 @@ uint8_t const* tud_descriptor_configuration_cb(uint8_t index) {
         itf++;
     }
     if ((present & FUNCTION_VCOM2) != 0U) {
-        uint8_t const vcom2[] = {VCOM_DESCRIPTOR(itf, STRID_VCOM2, EPNUM_VCOM2_NOTIF, EPNUM_VCOM2_OUT, EPNUM_VCOM2_IN)};
+        uint8_t const vcom2[] = {
+            VCOM_DESCRIPTOR(itf, STRID_VCOM2, EPNUM_VCOM2_NOTIF, EPNUM_VCOM2_OUT, EPNUM_VCOM2_IN, bulk)};
         out = append(out, vcom2, sizeof(vcom2));
         itf += 2U;
     }
     if ((present & FUNCTION_AUX) != 0U) {
-        uint8_t const aux[] = {TUD_VENDOR_DESCRIPTOR(itf, STRID_AUX, EPNUM_AUX_OUT, EPNUM_AUX_IN, 512)};
+        uint8_t const aux[] = {TUD_VENDOR_DESCRIPTOR(itf, STRID_AUX, EPNUM_AUX_OUT, EPNUM_AUX_IN, bulk)};
         out = append(out, aux, sizeof(aux));
         aux_interface = itf;
         itf++;
     }
-    uint8_t const header[] = {TUD_CONFIG_DESCRIPTOR(1, itf, 0, (uint16_t)(out - desc_configuration), 0x00, 100)};
-    (void)append(desc_configuration, header, sizeof(header));
-    return desc_configuration;
+    uint8_t header[] = {TUD_CONFIG_DESCRIPTOR(1, itf, 0, (uint16_t)(out - config), 0x00, 100)};
+    header[1] = type;
+    (void)append(config, header, sizeof(header));
+    return config;
+}
+
+uint8_t const* tud_descriptor_configuration_cb(uint8_t index) {
+    (void)index;
+    return build_configuration(desc_configuration, TUSB_DESC_CONFIGURATION, usb_bulk_packet_size());
+}
+
+/** The configuration as it would be at the other speed (USB 2.0 9.6.4). */
+uint8_t const* tud_descriptor_other_speed_configuration_cb(uint8_t index) {
+    (void)index;
+    uint16_t const other = (usb_bulk_packet_size() == USB_BULK_HIGH_SPEED) ? USB_BULK_FULL_SPEED : USB_BULK_HIGH_SPEED;
+    return build_configuration(desc_other_speed, TUSB_DESC_OTHER_SPEED_CONFIG, other);
 }
 
 // ---- Strings ------------------------------------------------------------------------------------
