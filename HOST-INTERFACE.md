@@ -202,36 +202,44 @@ when `calibrated-valid` is 1.
 
 ### Capture identities
 
-An identity is 24 bytes: a 16-byte opaque boot value followed by an eight-byte little-endian
-capture counter. Hosts compare all 24 bytes and do not interpret the boot value. The all-zero
-identity means no capture has successfully started since this boot and is never accepted as a
-stop token.
+A Pro can serve two hosts at once: a debugger on CMSIS-DAP and another tool on Verge Aux. Either
+one can restart the energy capture. An identity names one capture, so a host can stop the capture
+it started without stopping one that another host has started since.
 
-The firmware creates a boot value before the first successful start. It uses the hardware
-RNG's recommended initialization and entropy accumulation. A zero boot value is allowed: the
-nonzero counter keeps every successful capture's complete identity nonzero. It does not derive the value from the
-probe serial, a timer, uninitialized memory or a counter reset to zero. Entropy initialization has
-a bounded failure path. It never falls back to a fixed boot value.
+An identity is 24 bytes: a 16-byte boot value, then an eight-byte capture counter, little-endian.
+Hosts compare all 24 bytes and read nothing into the boot value. The all-zero identity belongs to
+no capture. A reply gives it when it has no identity to give, such as before the first start, and
+no request accepts it.
 
-The counter starts at zero. Every successful start, including legacy modes 0 and 5, increments
-it and publishes a new identity before conversions begin. It never wraps: after UINT64_MAX,
-new starts fail with result 9 until a probe restart establishes a fresh boot value. The current
-capture continues. Pauses, holds, target supply changes and stream attach/detach keep the identity.
+The firmware makes the boot value before the first start that succeeds. It takes it from the
+hardware random number generator, with the entropy sequence from NXP's SDK driver. It never derives
+the value from the serial number, a timer, uninitialised memory or a counter that starts at zero,
+and it never falls back to a fixed value. When the generator fails, the start fails with result 9.
+The boot value can be zero: the counter is never zero in a real identity, so no capture's identity
+is all zeros.
 
-Stop and failure retain the last identity with the retained total. A failed start does not
-publish a new identity. It may still pause or stop the old capture under the existing start
-failure rules; the old identity remains its identity. A probe restart clears the capture and
-retained identity. The next start uses the new boot value.
+The counter starts at zero. Every start that succeeds, legacy modes 0 and 5 included, adds one and
+publishes the new identity before the first conversion. The counter never wraps. Once it reaches
+2^64 − 1, new starts fail with result 9 until the probe restarts and makes a new boot value. The
+capture already running carries on.
 
-Identities are scoped to a probe and identify a capture, not an authorized host. Any host can
-read an identity, attach to that capture and explicitly stop it. USB reconnection/re-enumeration
-makes a host discard cached ownership until it explicitly starts or attaches again.
+A capture keeps its identity through pauses, holds, target supply changes, and streams attaching
+and ending. A stopped or failed capture keeps it too, with its total. A start that fails publishes
+no identity. It can still pause or stop the running capture, as any failed start can, and that
+capture keeps its identity. A probe restart clears the capture and its identity. The next start
+uses a new boot value.
+
+An identity belongs to one probe and names a capture, not a host. Any host can read it, attach to
+the capture and stop it on purpose. A host holds an identity only when it got it from its own start
+reply or stream header, and only an identity it holds may drive an automatic cleanup. When the
+probe disconnects or enumerates again, the host drops the identity it holds until it starts or
+attaches again.
 
 ### Identity-aware requests
 
-All integers below are little-endian. `id[24]` is the identity above. Existing request and reply
-sizes stay unchanged, including inside DAP_ExecuteCommands. New modes avoid appending fields
-that an older batch parser would mistake for its next command's reply.
+All integers are little-endian, and `id[24]` is an identity. The older modes keep their request and
+reply sizes, inside `DAP_ExecuteCommands` too. The new modes add no field to an older reply, so a
+batch parser that predates them never mistakes an added field for the next command's reply.
 
 | Request | Bytes | Interfaces | Action |
 | --- | ---: | --- | --- |
@@ -242,12 +250,13 @@ that an older batch parser would mistake for its next command's reply.
 | `[0x90,12]` | 2 | CMSIS-DAP, Aux | Read capture state and identity without changing it. |
 | `[0x90,13,id[24]]` | 26 | Aux | End streaming only if the capture identity matches. Acquisition continues. |
 
-Modes 9, 10 and 13 on CMSIS-DAP return DAP_ERROR without side effects, as the existing stream-only
-modes do. An unsupported mode returns DAP_ERROR. A truncated request or one whose full reply
-cannot fit is rejected before side effects under the existing packet preflight rules. HID
-padding is not treated as additional parameters. The preflight consumes exactly the bytes above.
+On CMSIS-DAP, modes 9, 10 and 13 return `DAP_ERROR` and change nothing, as the other stream modes
+do. A mode the firmware does not know returns `DAP_ERROR` on either interface. A request that is
+too short, or whose full reply would not fit in the space left for it, is refused before it changes
+anything, as any command is. Each mode takes exactly the bytes the table gives: in a batch the next
+command starts right after them, and HID padding after a request is never read as parameters.
 
-Modes 8/9 return 31 bytes:
+Modes 8 and 9 return 31 bytes:
 
 | Offset | Field |
 | --- | --- |
@@ -257,18 +266,18 @@ Modes 8/9 return 31 bytes:
 | 3–6 | Effective rate, u32 |
 | 7–30 | Identity of the capture successfully started |
 
-The returned identity/rate are those selected by this start, not a later snapshot. On any
-nonzero result the rate and identity fields are zero. Failed operations do not grant ownership.
-Mode 10 returns `[0x90,DAP_OK,result]` in three bytes, as legacy mode 6 does. A successful mode
-10 grants an attached identity only once its format-2 header arrives. It never obtains one by
-reading status afterwards.
+The rate and identity are the ones this start chose, not a later reading. When the result is not
+0, both are zero, and the start gives the host no identity.
 
-Modes 11 and 13 return `[0x90,DAP_OK,result]` in three bytes. Mode 11 checks identity before it
-pauses the ADC or changes capture/stream state. Mode 13 checks before ending the stream. A stale
-request leaves acquisition, stream, total, fault and retained identity untouched. It emits no
-stream-end message. A nonzero matching retained identity can be stopped repeatedly: return 0
-when already stopped normally, or retained result 7 after a capture fault. Ending an already
-ended stream with the matching identity returns 0. All-zero or nonmatching identities return 8.
+Mode 10 returns `[0x90, DAP_OK, result]`, three bytes, as mode 6 does. It gives the host an
+identity only when the stream's header arrives. Reading status afterwards never does.
+
+Modes 11 and 13 return `[0x90, DAP_OK, result]`, three bytes. Each compares the identity before it
+changes anything: mode 11 before it pauses the ADC, mode 13 before it ends the stream. A mismatch
+returns 8. It leaves the capture, the stream, the total, any fault and the identity as they were,
+and sends no end message. A matching identity can be stopped again and again. Mode 11 returns 0 if
+the capture already stopped normally, or 7 after a capture fault. Mode 13 returns 0 for a stream
+that has already ended. An all-zero identity returns 8 too.
 
 Mode 12 returns 32 bytes:
 
@@ -281,32 +290,33 @@ Mode 12 returns 32 bytes:
 | 4–7 | Effective rate, u32; zero with every nonzero result |
 | 8–31 | Current/retained identity; zero before first success or when unavailable |
 
-The state, rate and identity form one consistent snapshot. In particular, a status read must
-not combine one capture's identity with its replacement's running state. A capture with no pair
-yet reports running (0), with its identity. Its latest sample may still report NO_SAMPLE (2).
-Running is 1 only with result 0; it is 0 with every other result. A healthy never-started probe
-returns result 1, running 0, rate 0 and the zero identity. A first-start rate or calibration
-refusal leaves stopped state. A latched capture or control fault reports 7, with zero identity if
-no start succeeded. Result 9 is used only after entropy initialization actually failed, not merely
-because it has not been attempted. Unavailable hardware takes precedence and returns 3.
+The state, rate and identity in one reply always describe the same capture. A reply never pairs
+one capture's identity with the running state of the capture that replaced it. A capture that has
+taken no pair yet reports result 0 with its identity, and mode 1 can still report no sample (2).
+Running is 1 only with result 0. A healthy probe that has never started a capture reports result
+1, running 0, rate 0 and the zero identity. If the first start fails on its rate or its
+calibration, the probe stays stopped. A capture or control fault stays until a start succeeds.
+Until then mode 12 reports 7, with the zero identity if no start ever succeeded.
 
-A start after a failed entropy initialization tries it again, so result 9 from that cause lasts
-until an initialization succeeds, not until the probe restarts. A start whose initialization
-succeeds can still fail for another reason; mode 12 then reports that state, not 9. Each failed
-attempt takes up to about a second.
+For the generator, result 9 means it ran and failed, not that it has not run yet. A board without
+energy capture returns 3, never 9. The next start tries the generator again, so result 9 for that
+reason lasts until the generator succeeds, not until the probe restarts. Each failed try takes
+up to about a second. A start can get its boot value and still fail for another reason. Mode 12
+then reports the state that start left, not 9: after a failed calibration, result 1.
 
-Mode 12 reports 9 with zero identity only when no identity was established. Counter exhaustion
-does not make an existing identity unreadable or prevent stopping its capture. Modes 8/9 reject
-exhaustion or entropy failure before disturbing an existing capture. Old result values keep
-their meanings. Availability and request validation precede comparison; unsupported hardware
-returns 3 rather than 8.
+Mode 12 reports 9, with the zero identity, only when no identity exists yet. A counter that has run
+out leaves the current identity readable, and its capture can still be stopped. Modes 8 and 9 check
+the counter and the generator before they touch the running capture. The older results keep their
+meanings. The firmware checks that energy capture is available, and that the request is valid,
+before it compares identities, so a board without energy capture returns 3, not 8.
 
-Legacy mode 2 remains unconditional. Legacy modes 0/5 create identities but keep their replies.
-Updated hosts require bit 8 for a capture they will stop automatically. They retain the identity
-from their start reply or attached header and use mode 11/13 for cleanup. A stale result never
-authorizes reading and stopping the replacement. A lost or malformed start reply grants no token;
-cleanup must not read the current identity and adopt it.
-
+Mode 2 still stops whatever capture runs. Modes 0 and 5 still reply as before, and their captures
+get identities too. A host that stops a capture on its own, for instance when it exits, needs
+extended-capability bit 8. It holds the identity from its start reply or the stream's header. It
+cleans up a capture it started with mode 11, and a stream it attached to with mode 13. It never
+reads the current identity with mode 12 and adopts it. That holds after result 8, and after a start
+reply that was lost or malformed: the host then holds no identity, and the capture it finds may be
+another host's.
 
 ## Pro SPI: `0x91`
 
@@ -480,22 +490,23 @@ Modes 9/10 select format 2. Offsets 0–67 keep this layout, with version 2. Off
 contain the 24-byte capture identity, with a nonzero counter, and offsets 68–74 above move to
 92–98. Legacy modes 5/6 keep format 1. A header without step 5's fields, from older firmware,
 means a weight of 0 and no flags.
-The header's identity, calibration, rate and first sequence describe the same capture.
-No identity is appended to other stream messages.
+The header's identity, calibration, rate and first sequence number all describe the same capture.
+No other stream message carries the identity.
 
-A successful mode 9/10 reply establishes a new stream boundary. Its own header is the first stream
-message after that reply. Firmware discards prior queued messages. A previously submitted USB
-message remains before the reply. Hosts discard messages saved before the reply before reading
-the new header. Mode 9's header identity must match its start reply. Mode 10 grants a token only
-when its header arrives. A missing attach header does not authorize a status read for cleanup.
+A mode 9 or 10 that succeeds starts a new stream. The firmware drops the messages it had queued, and
+the stream's header is the first stream message after the reply. One message already handed to USB
+can still arrive before the reply, so a host discards anything it read before the reply. Mode 9's
+header carries the same identity as its reply, and a host checks that it does. With mode 10, the
+host holds an identity only once the header arrives. If the header never comes, it holds none, and
+it does not read status to find one.
 
 Mode 13 ends the stream as mode 7 does, with reason 1 in its end message, but only when the
 identity matches. A restart still ends the stream, with reason 3.
 
-A host keeps the identity from its start reply or the stream's header so it can clean up after a
-failure. It drops the identity when the stream ends or the probe disconnects. An identity read
-back from a saved recording, such as a verge capture file, belongs to that recording: never use it
-to stop or end a live capture.
+A host holds the identity from its start reply or the stream's header so it can clean up after a
+failure. It drops the identity once it has cleaned up, or when the probe disconnects. An identity
+read back from a saved recording, such as a verge capture file, belongs to that recording: never use
+it to stop or end a live capture.
 
 The points are the ones `0x90` mode 4 reports.
 
