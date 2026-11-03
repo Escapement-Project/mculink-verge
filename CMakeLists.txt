@@ -69,6 +69,14 @@ option(USB_RAM "Run TinyUSB from SRAM" ON)
 option(CODE_LAB "Build the vendor 0x88 code lab" OFF)
 # Add shared-timer counters for the USB and two-core command path. Bench-only; off in shipped images.
 option(DAP_TIMING_DIAGNOSTICS "Measure command handoff stages" OFF)
+# A test build that attaches at full speed, which needs no full-speed hub: `always` never chirps,
+# as on a full-speed-only port; `first` skips the chirp on the first attach only, as a chirp that
+# failed once. Never shipped; the version string carries it.
+set(USB_FULL_SPEED_TEST "" CACHE STRING "Attach at full speed: always, first, or empty for neither")
+set_property(CACHE USB_FULL_SPEED_TEST PROPERTY STRINGS "" always first)
+if(NOT USB_FULL_SPEED_TEST MATCHES "^(always|first)?$")
+  message(FATAL_ERROR "USB_FULL_SPEED_TEST is always, first, or empty, not ${USB_FULL_SPEED_TEST}")
+endif()
 if(RAMFUNC AND CMAKE_BUILD_TYPE STREQUAL "Debug")
   message(FATAL_ERROR
     "RAMFUNC does not fit a Debug build: the unrolled bit paths are about 300 KB at -O0 and SRAM "
@@ -96,6 +104,9 @@ if(CODE_LAB)
 endif()
 if(DAP_TIMING_DIAGNOSTICS)
   string(APPEND FW_VARIANT "+timing")
+endif()
+if(NOT USB_FULL_SPEED_TEST STREQUAL "")
+  string(APPEND FW_VARIANT "+fs-${USB_FULL_SPEED_TEST}")
 endif()
 
 add_custom_target(fw_version ALL
@@ -339,6 +350,12 @@ if(CODE_LAB)
   target_sources(${CORE1} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/code_lab.c)
   target_compile_definitions(${CORE1} PRIVATE CODE_LAB=1)
   target_compile_definitions(${PROJECT_NAME} PRIVATE CODE_LAB=1)
+endif()
+
+if(USB_FULL_SPEED_TEST STREQUAL "always")
+  target_compile_definitions(${PROJECT_NAME} PRIVATE USB_FULL_SPEED_TEST_ALWAYS=1)
+elseif(USB_FULL_SPEED_TEST STREQUAL "first")
+  target_compile_definitions(${PROJECT_NAME} PRIVATE USB_FULL_SPEED_TEST_FIRST=1)
 endif()
 
 if(DAP_TIMING_DIAGNOSTICS)

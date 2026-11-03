@@ -422,7 +422,7 @@ __attribute__((section(".ramfunc"))) static bool queued_work(void) {
                                ((dap_shared.energy_control_ack & DAP_ENERGY_QUIET_FLAG) == 0U) &&
                                ((CTIMER2->TCR & CTIMER_TCR_CEN_MASK) != 0U);
     return reply_waiting || disconnect_requested || tud_task_event_ready() || aux_has_work() || rearm_waiting ||
-           dap_shared.energy_control_request != dap_shared.energy_control_ack;
+           usb_speed_waiting() || dap_shared.energy_control_request != dap_shared.energy_control_ack;
 }
 
 /** Everything that gives the loop work wakes it: USB and the LED tick by interrupt, CPU 1 through
@@ -641,6 +641,7 @@ __attribute__((noinline, used)) void dap_core_security_init(void) {
         if (vcom_ready()) {
             vcom_task();
         }
+        usb_speed_task();
         reboot_poll();
         idle();
     }
@@ -679,6 +680,7 @@ int main(void) {
         .speed = TUSB_SPEED_AUTO,
     };
     NVIC_SetPriority(USB1_IRQn, CPU0_PRIORITY);
+    usb_speed_init();
     tusb_init(BOARD_TUD_RHPORT, &init);
     __DMB();
     __enable_irq();

@@ -25,9 +25,11 @@ handling of malformed batches; it does not add nested batches or queued commands
 
 ## Full speed
 
-The probe is a high-speed device, and works at full speed too. At full speed every bulk endpoint
-is 64 bytes, and CMSIS-DAP v2's packet size in `DAP_Info` (`0xFF`) is 64, so each command and each
-reply fits one packet. On the HID interface the packet size is 64 at either speed.
+The probe is a high-speed device. If a bus reset leaves it at full speed, it leaves the bus for
+300 ms and attaches again to try high speed. It tries three times after it is plugged in, then
+works at full speed. At full speed every bulk endpoint is 64 bytes, and CMSIS-DAP v2's packet size
+in `DAP_Info` (`0xFF`) is 64, so each command and each reply fits one packet. On the HID interface
+the packet size is 64 at either speed.
 
 ## Identify firmware: `0x82`
 

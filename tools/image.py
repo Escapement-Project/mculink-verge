@@ -891,8 +891,8 @@ def check_hid_padding(c: Checker, elf: str, slots: int) -> None:
 
 
 def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: bool = False) -> None:
-    from usb_checks import (check_aux, check_aux_stream, check_descriptors, check_full_speed, check_transport,
-                            check_unconfigured)
+    from usb_checks import (check_aux, check_aux_stream, check_descriptors, check_full_speed, check_rechirp,
+                            check_transport, check_unconfigured)
     from usb_idle_checks import check_idle, check_idle_rearm
     from usb_lifecycle import check_sequences
 
@@ -905,6 +905,7 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: 
     check_transport(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_full_speed(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
     check_descriptors(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
+    check_rechirp(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
     check_sequences(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_aux(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
     stream_shared = shared_offsets(slots, "energy_integration", "energy_available", "energy_dma_error",

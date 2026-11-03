@@ -228,6 +228,62 @@ def check_full_speed(c, elf0, elf1, symbols0, symbols1, fields):
     c.note("full speed: DAP_Info packet size 64, a batch stops at 64 bytes, 512 again at high speed")
 
 
+def check_rechirp(c, elf0, elf1, symbols0, symbols1, fields):
+    """A bus reset that leaves the probe at full speed takes it off the bus for 300 ms and back, at
+    most three times per attach; one at high speed, or any other event, does nothing
+    (src/usb_speed.c)."""
+    devcmdstat, bus_reset_end, sof = 0x40094000, 2, 4
+    usb = Usb(elf0, elf1, symbols0, symbols1, fields)
+    calls = []
+
+    def pull_up(uc, at, size, data):
+        calls.append("off" if at == usb.cpu0.sym["tud_disconnect"] else "on")
+        uc.reg_write(UC_ARM_REG_R0, 1)
+        uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+
+    for name in ("tud_disconnect", "tud_connect"):
+        entry = usb.cpu0.sym[name]
+        usb.cpu0.uc.hook_add(UC_HOOK_CODE, pull_up, begin=entry, end=entry)
+    usb.cpu0.uc.ctl_flush_tb()
+
+    def event(speed, kind=bus_reset_end):
+        usb.cpu0.uc.mem_write(devcmdstat, u32(speed << 22))
+        usb.call0("tud_event_hook_cb", 1, kind, 1)
+
+    def task(ms):
+        usb.cpu0.uc.mem_write(usb.cpu0.sym["system_ticks"], u32(ms))
+        usb.call0("usb_speed_task")
+
+    def waiting():
+        """What usb_speed_waiting answers; LTO inlines it into CPU 0's idle check."""
+        return bytes(usb.cpu0.uc.mem_read(usb.cpu0.sym["down"], 1)) != b"\x00"
+
+    event(2)
+    task(1000)
+    event(1, sof)
+    task(1001)
+    c.check(calls == [], f"a high-speed reset or a SOF moved the pull-up: {calls}")
+    now = 2000
+    for attempt in range(1, 5):
+        retry = attempt <= 3
+        event(1)
+        task(now)
+        c.check(calls[-1:] == (["off"] if retry else ["on"]) and waiting() == retry,
+                f"full-speed reset {attempt}: pull-up {calls}, waiting {waiting()}")
+        # A reset the controller reports while the probe is off the bus is not the host's.
+        event(1)
+        task(now + 299)
+        c.check(calls[-1:] == (["off"] if retry else ["on"]), f"full-speed reset {attempt}: back on before 300 ms: {calls}")
+        task(now + 300)
+        task(now + 301)
+        wanted = ["off", "on"] * min(attempt, 3)
+        c.check(calls == wanted and not waiting(),
+                f"full-speed reset {attempt}: pull-up {calls}, wanted {wanted}")
+        now += 1000
+    c.note("re-chirp: a full-speed reset leaves the bus for 300 ms with the loop kept awake, three times after power-up;"
+           " high speed, other events and resets while off the bus left alone")
+
+
 def descriptor_endpoints(config):
     """(address, transfer type, wMaxPacketSize) of each endpoint in a configuration descriptor."""
     found, i = [], 0
