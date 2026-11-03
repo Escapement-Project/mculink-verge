@@ -97,7 +97,7 @@ def check() -> int:
             else:
                 print(f"{probe.serial}: stock V{firmware_version(probe)} -- {probe.product}")
         except RuntimeError:
-            # Stock V3.172 echoes a bare 0x82; a firmware answering ID_DAP_Invalid lands here.
+            # A firmware answering ID_DAP_Invalid lands here; stock echoes 0x82 and goes above.
             print(f"{probe.serial}: stock V{firmware_version(probe)} -- {probe.product}")
         except Exception as error:
             print(f"{probe.serial}: did not answer vendor 0x82 ({error})")

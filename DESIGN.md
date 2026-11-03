@@ -68,7 +68,7 @@ the same three packets the same way, with TCK resting low between them.
 
 | id | | |
 | --- | --- | --- |
-| 0x82 | `CJTAG_INFO` | answers "CJTAG", a format version, a capability bitmap and the build string. Read-only, so a host may send it blindly: stock V3.172 echoes the command with nothing after it, which is how a host tells the two images apart. `BENCH.md` has the byte layout. |
+| 0x82 | `CJTAG_INFO` | answers "CJTAG", a format version, a capability bitmap and the build string. Read-only, so a host may send it blindly. Stock's reply has no "CJTAG" (V3.172 echoes the command alone, V3.174 answers `82 00 01`), which is how a host tells the two images apart. `BENCH.md` has the byte layout. |
 | 0x83 | `CJTAG_CONTROL` | a mode byte: 0 returns to four-wire framing, 2 frames as OScan1 after an activation the host drove, 3 with two more bytes frames scan format `f` from TAP state `s`, and 4 with a u32 mask limits the formats offered. Anything else answers `DAP_ERROR`. |
 
 | 0x84 | `J8` | hands J8's four pins to the host, on the plain MCU-Link |

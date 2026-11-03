@@ -215,13 +215,13 @@ directory, flashed with verge.
 
 ## Telling our image from stock, from the host
 
-The cleanest discriminator is a vendor command. CMSIS-DAP leaves `0x80`–`0x9F` to the probe, stock
-answers only `0x80` and `0x81`, so anything above is free. What stock answers, observed, is in
-mculink-stock-notes' `identity.md`.
+The cleanest discriminator is a vendor command. CMSIS-DAP leaves `0x80`–`0x9F` to the probe. Stock
+answers `0x80`, `0x81` and, since V3.174, `0x82` with replies of its own, and echoes each id above
+alone. What stock answers, observed, is in mculink-stock-notes' `identity.md`.
 
 | command | meaning |
 | --- | --- |
-| `0x82` | identify. Magic, format version, capability flags, build string. Stock answers a bare `82` with no payload, which is the discriminator. |
+| `0x82` | identify. Magic, format version, capability flags, build string. The magic is the discriminator: stock's reply has none (V3.172 echoes `82` alone, V3.174 answers `82 00 01`). |
 | `0x83 0x02` | frame as OScan1 after an activation the host drove; the CC13xx needs this one |
 | `0x83 0x03 f s` | frame in scan format `f` (SCNFMT: 9 OScan1, 10 OScan2, 13 OScan5, 14 OScan6) from TAP state `s` (`enum cjtag_tap`, 1 Run-Test/Idle), after the host switched the target's format |
 | `0x83 0x04 m` | offer only the formats in the u32 LE mask `m` (OScan1 always) until the probe restarts; `verge cjtag --oscan1-only` |
