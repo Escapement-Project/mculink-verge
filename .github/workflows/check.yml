@@ -19,7 +19,7 @@ concurrency:
 jobs:
   host:
     runs-on: ubuntu-latest
-    container: archlinux@sha256:e43f1fd80e073992c5f173efbbbf65144170bf60aeb7369940087d63eacea8f4 # latest, 2026-10-19
+    container: archlinux@sha256:ece6c971fec3c532fd508bce299a446deaf469feecbfe7c353e995bc1a5e7bba # latest, 2026-11-02
     env:
       UV_CACHE_DIR: ${{ github.workspace }}/.cache/uv
     steps:
@@ -27,7 +27,7 @@ jobs:
         run: |
           # pacman expands $repo and $arch.
           # shellcheck disable=SC2016
-          echo 'Server =https://archive.archlinux.org/repos/2026/10/20/$repo/os/$arch' > /etc/pacman.d/mirrorlist
+          echo 'Server =https://archive.archlinux.org/repos/2026/11/02/$repo/os/$arch' > /etc/pacman.d/mirrorlist
           pacman -Syuu --noconfirm --needed \
             git python cmake ninja uv gcc clang lld llvm qemu-system-arm \
             arm-none-eabi-gcc arm-none-eabi-newlib arm-none-eabi-binutils
@@ -54,10 +54,10 @@ jobs:
         if: ${{ !env.ACT }}
         with:
           path: .cache/uv
-          key: ${{ runner.os }}-uv-arch-2026-10-20-${{ steps.uv-key.outputs.hash }}
+          key: ${{ runner.os }}-uv-arch-2026-11-02-${{ steps.uv-key.outputs.hash }}
           restore-keys: |
-            ${{ runner.os }}-uv-arch-2026-10-20-
-            ${{ runner.os }}-uv-arch-2026-10-20
+            ${{ runner.os }}-uv-arch-2026-11-02-
+            ${{ runner.os }}-uv-arch-2026-11-02
 
       - name: Host checks
         run: uv run tools/gate.py --part host
@@ -69,7 +69,7 @@ jobs:
       matrix:
         toolchain: [gcc, clang]
     # Keep the check and release workflows on the same compilers and dependency revisions.
-    container: archlinux@sha256:e43f1fd80e073992c5f173efbbbf65144170bf60aeb7369940087d63eacea8f4 # latest, 2026-10-19
+    container: archlinux@sha256:ece6c971fec3c532fd508bce299a446deaf469feecbfe7c353e995bc1a5e7bba # latest, 2026-11-02
     env:
       UV_CACHE_DIR: ${{ github.workspace }}/.cache/uv
       TOOLCHAIN: ${{ matrix.toolchain }}
@@ -78,7 +78,7 @@ jobs:
         run: |
           # pacman expands $repo and $arch.
           # shellcheck disable=SC2016
-          echo 'Server =https://archive.archlinux.org/repos/2026/10/20/$repo/os/$arch' > /etc/pacman.d/mirrorlist
+          echo 'Server =https://archive.archlinux.org/repos/2026/11/02/$repo/os/$arch' > /etc/pacman.d/mirrorlist
           packages=(git python cmake ninja uv arm-none-eabi-gcc arm-none-eabi-newlib arm-none-eabi-binutils)
           if [ "$TOOLCHAIN" = clang ]; then
             packages+=(clang clang-tools-extra lld llvm)
@@ -107,10 +107,10 @@ jobs:
         if: ${{ !env.ACT }}
         with:
           path: .cache/uv
-          key: ${{ runner.os }}-uv-arch-2026-10-20-${{ steps.uv-key.outputs.hash }}
+          key: ${{ runner.os }}-uv-arch-2026-11-02-${{ steps.uv-key.outputs.hash }}
           restore-keys: |
-            ${{ runner.os }}-uv-arch-2026-10-20-
-            ${{ runner.os }}-uv-arch-2026-10-20
+            ${{ runner.os }}-uv-arch-2026-11-02-
+            ${{ runner.os }}-uv-arch-2026-11-02
 
       - name: Identify TinyUSB dependency inputs
         id: tinyusb

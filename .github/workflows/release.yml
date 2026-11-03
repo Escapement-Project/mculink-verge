@@ -37,13 +37,13 @@ jobs:
     # Arch's arm-none-eabi-gcc is the compiler the bench builds with, and `ninja check` holds the
     # image to baselines it made. The container and Arch's archive are both pinned to a day, so
     # the compiler changes only in a commit that moves both.
-    container: archlinux@sha256:e43f1fd80e073992c5f173efbbbf65144170bf60aeb7369940087d63eacea8f4 # latest, 2026-10-19
+    container: archlinux@sha256:ece6c971fec3c532fd508bce299a446deaf469feecbfe7c353e995bc1a5e7bba # latest, 2026-11-02
     steps:
-      - name: Install the toolchain as Arch had it on 2026-10-20
+      - name: Install the toolchain as Arch had it on 2026-11-02
         run: |
           # pacman expands $repo and $arch.
           # shellcheck disable=SC2016
-          echo 'Server =https://archive.archlinux.org/repos/2026/10/20/$repo/os/$arch' > /etc/pacman.d/mirrorlist
+          echo 'Server =https://archive.archlinux.org/repos/2026/11/02/$repo/os/$arch' > /etc/pacman.d/mirrorlist
           pacman -Syuu --noconfirm --needed \
             git python cmake ninja uv \
             arm-none-eabi-gcc arm-none-eabi-newlib arm-none-eabi-binutils
