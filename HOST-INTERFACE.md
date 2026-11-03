@@ -392,7 +392,9 @@ clear and answers it with `[0xff]`. Firmware from before `0x94` leaves bit 7 cle
 
 The probe takes one request at a time. The next one waits on USB until the probe has answered the
 one before, so replies come in request order. A program that opens the interface reads and drops
-whatever is waiting first: a reply or a stream message meant for the program before it. If a stream
+whatever is waiting first: a reply or a stream message meant for the program before it. It reads
+before it sends anything. A reply the program before never read waits behind the message ahead of
+it, and until that message is read the probe takes no request. If a stream
 is still running, the program ends it with mode 7. No other program can hold the interface, so
 nothing else would read that stream, and the probe keeps sending it. The probe answers an aux
 request before its next CMSIS-DAP command, so a request waits for at most the command running on
