@@ -13,6 +13,14 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/bsp/family_support.cmake
 
 project(mculink_cjtag C CXX ASM)
 
+# USB SRAM, which holds the packet buffers and dap_shared, is Device memory to both cores, and an
+# unaligned access to it faults. So no compiler may emit one anywhere. In the flags rather than as
+# a directory option: TinyUSB's board support replaces its library's compile options, and these
+# also reach the link line, where LTO generates the code. The stream encoder's word store is the
+# one exception, in assembly (src/energy_stream.h). tools/gate.py checks every compile and link.
+string(APPEND CMAKE_C_FLAGS " -mno-unaligned-access")
+string(APPEND CMAKE_CXX_FLAGS " -mno-unaligned-access")
+
 # Link-time optimisation. family_support.cmake asks for it as well, but it gates on
 # check_ipo_supported, which runs before project() has enabled a language and so always answers
 # no. The probe cannot be repeated from here either: it builds a throwaway project against the

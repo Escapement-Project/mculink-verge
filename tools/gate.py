@@ -28,6 +28,7 @@ configuration.
 import argparse
 import concurrent.futures
 import os
+import re
 import subprocess
 import sys
 import time
@@ -81,6 +82,22 @@ def report(label: str, ok: bool, output: str, seconds: float, failures: list[str
         print("\n".join("     " + line for line in output.rstrip().splitlines()[-25:]), flush=True)
 
 
+def unaligned_access_allowed(directory: str) -> list[str]:
+    """What compiles C or links an image with unaligned access left on (CMakeLists.txt says why
+    nothing may). TinyUSB's board support has replaced a library's options before."""
+    ok, listing, _ = run(["ninja", "-C", directory, "-t", "commands", "mculink_cjtag.elf"])
+    if not ok:
+        return ["ninja could not list the build's commands"]
+    found = []
+    for command in listing.splitlines():
+        compiled = re.search(r"\s-c\s+(\S+\.c)(\s|$)", command)
+        linked = re.search(r"\s-o\s+(\S*mculink_cjtag(?:_core1)?\.elf)(\s|$)", command)
+        what = compiled or linked
+        if what and command.rfind("-mno-unaligned-access") <= command.rfind("-munaligned-access"):
+            found.append(os.path.relpath(what.group(1), ROOT) if compiled else what.group(1))
+    return found
+
+
 def build_image(
     toolchain: str, codegen: bool, jobs: int, cycles_jobs: int
 ) -> tuple[str, bool, str, float, str | None, str, bool]:
@@ -98,6 +115,11 @@ def build_image(
     if ok:
         ok, more, _ = run(["ninja", "-C", directory, "-j", str(jobs)])
         output += more
+    if ok:
+        allowed = unaligned_access_allowed(directory)
+        if allowed:
+            ok = False
+            output += "built with unaligned access allowed: " + ", ".join(allowed) + "\n"
     return (f"build {name(toolchain, codegen)}", ok, output, time.monotonic() - started,
             directory if ok else None, toolchain, codegen)
 

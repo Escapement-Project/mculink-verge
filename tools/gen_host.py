@@ -34,8 +34,8 @@ HARNESS = os.path.join(HERE, "gen_host")
 
 GEN_BASE = ["-DSWD_GEN_BASE=0x38100000U", "-DJTAG_GEN_BASE=0x38100000U"]
 # CPU 1's flags, from CMakeLists.txt, since the generators run on CPU 1.
-M33 = ["-mcpu=cortex-m33+nodsp+nofp", "-mthumb", "-mfloat-abi=soft", "-O3", "-fno-strict-aliasing",
-       "-ffunction-sections", "-fdata-sections"]
+M33 = ["-mcpu=cortex-m33+nodsp+nofp", "-mthumb", "-mfloat-abi=soft", "-mno-unaligned-access", "-O3",
+       "-fno-strict-aliasing", "-ffunction-sections", "-fdata-sections"]
 
 
 def run(args: list[str], cwd: str, merge: bool = False, env: dict[str, str] | None = None) -> str:

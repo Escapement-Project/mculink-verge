@@ -261,11 +261,23 @@ ENERGY_STREAM_INLINE uint8_t* energy_stream_u16(uint8_t* out, uint16_t value) {
     return out + 2;
 }
 
+/** Every caller writes a slot, in SRAM4 (tools/image.py checks where they are). Pairs are five
+ *  bytes, so most words land unaligned, and the firmware is built with no unaligned access
+ *  (CMakeLists.txt). SRAM4 is Normal memory, where one unaligned STR is legal; left to the
+ *  compiler, every pair in CPU 0's DMA interrupt costs a memcpy call or four byte stores. Never
+ *  pass a pointer into USB SRAM. */
 ENERGY_STREAM_INLINE uint8_t* energy_stream_u32(uint8_t* out, uint32_t value) {
+#if defined(__arm__)
+    typedef struct {
+        uint8_t bytes[4];
+    } energy_stream_word_t;
+    __asm__("str %1, %0" : "=m"(*(energy_stream_word_t*)out) : "r"(value));
+#else
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
     value = __builtin_bswap32(value);
 #endif
     __builtin_memcpy(out, &value, sizeof value);
+#endif
     return out + 4;
 }
 
