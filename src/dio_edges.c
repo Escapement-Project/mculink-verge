@@ -186,10 +186,14 @@ __attribute__((section(".ramfunc"), noinline)) void dio_edges_task(void) {
         resync(fresh);
         PINT->SIENR = on;
         PINT->SIENF = on;
+        // The enables land before the count is read again. Without a barrier nothing orders a store
+        // to one peripheral before a load from another, USB SRAM included.
+        __DMB();
         if (dap_shared.dio_spi_turns != turns) {
             // SPI took the pins meanwhile: CPU 1 counts before it turns them off, so they stay off
-            // whichever of us wrote last, and the levels are not recorded under it. The next pass
-            // sees the count.
+            // whichever of us wrote last. The run resync asked for has already recorded the levels,
+            // before SPI moved the pins unless CPU 1 was quicker. A resting interrupt has not run,
+            // and clearing sync keeps it from recording them later. The next pass sees the count.
             uint32_t const primask = __get_PRIMASK();
             __disable_irq();
             PINT->CIENR = on;

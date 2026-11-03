@@ -265,8 +265,8 @@ through `dio_spi_turns`, which is odd while SPI has the pins.
 
 - When SPI takes the pins, CPU 1 counts, then turns the pin interrupts off (`dio_spi_begin`).
 - When SPI gives them back, CPU 1 counts again, then raises CPU 0's mailbox (`dio_spi_end`).
-- CPU 0's loop turns the interrupts back on only when the count is even, then reads the count
-  again, and turns them off if it changed (`dio_edges_task`).
+- CPU 0's loop turns the interrupts back on only when the count is even. After a barrier it reads
+  the count again, and turns them off if it changed (`dio_edges_task`).
 
 The pin interrupt can also rest: past a rate of edges it turns itself off for a while and marks the
 edges lost (`resting`). The loop turns it back on once the rest is over.
