@@ -177,5 +177,6 @@ void dio_spi_end(void) {
     led_sio(dio_outputs != 0U);
     __DMB();
     dap_shared.dio_spi_turns++;
+    __DMB();
     MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQSET = DAP_CORE_MAILBOX_WAKE_MASK;
 }

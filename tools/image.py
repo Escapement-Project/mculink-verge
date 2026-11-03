@@ -893,7 +893,7 @@ def check_hid_padding(c: Checker, elf: str, slots: int) -> None:
 def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: bool = False) -> None:
     from usb_checks import (check_aux, check_aux_stream, check_descriptors, check_full_speed, check_rechirp,
                             check_transport, check_unconfigured)
-    from usb_idle_checks import check_idle, check_idle_rearm
+    from usb_idle_checks import check_idle, check_idle_rearm, check_idle_serviced
     from usb_lifecycle import check_sequences
 
     fields = ("transfer_abort", "request", "request_tail", "rx_armed_slot", "next_request_seq", "first_live_seq",
@@ -901,6 +901,7 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: 
     offsets = shared_offsets(slots, *fields, small_enums=short_enums(elf0))
     check_idle(c, elf0, symbols_with_size(elf0), code_lab)
     check_idle_rearm(c, elf0, symbols_with_size(elf0), offsets)
+    check_idle_serviced(c, elf0, symbols_with_size(elf0))
     check_unconfigured(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_transport(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_full_speed(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)

@@ -42,9 +42,10 @@ Each core has a mailbox register the other raises.
 A core that waits clears its own register first, then looks for work, and waits only if it found
 none, so a raise that lands after the look still ends the wait. CPU 1 looks at all of its work
 (`dap_task`) and waits by polling the register's level, which cannot be missed
-(`wait_for_mailbox`). CPU 0 looks with `queued_work`, then waits from SRAM with every interrupt but
-the DIO pins' masked (`idle`, `wait_for_work`), watching the mailbox, pending interrupts, the
-consoles and the DIO edges.
+(`wait_for_mailbox`). CPU 0 clears its register at the top of its loop, so every task in the loop
+is part of the look (`serve`). It then checks for work still queued, the interrupts' included
+(`queued_work`), and waits from SRAM with every interrupt but the DIO pins' masked (`idle`,
+`wait_for_work`), watching the mailbox, pending interrupts, the consoles and the DIO edges.
 
 Every handover between the cores follows one rule. The writer writes the data, then a memory
 barrier (`__DMB`), then the flag that says it is there. The reader reads the flag, then a barrier,

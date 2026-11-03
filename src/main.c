@@ -426,12 +426,9 @@ __attribute__((section(".ramfunc"))) static bool queued_work(void) {
 }
 
 /** Everything that gives the loop work wakes it: USB and the LED tick by interrupt, CPU 1 through
- *  the mailbox when it frees a request slot, or publishes a reply, the console
- *  through vcom_ready, and DIO edges half filling their record. The mailbox is cleared before the
- *  checks, so a write CPU 1 makes after them still ends the wait. */
+ *  the mailbox (serve clears it), the console through vcom_ready, and DIO edges half filling their
+ *  record. */
 __attribute__((section(".ramfunc"))) static void idle(void) {
-    MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQCLR = DAP_CORE_MAILBOX_WAKE_MASK;
-    __DSB();
 #ifdef CODE_LAB
     if (queued_work() || lab_hammer()) {
         return;
@@ -632,6 +629,11 @@ __attribute__((noinline, used)) void dap_core_security_init(void) {
  *  into flash. */
 [[noreturn]] __attribute__((section(".ramfunc"), noinline)) static void serve(void) {
     for (;;) {
+        // Cleared before any task looks for CPU 1's work, so a raise that lands after a task has
+        // looked still ends the wait. queued_work does not see all of it: a freed request slot,
+        // or the DIO pins back from SPI.
+        MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQCLR = DAP_CORE_MAILBOX_WAKE_MASK;
+        __DSB();
         energy_control_task();
         energy_range_retry_task();
         tud_task();
