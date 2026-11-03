@@ -1,5 +1,5 @@
 # Builds the firmware for a version tag, checks it in the emulator, signs it, and attaches it to
-# the tag's release in the layout the verge update tool reads (its core/src/release.rs):
+# the tag's release in the layout the verge update tool reads (verge-probe's src/release.rs):
 #
 #   mculink-verge-<tag>.s19          the image, as objcopy -O srec writes it
 #   mculink-verge-<tag>.s19.sha256   sha256sum's line for it

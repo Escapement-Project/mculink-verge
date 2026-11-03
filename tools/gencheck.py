@@ -57,7 +57,7 @@ def run(elf: str, hz: int, read: bool, words: int, latency: int, target_latency:
     if "DAP_Setup" in probe.sym:
         probe.call("DAP_Setup")
     # An image from before the stall only has its margins taken.
-    # e5f19bd named it swd_gen_stall.
+    # Images from before the rename call it swd_gen_stall.
     name = next((n for n in ("gen_stall", "swd_gen_stall") if n in probe.sym), None)
     if stall and name is not None:
         probe.uc.mem_write(probe.sym[name], stall.to_bytes(4, "little"))
