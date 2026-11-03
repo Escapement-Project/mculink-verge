@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * From CMSIS-DAP, DAP.c's DAP_ExecuteCommand and DAP_ProcessCommand. Changed by the Escapement
- * Project: a shorter route for SWD and JTAG transfer blocks.
+ * Project: a shorter route for SWD and JTAG transfer blocks, each request's length checked
+ * against the packet before it runs, and DAP_ERROR for commands the generated paths cannot run.
  */
 /** The two command entry points, so a SWD transfer block can take a shorter route.
  *
