@@ -1,6 +1,7 @@
 # The gate on every push and pull request: host checks and GCC/Clang images in both code-generation
 # configurations, held to their baselines in the emulator.
-# AGENTS.md has what it covers.
+# AGENTS.md has what it covers. The caches are skipped under act: its job containers have no Node,
+# which GitHub's runners mount.
 
 name: check
 
@@ -50,6 +51,7 @@ jobs:
 
       - name: Cache uv packages and interpreters
         uses: actions/cache@v6
+        if: ${{ !env.ACT }}
         with:
           path: .cache/uv
           key: ${{ runner.os }}-uv-arch-2026-10-20-${{ steps.uv-key.outputs.hash }}
@@ -102,6 +104,7 @@ jobs:
 
       - name: Cache uv packages and interpreters
         uses: actions/cache@v6
+        if: ${{ !env.ACT }}
         with:
           path: .cache/uv
           key: ${{ runner.os }}-uv-arch-2026-10-20-${{ steps.uv-key.outputs.hash }}
@@ -115,6 +118,7 @@ jobs:
 
       - name: Cache TinyUSB LPC55 dependencies
         uses: actions/cache@v6
+        if: ${{ !env.ACT }}
         with:
           path: |
             external/tinyusb/hw/mcu/nxp/mcux-devices-lpc
@@ -125,6 +129,7 @@ jobs:
 
       - name: Cache TinyUSB mandatory dependencies
         uses: actions/cache@v6
+        if: ${{ !env.ACT }}
         with:
           path: |
             external/tinyusb/lib/fatfs
