@@ -302,8 +302,9 @@ minisign -S -s verge.key -m mculink-verge-v0.3.0.s19 -t "file:mculink-verge-v0.3
 ## Licence
 
 Apache-2.0, in `LICENSE`. Files changed from Arm's CMSIS-DAP carry Arm's notice and say what was
-changed. The image also contains TinyUSB (MIT), NXP's SDK drivers (BSD-3-Clause) and newlib-nano:
-`THIRD-PARTY-NOTICES.md` has their notices.
+changed. Two files adapted from NXP's SDK drivers, `src/vcom_line.h` and `src/energy_identity.c`,
+carry NXP's notice and stay under its BSD-3-Clause licence. The image also contains TinyUSB (MIT),
+NXP's SDK drivers (BSD-3-Clause) and newlib-nano: `THIRD-PARTY-NOTICES.md` has their notices.
 
 ## Not done yet
 
