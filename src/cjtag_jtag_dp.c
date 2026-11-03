@@ -90,7 +90,7 @@ static inline uint32_t cjtag_capture(void) {
 // registers and the GPIO addresses are paid for once a block rather than once a word. `flatten`
 // is what makes that actually happen here: this copy's transfer is large enough that the compiler
 // declines to inline it, and the block loop ends up calling it once a word. It costs flash, and
-// the flash was judged worth it. OPTIMISATIONS.md has the numbers.
+// the flash was judged worth it.
 #ifndef CJTAG_BLOCK_ATTRS
 #define CJTAG_BLOCK_ATTRS __attribute__((flatten)) HOT_PATH
 #endif

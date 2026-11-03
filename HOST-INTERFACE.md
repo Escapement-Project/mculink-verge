@@ -31,7 +31,35 @@ works at full speed. At full speed every bulk endpoint is 64 bytes, and CMSIS-DA
 in `DAP_Info` (`0xFF`) is 64, so each command and each reply fits one packet. On the HID interface
 the packet size is 64 at either speed.
 
+## How the probe identifies itself
+
+In a listing it reads `Escapement Project Verge CMSIS-DAP (CJF2551AD5)`.
+
+| | value |
+| --- | --- |
+| USB VID:PID | `0x1FC9:0x0143`, the same pair stock uses |
+| bcdDevice | `0x0100` and the functions present: debug bit 0, VCOM bit 1, the Pro's VCOM2 bit 2, Verge Aux bit 3 |
+| manufacturer, `DAP_Info` 0x01 | `Escapement Project` |
+| product, `DAP_Info` 0x02 | `Verge CMSIS-DAP`, `Verge Pro CMSIS-DAP` on a Pro |
+| serial, `DAP_Info` 0x03 | `CJ` + 8 hex of CRC32 over the unique id, or `CJNOUUID` |
+| `DAP_Info` 0x04 | `2.1.2`, ARM's CMSIS-DAP protocol version from the pinned submodule |
+| `DAP_Info` 0x05..0x08 | nothing: the four target strings are for a probe soldered to a known target |
+| `DAP_Info` 0x09 | `git describe` of the build |
+| vendor `0x82` | `CJTAG`, the format version, capability flags, the build string and later fields (below) |
+
+`src/usb_descriptors.c`, `src/DAP_config.h` and `src/ser_num.c` set them. `DAP_Info` also reports
+512-byte packets at high speed, three of them, and the capabilities SWD, JTAG, SWO UART, atomic
+commands and timestamps. What stock reports is in mculink-stock-notes' `identity.md`.
+
+To tell two builds apart, read the build string. `DAP_Info` 0x09 answers it to any CMSIS-DAP host,
+and `0x82` answers it along with the capability flags. It is `git describe --always --dirty
+--tags`, regenerated on every build, so a `-dirty` suffix means the image came from uncommitted
+work and nothing in the repository identifies it.
+
 ## Identify firmware: `0x82`
+
+`0x82` is read-only, so a host may send it to any probe. A reply without the `CJTAG` magic is not
+this firmware: stock V3.172 echoes `82` alone, and V3.174 answers `82 00 01`.
 
 Send `[0x82]`. The reply contains:
 
@@ -49,8 +77,8 @@ Send `[0x82]`. The reply contains:
 The current capability flag bits are: bit 0 OScan1 support; bit 1 cJTAG framing active; bit 2
 target-sense command support; bit 3 generated SWD paths; bit 4 host-driven OScan1 entry; bit 5
 generated JTAG paths; bit 6 Pro DIO available; bit 7 Pro target-supply control (added in format 5).
-Bits 0 and 4 are clear on the unsupported on-board variant. Bit 6 is clear if the Pro's J15 jumper
-disabled USB-SIO when the probe started.
+Bits 0 and 4, and the scan formats, are clear on the unsupported on-board variant. Bit 6 is clear if
+the Pro's J15 jumper disabled USB-SIO when the probe started.
 
 Format 6 extended-capability bit 0 advertises energy capture on Pro units with HW_VER_5 fitted.
 Bit 8 advertises capture identities and conditional stops (`0x90` modes 8–13). It is set with
@@ -78,9 +106,14 @@ The command starts with `[0x83, mode]`. Supported modes are:
 | 3 | `[format, tap_state]` | Start framing for the selected SCNFMT and TAP state after the host has switched the target. |
 | 4 | Four-byte little-endian format mask; bit `k` selects SCNFMT `k` | Change the formats offered to hosts until the probe restarts. OScan1 remains offered. |
 
+SCNFMT 9 is OScan1, 10 OScan2, 13 OScan5 and 14 OScan6. `tap_state` is the TAP state the target
+is in, numbered as `enum cjtag_tap` in `src/cjtag.h`: 1 is Run-Test/Idle.
+
 The reply is `[0x83, status]`, where `DAP_OK` is `0x00` and `DAP_ERROR` is `0xff`. Mode 1 is not
-defined. Starting cJTAG on the unsupported on-board variant returns `DAP_ERROR`. A host must
-switch the target and probe together; this command does not change the target's scan format.
+defined, and any mode the table does not list answers `DAP_ERROR`. `verge cjtag --formats` and
+`--oscan1-only` send mode 4. Starting cJTAG on the unsupported on-board variant returns `DAP_ERROR`.
+A host must switch the target and probe together; this command does not change the target's scan
+format.
 
 ## Pro DIO: `0x8E`
 
@@ -96,7 +129,9 @@ reports groups `0x07` (DIO0–2) and `0x08` (DIO3).
 An invalid pin, unavailable DIO, or direction change that splits a group returns `DAP_ERROR`
 (`0xff`) and leaves the state unchanged. `DAP_OK` is `0x00`. The reply still reports the current
 state. The state persists across
-debug sessions and hosts, and resets to inputs when the probe restarts. J15 disables DIO when
+debug sessions and hosts, so a pin can hold a target's boot mode through a reset and a reconnect,
+and resets to inputs when the probe restarts. DIO2 and DIO3 switch after DIO0 and DIO1; DIO2
+switched 40 ns later. J15 disables DIO when
 fitted at startup. Verge Aux carries the same command on the same pins, so a host can use them while
 a debugger holds CMSIS-DAP (extended capability bit 6).
 
@@ -177,7 +212,7 @@ calibration. A start calibrates again only when the last calibration failed, or 
 J18 selects (CURR_RANGE_SET) differs from the one calibrated. A start that cannot read the setting
 fails with 6 and keeps the calibration. Calibration disconnects J9 from the target for about
 0.2 s, so a target powered through J9 loses its supply for that time. Moving the jumpers away and
-back to the same setting goes unseen; reset the probe to calibrate again. PRO.md, "Energy
+back to the same setting goes unseen; reset the probe to calibrate again. BOARDS.md, "Energy
 measurement", has the details.
 
 | Result | Meaning |
@@ -399,7 +434,7 @@ and `0x85` now gets `[0xff]` like any unknown command.
 
 ## The auxiliary interface: Verge Aux
 
-On the MCU-Link Pro, the DIO, supply and energy commands are also on a second USB interface,
+On the MCU-Link Pro, the DIO, supply, energy and marker commands are also on a second USB interface,
 Verge Aux. A host can use it while a debugger holds the CMSIS-DAP interface.
 
 | Field | Value |
@@ -409,9 +444,9 @@ Verge Aux. A host can use it while a debugger holds the CMSIS-DAP interface.
 | Endpoints | EP5 OUT and EP5 IN, bulk, 512 bytes at high speed and 64 at full speed |
 | Windows | WinUSB, DeviceInterfaceGUID `{A297EA18-39D8-41BE-B2E8-884CEC8FE819}` |
 
-Every Pro has it, whatever its jumpers, and no other board does. Its interface number depends on
-which other interfaces the jumpers leave, so find it by class and string, or on Windows by the GUID.
-The string doesn't contain `CMSIS-DAP`, so debuggers pass it by.
+Every Pro has it, whatever its jumpers, and no other board does. It is the last interface, and its
+number depends on which other interfaces the jumpers leave, so find it by class and string, or on
+Windows by the GUID. The string doesn't contain `CMSIS-DAP`, so debuggers pass it by.
 
 A request is one transfer on EP5 OUT, in the format of the CMSIS-DAP command it names. The reply is
 one transfer on EP5 IN, in the format of that command's reply on CMSIS-DAP. A stream message can be
@@ -644,9 +679,27 @@ started with mode 5, once the capture stops, that sum equals the total `0x90` mo
 provided no pairs were lost. A host that ignores the header's step 5 fields sums switching pairs
 as older firmware did, a little apart from this firmware's total.
 
-## Other commands
+## Development commands
 
-Commands `0x84` through `0x8D` are implemented for board control, target measurements and
-development instruments. They are not documented here as a stable host API. `0x80` and `0x81` are
-not implemented by this firmware. Command `0x90` handles energy capture; `0x91` and `0x92` provide
-the Pro SPI and I2C bridges.
+These serve the firmware's own tools and the bench. They are not a stable host API: their requests
+and replies can change between builds. `src/dap_vendor.c` has each one's bytes. Some exist only in
+some builds: `0x84` with `MARKER` (on by default), `0x88` with `CODE_LAB`, `0x89` to `0x8B` and
+`0x8D` with the generators, so an `+armwire` image answers them as unknown, and `0x93` with
+`DAP_TIMING_DIAGNOSTICS`.
+
+| id | | what it does |
+| --- | --- | --- |
+| `0x84` | J8 | hands J8's four pins to the host, on the plain MCU-Link |
+| `0x86` | target sense | reads the target's supply and the debug connector's detect line, or any ADC0 channel |
+| `0x87` | sample | DPIDR reads with the SWDIO sample placed by the host; an instrument |
+| `0x88` | code lab | runs host-supplied code from RAM; built only with `-DCODE_LAB=ON` |
+| `0x89` | SWD generation | reports the generated SWD paths, and sets or measures the read latency they are generated for |
+| `0x8A` | JTAG generation | the same for the generated JTAG and two-pin paths; its report is the firmware's timing report |
+| `0x8B` | JTAG pacing | switches the generated JTAG transfers' learned idle clocks |
+| `0x8C` | staging | switches whether CPU 0 stages commands for CPU 1 |
+| `0x8D` | JTAG log | reads back what each JTAG generation was for |
+| `0x93` | timing | the command path's cycle counts; built only with `DAP_TIMING_DIAGNOSTICS` |
+
+`0x80` and `0x81` are stock's (mculink-stock-notes' `identity.md`). This firmware answers neither,
+so a LinkServer feature that rests on them does not work against it. Any other id from `0x80` to
+`0x9F` gets the invalid-command reply.

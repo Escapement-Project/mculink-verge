@@ -12,10 +12,9 @@ The [capability guide](CAPABILITIES.md) lists board conditions and the
 
 ## Limits
 
-These figures were measured or reported on 2026-10-20 and 2026-10-21. The SWD rows show the
-normal firmware path measured beside stock V3.172 on 2026-10-20. A separate experiment on
-2026-10-21 reached 50 MHz SWD reads with a timer-driven path, but that change was removed. None of
-these figures measures the current source revision. The [bench results](https://github.com/Escapement-Project/mculink-bench#measured-2026-10-20-ours-with-gcc-and-clang-against-stock-v3172)
+These figures were measured or reported on 2026-10-20 and 2026-10-21, on older builds than this
+source. The SWD rows show the build measured beside stock V3.172 on 2026-10-20, and mculink-bench's
+[notes for that date](https://github.com/Escapement-Project/mculink-bench/blob/master/results/throughput/2026-10-20.md)
 record the builds and methods.
 
 | Transport | Ours | Evidence | Ours depends on | NXP's stock V3.172 |
@@ -85,12 +84,12 @@ so whoever runs the probe decides whether to use them.
 | SWO | The same UART, to 10 Mbit/s | Above 10 Mbaud: 12, 16, 24 and 30 Mbaud ran clean |
 | SWO | The UART's clock divider is specified to 100 MHz (UM11126, 4.5.49) | Above 20.1 Mbaud, where nothing inside the divider's limit comes within 0.5% of the rate: 21.4, 24, 25 and 30 Mbaud ran clean with it at 107 to 150 MHz |
 
-SWD rates come from wire captures in mculink-bench's README under "The wire". JTAG and cJTAG rates
-come from the firmware's timing report (vendor 0x8A, run in the emulator); four-wire JTAG at 30 MHz
-was also measured on hardware (CJTAGGEN.md). Console loopbacks and SWO captures are recorded in
-BENCH.md. Stock SWD captures are in mculink-stock-notes' `wire.md` and mculink-bench's README.
-Other stock figures are in BENCH.md under "The console" and in
-mculink-bench's `results/throughput/2026-10-21-stock.json`.
+SWD rates come from wire captures in mculink-bench's `results/wireclock/2026-10-21.md`. JTAG and
+cJTAG rates come from the firmware's timing report (vendor 0x8A, run in the emulator); four-wire
+JTAG at 30 MHz was also measured on hardware (CJTAGGEN.md). Console loopbacks and SWO captures are
+recorded in MEASUREMENTS.md. Stock SWD captures are in mculink-stock-notes' `wire.md` and
+mculink-bench's `results/wireclock/2026-10-21.md`. Other stock figures are in MEASUREMENTS.md under
+"The console" and in mculink-bench's `results/throughput/2026-10-21-stock.json`.
 
 ## Build
 
@@ -112,16 +111,16 @@ uv run python external/tinyusb/tools/get_deps.py lpc55
 ## Check
 
 These checks need no hardware. An emulated Cortex-M33 runs the image's DAP command layer against
-a modelled target. Hardware results are in `BENCH.md`.
+a modelled target. Hardware results are in `MEASUREMENTS.md`.
 
 ```
 ninja -C build check                      # the gate, against what was just built
 uv run tools/cycles.py --check            # the same thing by hand
-uv run tools/cycles.py --clock 10 50      # throughput, wire period, where the time goes
+uv run tools/cycles.py --engine --clock 10 50  # throughput, wire period, where the time goes
 uv run tools/cycles.py --explain          # name the code in the longest gap between edges
 uv run tools/equiv.py <ref.elf> <new.elf> # hold a rewrite to a reference build, case by case
 uv run tools/image.py               # the USB descriptors and the serial number
-uv run tools/cycles.py --table     # KiB/s for every rate a host can ask for
+uv run tools/cycles.py --engine --table  # SWD KiB/s for every rate a host can ask for
 uv run tools/window.py             # disassemble the gap that repeats once a word
 ```
 
@@ -167,8 +166,10 @@ The transfer paths are generated at runtime, and a product image carries no othe
 are held to, marked `+armwire`; CMake refuses one option off without the other. The check holds
 that build to `tools/baseline-armwire/` instead. It
 finds ARM's paths clocking SWD and both JTAG wires faster than requested at 10 and 20 MHz, and
-four-wire JTAG at 50 MHz too. That directory's `known-overshoot.txt` records them; see
-OPTIMISATIONS.md.
+four-wire JTAG at 50 MHz too. That directory's `known-overshoot.txt` records them. ARM's code
+computes one delay for every wire from a cost model of an SWD bit. A four-wire JTAG clock makes
+one store fewer and runs fast, most of all at 50 MHz, and SWD and the two-pin frame land within
+a cycle of the request.
 
 Use `tools/equiv.py` to compare a replacement implementation with a reference build. It drives two
 builds over 536 SWD block cases, 188 four-wire JTAG cases, 128 two-pin cases in each format and, with
@@ -202,46 +203,16 @@ moves that interface to 1.
 With the SWD jumper fitted the probe still restarts into its bootloader on a USB request, so
 it can still be updated.
 
-## The Pro's DIO pins
+## The Pro
 
-On the MCU-Link Pro, the host can drive and read the four DIO pins on J19 (pins 2 to 5) as GPIO.
-The level translators give DIO0, DIO1 and DIO2 a shared direction; DIO3 is independent.
-DIO2 and DIO3 switch after DIO0 and DIO1; DIO2 switched 40 ns later.
-The pins run at the voltage on J19 pin 14, or at 3.3 V with
-nothing connected there.
+[CAPABILITIES.md](CAPABILITIES.md) says what each of the Pro's features needs, and
+[HOST-INTERFACE.md](HOST-INTERFACE.md) has their commands.
 
-The pins keep their state between debug sessions, so a pin can hold a target's boot mode through
-a reset and a reconnect. LED6 (SIO) is lit while the probe drives any of them. They go back to
-inputs when the probe restarts.
-
-`verge dio` reads them, and `verge dio --high 0 --low 1,2` sets them (see verge's README). From a
-checkout, `uv run tools/dap.py dio` does the same. Both send vendor command 0x8E, which
-`src/dap_vendor.c` describes. Verge Aux carries it too.
-
-## The Pro's SPI and I2C bridges
-
-SPI and I2C use CMSIS-DAP vendor commands `0x91` and `0x92` over the existing CMSIS-DAP USB
-interfaces. J15 disables them. SPI uses the same J19 pins as DIO0–DIO3, so SPI is busy while a DIO
-pin is an output. I2C shares Flexcomm 3 with SWO, so turn SWO off before using I2C. See
-[the host interface](HOST-INTERFACE.md) for request formats and limits.
-
-## Pro target supply
-
-The Pro can switch its target regulator through vendor command 0x8F. J5 selects 1.8 V when shorted
-or 3.3 V when open. Fit the J6 jumper to connect that output to the target. Command 0x86 reads the
-voltage at J6 pin 1; 0x8F reports whether the regulator is enabled. Firmware disables the supply
-during startup.
-
-From a checkout, `uv run tools/dap.py target-power on`, `off` or `read` controls the supply. The
-command is available only on MCU-Link Pro.
-
-## Verge Aux
-
-The Pro has a second vendor interface, Verge Aux, which carries the DIO, supply and energy
-commands. A host can use the DIO pins, switch the supply and record energy through it while a
-debugger holds CMSIS-DAP. A debugger can mark moments in that recording with vendor command
-0x94, which the probe stamps on the recording's clock as it runs. It is the Pro's last interface.
-[The host interface](HOST-INTERFACE.md) describes it.
+- **DIO pins:** four GPIO pins on J19. `verge dio` reads and drives them.
+- **SPI and I2C bridges:** vendor commands `0x91` and `0x92`.
+- **Target supply:** switched by vendor command `0x8F`. `verge power` controls it.
+- **Verge Aux:** a second vendor interface that carries the DIO, supply, energy and marker
+  commands, so a tool can use them while a debugger holds CMSIS-DAP.
 
 ## Releases
 
@@ -303,10 +274,8 @@ NXP's SDK drivers (BSD-3-Clause) and newlib-nano: `THIRD-PARTY-NOTICES.md` has t
 
 ## Not done yet
 
-- On the Pro: the analog trace input and the LPC804 (PRO.md).
+- On the Pro: the analog trace input and the LPC804 (BOARDS.md).
 - SWO over a streaming endpoint, from the ring already in USB SRAM.
-- Clocks 44 and 45 of every SWD transfer cost 89 cycles more than a data bit, 12.9% of a transfer.
-  One attempt at them made the data phase worse.
 - A cheaper read-latency measurement at connect. In OScan2 and OScan5 at 25 and 50 MHz it costs
   each session 10 to 15 ms.
 - The generated scan engine as a loop rather than 32 near-identical copies, which would shrink
@@ -315,16 +284,14 @@ NXP's SDK drivers (BSD-3-Clause) and newlib-nano: `THIRD-PARTY-NOTICES.md` has t
 ## Where to read next
 
 - `DESIGN.md`: design rationale, two-pin support in ARM's code, and the board.
-- `BENCH.md`: test harnesses, flashing, image identification and hardware measurements.
+- `BENCH.md`: reading the target's supply, bench hazards, the marker header and failure modes.
+- `MEASUREMENTS.md`: what the bench measured, newest first.
 - [mculink-bench](https://github.com/Escapement-Project/mculink-bench) and
   [mculink-stock-notes](https://github.com/Escapement-Project/mculink-stock-notes): throughput and
   the wire clock against stock, and what stock does as seen from outside.
 - `TIMING.md`: measured timing rules for the generated paths.
 - `CODEGEN.md` and `CJTAGGEN.md`: runtime generation of SWD and JTAG paths.
-- `PRO.md`: MCU-Link Pro pins, straps and firmware support.
+- `BOARDS.md`: both boards' pins and straps, and the Pro's circuits.
 - `BUSES.md`: which code uses which bus port, and when.
-- `PACING.md`: wire-clock pacing and known problems in ARM's paths, used with generation disabled.
-- `OPTIMISATIONS.md`: throughput changes to ARM's paths and rejected experiments. Its figures
-  predate the hardware measurements.
 - `AGENTS.md`: rules for changing this code.
 - [verge](https://github.com/Escapement-Project/verge): the CLI and GUI for firmware updates.

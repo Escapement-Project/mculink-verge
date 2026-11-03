@@ -66,34 +66,15 @@ the same three packets the same way, with TCK resting low between them.
 
 ## Vendor commands
 
-| id | | |
-| --- | --- | --- |
-| 0x82 | `CJTAG_INFO` | answers "CJTAG", a format version, a capability bitmap and the build string. Read-only, so a host may send it blindly. Stock's reply has no "CJTAG" (V3.172 echoes the command alone, V3.174 answers `82 00 01`), which is how a host tells the two images apart. `BENCH.md` has the byte layout. |
-| 0x83 | `CJTAG_CONTROL` | a mode byte: 0 returns to four-wire framing, 2 frames as OScan1 after an activation the host drove, 3 with two more bytes frames scan format `f` from TAP state `s`, and 4 with a u32 mask limits the formats offered. Anything else answers `DAP_ERROR`. |
-
-| 0x84 | `J8` | hands J8's four pins to the host, on the plain MCU-Link |
-| 0x86 | `TARGET` | reads the target's supply and J6 pin 9's detect line |
-| 0x87 | `SAMPLE` | DPIDR reads with the SWDIO sample placed by the host; an instrument |
-| 0x88 | `LAB` | runs host-supplied code from RAM; built only with `CODE_LAB` |
-| 0x89 | `SWD_GEN` | reports the generated SWD paths and sets the read latency they are generated for |
-| 0x8A | `JTAG_GEN` | the same for the generated JTAG and two-pin paths |
-| 0x8B | `JTAG_PACING` | switches the generated JTAG transfers' learned pacing |
-| 0x8C | `STAGE` | switches whether CPU 0 stages commands for CPU 1 |
-| 0x8D | `JTAG_LOG` | reads back the JTAG generator's log of what each generation was for |
-| 0x8E | `DIO` | drives and reads the Pro's DIO pins on J19 |
-
-`src/dap_vendor.c` has each command's bytes. Anything else in 0x80..0x9F answers `ID_DAP_Invalid` here. `DAP_ProcessCommand` returns what
-`DAP_ProcessVendorCommand` returns without inspecting it, so the rejection has to be written by the
-default case rather than left to the caller.
-
-Stock's 0x80 and 0x81 do something unknown and are **not implemented here**, so any LinkServer
-feature resting on them will not work against this firmware.
+HOST-INTERFACE.md documents every vendor command. `DAP_ProcessCommand` returns what
+`DAP_ProcessVendorCommand` returns without inspecting it, so the rejection of an unknown id has to
+be written by the default case rather than left to the caller.
 
 ## Architecture, and why
 
 **TinyUSB's `mcu_link` board support does the board and USB work.** It carries the gcc toolchain
 file, startup code, linker script, clock setup and the LPC55 `lpc_ip3511` device driver, all
-maintained upstream. Using it is why this is a few hundred lines rather than a port.
+maintained upstream.
 
 **ARM's CMSIS-DAP sources compile as they ship.** The only accommodation is `-Wno-unused-variable`
 on their files, because `DAP.c` leaves a variable unused when SWO is configured out and TinyUSB's
@@ -111,29 +92,11 @@ follows the jumpers. `tools/ms_os_20_test.c` checks every length field under san
 
 ## Board facts
 
-| signal | pin |
-| --- | --- |
-| TCK/SWCLK | P0_0 |
-| TDI | P0_1 |
-| TMS/SWDIO | P0_2 |
-| TDO/SWO | P0_3 |
-| RESET_TXEN | P0_13 |
-| nRESET | P0_19 |
-| TMS_SWDIO_TXEN | P0_28 |
-| LED1 | P0_5 |
-| target console RXD | P0_24, Flexcomm 0 |
-| target console TXD | P0_25, Flexcomm 0 |
-
-SWO arrives on P0_3 as `FC3_RXD`, `IOCON_FUNC1`. That pin is JTAG's TDO as well, so only one of
-the two configurations is live at a time: `src/swo.c` hands the pin to Flexcomm 3 while capture
-runs and back to the secure GPIO when it stops.
+BOARDS.md has both boards' pins.
 
 TinyUSB's board support claims Flexcomm 0 for its own debug logging on different pins, so
 `vcom_init` runs after `board_init` and takes the peripheral back. The probe has no console of its
 own, so nothing is lost.
-
-Source: the board header in ARM's CMSIS-DAP MCU-Link example, checked against the schematic's net
-names.
 
 ### Console DMA recovery
 
@@ -165,12 +128,6 @@ spins until the counter passes a deadline, so a pin that never reaches the asked
 the probe rather than time out, and a transfer with `DAP_TRANSFER_TIMESTAMP` set would report 0 to
 a host that asked for a time. `board_timestamp_init` starts it.
 
-**The two TXEN pins are buffer direction controls and they matter.** Releasing SWDIO means clearing
-`TMS_SWDIO_TXEN` as well as making the pin an input: the buffer keeps driving the wire otherwise.
-Releasing the wire is exactly what OScan1 needs, so this pin is load-bearing for the whole project.
-`board_debug_pins_init` brings both TXEN pins up low before the pins they gate, so connecting the
-probe to a running board disturbs nothing until the host asks for a port.
-
 ## References
 
 ### Related projects
@@ -187,8 +144,9 @@ No open-source probe firmware implementing OScan1 end to end was found.
 
 ### In this repo
 
-- `external/tinyusb` — TinyUSB's master with three changes (caller-owned vendor buffers, an
-  endpoint bounds check and placeholder endpoints), from a fork until they are upstreamed.
+- `external/tinyusb` — TinyUSB's master with three changes (caller-owned vendor buffers, an endpoint
+  bounds check and placeholder endpoints), from a fork until they are upstreamed. The fork also
+  moves `tools/get_deps.py`'s NXP SDK and CMSIS 6 pins forward.
 - `external/CMSIS-DAP` — pinned at v2.1.2. `Firmware/Source` has DAP.c, SW_DP.c, JTAG_DP.c, SWO.c
   (not built: `src/swo.c` replaces it), UART.c and DAP_vendor.c; `Firmware/Examples/MCU-LINK/` has the board headers this started from.
 

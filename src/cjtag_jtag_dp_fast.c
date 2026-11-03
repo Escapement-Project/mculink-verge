@@ -6,7 +6,7 @@
  *
  * The choice has to be made above the frame. Making it inside costs a cycle in the paced copy,
  * which is enough to take a 10 MHz request over the clock the host asked for -- see the note in
- * src/cjtag.c, and OPTIMISATIONS.md for what it is worth.
+ * src/cjtag.c.
  */
 #define CJTAG_FRAME cJTAG_FrameFast
 #define CJTAG_NAME(name) cjtagf_##name

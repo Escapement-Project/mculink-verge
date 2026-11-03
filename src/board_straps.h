@@ -1,5 +1,5 @@
 /** Which board this is and which of its functions a jumper turns off: read once by CPU 0 at boot,
- *  from the hardware-version straps, and published to CPU 1 in dap_shared (PRO.md).
+ *  from the hardware-version straps, and published to CPU 1 in dap_shared (BOARDS.md).
  */
 #ifndef BOARD_STRAPS_H
 #define BOARD_STRAPS_H

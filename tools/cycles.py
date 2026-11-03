@@ -792,8 +792,8 @@ def decode_instruction(address: int, code: bytes) -> tuple[Insn, tuple[int, str 
 
 
 # Cycles between two counted commands, which the count does not see. The probe spends about 15 us
-# between commands (BENCH.md), over 2,000 cycles; any gap past the longest latency and hold leaves
-# the same windows.
+# between commands (MEASUREMENTS.md), over 2,000 cycles; any gap past the longest latency and hold
+# leaves the same windows.
 BETWEEN_COMMANDS = 2_000
 
 
@@ -2093,8 +2093,9 @@ def check(
     if bless:
         os.makedirs(baseline_dir, exist_ok=True)
         with open(known_path, "w") as fh:
-            fh.write("# Wires that clock faster than the host asked for. See OPTIMISATIONS.md:\n")
-            fh.write("# it is a decision rather than a slip, and both ways out cost throughput.\n")
+            fh.write("# Wires that clock faster than the host asked for, which the gate accepts."
+                     " Only ARM's paths (the\n")
+            fh.write('# +armwire build) have any: README.md, "Check", says why.\n')
             for tag in sorted(seen_overshoot):
                 fh.write(tag + "\n")
         print(f"baseline rewritten in {baseline_dir}")

@@ -10,7 +10,7 @@
  * The transfer itself is ARM's JTAG_TransferFunction transcribed, loops and all. Unrolling its
  * data phase was tried and measured: a read bit went from 6 cycles to 5 as predicted and the
  * whole thing lost 5% to 10%, because the gap between transfers grew by more than the data phase
- * saved. See OPTIMISATIONS.md.
+ * saved.
  *
  * What is worth having is the other half of what src/swd_dp.c does: a transfer saves registers on
  * entry, restores them on exit and reloads the GPIO addresses each time, and ARM's block command

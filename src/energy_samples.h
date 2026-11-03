@@ -12,7 +12,7 @@ typedef struct {
     uint8_t count;
 } energy_calibration_t;
 
-/** R73 and R75, the voltage channel's divider, sit on the target side of the shunts (PRO.md), so
+/** R73 and R75, the voltage channel's divider, sit on the target side of the shunts (BOARDS.md), so
  *  their current is in every current reading: 5 uA at 3.3 V. */
 #define ENERGY_DIVIDER_OHMS 660000U
 

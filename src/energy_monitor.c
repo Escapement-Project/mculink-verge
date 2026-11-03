@@ -167,8 +167,9 @@ static void pins_init(void) {
     IOCON_PinMuxSet(IOCON, 0U, 29U, IOCON_FUNC7 | IOCON_SLEW_FAST | IOCON_DIGITAL_EN);
     IOCON_PinMuxSet(IOCON, 0U, 30U, IOCON_FUNC0 | IOCON_MODE_INACT | IOCON_DIGITAL_EN);
 
-    // PRO.md, "Range switching": the amplified current on the negative input, the ladder at 28/31
-    // of ACMPVREF on the positive. The output falls, and clears U18, above 90 mV on the shunt.
+    // BOARDS.md, "Range switching": the amplified current on the negative input, the ladder at
+    // 28/31 of ACMPVREF on the positive. The output falls, and clears U18, above 90 mV on the
+    // shunt.
     POWER_DisablePD(kPDRUNCFG_PD_COMP);
     PMC->COMP = PMC_COMP_HYST(0U) | PMC_COMP_VREFINPUT(0U) | PMC_COMP_LOWPOWER(0U) | PMC_COMP_PMUX(0U) |
                 PMC_COMP_NMUX(4U) | PMC_COMP_VREF(28U);
@@ -219,10 +220,10 @@ static const calibration_load_t load_r3 = {1UL << 26U, 1650000U + LOAD_SWITCH_MI
 static const calibration_load_t load_r4 = {1UL << 29U, 16500U + LOAD_SWITCH_MILLIOHMS};
 #define CAL_DISC (1UL << 24U)
 
-/** Each range's loads, smallest current first (PRO.md, "Calibration"). The divider's current alone
- *  is a point only in the low ranges: in the high ones it sits under the amplifier's output floor.
- *  Without R1, the 350 mA setting's high range read 0.5 mA 4% high, extending R3's slope down a
- *  curve that bends up towards the floor. R1 counts only clear of that floor. */
+/** Each range's loads, smallest current first (BOARDS.md, "Calibration"). The divider's current
+ *  alone is a point only in the low ranges: in the high ones it sits under the amplifier's output
+ *  floor. Without R1, the 350 mA setting's high range read 0.5 mA 4% high, extending R3's slope
+ *  down a curve that bends up towards the floor. R1 counts only clear of that floor. */
 static const calibration_load_t* const loads_350_low[] = {&no_load, &load_r1, &load_r3, nullptr};
 static const calibration_load_t* const loads_350_high[] = {&load_r1, &load_r3, &load_r2, &load_r4, nullptr};
 static const calibration_load_t* const loads_50_low[] = {&no_load, &load_r1, nullptr};
@@ -336,7 +337,7 @@ static bool latch_in_low_range(void) {
     return (GPIO->PIN[0] & (1UL << 30U)) != 0U;
 }
 
-/** PRO.md, "Calibration". */
+/** BOARDS.md, "Calibration". */
 __attribute__((noinline)) static bool current_calibrate(void) {
     current_calibrated = false;
     low_range_calibration = (energy_calibration_t){0};
@@ -386,14 +387,14 @@ static energy_calibration_t const* range_calibration(bool low) {
     return low ? &low_range_calibration : &high_range_calibration;
 }
 
-/** UM11673 Table 4's low-range limits. The comparator trips above both (PRO.md, "Range
+/** UM11673 Table 4's low-range limits. The comparator trips above both (BOARDS.md, "Range
  *  switching"), so a high-range segment that stays under its setting's limit re-arms the low range. */
 static uint32_t rearm_below_na(void) {
     return current_range == TARGET_SENSE_CURRENT_RANGE_350_MA ? 1500000U : 400000U;
 }
 
 /** About a millisecond of pairs, so the low range re-arms within about 2 ms of the current falling
- *  at every rate from 2,286 pairs/s (PRO.md, "Range switching"): the most words that take no
+ *  at every rate from 2,286 pairs/s (BOARDS.md, "Range switching"): the most words that take no
  *  longer, as a power of two. With 10 ms, the re-arm took 7 to 15 ms at 20,000 pairs/s and 1.5 to
  *  3 ms at 100,000, so the range a short low phase was read on depended on the rate.
  *

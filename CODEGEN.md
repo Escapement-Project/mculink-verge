@@ -1,8 +1,8 @@
 # Runtime code generation of the bit paths
 
 A companion to TIMING.md, which has the rules in prose: read it first. Dense on purpose.
-Everything here was measured on the bench 2026-10-16 unless marked otherwise. BENCH.md section
-"The cost model now times the bus, and reproduces every SWD result so far" has the evidence.
+Everything here was measured on the bench 2026-10-16 unless marked otherwise. MEASUREMENTS.md,
+"The cost model times the bus", has the evidence.
 
 ## The generator as built (src/swd_gen.c, behind SWD_CODEGEN, on by default since 2026-10-20)
 
@@ -177,8 +177,8 @@ P=4 d=7 (margin 0, window edge), P=5 d=9, P=8 d=10: all clean, 7,200 target bits
 - GPIO base 0x4008_C000. Port 0 only for debug pins. B (byte) regs at base + pin; W (word) at
   base+0x1000+4*pin; DIR +0x2000; MASK +0x2080; PIN +0x2100; MPIN +0x2180; SET +0x2200;
   CLR +0x2280; NOT +0x2300; DIRSET +0x2380; DIRCLR +0x2400.
-- P0_0 SWCLK/TCK, P0_1 TDI, P0_2 SWDIO/TMS, P0_3 TDO/SWO, P0_19 nRESET, P0_28 SWDIO TXEN
-  (buffer direction; high = probe drives), P0_13 nRESET TXEN. J8 marker pins: port 1, pins 0-3.
+- Pins: BOARDS.md. P0_28 SWDIO TXEN is high while the probe drives. J8 marker pins: port 1,
+  pins 0-3.
 - SRAMX 0x0400_0000-0x0400_7FFF: executable, always clocked; nothing in the image uses it.
   Data accesses to SRAMX go over C-AHB and would contend with fetch: keep data in SRAM.
 - DWT->CYCCNT 0xE000_1004 (enabled by `board_timestamp_init`).

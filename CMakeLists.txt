@@ -47,7 +47,7 @@ option(CORE_150MHZ "Run the core at 150 MHz" ON)
 # commands as well as the clock. src/marker.h says why that is worth a pin.
 option(MARKER "Mark command processing on the J8 header" ON)
 # Sample SWDIO just after the rising edge on the delayed SWD path, with each transfer masked. Off
-# until the bench has settled it; BENCH.md has the measurements behind it.
+# until the bench has settled it; MEASUREMENTS.md has the measurements behind it.
 option(SWD_SAMPLE_AFTER_EDGE "Sample SWDIO after the rising edge on the delayed SWD path" OFF)
 # Generate the SWD transfer paths at run time into SRAMX, for the clock the host asks for. See
 # src/swd_gen.c.

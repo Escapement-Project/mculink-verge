@@ -157,7 +157,7 @@ BOARD_KIND_PRO = 1
 
 
 class Circuit:
-    """The Pro's energy circuit as calibration sees it (PRO.md): the probe's 3.3 V on the shunts,
+    """The Pro's energy circuit as calibration sees it (BOARDS.md): the probe's 3.3 V on the shunts,
     loads from node T to ground, the divider, and the sense amplifier's gain of 30. The amplifier's
     offset and output floor are the ones a unit showed on the bench, in codes."""
 
@@ -1475,8 +1475,8 @@ def check_calibration(c, elf, symbols, offsets, model_syscon):
             c.check(result == 0 and (codes, currents, count) == (tables[low][0], tables[low][1], tables[low][3]),
                     f"{setting_ma} mA: mode 4 differs from the {'low' if low else 'high'} range's table")
 
-    # J17's contact can double the 350 mA setting's high range resistance (PRO.md). Then R1 clears
-    # the floor and is a point, unless the amplifier's offset pins it at the floor.
+    # J17's contact can double the 350 mA setting's high range resistance (BOARDS.md). Then R1
+    # clears the floor and is a point, unless the amplifier's offset pins it at the floor.
     for offset, kept in ((Circuit.OFFSET, True), (-110, False)):
         _, _, circuit, _, ok, tables = run(350, contact=0.25, offset=offset)
         currents, count = tables[False][1], tables[False][3]

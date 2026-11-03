@@ -31,7 +31,7 @@ the wire facts the two-pin generator has to respect.
 - **Rates seen through the firmware**: paced frames at 1 MHz clean; the unpaced fast path at
   "25 MHz" runs an irregular ~11 MHz (period 50-160 ns) and is clean, 20/20 64-word ROM blocks;
   at "37.5 MHz" every transfer fails (TDO sampled too early, below).
-- **Throughput today**: ~230 KiB/s through `dap.py`, 64-word blocks, USB included, flat from
+- **Throughput on 2026-10-17**: ~230 KiB/s through `dap.py`, 64-word blocks, USB included, flat from
   15 MHz up because the fast path is unpaced C.
 - **Never enter Test-Logic-Reset during a session.** Any entry, even three frames from
   Run-Test/Idle, drops OScan1 (reads then show 0x81010101, the signature of an adapter in JScan),
@@ -172,8 +172,9 @@ Clause 25 covers the OScan formats, 10.4 the escapes, and 9.10 the configuration
 - The probe frames OScan2 through a fourth copy of ARM's JTAG_DP.c (`cjtag2_*`,
   `src/cjtag_jtag_dp_tracked.c`, paced only, not flattened: +10 KB). `cJTAG_Frame2` follows the TAP
   from the TMS it sends: three packets in Shift-DR/IR, one TMS packet elsewhere, which returns
-  TDO 1, as OScan1's joint drive gives outside Shift. The generated paths are OScan1 only for now
-  (`jtag_gen_usable`), and the connect-time latency sweep is skipped in OScan2.
+  TDO 1, as OScan1's joint drive gives outside Shift. The generated paths were OScan1 only at this
+  point (`jtag_gen_usable`), and the connect-time latency sweep was skipped in OScan2, until the
+  next section.
 - Vendor `0x83 03 <SCNFMT> <TAP state>` turns it on; mode 2 stays OScan1. A mode, not a byte after
   mode 2: a vendor command has no length, so an optional byte would be read from the next queued
   command. `0x82` format 4 appends the u32 mask of formats framed.
@@ -248,8 +249,8 @@ Clause 25 covers the OScan formats, 10.4 the escapes, and 9.10 the configuration
   nTDI and TDO in Shift, and TMS 1 in Shift as an EOT escape on the nTDI packet (TCKC held high,
   TMSC to its inverse and back, each edge and the fall a host period after the last; Figure
   25-11). Every OScan5 frame carries TDO, so detach needs no trailing frame. Vendor 0x83 mode 3
-  takes SCNFMT 13 and 0x82 offers it. `JTAG_GEN_OSCAN5` (3) exists so the generator refuses it and
-  the routes fall back to ARM's copy; generating it is the next step.
+  takes SCNFMT 13 and 0x82 offers it. `JTAG_GEN_OSCAN5` (3) existed so the generator refused it and
+  the routes fell back to ARM's copy, until the next section generated it.
 - `dap.py cjtag --ti --format 13 --switch command`: STFMT 13 as an OScan1 command, mode 3 at
   Run-Test/Idle, ECL framed in OScan5 with 7 raw clocks after it (a non-Shift OScan5 SP is OScan1's
   three bits, then the 4-clock CP; Table C-17). With the robust attach (`--ti-from 1 --ti-prefix
@@ -335,7 +336,7 @@ Clause 25 covers the OScan formats, 10.4 the escapes, and 9.10 the configuration
   this run, matched these within 2%, so the bench changed, not the firmware. OScan2 fell most, which
   points at the target answering WAIT more (not measured).
 
-## Architecture
+## Architecture, as planned before the generator (2026-10-17)
 
 - **One JTAG transfer scheduler**, two clock emitters. A transfer is the TAP walk
   (Run-Test/Idle, Select-DR, Capture-DR, Shift-DR), `ir_before`/`ir_after`-style DR padding for
@@ -358,8 +359,8 @@ Clause 25 covers the OScan formats, 10.4 the escapes, and 9.10 the configuration
   four variants (read/write x four-wire/OScan1).
 - **Expected wire throughput**: at the measured 17-19-cycle frame, ~42 JTAG clocks a word cost
   ~750 cycles = 5 us, ~780 KiB/s wire time for OScan1 (vs ~230 KiB/s with USB today); four-wire
-  42 clocks at P = 4 = 1.1 us a word. USB will bound both, as it does SWD (BENCH.md "The USB path
-  at 50 MHz").
+  42 clocks at P = 4 = 1.1 us a word. USB will bound both, as it does SWD (MEASUREMENTS.md, "The
+  USB path at 50 MHz").
 
 ## Learned pacing (2026-10-17)
 
@@ -384,8 +385,9 @@ Clause 25 covers the OScan formats, 10.4 the escapes, and 9.10 the configuration
   +10 to next fall + 8, against +8 to next fall + 7 after nRESET (measured by routing the DAP and timing its DPACC scan, and the ICEPick's own TDO). The generated transfers read the acknowledge's last bit at
   latency + 1, so they failed there while ARM's C path and probe-rs's scans, which sample late,
   did not. Fixed: four-wire latency default 10, and that bit sampled as late as the
-  decision allows (at least latency + 4 on unmasked clocks). Cost: the four-wire clock floor is 6
-  cycles (25 MHz), not 5.
+  decision allows (at least latency + 4 on unmasked clocks). Cost: the four-wire clock floor was 6
+  cycles (25 MHz), not 5, until the probe measured the latency at connect. A target that answers
+  within 8 cycles runs at 30 MHz again (README.md, "Limits").
 - **probe-rs four-wire reset on the CC13xx never worked**, on any build: `Icepick::new` for four
   wires reset the TAPs but kept the chain state, which still held the DAP, so every ICEPick scan
   after the reset was 13 bits instead of 7. Fixed in icepick.rs by setting the ICEPick-only chain

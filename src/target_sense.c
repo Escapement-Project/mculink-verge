@@ -53,7 +53,7 @@ uint32_t target_sense_full_scale_mv(void) {
  * FRO_HF clocks it rather than MAIN_CLK, so the rate does not move with the core clock: 96 MHz
  * over 8 is 12 MHz. The reference is VREFP. The plain board ties it to VDDA, the probe's own
  * 3.3 V supply, so a reading there is only as absolute as that regulator. The Pro gives it an
- * LM4040 3.0 V reference instead (schematic sheet 2), which PRO.md's energy section builds on.
+ * LM4040 3.0 V reference instead (schematic sheet 2), which BOARDS.md's energy section builds on.
  */
 static target_sense_status_t adc_init(void) {
     CLOCK_SetClkDiv(kCLOCK_DivAdcAsyncClk, TARGET_SENSE_ADC_DIVIDER, true);

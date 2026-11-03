@@ -1,11 +1,13 @@
-# The MCU-Link Pro
+# The boards
 
 One image runs on the plain MCU-Link and the MCU-Link Pro. It reads the board's straps at boot
-and starts what that board has. This file has the Pro's pins and straps, and what the firmware
-does with them.
+and starts what that board has. This file has both boards' pins and straps, then the Pro's own
+pins and circuits, and what the firmware does with them.
 
 ## Sources
 
+- The board header in ARM's CMSIS-DAP MCU-Link example, checked against the plain board's
+  schematic net names: the debug pins both boards share.
 - NXP's UM11673, the Pro's user manual, Rev 1.2: features, jumpers (Table 1), the J19 pinout
   (Table 3), energy ranges and status LEDs (the two Tables 4).
 - The Readme in LinkServer's MCU-LINK directory: one image for every LPC55S69 MCU-Link, the
@@ -28,42 +30,55 @@ does with them.
 
 ## What runs on a Pro
 
-- **As a probe**, everything the plain board does: SWD, four-wire JTAG on J7, two-pin cJTAG, SWO,
-  and the target console. The feature jumpers work as README.md "Jumpers" describes.
-- **The second serial port** on J26, a second CDC interface. 3.3 V only: J26 has no level shifter.
-- **The DIO pins** on J19, driven from the host (README.md "The Pro's DIO pins").
-- **SPI and I2C** through CMSIS-DAP vendor commands `0x91` and `0x92`, not a separate USB-SIO
-  endpoint. SPI uses DIO0–DIO3 and is unavailable while a DIO pin is an output. I2C uses Flexcomm 3,
-  which also drives SWO, so turn SWO off before using I2C. J15 disables both bridges.
-- **The target supply** is switched by the host. J5 selects 1.8 V when shorted or 3.3 V when open;
-  J6 must connect the supply to the target. The regulator is rated to 400 mA. See HOST-INTERFACE.md
-  for the command.
+CAPABILITIES.md lists what the firmware does on a Pro and what each feature needs; the feature
+jumpers work as README.md "Jumpers" describes. Four-wire JTAG reaches J7. The second serial port,
+on J26, is a second CDC interface and 3.3 V only: J26 has no level shifter.
+
 - **The LEDs**, with the meanings UM11673 gives them where the function exists. LED1 is lit while
   USB is configured. The status, SWO and VCOM LEDs flicker with traffic. LED5 (FUNC) shows the
   wire by the shape of its ramp: dark to light for SWD, light to dark for two-pin cJTAG, light to
   dark to light for four-wire JTAG, solid with the SWD jumper fitted, dark with no port connected.
   LED6 (SIO) is lit while the host drives a DIO pin or runs SPI. LED7 (energy) stays dark. The fades
   follow CIE lightness, so they look linear to the eye.
-
-- **Energy capture** is available on Pro units with HW_VER_5 fitted. The host can start a background
-  ADC capture and read raw voltage/current codes, calibrated voltage/current, and accumulated
-  energy. The probe calibrates against its own loads as it boots. A capture start calibrates again
-  only after a failed calibration or a change of jumper setting. The accumulator
-  updates without host polling and remains readable after capture stops. "Energy measurement"
-  below derives the circuit's settings from the documents.
+- **Energy capture** needs HW_VER_5 fitted. "Energy measurement" below derives the circuit's
+  settings from the documents.
 
 Not yet: the analog trace input and the LPC804.
 
 ## What the two boards share
 
-- The debug interface pins: P0_0 SWCLK, P0_1 TDI, P0_2 SWDIO, P0_3 TDO/SWO, P0_13 RESET_TXEN,
-  P0_14 the target's ISP-EN, P0_19 nRESET, P0_22 detect, P0_28 SWDIO_TXEN, P0_31 VREF (schematic
-  sheet 3). Four-wire JTAG reaches J7: TMS 2, TCK 4, TDO 6, TDI 8, nRESET 10, ISP-EN 7, detect 9
-  (sheet 5). TCK and TDI share one 74LVC2T45 whose direction pin is HW_VER_7, so with J13 fitted
-  neither is driven at all, whatever the firmware does. The reference-voltage follower is the
-  plain board's, with a 30K1 pull-up for its 33K.
-- VCOM on Flexcomm 0, P0_24/P0_25; the status LED on P0_5 (LED3, red, on the Pro); the 16 MHz
-  crystal (DAPLink `hic_init.c`); the high-speed USB port.
+The debug pins (the Pro's schematic, sheet 3):
+
+| signal | pin | note |
+| --- | --- | --- |
+| TCK/SWCLK | P0_0 | |
+| TDI | P0_1 | |
+| TMS/SWDIO | P0_2 | the two-pin wire |
+| TDO/SWO | P0_3 | also `FC3_RXD` (`IOCON_FUNC1`) for SWO, so only one of the two configurations is live at a time: `src/swo.c` hands the pin to Flexcomm 3 while capture runs and back to the secure GPIO when it stops |
+| RESET_TXEN | P0_13 | buffer direction |
+| ISP-EN | P0_14 | the target's ISP line |
+| nRESET | P0_19 | |
+| detect | P0_22 | |
+| TMS_SWDIO_TXEN | P0_28 | buffer direction, load-bearing for OScan1 |
+| VREF | P0_31 | |
+| target console RXD / TXD | P0_24 / P0_25 | Flexcomm 0 |
+| status LED | P0_5 | LED1 on the plain board, LED3 (red) on the Pro. Also `ISP1`: the pin the ROM bootloader samples at reset, and what the ISP jumper pulls |
+
+The debug connector is J6 on the plain board and J7 on the Pro (sheet 5), in the standard 10-pin
+Cortex Debug layout: 1 VREF, 2 TMS, 4 TCK, 6 TDO, 8 TDI, 10 nRESET, 3 and 5 ground, and 9 detect,
+the standard's GNDDetect, which a target grounds. Pin 7 is ISP-EN, where the standard has a key;
+leave it unconnected at the target. There is no nTRST, so the TAP is reset through TMS. On the Pro,
+TCK and TDI share one 74LVC2T45 whose direction pin is HW_VER_7, so with J13 fitted neither is
+driven at all, whatever the firmware does. The reference-voltage follower is the plain board's, with
+a 30K1 pull-up for its 33K.
+
+The two TXEN pins are buffer direction controls. Releasing SWDIO means clearing `TMS_SWDIO_TXEN`
+as well as making the pin an input: the buffer keeps driving the wire otherwise. Releasing the wire
+is exactly what OScan1 needs, so this pin is load-bearing for the whole project.
+`board_debug_pins_init` brings both TXEN pins up low before the pins they gate, so connecting the
+probe to a running board disturbs nothing until the host asks for a port.
+
+Both boards also have the 16 MHz crystal (DAPLink `hic_init.c`) and the high-speed USB port.
 
 Strap pins, all inputs needing a pull-up (DAPLink `IO_Config.h`):
 

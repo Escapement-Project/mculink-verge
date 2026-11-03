@@ -11,10 +11,11 @@ probe before fitting or removing one.
 | Two-pin cJTAG | OScan1, OScan2, OScan5, OScan6 | OScan1, OScan2, OScan5, OScan6 | The host and target must use a shared scan format. The host chooses the format. |
 | SWO capture | UART encoding | UART encoding | No Manchester encoding or streaming endpoint. The firmware reports a 30 Mbaud ceiling. |
 | Target serial port | One USB serial port | Two USB serial ports | J4 on the full MCU-Link or J14 on the Pro disables the first port. The Pro's second port is on J26 and is 3.3 V only. |
-| DIO pins | Not available | Four pins on J19 | J15 disables USB-SIO and leaves the pins as inputs. DIO0–2 change direction as a group; DIO3 changes on its own. |
+| DIO pins | Not available | Four pins on J19 | J15 disables USB-SIO and leaves the pins as inputs. DIO0–2 change direction as a group; DIO3 changes on its own. They run at the voltage on J19 pin 14, or 3.3 V with nothing there. `verge dio` reads and drives them, as does `tools/dap.py dio` from a checkout. |
 | SPI and I2C bridges | Not available | SPI on DIO0–DIO3; I2C on Flexcomm 3 | CMSIS-DAP vendor commands `0x91` and `0x92`. J15 disables both. SPI shares the DIO pins; I2C shares Flexcomm 3 with SWO. |
-| Target supply | Not available | Switchable 1.8 V or 3.3 V | `tools/dap.py target-power` controls it. J5 selects voltage and J6 connects it to the target. Firmware disables it during startup. |
+| Target supply | Not available | Switchable 1.8 V or 3.3 V, up to 400 mA | `verge power` controls it, as does `tools/dap.py target-power` from a checkout. J5 selects voltage and J6 connects it to the target. Firmware disables it during startup. |
 | Energy capture | Not available | Calibrated voltage/current readings and accumulated energy | Capture is available when HW_VER_5 is fitted. Calibration is verified in both 350 mA and 50 mA jumper settings. |
+| Verge Aux | Not available | A second vendor interface | Carries the DIO, target supply, energy and marker commands, so a tool can use them while a debugger holds CMSIS-DAP. Every Pro has it, whatever its jumpers. |
 | Firmware update | Supported by `verge` | Supported by `verge` | A USB restart can enter the bootloader without the ISP jumper. The ISP jumper remains the recovery path for an image that does not start. |
 
 The Pro also has LEDs for board, SWO, serial, debug-wire and DIO activity. Energy capture retains
@@ -29,10 +30,6 @@ measured on 2026-10-20, on an older build than this source.
 mculink-bench's [measurements page](https://github.com/Escapement-Project/mculink-bench) compares
 this firmware with stock and with a SEGGER J-Link Ultra, through the same probe-rs workload on the
 same target.
-
-The firmware reports its maximum SWO baud as 30 Mbaud. Bench captures reached 30 Mbaud on the full
-MCU-Link and 24 Mbaud on the Pro. The Pro result is limited by the available trace source, which
-did not reach a higher rate.
 
 ## Related guides
 

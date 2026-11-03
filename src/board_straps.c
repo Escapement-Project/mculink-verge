@@ -9,7 +9,7 @@
 
 #include "dap_shared.h"
 
-/** The hardware-version straps (DAPLink's lpc55xx IO_Config.h, PRO.md), each an input pulled low
+/** The hardware-version straps (DAPLink's lpc55xx IO_Config.h, BOARDS.md), each an input pulled low
  *  by the board or a jumper. HW_VER_4 low says a board id is fitted, and HW_VER_3 is that id, high
  *  on a Pro. The plain MCU-Link's 64-pin package bonds neither, nor HW_VER_2, so with their
  *  pull-ups all three read high there. */

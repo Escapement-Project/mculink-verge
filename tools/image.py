@@ -1125,7 +1125,7 @@ def usb_string(probe: Machine, index: int) -> str:
 
 
 def expected_layout(board: int, jumpers: int) -> tuple[int, set[int], int]:
-    """Interfaces, endpoints and functions of PRO.md's one layout: CMSIS-DAP v2 on EP1 and v1 on EP3,
+    """Interfaces, endpoints and functions of the one layout: CMSIS-DAP v2 on EP1 and v1 on EP3,
     VCOM on EP2 with its notification at 0x86, VCOM2 on EP4 with its notification at 0x87, and Verge
     Aux on EP5, last. A function the board lacks or a jumper turns off is left out: the SWD jumper
     takes both CMSIS-DAP interfaces, as stock's does, and leaves Verge Aux. The functions are
@@ -1417,7 +1417,7 @@ ISP_CTRL_PIN = 14
 
 def check_board(c: Checker, elf: str, request_slots: int) -> None:
     """Only the plain MCU-Link lets the marker near its pins, and an on-board one keeps two-pin cJTAG
-    off (PRO.md).
+    off (BOARDS.md).
 
     On a Pro the J8 pins are the analog trace input, a level shifter's direction and two SPI lines,
     so driving them fights other drivers. CPU 1 takes the board from dap_shared, as CPU 0 read it.
@@ -1961,7 +1961,7 @@ LED_SMOOTH_LSTAR = 1.0
 # How far an inverted LED has to be from what it would have shown, in L*.
 LED_FLICKER_LSTAR = 40
 
-# The Pro's LEDs on port 1 (src/led.c, PRO.md), and FUNC's ramp in ms (512 ticks).
+# The Pro's LEDs on port 1 (src/led.c, BOARDS.md), and FUNC's ramp in ms (512 ticks).
 PRO_LED_USB, PRO_LED_SWO, PRO_LED_VCOM, PRO_LED_FUNC, PRO_LED_SIO, PRO_LED_NRG = 12, 13, 15, 16, 17, 18
 PRO_SWITCHED = (PRO_LED_USB, PRO_LED_SWO, PRO_LED_VCOM, PRO_LED_SIO, PRO_LED_NRG)
 LED_RAMP_MS = (900, 1200)
@@ -2125,7 +2125,7 @@ def check_led(c: Checker, elf: str, request_slots: int) -> None:
 
 
 def check_pro_leds(c: Checker, elf: str, request_slots: int) -> None:
-    """The Pro's six other LEDs (PRO.md), and that no other board touches their pins.
+    """The Pro's six other LEDs (BOARDS.md), and that no other board touches their pins.
 
     FUNC is CTIMER1's match 3 as a PWM, its level written to the shadow register that the timer
     takes as it wraps. Each wire has to show its own shape: SWD a rising ramp, two-pin a falling one,

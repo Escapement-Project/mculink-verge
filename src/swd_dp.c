@@ -265,7 +265,7 @@ SWD_TransferFunction(Fast)
  * the previous edge stays readable until the new one has made the round trip through the buffers
  * and the target, a few cycles after this store, while sampling before the edge leaves only what
  * the period has to spare beyond that trip: under a cycle at the 16.67 MHz setting. vendor 0x87
- * measured both edges of the window; BENCH.md has it.
+ * measured both edges of the window; MEASUREMENTS.md has it.
  *
  * **The sample must follow the store with nothing in between.** An interrupt there makes the
  * sample late enough to read the next bit, so every transfer on this path runs masked. Before the
@@ -344,7 +344,7 @@ COMMAND_PATH uint32_t SWD_TransferCommand(const uint8_t* request, uint8_t* respo
      * and spills them on every word. Peeling it out fixes that. **It has to stay out of line.**   \
      * An inlined second transfer costs one register in the loop's data phase, and one register    \
      * there is one cycle on each of 32 data bits, which is more than the peel saves. That was     \
-     * measured, not guessed: src/hot.h and BENCH.md have the four builds. */                      \
+     * measured, not guessed: src/hot.h has the figures. */                                        \
     static uint8_t SWD_TransferTail##speed(uint32_t request, uint32_t* data) HOT_PATH;                    \
     static uint8_t SWD_TransferTail##speed(uint32_t request, uint32_t* data) {                            \
         return SWD_Transfer##speed(request, data);                                                        \

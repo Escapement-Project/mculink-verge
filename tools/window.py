@@ -11,7 +11,7 @@ cycles against a write bit at four, a driven two-pin bit at nine against a sampl
 are where a difference between two paths actually lives.
 
 So: group every gap by length, show the distribution, and print the instructions of one gap of the
-length asked for. Two of the changes in OPTIMISATIONS.md came straight off this output, a word
+length asked for. Two changes to ARM's SWD path came straight off this output, a word
 rebuilt from its own bytes and a parity recomputed once a word, and neither was visible in a
 disassembly listing of the function, because both sit in code the optimiser hoisted to the top of
 a loop body that is thousands of instructions long.

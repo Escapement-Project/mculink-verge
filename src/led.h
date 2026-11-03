@@ -10,7 +10,7 @@
  *  - a flicker: a command has arrived. The LED inverts for a moment, as a network LED does, and
  *    a stream of commands flickers it steadily.
  *
- * The Pro has six more, lit by a low pin the same way (PRO.md):
+ * The Pro has six more, lit by a low pin the same way (BOARDS.md):
  *
  *  - LED1 USB: lit while configured and not suspended.
  *  - LED2 SWO and LED4 VCOM: dark, flickering on traffic: SWO bytes going to the host, console

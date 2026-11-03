@@ -39,7 +39,7 @@
  * Nothing upstream predicts it: the emulator counts instructions and sees no change, the gate
  * passes it, and so do all 1,212 differential cases. Forcing these functions to a 16-byte
  * boundary moved the figure by 0.00 cycles, which rules out alignment. The only instrument that
- * catches it is a capture folded by position in the transfer. BENCH.md has the five builds.
+ * catches it is a capture folded by position in the transfer.
  */
 #ifdef RAMFUNC_BIT_PATHS
 #define HOT_PATH __attribute__((noinline, section(".ramfunc")))
