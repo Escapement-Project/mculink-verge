@@ -63,7 +63,8 @@ __attribute__((section(".ramfunc"))) static uint8_t stage_request(uint8_t (*buff
     uint8_t const at = *next;
     *next = dap_usb_next_slot(at, DAP_STAGE_REQUESTS);
 #ifdef DAP_TIMING_DIAGNOSTICS
-    bool const record_timing = command[0] != DAP_TIMING_COMMAND;
+    // The bulk pipeline's alone, as CPU 1's counters are.
+    bool const record_timing = (buffers != dap_stage.hid_request) && (command[0] != DAP_TIMING_COMMAND);
     uint32_t const copy_start = record_timing ? dap_timing_now() : 0U;
 #endif
     memcpy(buffers[at], command, length);
@@ -81,15 +82,18 @@ static bool disconnect_complete;
 /** Whether the configuration has CMSIS-DAP, whose bulk interface is then vendor instance 0. */
 static bool debug_present;
 
-/** The reply at response_head is on its way to the host. At most one is: both transports send
- *  from the head of the one ring, so replies leave in the order their commands ran. */
-static volatile bool response_in_flight;
+/** The head of each transport's reply ring is on its way to its host. At most one is on each, so
+ *  each transport's replies leave in the order their commands ran. */
+static volatile bool bulk_reply_in_flight;
+static volatile bool hid_reply_in_flight;
 
 static void usb_transport_task(void);
 static void energy_range_retry_task(void);
 static void energy_control_task(void);
 static void arm_rx(void);
 static void send_head(void);
+static void send_bulk_head(void);
+static void send_hid_head(void);
 static void start_core1(void);
 
 __attribute__((section(".ramfunc"))) static void signal_core1(void) {
@@ -175,14 +179,16 @@ __attribute__((section(".ramfunc"))) void tud_vendor_rx_cb(uint8_t index, const 
 void tud_mount_cb(void) {
     dap_shared.bulk_packet_size = usb_bulk_packet_size();
     dap_shared.first_live_seq = dap_shared.next_request_seq;
-    response_in_flight = false;
+    bulk_reply_in_flight = false;
+    hid_reply_in_flight = false;
     aux_mount();
     __DMB();
     transfer_abort();
 }
 
-/** The head reply has left, or will not: its slot goes back to CPU 1, which may be waiting for one. */
-__attribute__((section(".ramfunc"))) static void response_sent(void) {
+/** The head bulk reply has left, or will not: its slot goes back to CPU 1, which may be waiting for
+ *  one. */
+__attribute__((section(".ramfunc"))) static void bulk_reply_sent(void) {
 #ifdef DAP_TIMING_DIAGNOSTICS
     uint8_t const head = dap_shared.response_head;
     if (dap_stage.response_timing_excluded[head] == 0U) {
@@ -192,13 +198,18 @@ __attribute__((section(".ramfunc"))) static void response_sent(void) {
     dap_stage.response_timing_excluded[head] = 0U;
 #endif
     dap_shared.response_head = dap_usb_slot_release(dap_shared.response_len, dap_shared.response_head, REQUEST_SLOTS);
-    response_in_flight = false;
+    bulk_reply_in_flight = false;
     __DMB();
     signal_core1();
 }
 
-__attribute__((section(".ramfunc"))) static bool head_in_flight_on(uint8_t transport) {
-    return response_in_flight && (dap_shared.response_transport[dap_shared.response_head] == transport);
+/** The same for the head HID reply. */
+__attribute__((section(".ramfunc"))) static void hid_reply_sent(void) {
+    dap_shared.hid_response_head =
+        dap_usb_slot_release(dap_shared.hid_response_len, dap_shared.hid_response_head, REQUEST_SLOTS);
+    hid_reply_in_flight = false;
+    __DMB();
+    signal_core1();
 }
 
 __attribute__((section(".ramfunc"))) void tud_vendor_tx_cb(uint8_t index, uint32_t sent_bytes) {
@@ -207,9 +218,9 @@ __attribute__((section(".ramfunc"))) void tud_vendor_tx_cb(uint8_t index, uint32
         aux_sent();
         return;
     }
-    if (head_in_flight_on(DAP_TRANSPORT_BULK)) {
-        response_sent();
-        send_head();
+    if (bulk_reply_in_flight) {
+        bulk_reply_sent();
+        send_bulk_head();
     }
 }
 
@@ -218,7 +229,7 @@ __attribute__((section(".ramfunc"))) static bool start_rx(void* context, uint8_t
     return tud_vendor_read_xfer_buf(buffers[slot]);
 }
 
-__attribute__((section(".ramfunc"))) static bool start_tx(void* context, uint8_t slot, uint16_t length) {
+__attribute__((section(".ramfunc"))) static bool start_bulk_tx(void* context, uint8_t slot, uint16_t length) {
     uint8_t (*buffers)[DAP_PACKET_SIZE] = context;
 #ifdef DAP_TIMING_DIAGNOSTICS
     bool const staged = dap_shared.response_staged[slot] != 0U;
@@ -239,7 +250,6 @@ __attribute__((section(".ramfunc"))) static bool start_tx(void* context, uint8_t
         }
 #endif
     }
-    bool started;
 #ifdef DAP_TIMING_DIAGNOSTICS
     dap_stage.response_timing_excluded[slot] = !record_timing;
     uint32_t const start = record_timing ? dap_timing_now() : 0U;
@@ -247,17 +257,19 @@ __attribute__((section(".ramfunc"))) static bool start_tx(void* context, uint8_t
         dap_stage.response_tx_tick[slot] = dap_timing_now();
     }
 #endif
-    if (dap_shared.response_transport[slot] == DAP_TRANSPORT_BULK) {
-        started = tud_vendor_write_xfer(buffers[slot], length) == length;
-    } else {
-        started = tud_hid_n_report(0U, 0U, buffers[slot], length);
-    }
+    bool const started = tud_vendor_write_xfer(buffers[slot], length) == length;
 #ifdef DAP_TIMING_DIAGNOSTICS
     if (record_timing) {
         dap_stage.timing.tx_start_cycles += dap_timing_now() - start;
     }
 #endif
     return started;
+}
+
+/** TinyUSB's HID class copies the report into its own endpoint buffer. */
+__attribute__((section(".ramfunc"))) static bool start_hid_tx(void* context, uint8_t slot, uint16_t length) {
+    uint8_t (*buffers)[DAP_SHARED_HID_REPORT_SIZE] = context;
+    return tud_hid_n_report(0U, 0U, buffers[slot], length);
 }
 
 /** Keep TinyUSB and endpoint ownership on CPU 0. */
@@ -334,9 +346,9 @@ __attribute__((section(".ramfunc"))) static void arm_rx(void) {
     }
 }
 
-/** Starts the head reply if CPU 1 has published it and none is on its way. The completion
- *  callbacks call it as well, so a reply already waiting leaves without the loop coming round. */
-__attribute__((section(".ramfunc"))) static void send_head(void) {
+/** Starts the head bulk reply if CPU 1 has published it and none is on its way. The completion
+ *  callback calls it as well, so a reply already waiting leaves without the loop coming round. */
+__attribute__((section(".ramfunc"))) static void send_bulk_head(void) {
     uint8_t const head = dap_shared.response_head;
     uint16_t const length = dap_shared.response_len[head];
     if (length == 0U) {
@@ -345,10 +357,30 @@ __attribute__((section(".ramfunc"))) static void send_head(void) {
     __DMB();
     // An unconfigured device has no host to take this reply, including one CPU 1 just finished.
     if (!tud_mounted() || dap_usb_stale(dap_shared.response_seq[head], dap_shared.first_live_seq)) {
-        response_sent();
+        bulk_reply_sent();
         return;
     }
-    (void)dap_usb_start_tx(&response_in_flight, head, length, start_tx, dap_shared.response);
+    (void)dap_usb_start_tx(&bulk_reply_in_flight, head, length, start_bulk_tx, dap_shared.response);
+}
+
+/** The same for the head HID reply. */
+__attribute__((section(".ramfunc"))) static void send_hid_head(void) {
+    uint8_t const head = dap_shared.hid_response_head;
+    uint16_t const length = dap_shared.hid_response_len[head];
+    if (length == 0U) {
+        return;
+    }
+    __DMB();
+    if (!tud_mounted() || dap_usb_stale(dap_shared.hid_response_seq[head], dap_shared.first_live_seq)) {
+        hid_reply_sent();
+        return;
+    }
+    (void)dap_usb_start_tx(&hid_reply_in_flight, head, length, start_hid_tx, dap_stage.hid_response);
+}
+
+__attribute__((section(".ramfunc"), noinline)) static void send_head(void) {
+    send_bulk_head();
+    send_hid_head();
 }
 
 /** CPU 0 waits here between events, running from SRAM with interrupts masked, so that one pending
@@ -405,7 +437,8 @@ __attribute__((section(".ramfunc"))) static bool lab_hammer(void) {
 
 __attribute__((section(".ramfunc"))) static bool queued_work(void) {
     bool const reply_waiting =
-        !response_in_flight && !dap_usb_slot_free(dap_shared.response_len, dap_shared.response_head);
+        (!bulk_reply_in_flight && !dap_usb_slot_free(dap_shared.response_len, dap_shared.response_head)) ||
+        (!hid_reply_in_flight && !dap_usb_slot_free(dap_shared.hid_response_len, dap_shared.hid_response_head));
     // A hold stops the conversion timer for a read-latency measurement: no gap comes until it
     // ends, so the loop may wait meanwhile, and the next wake tries again.
     bool const rearm_waiting = (dap_shared.energy_range_retry_pending != 0U) &&
@@ -515,7 +548,7 @@ __attribute__((noinline)) void dma0_init(void) {
     DMA0->CTRL = DMA_CTRL_ENABLE_MASK;
 }
 
-bool usb_transport_reply_in_flight(void) { return response_in_flight; }
+bool usb_transport_reply_in_flight(bool hid) { return hid ? hid_reply_in_flight : bulk_reply_in_flight; }
 
 void usb_transport_request_disconnect(void) {
     disconnect_complete = false;
@@ -573,9 +606,9 @@ __attribute__((section(".ramfunc"))) void tud_hid_report_complete_cb(uint8_t ins
     (void)instance;
     (void)report;
     (void)len;
-    if (head_in_flight_on(DAP_TRANSPORT_HID)) {
-        response_sent();
-        send_head();
+    if (hid_reply_in_flight) {
+        hid_reply_sent();
+        send_hid_head();
     }
 }
 
@@ -585,8 +618,8 @@ __attribute__((section(".ramfunc"))) void tud_hid_report_failed_cb(uint8_t insta
     (void)instance;
     (void)report;
     (void)xferred_bytes;
-    if ((report_type == HID_REPORT_TYPE_INPUT) && head_in_flight_on(DAP_TRANSPORT_HID)) {
-        response_in_flight = false;  // usb_transport_task sends it again
+    if ((report_type == HID_REPORT_TYPE_INPUT) && hid_reply_in_flight) {
+        hid_reply_in_flight = false;  // usb_transport_task sends it again
     }
 }
 

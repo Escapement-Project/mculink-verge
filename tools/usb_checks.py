@@ -15,6 +15,8 @@ class Usb:
         self.cpu1 = machine(elf1, symbols1)
         self.fields = fields
         self.sent = []
+        # CMSIS-DAP's replies as `sent` has them, with the interface each went out on.
+        self.sent_on = []
         self.configured = True
         self.tx_attempts = 0
         # Replies on the aux interface's vendor instance, apart from CMSIS-DAP's, and the buffers its
@@ -58,12 +60,15 @@ class Usb:
                     self.aux_in_flight = True
                 if accepted:
                     (self.aux_sent if index == self.aux_index else self.sent).append(bytes(uc.mem_read(address, length)))
+                    if index != self.aux_index:
+                        self.sent_on.append(("bulk", self.sent[-1]))
                 result = length if accepted else 0
             elif at == self.cpu0.sym["tud_hid_n_report"]:
                 address, length = uc.reg_read(UC_ARM_REG_R2), uc.reg_read(UC_ARM_REG_R3)
                 self.tx_attempts += 1
                 if self.accept_tx and self.configured:
                     self.sent.append(bytes(uc.mem_read(address, length)))
+                    self.sent_on.append(("HID", self.sent[-1]))
                 result = int(self.accept_tx and self.configured)
             else:
                 return
@@ -138,25 +143,25 @@ def check_transport(c, elf0, elf1, symbols0, symbols1, fields, slots):
     c.check(usb.get("first_live_seq") == 0, "USB configuration did not advance the host generation")
     for _ in range(2):
         c.check(usb.dispatch() == 1, "stale request did not release its queue slot")
-        c.check(usb.get("response_len", 2) == 0, "stale request published a reply")
+        c.check(all(usb.get(f"{ring}_len", 2 * slots) == 0 for ring in ("response", "hid_response")),
+                "stale request published a reply")
     c.check(bytes(usb.cpu1.uc.mem_read(symbols1["DAP_Data"][0], 1)) == b"\x00", "stale Connect executed")
 
-    # Production selection must merge HID and bulk in arrival order.
+    # Production selection must merge HID and bulk in arrival order, each reply in its own ring.
     usb.receive(b"\x02\x01", True)
     usb.receive(b"\x03")
-    for seq, transport in ((0, 1), (1, 0)):
-        out = usb.get("response_tail", 1)
+    for seq, ring in ((0, "hid_response"), (1, "response")):
+        out = usb.get(f"{ring}_tail", 1)
         c.check(usb.dispatch() == 1, "fresh command did not dispatch")
-        c.check(int.from_bytes(usb.cpu0.uc.mem_read(usb.shared[0] + fields["response_seq"] + out * 4, 4), "little") == seq,
+        c.check(usb.get(f"{ring}_tail", 1) == (out + 1) % slots, f"the reply did not go to the {ring} ring")
+        c.check(int.from_bytes(usb.cpu0.uc.mem_read(usb.shared[0] + fields[f"{ring}_seq"] + out * 4, 4), "little") == seq,
                 "HID/bulk arrival order changed")
-        c.check(bytes(usb.cpu0.uc.mem_read(usb.shared[0] + fields["response_transport"] + out, 1)) == bytes([transport]),
-                "reply transport changed")
 
     # A configuration change must release a pending old reply without submitting it to USB.
     usb.call0("tud_mount_cb")
-    for _ in range(2):
-        usb.call0("send_head")
-    c.check(not usb.sent and usb.get("response_head", 1) == usb.get("response_tail", 1),
+    usb.call0("send_head")
+    c.check(not usb.sent and all(usb.get(f"{ring}_head", 1) == usb.get(f"{ring}_tail", 1)
+                                 for ring in ("response", "hid_response")),
             "old replies were submitted or retained after configuration")
     usb.receive(b"\x00\xff")
     usb.dispatch()
@@ -329,6 +334,70 @@ def check_descriptors(c, elf0, elf1, symbols0, symbols1, fields):
     c.note("descriptors: bulk 512 at high speed and 64 at full on both boards; other-speed configurations and the qualifier agree")
 
 
+def check_interfaces_apart(c, elf0, elf1, symbols0, symbols1, fields, slots):
+    """A host that leaves one CMSIS-DAP interface with replies owed must not stop a host on the other.
+    Nothing polls the abandoned IN endpoint again (Linux reads an HID one only while its node is
+    open), so the reply offered there stays in flight for good, with the rest queued behind it."""
+    # Past `slots`, the gone interface's next command waits for reply room that never comes, as a new
+    # host's would if it sent before reading what the last one left.
+    for gone_hid, owed in ((gone_hid, owed) for gone_hid in (True, False) for owed in range(1, slots + 2)):
+        gone, live = ("HID", "bulk") if gone_hid else ("bulk", "HID")
+        ring = "hid_response" if gone_hid else "response"
+        usb = Usb(elf0, elf1, symbols0, symbols1, fields)
+
+        def held():
+            return (usb.get(f"{ring}_tail", 1), usb.get(f"{ring}_seq", 4 * slots),
+                    [transport for transport, _ in usb.sent_on].count(gone))
+
+        for sent in range(owed):
+            if sent == slots:
+                untouched = held()
+            usb.receive(b"\x00\xff", gone_hid)
+            usb.dispatch()
+            usb.call0("send_head")
+        if owed <= slots:
+            untouched = held()
+        expected = bytes([0, 1, slots]) + (b"" if gone_hid else bytes(61))
+        answered = 0
+        for _ in range(2 * slots):
+            before = len(usb.sent_on)
+            usb.receive(b"\x00\xfe", not gone_hid)
+            usb.dispatch()
+            usb.call0("send_head")
+            replies = [reply for transport, reply in usb.sent_on[before:] if transport == live]
+            if replies != [expected]:
+                break
+            answered += 1
+            if gone_hid:
+                usb.call0("tud_vendor_tx_cb", 0, len(expected))
+            else:
+                usb.call0("tud_hid_report_complete_cb", 0, SCRATCH, 64)
+        c.check(answered == 2 * slots, f"{owed} {gone} replies nobody reads stopped {live}: "
+                                       f"{answered} of {2 * slots} commands answered")
+        c.check(held() == untouched, f"{owed} {gone} replies nobody reads: their ring changed once full")
+    c.note("a gone host's unread replies on either CMSIS-DAP interface leave the other answering")
+
+
+def check_completion_chains(c, elf0, elf1, symbols0, symbols1, fields):
+    """A reply's completion sends the next one waiting on its transport, without the loop coming
+    round (src/main.c)."""
+    for hid in (False, True):
+        name = "HID" if hid else "bulk"
+        usb = Usb(elf0, elf1, symbols0, symbols1, fields)
+        for _ in range(2):
+            usb.receive(b"\x00\xfe", hid)
+            usb.dispatch()
+        usb.call0("send_head")
+        c.check([transport for transport, _ in usb.sent_on] == [name], f"{name}: the first reply did not go")
+        if hid:
+            usb.call0("tud_hid_report_complete_cb", 0, SCRATCH, 64)
+        else:
+            usb.call0("tud_vendor_tx_cb", 0, 3)
+        c.check([transport for transport, _ in usb.sent_on] == [name, name],
+                f"{name}: the first reply's completion did not send the next")
+    c.note("a bulk or HID reply's completion sends the next one waiting")
+
+
 def check_unconfigured(c, elf0, elf1, symbols0, symbols1, fields, slots):
     for hid in (False, True):
         usb = Usb(elf0, elf1, symbols0, symbols1, fields)
@@ -341,11 +410,12 @@ def check_unconfigured(c, elf0, elf1, symbols0, symbols1, fields, slots):
         for _ in range(slots * 2):
             usb.call0("send_head")
         name = "HID" if hid else "bulk"
-        c.check(usb.get("response_head", 1) == usb.get("response_tail", 1) and
-                all(usb.cpu0.uc.mem_read(usb.shared[0] + fields["response_len"] + slot * 2, 2) == b"\x00\x00"
+        ring, in_flight = ("hid_response", "hid_reply_in_flight") if hid else ("response", "bulk_reply_in_flight")
+        c.check(usb.get(f"{ring}_head", 1) == usb.get(f"{ring}_tail", 1) and
+                all(usb.cpu0.uc.mem_read(usb.shared[0] + fields[f"{ring}_len"] + slot * 2, 2) == b"\x00\x00"
                     for slot in range(slots)), f"unconfigured {name}: CPU 0 retained completed replies")
         c.check(usb.tx_attempts == 0, f"unconfigured {name}: CPU 0 retried a closed endpoint {usb.tx_attempts} times")
-        c.check(usb.cpu0.uc.mem_read(usb.cpu0.sym["response_in_flight"], 1) == b"\x00",
+        c.check(usb.cpu0.uc.mem_read(usb.cpu0.sym[in_flight], 1) == b"\x00",
                 f"unconfigured {name}: reply ownership stayed busy")
         usb.configured = True
         usb.call0("tud_mount_cb")
@@ -357,12 +427,12 @@ def check_unconfigured(c, elf0, elf1, symbols0, symbols1, fields, slots):
         expected = b"\x00\x02" + (b"\x40\x00" + bytes(60) if hid else b"\x00\x02")
         c.check(usb.sent == [expected], f"unconfigured {name}: new host's first reply changed")
         # A bus reset also abandons accepted IN transfers without a completion callback.
-        abandoned = usb.get("response_head", 1)
+        abandoned = usb.get(f"{ring}_head", 1)
         usb.configured = False
         usb.call0("send_head")
-        c.check(usb.cpu0.uc.mem_read(usb.cpu0.sym["response_in_flight"], 1) == b"\x00" and
-                usb.get("response_head", 1) == (abandoned + 1) % slots and
-                usb.cpu0.uc.mem_read(usb.shared[0] + fields["response_len"] + abandoned * 2, 2) == b"\x00\x00",
+        c.check(usb.cpu0.uc.mem_read(usb.cpu0.sym[in_flight], 1) == b"\x00" and
+                usb.get(f"{ring}_head", 1) == (abandoned + 1) % slots and
+                usb.cpu0.uc.mem_read(usb.shared[0] + fields[f"{ring}_len"] + abandoned * 2, 2) == b"\x00\x00",
                 f"unconfigured {name}: abandoned IN transfer retained its slot")
         usb.configured = True
         usb.call0("tud_mount_cb")

@@ -162,17 +162,17 @@ typedef struct {
 } dap_timing_counters_t;
 #endif
 
-/** Which transport response_transport names. */
-enum {
-    DAP_TRANSPORT_BULK,
-    DAP_TRANSPORT_HID,
-};
-
-/** Three rings of REQUEST_SLOTS, each handed over through its `_len` array (dap_usb_slot_free).
+/** Four rings of REQUEST_SLOTS, each handed over through its `_len` array (dap_usb_slot_free): a
+ *  request ring and a reply ring for each transport.
  *
  * A host keeps at most DAP_PACKET_COUNT commands outstanding, and that is REQUEST_SLOTS. So with
  * a reply slot per command, CPU 1 can run every command it has been sent without waiting for an
  * earlier reply to leave, and a conforming HID host never finds its ring full.
+ *
+ * Each transport has its own reply ring because a reply offered on an IN endpoint waits there until
+ * a host reads it, and a host that has gone never will (Linux polls an HID endpoint only while its
+ * node is open). In a shared ring that reply held the head, and the other interface's replies queued
+ * behind it until no command could run.
  */
 typedef struct {
     // Bulk requests: CPU 0 fills, CPU 1 releases as soon as it has taken the command.
@@ -193,14 +193,19 @@ typedef struct {
     volatile uint8_t hid_request_stage[REQUEST_SLOTS];
     volatile uint8_t hid_request_head;
     volatile uint8_t hid_request_tail;
-    // Replies, in the order CPU 1 ran their commands: CPU 1 fills, CPU 0 releases once USB has sent
-    // the slot. Both transports share the ring and CPU 0 sends from its head only.
+    // Bulk replies, in the order CPU 1 ran their commands: CPU 1 fills, CPU 0 releases once USB has
+    // sent the slot. CPU 0 sends from the head only.
     volatile uint16_t response_len[REQUEST_SLOTS];
     volatile uint32_t response_seq[REQUEST_SLOTS];  // the command's
-    volatile uint8_t response_transport[REQUEST_SLOTS];
     volatile uint8_t response_staged[REQUEST_SLOTS];  // the reply is in dap_stage.response
     volatile uint8_t response_head;
     volatile uint8_t response_tail;
+    // HID replies, the same way. Each is in dap_stage.hid_response, because TinyUSB's HID class sends
+    // a copy from a buffer of its own.
+    volatile uint16_t hid_response_len[REQUEST_SLOTS];
+    volatile uint32_t hid_response_seq[REQUEST_SLOTS];
+    volatile uint8_t hid_response_head;
+    volatile uint8_t hid_response_tail;
 
     /** Whether CPU 0 stages the commands it receives next, set by ID_VENDOR_STAGE. Each command
      *  carries its own flag, so a change takes effect between commands. */
@@ -285,12 +290,14 @@ extern dap_shared_t dap_shared;
  * slots. A buffer comes round again after REQUEST_SLOTS more commands, and CPU 0 cannot receive
  * that many while the command in it runs. HID has its own, a packet long like `request_copy`,
  * because the command layer bounds its reads by the packet size. The reply buffers are the reply
- * slots'.
+ * slots'. HID's hold one report each: every HID command runs in CPU 1's own buffer, a packet long
+ * like `response_copy`, and only its report is copied here, so no reply can run into the next.
  */
 typedef struct {
     DAP_SHARED_ALIGN uint8_t request[DAP_STAGE_REQUESTS][DAP_SHARED_PACKET_SIZE];
     DAP_SHARED_ALIGN uint8_t hid_request[DAP_STAGE_REQUESTS][DAP_SHARED_PACKET_SIZE];
     DAP_SHARED_ALIGN uint8_t response[REQUEST_SLOTS][DAP_SHARED_PACKET_SIZE];
+    DAP_SHARED_ALIGN uint8_t hid_response[REQUEST_SLOTS][DAP_SHARED_HID_REPORT_SIZE];
     /** Verge Aux's one request and its reply (src/aux_slot.h). */
     aux_slot_t aux;
 #ifdef DAP_TIMING_DIAGNOSTICS

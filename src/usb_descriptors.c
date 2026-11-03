@@ -339,10 +339,10 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
             return true;
         }
         if (request->wValue == DAP_SHARED_QUEUE_STATUS) {
-            // Slot count, the heads and tails, CPU 0's reply in flight, both mailbox registers'
-            // low bytes, then each ring's lengths and the replies' transports: what
-            // tools/dap.py core1 --queues prints.
-            static uint8_t queues[11U + 7U * REQUEST_SLOTS];
+            // Slot count, the heads and tails, whether each transport's head reply is in flight, both
+            // mailbox registers' low bytes, then each ring's lengths: what tools/dap.py core1 --queues
+            // prints.
+            static uint8_t queues[14U + 8U * REQUEST_SLOTS];
             uint8_t* out = queues;
             *out++ = REQUEST_SLOTS;
             *out++ = dap_shared.request_head;
@@ -352,17 +352,19 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
             *out++ = dap_shared.hid_request_tail;
             *out++ = dap_shared.response_head;
             *out++ = dap_shared.response_tail;
-            *out++ = usb_transport_reply_in_flight() ? 1U : 0U;
+            *out++ = usb_transport_reply_in_flight(false) ? 1U : 0U;
+            *out++ = dap_shared.hid_response_head;
+            *out++ = dap_shared.hid_response_tail;
+            *out++ = usb_transport_reply_in_flight(true) ? 1U : 0U;
             *out++ = (uint8_t)MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU1].IRQ;
             *out++ = (uint8_t)MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQ;
             for (uint32_t i = 0U; i < REQUEST_SLOTS; i++) {
                 uint16_t const lengths[] = {dap_shared.request_len[i], dap_shared.hid_request_len[i],
-                                            dap_shared.response_len[i]};
-                for (uint32_t j = 0U; j < 3U; j++) {
+                                            dap_shared.response_len[i], dap_shared.hid_response_len[i]};
+                for (uint32_t j = 0U; j < 4U; j++) {
                     *out++ = (uint8_t)lengths[j];
                     *out++ = (uint8_t)(lengths[j] >> 8);
                 }
-                *out++ = dap_shared.response_transport[i];
             }
             return tud_control_xfer(rhport, request, queues, (uint16_t)TU_MIN(sizeof(queues), request->wLength));
         }

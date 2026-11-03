@@ -10,8 +10,14 @@
 #define DAP_CORE_MAILBOX_CPU1 0U
 #define DAP_CORE_MAILBOX_CPU0 1U
 
-static inline bool dap_core_has_work(bool response_free, bool bulk_ready, bool hid_ready) {
-    return response_free && (bulk_ready || hid_ready);
+/** A transport's next command can run once that transport's reply ring has a slot for the reply.
+ *  An older command on the other transport, whose host may have stopped reading, does not hold it. */
+static inline bool dap_core_ready(bool request_waiting, bool reply_free) {
+    return request_waiting && reply_free;
+}
+
+static inline bool dap_core_has_work(bool bulk_ready, bool hid_ready) {
+    return bulk_ready || hid_ready;
 }
 
 /** CPU 1's entry, from core1_start.S once .data and .bss are set up. */

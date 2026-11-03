@@ -848,11 +848,12 @@ def check_hid_padding(c: Checker, elf: str, slots: int) -> None:
     if not c.check("dap_task" in sym, "CPU1 command task missing from HID checks"):
         return
     names = ("hid_request_len", "hid_request_seq", "hid_request_stage", "hid_request_head",
-             "hid_request", "response_tail", "response_len", "response", "response_staged")
+             "hid_request", "hid_response_tail", "hid_response_len")
     fields = shared_offsets(slots, *names, small_enums=short_enums(elf))
-    stage = shared_offsets(slots, "hid_request", "response", "response[1]",
+    stage = shared_offsets(slots, "hid_request", "hid_response", "hid_response[1]",
                            small_enums=short_enums(elf), struct_type="dap_stage_t")
-    stride = stage["response[1]"] - stage["response"]
+    stride = stage["hid_response[1]"] - stage["hid_response"]
+    own, own_size = sym["response_copy"]
     for staged in (False, True):
         probe = machine(elf, sym)
         shared = probe.sym["dap_shared"]
@@ -862,17 +863,18 @@ def check_hid_padding(c: Checker, elf: str, slots: int) -> None:
                                 (b"\x00", b"\xff"), (b"\x00\xff", b"\x00\x02\x40\x00")):
             for slot in range(slots):
                 probe.uc.mem_write(shared + fields["hid_request_head"], bytes([slot]))
-                probe.uc.mem_write(shared + fields["response_tail"], bytes([slot]))
+                probe.uc.mem_write(shared + fields["hid_response_tail"], bytes([slot]))
                 probe.uc.mem_write(shared + fields["hid_request_len"] + slot * 2, u16(len(payload)))
                 probe.uc.mem_write(shared + fields["hid_request_seq"] + slot * 4, u32(1))
                 probe.uc.mem_write(shared + fields["hid_request_stage"] + slot, bytes([slot + 1 if staged else 0]))
-                probe.uc.mem_write(shared + fields["response_len"] + slot * 2, u16(0))
+                probe.uc.mem_write(shared + fields["hid_response_len"] + slot * 2, u16(0))
                 request = staging + stage["hid_request"] + 512 * slot if staged else shared + fields["hid_request"] + 64 * slot
                 probe.uc.mem_write(request, b"\xa5\xff" + b"\xa5" * 62)
                 probe.uc.mem_write(request, payload)
-                response = staging + stage["response"] + stride * slot if staged else shared + fields["response"] + 512 * slot
+                response = staging + stage["hid_response"] + stride * slot
                 if prefix is None:
                     probe.uc.mem_write(response, b"\xa5" * 64)
+                probe.uc.mem_write(own, b"\x5a" * own_size)
                 probe.call("dap_task")
                 c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC, "HID command task did not return")
                 reply = bytes(probe.uc.mem_read(response, 64))
@@ -883,27 +885,31 @@ def check_hid_padding(c: Checker, elf: str, slots: int) -> None:
                     meaningful = len(prefix)
                     c.check(reply[:meaningful] == prefix, "HID payload or packet-size override changed")
                 c.check(reply[meaningful:] == bytes(64 - meaningful), "HID reply leaked its previous tail")
-                c.check(bytes(probe.uc.mem_read(shared + fields["response_len"] + slot * 2, 2)) == u16(64),
+                c.check(bytes(probe.uc.mem_read(shared + fields["hid_response_len"] + slot * 2, 2)) == u16(64),
                         "HID reply did not publish a full report")
-                c.check(bytes(probe.uc.mem_read(shared + fields["response_staged"] + slot, 1)) == bytes([staged]),
-                        "HID reply used the wrong staging mode")
+                c.check(bytes(probe.uc.mem_read(own, 64)) == reply,
+                        "HID reply did not run in CPU 1's own packet-long buffer")
     c.note("HID long/short/malformed Info replies, zero padding and packet size across both staging modes and all slots")
 
 
 def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: bool = False) -> None:
-    from usb_checks import (check_aux, check_aux_stream, check_descriptors, check_full_speed, check_rechirp,
-                            check_transport, check_unconfigured)
-    from usb_idle_checks import check_idle, check_idle_rearm, check_idle_serviced
+    from usb_checks import (check_aux, check_aux_stream, check_completion_chains, check_descriptors, check_full_speed,
+                            check_interfaces_apart, check_rechirp, check_transport, check_unconfigured)
+    from usb_idle_checks import check_idle, check_idle_rearm, check_idle_reply, check_idle_serviced
     from usb_lifecycle import check_sequences
 
     fields = ("transfer_abort", "request", "request_tail", "rx_armed_slot", "next_request_seq", "first_live_seq",
-              "response_len", "response_tail", "response_seq", "response_transport", "response_head", "board", "jumpers", "bulk_packet_size", "energy_range_retry_pending", "energy_range_retry_enabled")
+              "response_len", "response_tail", "response_seq", "response_head", "hid_response_len",
+              "hid_response_tail", "hid_response_seq", "hid_response_head", "board", "jumpers", "bulk_packet_size", "energy_range_retry_pending", "energy_range_retry_enabled")
     offsets = shared_offsets(slots, *fields, small_enums=short_enums(elf0))
     check_idle(c, elf0, symbols_with_size(elf0), code_lab)
     check_idle_rearm(c, elf0, symbols_with_size(elf0), offsets)
+    check_idle_reply(c, elf0, symbols_with_size(elf0), offsets)
     check_idle_serviced(c, elf0, symbols_with_size(elf0))
     check_unconfigured(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_transport(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
+    check_interfaces_apart(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
+    check_completion_chains(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
     check_full_speed(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
     check_descriptors(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
     check_rechirp(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
@@ -1914,7 +1920,7 @@ def check_core1_image(c: Checker, elf: str, core1: str, request_slots: int,
     (stage0, stage_size0), (stage1, stage_size1) = sym0["dap_stage"], sym1["dap_stage"]
     c.check((stage0, stage_size0) == (stage1, stage_size1),
             f"dap_stage is {stage_size0} bytes at {stage0:#x} on CPU 0 and {stage_size1} bytes at {stage1:#x} on CPU 1")
-    stage_fields = ("request", "hid_request", "response", "response[1]")
+    stage_fields = ("request", "hid_request", "response", "response[1]", "hid_response", "hid_response[1]")
     stages = [shared_offsets(request_slots, *stage_fields, small_enums=short_enums(image),
                              struct_type="dap_stage_t", timing_diagnostics=timing_diagnostics)
               for image in (elf, core1)]
@@ -1922,6 +1928,7 @@ def check_core1_image(c: Checker, elf: str, core1: str, request_slots: int,
             "staged buffer layouts differ between cores or from dap_shared.h")
     c.check(stages[0]["response[1]"] - stages[0]["response"] == 512,
             "staged reply slots are not packet-sized")
+    c.check(stages[0]["hid_response[1]"] - stages[0]["hid_response"] == 64, "HID reply rows are not report-sized")
     c.check(stage0 == SRAM3[0] + SRAM3[1] - 8192, "dap_stage does not start in SRAM3's top 8 KiB")
     # The top of SRAM3, where dap_shared.h and BUSES.md put it, past CPU 1's data.
     bss_end = symbols(core1).get("__bss_end__", top)

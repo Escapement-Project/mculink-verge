@@ -54,27 +54,37 @@ then the data. The flags are the lengths, states, counts and sequence numbers be
 
 ## Commands and replies
 
-`dap_shared` holds three rings of `REQUEST_SLOTS` slots each: bulk requests, HID requests and
-replies. A slot is full while its length is non-zero. Whoever fills it writes the length last, and
+`dap_shared` holds four rings of `REQUEST_SLOTS` slots each: a request ring and a reply ring for
+each transport. A slot is full while its length is non-zero. Whoever fills it writes the length last, and
 whoever empties it writes zero once it no longer needs the bytes (`dap_usb_slots.h`).
 
 | ring | fills | empties | indices |
 | --- | --- | --- | --- |
 | bulk requests | CPU 0, in `tud_vendor_rx_cb` | CPU 1, as it takes the command | tail CPU 0's, head CPU 1's |
 | HID requests | CPU 0, in `tud_hid_set_report_cb` | CPU 1, as it takes the command | tail CPU 0's, head CPU 1's |
-| replies | CPU 1, after running the command | CPU 0, once USB has sent it or will not | tail CPU 1's, head CPU 0's |
+| bulk replies | CPU 1, after running the command | CPU 0, once USB has sent it or will not | tail CPU 1's, head CPU 0's |
+| HID replies | CPU 1, after running the command | CPU 0, once USB has sent it or will not | tail CPU 1's, head CPU 0's |
 
 Each index has one writer, and each length one writer per direction: the filler makes it non-zero
 and the emptier makes it zero. So no slot needs a lock.
 
-CPU 0 numbers every command from one count across both transports (`next_request_seq`), and CPU 1
-takes the oldest waiting one (`dap_usb_choose_hid`). Commands run in the order they arrived, and
-CPU 0 sends replies from the head of the one reply ring only, so replies leave in the same order.
+CPU 0 numbers every command from one count across both transports (`next_request_seq`). CPU 1
+takes the oldest waiting command whose transport has a free reply slot (`dap_core_ready`,
+`dap_usb_choose_hid`). Each transport's commands run in the order they arrived. CPU 0 sends each
+transport's replies from the head of its own ring, so they leave in that order too.
+
+Each transport has a reply ring of its own because a reply offered on an IN endpoint waits there
+until a host reads it. A host that has gone never will, and Linux polls an HID endpoint only while
+its device node is open. In a ring both transports shared, such a reply would hold the head. The
+other transport's replies would queue behind it, and once they filled the ring, CPU 1 could take no
+command from either. With a ring each, a gone host's replies hold back only its own interface
+(`check_interfaces_apart` in `tools/usb_checks.py`). The next host on that interface has to read
+them first, as it would with one transport.
 
 The USB controller writes a request straight into its slot. CPU 0 arms EP1 OUT only into a free
 slot. With none free the endpoint stays unarmed, the controller answers NAK, and the host waits.
-CPU 0 starts one reply at a time. Which slot is armed and whether a reply is in flight are CPU 0's
-loop's alone, since TinyUSB's callbacks run in the loop too.
+CPU 0 starts one reply at a time on each transport. Which slot is armed and whether a reply is in
+flight are CPU 0's loop's alone, since TinyUSB's callbacks run in the loop too.
 
 ### Staged copies
 
@@ -103,10 +113,10 @@ is gone by the time it runs.
 ### A new configuration
 
 Each time the host sets a configuration, which follows every bus reset, CPU 0 starts a new
-numbering in `tud_mount_cb`. It sets `first_live_seq` to the next command's number, forgets the
-reply in flight, and raises the abort flag. CPU 1 drops any command numbered before
+numbering in `tud_mount_cb`. It sets `first_live_seq` to the next command's number, forgets each
+transport's reply in flight, and raises the abort flag. CPU 1 drops any command numbered before
 `first_live_seq` unrun, checking that as the last thing before it runs one, so the abort has the
-least room to miss. CPU 0 drops those commands' replies unsent (`send_head`). The same callback
+least room to miss. CPU 0 drops those commands' replies unsent (`send_bulk_head`, `send_hid_head`). The same callback
 sets `bulk_packet_size` for the new speed, before any command of that configuration can arrive.
 
 A bus reset's speed comes from TinyUSB's interrupt: `tud_event_hook_cb` records it in

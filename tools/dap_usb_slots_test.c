@@ -81,7 +81,7 @@ static void test_tx_completion_during_start(void) {
 
 /** CPU 1 fills reply slots at the tail, as core1_main.c does; returns whether it could. */
 static bool core1_publish(volatile uint16_t* response_len, uint8_t* tail, uint16_t length) {
-    if (!dap_core_has_work(dap_usb_slot_free(response_len, *tail), true, false)) {
+    if (!dap_core_has_work(dap_core_ready(true, dap_usb_slot_free(response_len, *tail)), false)) {
         return false;
     }
     response_len[*tail] = length;
@@ -145,6 +145,18 @@ static void test_request_queue_and_transport_order(void) {
     assert(dap_usb_choose_hid(true, UINT32_MAX, true, 0U));
 }
 
+/** A transport whose reply ring is full, its host gone without reading, holds back only its own
+ *  commands: an older HID command waits, and the newer bulk one runs. */
+static void test_full_reply_ring_holds_only_its_transport(void) {
+    bool const hid_ready = dap_core_ready(true, false);
+    bool const bulk_ready = dap_core_ready(true, true);
+    assert(!hid_ready && bulk_ready);
+    assert(dap_core_has_work(bulk_ready, hid_ready));
+    assert(!dap_usb_choose_hid(hid_ready, 4U, bulk_ready, 5U));
+    assert(!dap_core_has_work(dap_core_ready(true, false), dap_core_ready(true, false)));
+    assert(!dap_core_has_work(dap_core_ready(false, true), dap_core_ready(false, true)));
+}
+
 /** A new configuration's numbering, as tud_mount_cb starts it, across the wrap of the counter:
  *  CPU 1 runs only the new host's command, and CPU 0 sends only its reply. */
 static void test_new_configuration_drops_the_last_hosts_work(void) {
@@ -182,10 +194,9 @@ static void test_new_configuration_drops_the_last_hosts_work(void) {
  *  interleaving of those four steps, and whether or not the register was left raised before,
  *  CPU 1 either finds the work or finds the register raised. */
 static void test_mailbox_level_handoff(void) {
-    assert(!dap_core_has_work(false, true, false));
-    assert(!dap_core_has_work(true, false, false));
-    assert(dap_core_has_work(true, true, false));
-    assert(dap_core_has_work(true, false, true));
+    assert(!dap_core_has_work(false, false));
+    assert(dap_core_has_work(true, false));
+    assert(dap_core_has_work(false, true));
 
     for (uint32_t stale = 0U; stale < 2U; stale++) {
         for (uint32_t publish_at = 0U; publish_at < 4U; publish_at++) {
@@ -202,7 +213,7 @@ static void test_mailbox_level_handoff(void) {
                     } else if (cpu1_step++ == 0U) {
                         raised = false;
                     } else {
-                        found = dap_core_has_work(true, published, false);
+                        found = dap_core_has_work(published, false);
                     }
                 }
                 assert(found || raised);
@@ -275,8 +286,10 @@ static void test_shared_state_initialization(void) {
     for (size_t i = 0U; i < REQUEST_SLOTS; i++) {
         assert(dap_usb_slot_free(state.response_len, (uint8_t)i));
         assert(dap_usb_slot_free(state.hid_request_len, (uint8_t)i));
+        assert(dap_usb_slot_free(state.hid_response_len, (uint8_t)i));
     }
     assert(state.response_head == 0U && state.response_tail == 0U);
+    assert(state.hid_response_head == 0U && state.hid_response_tail == 0U);
     assert(state.transfer_abort == nullptr);
     assert(state.stage_commands == 1U);
 }
@@ -316,6 +329,7 @@ int main(void) {
     test_rx_completion_during_arm();
     test_tx_completion_during_start();
     test_cross_core_response_handoff();
+    test_full_reply_ring_holds_only_its_transport();
     test_request_queue_and_transport_order();
     test_new_configuration_drops_the_last_hosts_work();
     test_mailbox_level_handoff();

@@ -149,10 +149,11 @@ class Probe:
         raw = bytes(self.device.ctrl_transfer(0xC0, USB_CORE1_STATUS_REQUEST, 1, 0, 256, timeout=1000))
         slots = raw[0]
         names = ("request_head", "request_tail", "rx_armed_slot", "hid_head", "hid_tail",
-                 "response_head", "response_tail", "reply_in_flight", "mailbox_cpu1", "mailbox_cpu0")
-        state = dict(zip(names, raw[1:11]), slots=slots)
-        per = [struct.unpack_from("<HHHB", raw, 11 + 7 * i) for i in range(slots)]
-        state["request_len"], state["hid_request_len"], state["response_len"], state["response_transport"] = (
+                 "response_head", "response_tail", "reply_in_flight", "hid_response_head", "hid_response_tail",
+                 "hid_reply_in_flight", "mailbox_cpu1", "mailbox_cpu0")
+        state = dict(zip(names, raw[1:14]), slots=slots)
+        per = [struct.unpack_from("<HHHH", raw, 14 + 8 * i) for i in range(slots)]
+        state["request_len"], state["hid_request_len"], state["response_len"], state["hid_response_len"] = (
             [p[k] for p in per] for k in range(4))
         return state
 
@@ -790,8 +791,10 @@ def cmd_core1(args) -> int:
         print(f"  bulk requests: head {q['request_head']} tail {q['request_tail']} armed {q['rx_armed_slot']}, "
               f"lengths {q['request_len']}")
         print(f"  HID requests:  head {q['hid_head']} tail {q['hid_tail']}, lengths {q['hid_request_len']}")
-        print(f"  replies:       head {q['response_head']} tail {q['response_tail']}, lengths {q['response_len']}, "
-              f"transports {q['response_transport']}, head in flight {bool(q['reply_in_flight'])}")
+        print(f"  bulk replies:  head {q['response_head']} tail {q['response_tail']}, lengths {q['response_len']}, "
+              f"head in flight {bool(q['reply_in_flight'])}")
+        print(f"  HID replies:   head {q['hid_response_head']} tail {q['hid_response_tail']}, "
+              f"lengths {q['hid_response_len']}, head in flight {bool(q['hid_reply_in_flight'])}")
         print(f"  mailbox:       CPU 1's register {q['mailbox_cpu1']:#04x}, CPU 0's {q['mailbox_cpu0']:#04x}")
     if args.swo:
         print("  SWO: " + ", ".join(f"{k} {v:#x}" for k, v in probe.swo_status().items()))

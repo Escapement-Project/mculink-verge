@@ -155,6 +155,54 @@ def check_idle_rearm(c, elf, symbols, offsets):
     c.note("CPU 0 idle: a re-arm waiting for the gap keeps the loop awake while the conversion timer runs, not through a hold")
 
 
+def check_idle_reply(c, elf, symbols, offsets):
+    """A reply CPU 1 has published keeps CPU 0's loop from waiting until it is on its way, on either
+    transport: an endpoint that refused it raises no event to retry it (src/main.c, queued_work)."""
+    for ring in (None, "response", "hid_response"):
+        probe = machine(elf, symbols)
+        shared = symbols["dap_shared"][0]
+        for name in ("usb_pending", "active_mode"):
+            if name in probe.sym:
+                probe.uc.mem_write(probe.sym[name], b"\xff")
+        if ring is not None:
+            probe.uc.mem_write(shared + offsets[f"{ring}_len"], (4).to_bytes(2, "little"))
+        state = {"tasks": 0, "waits": 0, "offered": 0}
+        stubbed = {probe.sym[name] for name in ("energy_control_task", "energy_range_retry_task", "dio_edges_task",
+                                               "aux_task", "reboot_poll", "tud_task_event_ready", "vcom_ready",
+                                               "dio_edges_waiting", "aux_has_work", "lab_hammer",
+                                               "tud_vendor_n_mounted") if name in probe.sym}
+        refused = {probe.sym[name] for name in ("tud_vendor_n_write_xfer", "tud_hid_n_report")}
+
+        def hook(uc, at, size, data):
+            result = 0
+            if at == probe.sym["tud_task_ext"]:
+                state["tasks"] += 1
+                if state["tasks"] == 3:
+                    uc.emu_stop()
+            elif at == probe.sym["wait_for_work"]:
+                state["waits"] += 1
+                uc.emu_stop()
+            elif at == probe.sym["tud_mounted"]:
+                result = 1
+            elif at in refused:
+                state["offered"] += 1
+            elif at not in stubbed:
+                return
+            uc.reg_write(UC_ARM_REG_R0, result)
+            uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+
+        probe.uc.reg_write(UC_ARM_REG_BASEPRI, 0)
+        probe.uc.hook_add(UC_HOOK_CODE, hook)
+        probe.uc.ctl_flush_tb()
+        probe.call("serve", timeout_insns=8000)
+        if ring is None:
+            c.check(state["waits"] == 1 and state["offered"] == 0, f"idle with no reply waiting: {state}")
+        else:
+            c.check(state["waits"] == 0 and state["tasks"] == 3 and state["offered"] >= 2,
+                    f"idle with a refused {ring} reply waiting: {state}")
+    c.note("CPU 0 idle: a refused bulk or HID reply keeps the loop offering it; none waiting lets it wait")
+
+
 def check_idle_serviced(c, elf, symbols):
     """A raise the loop has serviced does not keep it from waiting: the pass clears the mailbox, so
     the wait that follows starts with it clear (src/main.c, serve)."""

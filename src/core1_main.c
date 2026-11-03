@@ -95,10 +95,13 @@ COMMAND_PATH static bool dap_task(void) {
     __DMB();
     uint8_t const bulk = dap_shared.request_head;
     uint8_t const hid = dap_shared.hid_request_head;
-    uint8_t const out = dap_shared.response_tail;
-    bool const bulk_ready = !dap_usb_slot_free(dap_shared.request_len, bulk);
-    bool const hid_ready = !dap_usb_slot_free(dap_shared.hid_request_len, hid);
-    if (!dap_core_has_work(dap_usb_slot_free(dap_shared.response_len, out), bulk_ready, hid_ready)) {
+    uint8_t const bulk_out = dap_shared.response_tail;
+    uint8_t const hid_out = dap_shared.hid_response_tail;
+    bool const bulk_ready = dap_core_ready(!dap_usb_slot_free(dap_shared.request_len, bulk),
+                                          dap_usb_slot_free(dap_shared.response_len, bulk_out));
+    bool const hid_ready = dap_core_ready(!dap_usb_slot_free(dap_shared.hid_request_len, hid),
+                                         dap_usb_slot_free(dap_shared.hid_response_len, hid_out));
+    if (!dap_core_has_work(bulk_ready, hid_ready)) {
         return false;
     }
     __DMB();
@@ -110,21 +113,17 @@ COMMAND_PATH static bool dap_task(void) {
     bool const staged = stage != 0U;
     uint16_t const request_length = use_hid ? dap_shared.hid_request_len[hid] : dap_shared.request_len[bulk];
     uint32_t const packet_size = use_hid ? DAP_SHARED_HID_REPORT_SIZE : dap_shared.bulk_packet_size;
+    // An HID reply always runs here, a packet long, and only its report goes out to dap_stage's
+    // report-long rows.
     uint8_t* request = request_buffer;
     uint8_t* response = response_buffer;
     if (staged) {
         request = use_hid ? dap_stage.hid_request[stage - 1U] : dap_stage.request[stage - 1U];
-        response = dap_stage.response[out];
-    } else if (use_hid) {
-#ifdef DAP_TIMING_DIAGNOSTICS
-        uint32_t const copy_start = dap_timing_now();
-#endif
-        memcpy(request_copy, dap_shared.hid_request[hid], dap_shared.hid_request_len[hid]);
-#ifdef DAP_TIMING_DIAGNOSTICS
-        if (request_copy[0] != DAP_TIMING_COMMAND) {
-            dap_stage.timing.request_copy_cycles += dap_timing_now() - copy_start;
+        if (!use_hid) {
+            response = dap_stage.response[bulk_out];
         }
-#endif
+    } else if (use_hid) {
+        memcpy(request_copy, dap_shared.hid_request[hid], dap_shared.hid_request_len[hid]);
     } else {
 #ifdef DAP_TIMING_DIAGNOSTICS
         uint32_t const copy_start = dap_timing_now();
@@ -137,8 +136,9 @@ COMMAND_PATH static bool dap_task(void) {
 #endif
     }
 #ifdef DAP_TIMING_DIAGNOSTICS
-    bool const timing_command = !use_hid && (request[0] == DAP_TIMING_COMMAND);
-    if (!use_hid && !timing_command) {
+    // The counters time the bulk pipeline: HID commands and the command that reads them are left out.
+    bool const timing_command = use_hid || (request[0] == DAP_TIMING_COMMAND);
+    if (!timing_command) {
         dap_stage.timing.wake_to_dispatch_cycles += dap_timing_now() - dap_stage.request_tick[bulk];
     }
 #endif
@@ -185,12 +185,19 @@ COMMAND_PATH static bool dap_task(void) {
     if (use_hid) {
         produced = dap_hid_reply(response, produced);
     }
-    if (produced != 0U) {
+    if ((produced != 0U) && use_hid) {
+        memcpy(dap_stage.hid_response[hid_out], response_copy, produced);
+        dap_shared.hid_response_seq[hid_out] = seq;
+        __DMB();
+        dap_shared.hid_response_len[hid_out] = (uint16_t)produced;
+        dap_shared.hid_response_tail = dap_usb_next_slot(hid_out, REQUEST_SLOTS);
+        wake_core0();
+    } else if (produced != 0U) {
         if (!staged) {
 #ifdef DAP_TIMING_DIAGNOSTICS
             uint32_t const copy_start = timing_command ? 0U : dap_timing_now();
 #endif
-            memcpy(dap_shared.response[out], response_copy, produced);
+            memcpy(dap_shared.response[bulk_out], response_copy, produced);
 #ifdef DAP_TIMING_DIAGNOSTICS
             if (!timing_command) {
                 dap_stage.timing.response_copy_cycles += dap_timing_now() - copy_start;
@@ -200,12 +207,11 @@ COMMAND_PATH static bool dap_task(void) {
 #ifdef DAP_TIMING_DIAGNOSTICS
         uint32_t const publish_start = timing_command ? 0U : dap_timing_now();
 #endif
-        dap_shared.response_staged[out] = staged;
-        dap_shared.response_seq[out] = seq;
-        dap_shared.response_transport[out] = use_hid ? DAP_TRANSPORT_HID : DAP_TRANSPORT_BULK;
+        dap_shared.response_staged[bulk_out] = staged;
+        dap_shared.response_seq[bulk_out] = seq;
         __DMB();
-        dap_shared.response_len[out] = (uint16_t)produced;
-        dap_shared.response_tail = dap_usb_next_slot(out, REQUEST_SLOTS);
+        dap_shared.response_len[bulk_out] = (uint16_t)produced;
+        dap_shared.response_tail = dap_usb_next_slot(bulk_out, REQUEST_SLOTS);
         wake_core0();
 #ifdef DAP_TIMING_DIAGNOSTICS
         if (!timing_command) {

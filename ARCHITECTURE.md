@@ -80,7 +80,7 @@ capture, and the SPI and I2C bridges.
 | The generated wire code | SRAMX, `0x0400_0000` | CPU 1, at run time |
 | TinyUSB's buffers, Verge Aux's included | USB SRAM, its first 4 KiB from `0x4010_0000` | CPU 0, and the USB controller |
 | `dap_shared`: command and reply slots, queues, DMA's channel table, the SWO ring | USB SRAM, from `0x4010_1000` | both cores, the USB controller and DMA |
-| `dap_stage`: staged commands and replies, Verge Aux's slot | SRAM3, the top 8 KiB from `0x2003_E000` | both cores |
+| `dap_stage`: staged commands and replies, the HID replies, Verge Aux's slot | SRAM3, the top 8 KiB from `0x2003_E000` | both cores |
 | Energy stream messages | SRAM4, 16 slots of 512 bytes from `0x2004_0000` | the core that owns the capture state |
 
 Nothing passes between the images by symbol. Each defines `dap_shared` in a section that both
@@ -151,15 +151,15 @@ A CMSIS-DAP v2 command goes like this:
    has to reach the transfer running now, not wait behind it.
 3. Otherwise CPU 0 copies the command into `dap_stage`, gives it the next sequence number and
    publishes its length. It raises CPU 1's mailbox, then arms EP1 OUT into the next free slot.
-4. When a reply slot is free, CPU 1 takes the oldest waiting command from either transport, by
-   sequence number. It releases the request slot at once, so CPU 0 can receive the next command
+4. CPU 1 takes the oldest waiting command, by sequence number, from either transport whose reply
+   ring has a free slot. It releases the request slot at once, so CPU 0 can receive the next command
    while this one runs. A command numbered before the current USB configuration came from a host
    that has gone, and CPU 1 drops it unrun.
 5. CPU 1 runs it. `dap_dispatch.c` sends SWD and JTAG transfers, `DAP_Transfer` and
    `DAP_TransferBlock`, down a short route to the generated code. Everything else goes through
    ARM's `DAP.c`, and vendor ids on to `dap_vendor.c`. The reply goes into `dap_stage`, or, for a
    command CPU 0 did not stage, into CPU 1's own buffer and from there to the reply slot.
-6. CPU 1 publishes the reply in the reply ring and raises CPU 0's mailbox.
+6. CPU 1 publishes the reply in the bulk reply ring and raises CPU 0's mailbox.
 7. CPU 0 copies a staged reply into the slot's USB buffer and starts the IN transfer. It sends one
    reply at a time, from the head of the ring, so replies leave in the order their commands ran.
 
@@ -167,10 +167,15 @@ A CMSIS-DAP v2 command goes like this:
 `DAP_TransferAbort` and pipelines two commands, which is enough to keep the wire busy
 (MEASUREMENTS.md, "The command pipeline over USB").
 
-CMSIS-DAP v1 commands take the same path through a queue of their own, and their replies leave on
-EP3 IN. One difference: TinyUSB re-arms the HID endpoint itself, so a report that finds the queue
-full has nowhere to wait and is dropped. Only a host with more than three reports outstanding hits
-that, since `DAP_Info` told it three.
+CMSIS-DAP v1 commands take the same path through a queue of their own. Two things differ. CPU 1
+runs every HID command's reply in its own buffer, and copies the 64-byte report into the HID reply
+ring in `dap_stage`, from which it leaves on EP3 IN. And TinyUSB re-arms the HID endpoint itself,
+so a report that finds the queue full has nowhere to wait and is dropped. Only a host with more than
+three reports outstanding hits that, since `DAP_Info` told it three.
+
+Each transport has a reply ring of its own because a reply waits on its endpoint until a host reads
+it, and a host that has gone never will. With a ring each, such replies hold back only their own
+interface (CONCURRENCY.md, "Commands and replies").
 
 Each time the host sets a configuration, which follows every bus reset, CPU 0 starts a new
 numbering. CPU 1 drops older commands unrun and CPU 0 drops their replies unsent. CPU 0 also raises

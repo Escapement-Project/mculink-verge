@@ -24,7 +24,7 @@ Source: UM11126 rev 2.8 tables 4, 5 and 6.
 | 2 | 0x2000_0000 SRAM0, 64 KB | CPU 0's data, stack (top 4 KB, see [STACK.md](STACK.md)) and `.ramfunc` (`vcom_task` and the energy integration among them); the consoles' receive rings, send buffers and ring descriptors, and the energy ring, its reload descriptors and its integration state (`energy_integration`), which DMA0 reaches |
 | 3 | 0x2001_0000 SRAM1, 64 KB | CPU 1's full 16 KiB stack in the bottom quarter, followed by its `.ramfunc` (command processing around the generated code, and the sample probe's reads), `.data` and, in a product image, all of its `.bss` and the start of `.cold_bss` |
 | 4 | 0x2002_0000 SRAM2, 64 KB | The rest of CPU 1's `.cold_bss` in a product image. In the ARM reference build, ARM's bit paths in `.ramfunc` and its `.bss`, which on GCC run on into SRAM3. tools/image.py refuses a product image whose RAM code or data, `.cold_bss` aside, reaches SRAM3 |
-| 5 | 0x2003_0000 SRAM3, 64 KB | `dap_stage` in the top 8 KB from 0x2003_E000: packet-sized commands and replies CPU 0 stages for CPU 1, and Verge Aux's request slot. Below it, nothing of a product image's CPU 1. `.cold_bss` (the JTAG generator's two saved builds, 32 KB, touched only on a wire or configuration switch) comes after every other `.bss` and may reach here. GCC's ARM reference build outgrows SRAM2 with `.ramfunc`, so some of ARM's bit paths run from here: a test build |
+| 5 | 0x2003_0000 SRAM3, 64 KB | `dap_stage` in the top 8 KB from 0x2003_E000: packet-sized commands and replies CPU 0 stages for CPU 1, every HID reply, and Verge Aux's request slot. Below it, nothing of a product image's CPU 1. `.cold_bss` (the JTAG generator's two saved builds, 32 KB, touched only on a wire or configuration switch) comes after every other `.bss` and may reach here. GCC's ARM reference build outgrows SRAM2 with `.ramfunc`, so some of ARM's bit paths run from here: a test build |
 | 6 | 0x2004_0000 SRAM4, 16 KB | Stream message storage in the lower 8 KB from 0x2004_0000; upper 8 KB unused |
 | 7 | 0x4000_0000 APB bridge 0 **and** 0x4002_0000 APB bridge 1 | Every APB peripheral, both bridges on one port (below) |
 | 8 | 0x4008_0000 | DMA0 regs, SCTimer, Flexcomm 0 to 4, mailbox, ordinary GPIO |
@@ -45,11 +45,13 @@ contends with any other.
 | CPU 1 | 3 | Shared generator event workspace, 1280 events with JTAG or 256 for SWD only | Builds run serially between timed windows; each schedule is consumed before reuse |
 | CPU 1 | 10 | Secure GPIO (`DBGIF_GPIO`): every SWDIO, SWCLK, TMS, TDI, TDO access | Inside every timed window |
 | CPU 1 | 3, 4, 5 | The `.ramfunc` bit paths of the ARM reference build: ARM's SWD, the JTAG and cJTAG blocks | Inside their timed windows |
-| CPU 1 | 5 | A staged command's request and reply in `dap_stage`: the generated transfers load write data and store read data there | Inside timed windows |
+| CPU 1 | 5 | A staged command's request in `dap_stage`, and a staged bulk command's reply: the generated transfers load write data and store read data there | Inside timed windows |
+| CPU 1 | 3 | Its own `request_copy` and `response_copy`: an unstaged command's request and reply, and every HID command's reply. The generated transfers load write data and store read data there | Inside timed windows |
+| CPU 1 | 5 | Each HID reply's report, from `response_copy` into `dap_stage` | Between timed windows |
 | CPU 1 | 5 | Verge Aux's slot in `dap_stage`: its state before each command, and an aux request and its reply | Between commands |
 | CPU 1 | 7 | CTimer 4's counter, the energy stream's clock: read at each start, resume, hold and release, and to stamp each marker | Energy commands and `0x94`, and around a read-latency measurement, outside its window |
 | CPU 1 | 0, 3, 4, 5 | C code, `.ramfunc`, data and stack between transfers | Between timed windows |
-| CPU 1 | 11 | `dap_shared`: unstaged requests and replies, the queues, the LED inputs | Between timed windows |
+| CPU 1 | 11 | `dap_shared`: unstaged requests and bulk replies, the queues, the LED inputs | Between timed windows |
 | CPU 1 | 11 | `dap_shared`: SWO's ring, its descriptors and channel entry, its segment count, and `swo_lost`, which it clears as the ring starts | SWO commands only |
 | CPU 1 | 10 | ADC0 (target sense, `dap_vendor`, the Pro's energy calibration) and settled energy FIFO results | Own core, never during a window: at boot on the Pro, a host's sense reads, a start that calibrates; FIFO drain at capture pause/stop |
 | CPU 1 | 2 | CPU 0's `energy_integration` in SRAM0: ring reads for latest-pair replies and the unconsumed capture tail; each start's identity, publication sequence, tables, constants, descriptors and position; the running flag; the segment count a capture started at; the energy stream's timeline, and its message indices at a start, pause or stop; a hold's record after each read-latency measurement; a marker's record, and the stream's marking and busy flags, for each `0x94` | Host polls while capture runs; tail drain and capture setup around the quiet handshake; the running flag before each read-latency measurement and around each sense conversion; the DIO edges recorded since the last message, at a pause or stop | Never during a window |
@@ -72,6 +74,7 @@ contends with any other.
 | CPU 0 | 3, 4 or 5 | `DAP_TransferAbort`, one byte in CPU 1's `.bss`, through `dap_shared.transfer_abort` | The moment an abort arrives, so possibly during a window |
 | CPU 0 | 9, 11 | USB device regs and buffers (TinyUSB) | Every USB transfer |
 | CPU 0 | 11 then 5 | Each staged command, from its USB slot into `dap_stage`, and each staged reply back | As each arrives and as each starts to send, so during CPU 1's windows when commands are queued |
+| CPU 0 | 5 then 11 | Each HID reply, from `dap_stage` into TinyUSB's HID buffer | As each starts to send, so during CPU 1's windows when commands are queued |
 | CPU 0 | 11 then 5 | Each Verge Aux request, from its USB buffer into `dap_stage`, and each reply back | On the Pro, as each arrives and as each reply is taken, so during CPU 1's windows |
 | CPU 0, CPU 1 | 6 | Stream message payload slots, 16 × 512 bytes, reserved at 0x2004_0000 in both linkers | The capture owner builds each message before publishing its SRAM0 length/index; CPU0 sends published slots. CPU1 writes only outside timed windows under capture ownership; no DMA uses this bank. |
 | CPU 0 | 6 then 11 | Each energy stream message, from its reserved SRAM4 slots to Verge Aux's USB buffer | While a stream runs, up to about 1,000 times a second |
