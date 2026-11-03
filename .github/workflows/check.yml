@@ -39,6 +39,11 @@ jobs:
       - name: Let git work in a checkout another user owns
         run: git config --global --add safe.directory '*'
 
+      # tools/jtag_transfer_test.py compares its extract with ARM's DAP.c and builds against
+      # CMSIS-DAP's headers.
+      - name: Fetch ARM's CMSIS-DAP
+        run: git -c protocol.version=2 submodule update --init --depth 1 external/CMSIS-DAP
+
       - name: Identify uv script dependency inputs
         id: uv-key
         run: echo "hash=$(python tools/uv_cache_key.py)" >> "$GITHUB_OUTPUT"
