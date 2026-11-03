@@ -233,15 +233,15 @@ COMMAND_PATH static bool dap_task(void) {
 }
 
 /** Every exception CPU 1 takes is a fault: it runs with interrupts off. Record it where CPU 0 can
- *  report it over USB, then stop. `frame` is the stacked exception frame, from core1_start.S. */
-[[noreturn]] __attribute__((used)) void core1_fault(const uint32_t* frame);
-[[noreturn]] __attribute__((used)) void core1_fault(const uint32_t* frame) {
+ *  report it over USB, then stop. core1_start.S passes the stacked LR, return address and XPSR. */
+[[noreturn]] __attribute__((used)) void core1_fault(uint32_t lr, uint32_t pc, uint32_t xpsr);
+[[noreturn]] __attribute__((used)) void core1_fault(uint32_t lr, uint32_t pc, uint32_t xpsr) {
     dap_shared.core1.cfsr = SCB->CFSR;
     dap_shared.core1.hfsr = SCB->HFSR;
     dap_shared.core1.bfar = SCB->BFAR;
-    dap_shared.core1.lr = frame[5];
-    dap_shared.core1.pc = frame[6];
-    dap_shared.core1.xpsr = frame[7];
+    dap_shared.core1.lr = lr;
+    dap_shared.core1.pc = pc;
+    dap_shared.core1.xpsr = xpsr;
     __DMB();
     dap_shared.core1.exception = __get_IPSR();
     for (;;) {

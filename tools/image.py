@@ -907,6 +907,42 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: 
                      stream_layout)
 
 
+def written_before_branch(elf: str, function: str, register: str) -> int | None:
+    """The value `function` moves into a special register with MSR before it first branches, or
+    None if it branches first or loads the value some other way than a literal or immediate."""
+    listing = subprocess.run(["arm-none-eabi-objdump", "-d", "--no-show-raw-insn", elf],
+                             capture_output=True, text=True, check=True).stdout
+    words, body, inside = {}, [], False
+    for line in listing.splitlines():
+        header = re.match(r"^[0-9a-f]+ <(.+)>:$", line)
+        if header:
+            inside = header.group(1) == function
+            continue
+        m = re.match(r"^\s*([0-9a-f]+):\s+(\S+)\s*([^@]*?)\s*(?:@ \(([0-9a-f]+) .*)?$", line)
+        if not m:
+            continue
+        if m.group(2) == ".word":
+            words[int(m.group(1), 16)] = int(m.group(3), 16)
+        elif inside:
+            body.append((m.group(2), [op.strip() for op in m.group(3).split(",")], m.group(4)))
+    held: dict[str, int | None] = {}
+    for mnemonic, operands, literal in body:
+        base = mnemonic.split(".")[0]
+        if base == "msr" and operands[0] == register:
+            return held.get(operands[1])
+        if re.match(r"^(b|bl|blx|bx|cbn?z)$", base) or re.match(r"^b(eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)$", base):
+            return None
+        if base.startswith(("str", "cmp", "cmn", "tst", "teq", "msr", "push", "it", "cps", "dsb", "isb", "dmb")):
+            continue
+        if base == "ldr" and literal is not None:
+            held[operands[0]] = words.get(int(literal, 16))
+        elif base in ("mov", "movs", "movw") and operands[1].startswith("#"):
+            held[operands[0]] = int(operands[1][1:], 0)
+        else:
+            held[operands[0]] = None
+    return None
+
+
 def check_stacks(c: Checker, elf0: str, elf1: str) -> None:
     cpu0, cpu1 = symbols(elf0), symbols(elf1)
     c.check(cpu0["__StackTop"] == 0x20010000 and cpu0["__StackLimit"] == 0x2000f000,
@@ -916,6 +952,19 @@ def check_stacks(c: Checker, elf0: str, elf1: str) -> None:
     c.check(cpu1.get("__core1_stack_bottom") == 0x20010000 and cpu1["__core1_stack_top"] == 0x20014000,
             "CPU1 does not reserve its configured 16 KiB stack")
     c.note("linked stack reservations: CPU0 4 KiB, CPU1 16 KiB, no CPU0 data/heap overlap")
+    # CPU 0's limit comes from NXP's startup file, which a TinyUSB update replaces.
+    limits = ((elf0, "Reset_Handler", "MSPLIM", cpu0["__StackLimit"], "CPU0's reset"),
+              (elf1, "core1_reset", "MSPLIM", cpu1["__core1_stack_bottom"], "CPU1's reset"),
+              # After an overflow MSP sits at the limit, and a push in the handler locks the core up.
+              (elf1, "core1_default_handler", "MSP", cpu1["__core1_stack_top"], "CPU1's fault handler"))
+    found = [(what, register, want, written_before_branch(elf, function, register))
+             for elf, function, register, want, what in limits]
+    for what, register, want, got in found:
+        c.check(got == want, f"{what} does not set {register} to {want:#x} before it branches"
+                             f" ({'nothing found' if got is None else f'sets {got:#x}'})")
+    if all(got == want for _, _, want, got in found):
+        c.note("stack limits: CPU0 and CPU1 set MSPLIM to their stacks' bottoms at reset;"
+               " CPU1's fault handler restarts its stack")
 
 
 def check_identity(c: Checker, elf: str, code_lab: bool) -> None:

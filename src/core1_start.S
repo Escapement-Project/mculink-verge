@@ -30,6 +30,9 @@ core1_reset:
     ldr r0, =core1_vectors
     ldr r1, =0xE000ED08
     str r0, [r1]
+    /* CPU 0's stack lies directly below this one: without a limit an overflow runs into it. */
+    ldr r0, =__core1_stack_bottom
+    msr msplim, r0
 
     /* .data holds the bit paths that run from RAM as well as initialised variables. */
     ldr r0, =__data_load__
@@ -59,7 +62,15 @@ core1_reset:
     .thumb_func
     .align 2
 core1_default_handler:
-    mrs r0, msp
+    /* An overflow leaves MSP at the limit, and one push from here would lock the core up before
+     * anything is recorded. So read the frame, then give core1_fault the whole stack: it never
+     * returns. After an overflow these words are not the frame's, and CFSR.STKOF says so. */
+    mrs r3, msp
+    ldr r0, [r3, #20]
+    ldr r1, [r3, #24]
+    ldr r2, [r3, #28]
+    ldr r3, =__core1_stack_top
+    msr msp, r3
     b core1_fault
 
     .section .note.GNU-stack,"",%progbits

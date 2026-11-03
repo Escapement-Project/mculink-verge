@@ -2,6 +2,13 @@
 
 CPU0 reserves 4 KiB at the top of SRAM0. CPU1 reserves the first 16 KiB of SRAM1 (0x20010000..0x20013fff). The linker defines both
 ranges, and the image checks verify their limits. CPU0's link refuses overlap with data.
+
+CPU1's stack sits directly above CPU0's, so each core sets MSPLIM to its stack's bottom at reset
+and an overflow faults instead of overwriting the memory below. CPU0's limit comes from NXP's
+startup file, and its fault handler spins. CPU1 records the fault for CPU0 to report
+(`tools/dap.py status`, with CFSR.STKOF set), on a fresh stack: after an overflow, MSP sits at
+the limit and any push would lock the core up. The image checks read both reset handlers and
+CPU1's fault handler for these writes.
 Neither core reserves a heap. The gate traps entry to linked allocator functions and checks the
 trap by deliberately calling each one. Serial formatting and all command/error paths exercised
 by the image checks run with that trap active.
