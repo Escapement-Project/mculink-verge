@@ -424,7 +424,7 @@ def check_connect_on_capture_board(c: Checker, elf: str, slots: int) -> None:
     """A host connecting at 25 MHz to a target that answers at 9, which the default latency's build
     reads right. Elsewhere nothing is measured. On a board that can capture, a capture starting
     later rebuilds for its stall a build that does not serve 9, so the connection has to measure.
-    Four-wire connections measure there anyway (tools/jtag_latency_test.c, test_stall_connect)."""
+    JTAG connections measure there anyway (tools/jtag_latency_test.c, test_stall_connect)."""
     if "swd_sweep_last" not in symbols(elf):
         return
     from cycles import ID_SWJ_SEQUENCE, ID_TRANSFER, ID_VENDOR_SWD_GEN, timed_dpidr_target
@@ -1416,7 +1416,7 @@ ISP_CTRL_PIN = 14
 
 
 def check_board(c: Checker, elf: str, request_slots: int) -> None:
-    """Only the plain MCU-Link lets the marker near its pins, and an on-board one keeps two-pin cJTAG
+    """Only the plain MCU-Link lets the marker near its pins, and an on-board one keeps cJTAG
     off (BOARDS.md).
 
     On a Pro the J8 pins are the analog trace input, a level shifter's direction and two SPI lines,
@@ -1457,14 +1457,14 @@ def check_board(c: Checker, elf: str, request_slots: int) -> None:
         if reported != board:
             c.problems.append(f"{name} board: vendor 0x82 reports board {reported}, wanted {board}")
         if bool(flags & 0x11) != two_pin:
-            c.problems.append(f"{name} board: vendor 0x82 flags {flags:#04x} get two-pin cJTAG wrong")
+            c.problems.append(f"{name} board: vendor 0x82 flags {flags:#04x} get cJTAG wrong")
         if (j8[1] == 0) != plain:
             c.problems.append(f"{name} board: vendor 0x84 answered {j8.hex()}")
         if (enter[1] == 0) != two_pin:
             c.problems.append(f"{name} board: vendor 0x83 mode 2 answered {enter.hex()}")
         if bool(driven & 0x0F) != plain:
             c.problems.append(f"{name} board: J8's pins were {'not ' if plain else ''}driven ({driven:#x})")
-    c.note("board: CPU 1 reports each board as CPU 0 read it; J8 on the plain one only, two-pin on the plain one and the Pro, "
+    c.note("board: CPU 1 reports each board as CPU 0 read it; J8 on the plain one only, cJTAG on the plain one and the Pro, "
            "the target's ISP pin released on both")
 
 
@@ -2128,8 +2128,8 @@ def check_pro_leds(c: Checker, elf: str, request_slots: int) -> None:
     """The Pro's six other LEDs (BOARDS.md), and that no other board touches their pins.
 
     FUNC is CTIMER1's match 3 as a PWM, its level written to the shadow register that the timer
-    takes as it wraps. Each wire has to show its own shape: SWD a rising ramp, two-pin a falling one,
-    four-wire a triangle, all at one rate and in steps too small to see. The others are switched
+    takes as it wraps. Each wire has to show its own shape: SWD a rising ramp, cJTAG a falling one,
+    JTAG a triangle, all at one rate and in steps too small to see. The others are switched
     GPIO, lit by a low pin.
     """
     plain = LedTick(elf, request_slots)
@@ -2177,7 +2177,7 @@ def check_pro_leds(c: Checker, elf: str, request_slots: int) -> None:
         led.ticks(0)
         shapes[wire] = led.run(ticks, func)
     c.check(max(shapes[LED_WIRE_NONE]) == 0, "FUNC is not dark with no port connected")
-    for wire, name, jump in ((LED_WIRE_SWD, "SWD", -1), (LED_WIRE_CJTAG, "two-pin", 1)):
+    for wire, name, jump in ((LED_WIRE_SWD, "SWD", -1), (LED_WIRE_CJTAG, "cJTAG", 1)):
         levels = shapes[wire]
         steps = [b - a for a, b in zip(levels, levels[1:])]
         wraps = [i for i, s in enumerate(steps) if s * jump > 50]
@@ -2197,7 +2197,7 @@ def check_pro_leds(c: Checker, elf: str, request_slots: int) -> None:
     halves = [(b - a) * led.tick_ms for a, b in zip(ends, ends[1:])]
     c.check(largest_step(jtag) <= LED_SMOOTH_LSTAR and min(jtag) <= 1 and max(jtag) >= 99
             and len(halves) >= 2 and all(LED_RAMP_MS[0] <= h <= LED_RAMP_MS[1] for h in halves),
-            f"FUNC for four-wire JTAG is not a triangle of {LED_RAMP_MS[0]} to {LED_RAMP_MS[1]} ms a side: "
+            f"FUNC for JTAG is not a triangle of {LED_RAMP_MS[0]} to {LED_RAMP_MS[1]} ms a side: "
             f"it reaches an end at ticks {ends[:6]}, in steps up to {largest_step(jtag):.1f}")
     led.write("jumpers", 2)
     c.check(all(v >= 100 for v in led.run(500, func)), "FUNC is not solid with the SWD jumper fitted")
@@ -2251,7 +2251,7 @@ def check_pro_leds(c: Checker, elf: str, request_slots: int) -> None:
         led.write("led_sio", driving)
         sio.append(all(led.run(5, pin_lit(PRO_LED_SIO))))
     c.check(sio == [False, True, False], f"the SIO LED is not lit exactly while the host drives a DIO pin: {sio}")
-    c.note(f"Pro LEDs: FUNC ramps in {512 * led.tick_ms:.0f} ms (SWD up, two-pin down, four-wire both), solid "
+    c.note(f"Pro LEDs: FUNC ramps in {512 * led.tick_ms:.0f} ms (SWD up, cJTAG down, JTAG both), solid "
            f"with the SWD jumper, dark with no port; SWO and VCOM flicker, USB lit while configured")
 
 

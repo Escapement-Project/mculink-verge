@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
 # ///
-"""Build the SWD and two-pin generators away from the firmware and check that every build agrees.
+"""Build the SWD and cJTAG generators away from the firmware and check that every build agrees.
 
 The generators are ordinary C whose output is code, so a compiler that miscompiles one, or
 undefined behaviour that one compiler exploits and another does not, changes the wire without

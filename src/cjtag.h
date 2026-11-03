@@ -1,7 +1,7 @@
-/** IEEE 1149.7 two-pin (cJTAG) support, OScan1, OScan2, OScan5 and OScan6 formats.
+/** IEEE 1149.7 (cJTAG) support, OScan1, OScan2, OScan5 and OScan6 formats.
  *
- * Enabled by a vendor command, because a probe cannot tell from the wire whether a target is
- * four-pin or two-pin. The host drives the target's activation, then turns framing on.
+ * Enabled by a vendor command, because a probe cannot tell from the wire whether a target
+ * speaks JTAG or cJTAG. The host drives the target's activation, then turns framing on.
  */
 #ifndef CJTAG_H
 #define CJTAG_H
@@ -46,10 +46,10 @@ enum cjtag_tap {
     CJTAG_TAP_STATES
 };
 
-/** Whether the TAP is being driven over two pins rather than four-wire JTAG. */
+/** Whether the TAP is being driven over cJTAG rather than JTAG. */
 bool cJTAG_Active(void);
 
-/** The scan format two-pin frames take, CJTAG_OSCAN1, _OSCAN2, _OSCAN5 or _OSCAN6. */
+/** The scan format cJTAG frames take, CJTAG_OSCAN1, _OSCAN2, _OSCAN5 or _OSCAN6. */
 uint32_t cJTAG_Format(void);
 
 /** OScan2's, OScan5's and OScan6's frames depend on the TAP state the frame is clocked in, so the probe
@@ -68,7 +68,7 @@ bool cJTAG_TapEntered(void);
 /** Whether the tracked TAP is in Shift-DR or Shift-IR, which decides the next frame's shape. */
 bool cJTAG_TapShift(void);
 
-/** Mark the TAP as two-pin in `format` without driving any activation, for a host that has driven
+/** Mark the TAP as cJTAG in `format` without driving any activation, for a host that has driven
  * its own and left the TAP in `tap`, which OScan2, OScan5 and OScan6 need.
  *
  * Lowers the clock and takes the wire at the level it already holds, which is the state every
@@ -77,9 +77,9 @@ bool cJTAG_TapShift(void);
  */
 bool cJTAG_Enter(uint32_t format, uint32_t tap);
 
-/** Return to four-wire JTAG.
+/** Return to JTAG.
  *
- * The target stays in its two-pin format; this only stops the probe framing for it. Getting the
+ * The target stays in its cJTAG format; this only stops the probe framing for it. Getting the
  * target back is a power-on reset, so this exists for the host to undo its own mode switch, not to
  * undo the target's. In OScan2 and OScan6 one more frame goes out first, where it cannot move the TAP: the
  * last frame outside Shift advances the target's TAP only at the next TCKC period (1149.7

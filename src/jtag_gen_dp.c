@@ -5,7 +5,7 @@
  * From CMSIS-DAP, JTAG_DP.c and DAP.c's JTAG commands. Changed by the Escapement Project: driven
  * over generated clocks, blocks taken whole.
  */
-/** ARM's JTAG entry points over the generated clocks, four-wire or two-pin.
+/** ARM's JTAG entry points over the generated clocks, JTAG or cJTAG.
  *
  * src/jtag_gen.c generates one function for the wire in use: up to 32 JTAG clocks with TMS held.
  * Everything ARM's JTAG_DP.c does is a run of those, so each entry point here is ARM's clocks, TMS
@@ -27,15 +27,15 @@
 
 static_assert(DAP_JTAG_DEV_CNT + 4U <= JTAG_GEN_FRAMES_MAX, "JTAG transfer header exceeds frame capacity");
 
-/** ARM's TDI pin on two pins, where no pin holds it: the level a frame carries when nothing sets
- * it. On four wires the pin itself is the state, as it is for ARM. */
+/** ARM's TDI pin with cJTAG, where no pin holds it: the level a frame carries when nothing sets
+ * it. With JTAG the pin itself is the state, as it is for ARM. */
 static uint32_t tdi_level;
 
 static uint32_t tdi_now(void) { return cJTAG_Active() ? tdi_level : PIN_TDI_IN(); }
 
 static uint32_t held(void) { return tdi_now() != 0U ? 0xFFFFFFFFU : 0U; }
 
-/** ARM's PIN_TDI_OUT between clocks: on four wires the pin moves now, as ARM's does. */
+/** ARM's PIN_TDI_OUT between clocks: with JTAG the pin moves now, as ARM's does. */
 static void set_tdi(uint32_t level) {
     tdi_level = level;
     if (!cJTAG_Active()) {

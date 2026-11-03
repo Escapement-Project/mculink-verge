@@ -1,11 +1,11 @@
 # MCU-Link cJTAG firmware — design and references
 
-What this firmware is for, how its two-pin support fits into ARM's code, what is known about the
+What this firmware is for, how its cJTAG support fits into ARM's code, what is known about the
 board, and the projects it draws on.
 
 ## Why this exists
 
-probe-rs cannot talk to a two-pin IEEE 1149.7 (cJTAG) target through a CMSIS-DAP probe, and the
+probe-rs cannot talk to an IEEE 1149.7 (cJTAG) target through a CMSIS-DAP probe, and the
 reason is in the probe's firmware rather than in the host.
 
 ARM's reference SWD bit path moves SWDIO while SWCLK is high:
@@ -42,8 +42,8 @@ In the ARM reference build, ARM's `JTAG_DP.c` is compiled **three times**, and t
 the only thing that differs:
 
 - normally, with its five entry points renamed `jtag4_*`;
-- again through `src/cjtag_jtag_dp.c`, renamed `cjtag_*`, with the pin layer shadowed so each
-  four-wire clock becomes one OScan1 frame;
+- again through `src/cjtag_jtag_dp.c`, renamed `cjtag_*`, with the pin layer shadowed so each JTAG
+  clock becomes one OScan1 frame;
 - and once more through `src/cjtag_jtag_dp_fast.c`, renamed `cjtagf_*`, which drives the frame
   without its pacing loop for requests above the switch point.
 
@@ -57,7 +57,7 @@ expand, in order, to `PIN_TDI_OUT` (sometimes), `PIN_TCK_CLR`, `PIN_DELAY`, `PIN
 `PIN_TCK_CLR`, and emits it at whichever of `PIN_TDO_IN` or `PIN_TCK_SET` comes first. The
 submodule is pinned to a release, so the order cannot change without someone bumping the tag.
 
-**Where a frame rests, and why it is not where ARM's four-wire code rests.** A frame is entered and
+**Where a frame rests, and why it is not where ARM's JTAG code rests.** A frame is entered and
 left with TCKC low and the wire driven. That is deliberate and it is the second half of the fix.
 Taking the wire back after the TDO packet moves TMSC from whatever the target drove to whatever our
 output latch holds; doing it while TCKC was still high put one escape edge in every frame, which is
@@ -81,7 +81,7 @@ on their files, because `DAP.c` leaves a variable unused when SWO is configured 
 example flags are `-Werror`. No patches to upstream source.
 
 The code that is ours is board and protocol specific: the pin layer, the bit paths and the
-generators that write them at run time, the two-pin framing, the USB descriptors, and the command
+generators that write them at run time, the cJTAG framing, the USB descriptors, and the command
 path between the two cores.
 
 The MS OS 2.0 descriptor set is **built at boot rather than hand-written**: it has nested length

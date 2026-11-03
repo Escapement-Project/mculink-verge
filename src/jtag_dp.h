@@ -13,7 +13,7 @@
 
 #include <stdint.h>
 
-/** ARM's DAP_JTAG_TransferBlock with the transfer inlined; four-wire only. */
+/** ARM's DAP_JTAG_TransferBlock with the transfer inlined; JTAG only. */
 uint32_t JTAG_TransferBlock(const uint8_t* request, uint8_t* response);
 uint32_t JTAG_TransferCommand(const uint8_t* request, uint8_t* response);
 
@@ -46,7 +46,7 @@ void cjtagt_WriteAbort(uint32_t data);
 uint8_t cjtagt_Transfer(uint32_t request, uint32_t* data);
 uint32_t cjtagt_TransferBlock(const uint8_t* request, uint8_t* response);
 
-// Two-pin over the generated frames, src/jtag_gen_dp.c, when JTAG_CODEGEN is on.
+// cJTAG over the generated frames, src/jtag_gen_dp.c, when JTAG_CODEGEN is on.
 void jgen_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo);
 void jgen_IR(uint32_t ir);
 uint32_t jgen_ReadIDCode(void);

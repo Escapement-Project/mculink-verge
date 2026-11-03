@@ -1,4 +1,4 @@
-/** The four-wire and two-pin read latency, measured on the wire. See jtag_sweep.h and latency.h. */
+/** The JTAG and cJTAG read latency, measured on the wire. See jtag_sweep.h and latency.h. */
 #include "jtag_sweep.h"
 
 #include "DAP_config.h"
@@ -13,7 +13,7 @@
 /** IDCODE reads at each candidate, as SWD reads DPIDR. */
 #define SWEEP_READS 64U
 
-/** Cycles past the measured latency that two-pin builds sample. The measurement finds the first
+/** Cycles past the measured latency that cJTAG builds sample. The measurement finds the first
  *  cycle on which every IDCODE read agrees, which leaves transfers no margin: on the Pro's CC1312
  *  about one 256 KiB OScan5 or OScan6 read in three failed on an acknowledge above 20 MHz at the
  *  measured latency, and none one cycle later. */

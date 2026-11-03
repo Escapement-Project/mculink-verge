@@ -3,11 +3,11 @@
  * The alternative was reimplementing the five entry points. That would duplicate the TAP walking,
  * the ir_before/ir_length accounting and the transfer retry logic -- about 250 lines whose only
  * job is to be identical to ARM's, and which would drift from it silently. Only the wire framing
- * differs between two-pin and four-pin, so only the wire framing is replaced here.
+ * differs between JTAG and cJTAG, so only the wire framing is replaced here.
  *
  * **The contract this rests on.** JTAG_DP.c expresses every clock through four macros that expand,
  * in this order, to: PIN_TDI_OUT (sometimes), PIN_TCK_CLR, PIN_DELAY, PIN_TDO_IN (sometimes),
- * PIN_TCK_SET, PIN_DELAY. Shadowing those names turns a four-wire clock into one OScan1 frame:
+ * PIN_TCK_SET, PIN_DELAY. Shadowing those names turns a JTAG clock into one OScan1 frame:
  * the pin calls stage TMS and TDI, PIN_TCK_CLR opens a frame, and whichever of PIN_TDO_IN or
  * PIN_TCK_SET comes first emits it. The submodule is pinned at a release, so that order cannot
  * change without someone bumping the tag and reading this.
@@ -77,7 +77,7 @@ static inline uint32_t cjtag_capture(void) {
 #define PIN_SWCLK_TCK_SET() cjtag_emit()
 
 // The frame does its own pacing, so the delays JTAG_DP.c wraps around these no-op clock calls are
-// dead time: eight per frame where six are wanted. Suppressing them is worth 20% of a two-pin bit
+// dead time: eight per frame where six are wanted. Suppressing them is worth 20% of a cJTAG bit
 // at a paced clock, and nothing at all on the delay-free path, where they are already empty.
 #undef PIN_DELAY_SLOW
 #undef PIN_DELAY_FAST
@@ -86,7 +86,7 @@ static inline uint32_t cjtag_capture(void) {
 
 #include "JTAG_DP.c"
 
-// The same block loop the four-wire path uses, expanded next to this copy's transfer so the
+// The same block loop the JTAG path uses, expanded next to this copy's transfer so the
 // registers and the GPIO addresses are paid for once a block rather than once a word. `flatten`
 // is what makes that actually happen here: this copy's transfer is large enough that the compiler
 // declines to inline it, and the block loop ends up calling it once a word. It costs flash, and

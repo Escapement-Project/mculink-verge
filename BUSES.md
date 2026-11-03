@@ -2,7 +2,7 @@
 
 The LPC55S69's AHB matrix arbitrates per slave port: two masters that reach the same port in the
 same cycle take turns, and the loser stalls. Code that times the wire by counting cycles (the SWD,
-JTAG and two-pin paths, generated or not) is only exact while nothing else is on the ports it
+JTAG and cJTAG paths, generated or not) is only exact while nothing else is on the ports it
 uses. Twice already the other core broke that: CPU 0 polling the ordinary GPIO on port 8 misread
 bits at 50 MHz, and its LED tick on CTimer 3 (port 7) moved the stop of the reads clocked from
 CTimer 0 by a cycle about once in 10,000 transfers. Those timer-clocked reads reached 50 MHz and
@@ -44,7 +44,7 @@ contends with any other.
 | CPU 1 | 1 | Generated code fetch | Every generated transfer |
 | CPU 1 | 3 | Shared generator event workspace, 1280 events with JTAG or 256 for SWD only | Builds run serially between timed windows; each schedule is consumed before reuse |
 | CPU 1 | 10 | Secure GPIO (`DBGIF_GPIO`): every SWDIO, SWCLK, TMS, TDI, TDO access | Inside every timed window |
-| CPU 1 | 3, 4, 5 | The `.ramfunc` bit paths of the ARM reference build: ARM's SWD, the JTAG and two-pin blocks | Inside their timed windows |
+| CPU 1 | 3, 4, 5 | The `.ramfunc` bit paths of the ARM reference build: ARM's SWD, the JTAG and cJTAG blocks | Inside their timed windows |
 | CPU 1 | 5 | A staged command's request and reply in `dap_stage`: the generated transfers load write data and store read data there | Inside timed windows |
 | CPU 1 | 5 | Verge Aux's slot in `dap_stage`: its state before each command, and an aux request and its reply | Between commands |
 | CPU 1 | 7 | CTimer 4's counter, the energy stream's clock: read at each start, resume, hold and release, and to stamp each marker | Energy commands and `0x94`, and around a read-latency measurement, outside its window |
@@ -107,10 +107,10 @@ for the whole update before using the DMA position. Pause drains the settled rin
   read of ADC0 already under way holds a secure GPIO access up to 2 cycles. A held store holds
   every edge after it, which only stretches a phase. A held sample placed after the next rising
   edge reads the next bit: SWD reads at P = 4 failed about once in 100 transfers at 100k pairs/s,
-  scaling with DMA0's reads, and four-wire JTAG reads a target that answers 10 to 13 cycles after
-  a fall failed in the emulator. With capture asked for, the generated SWD and four-wire paths keep
+  scaling with DMA0's reads, and JTAG reads a target that answers 10 to 13 cycles after
+  a fall failed in the emulator. With capture asked for, the generated SWD and JTAG paths keep
   2 cycles at the late end of such a sample's window, and their clocks lengthen where that leaves
-  no room (`gen_stall`, CODEGEN.md); two-pin samples come before that edge. Holding the
+  no room (`gen_stall`, CODEGEN.md); cJTAG samples come before that edge. Holding the
   conversion trigger for a measurement (`energy_monitor_hold`) stops the ADC reads, the ring
   writes and CPU 0's segment interrupts together, so latency measurements run without the stall.
   Capture is disabled by default.

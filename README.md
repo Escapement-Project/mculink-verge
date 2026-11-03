@@ -1,8 +1,7 @@
 # mculink-verge
 
-Open CMSIS-DAP firmware for the NXP MCU-Link and MCU-Link Pro. It supports SWD, four-wire JTAG
-and IEEE 1149.7 two-pin cJTAG in OScan1, OScan2, OScan5 and OScan6 formats. Stock firmware does
-not support cJTAG.
+Open CMSIS-DAP firmware for the NXP MCU-Link and MCU-Link Pro. It supports SWD, JTAG and IEEE 1149.7
+cJTAG in OScan1, OScan2, OScan5 and OScan6 formats. Stock firmware does not support cJTAG.
 
 It runs on the standalone boards, not on MCU-Links built into evaluation boards. Both provide SWO
 capture and one USB serial port. The Pro adds a second serial port, four GPIO pins, SPI and I2C
@@ -21,8 +20,8 @@ record the builds and methods.
 | --- | --- | --- | --- | --- |
 | SWD writes | 50 MHz | Bench, 2026-10-20 | Nothing | 10.7 MHz |
 | SWD reads | 37.5 MHz | Bench, 2026-10-20 | The Pro's energy capture: 30 MHz while it runs (bench, 2026-10-29) | 9.6 MHz |
-| JTAG, four wires (reads and writes) | 30 MHz | Bench and firmware timing report | The target's TDO delay; the Pro's energy capture (emulator, 2026-10-29) | Not measured yet |
-| cJTAG, two pins (reads and writes) | 50 MHz per wire packet; per JTAG clock in Shift, 7.9 MHz in OScan1 and OScan2, 9.4 MHz in OScan5 and OScan6 | Firmware timing report; target-dependent | The target's TDO delay | Not supported |
+| JTAG (reads and writes) | 30 MHz | Bench and firmware timing report | The target's TDO delay; the Pro's energy capture (emulator, 2026-10-29) | Not measured yet |
+| cJTAG (reads and writes) | 50 MHz per wire packet; per JTAG clock in Shift, 7.9 MHz in OScan1 and OScan2, 9.4 MHz in OScan5 and OScan6 | Firmware timing report; target-dependent | The target's TDO delay | Not supported |
 | Console (VCOM) | 19.2 Mbaud | Bench loopback | Nothing | 3 Mbaud or more; its limit not measured yet |
 | SWO | 30 Mbaud, UART encoding only | Bench capture | Nothing | Not measured yet |
 | USB | High speed, 512-byte packets, 3 commands held | Firmware report | The host's port: 64-byte packets on a full-speed one (bench, 2026-11-03) | 512-byte packets, 8 commands reported |
@@ -38,14 +37,14 @@ run.
   not slow either. On the Pro, energy capture slows reads. While it runs, a read clock takes at
   least 5 cycles (30 MHz), or 6 for some reply delays. The capture's DMA can delay the probe's
   read of SWDIO by two cycles, and a 4-cycle clock leaves no room for that.
-- **JTAG, four wires.** The probe has to sample TDO after the target drives it, so a slow target
+- **JTAG.** The probe has to sample TDO after the target drives it, so a slow target
   lengthens the clock. The probe measures that delay when a host connects. Up to 8 core cycles
   (53 ns) the clock runs at 30 MHz, at 9 or 10 cycles at 25 MHz, and past that each cycle of delay
   adds one to the clock: 18.75 MHz at 12, 12.5 at 16. A CC1312R1 measures 7 after a pin reset
   and 11 after a system reset. On the Pro, energy capture can make these clocks up to two cycles
   longer while it runs, because its DMA can delay the probe's read of TDO by two cycles. Scans run
   at 25 MHz at 6 or 7 cycles of delay, 21.4 MHz at 8 and 18.75 MHz at 9 or 10.
-- **cJTAG, two pins.** The wire carries packets at up to 50 MHz, and three packets make one JTAG
+- **cJTAG.** The wire carries packets at up to 50 MHz, and three packets make one JTAG
   clock. The probe samples TDO a cycle past the delay it measures, and each cycle adds one to the
   frame. A CC1312R1 measures 8 in OScan1, so that frame takes 19 core cycles, or 7.9 MHz (the
   generator's frame lengths, 2026-10-26). In OScan2, a clock outside Shift-DR and Shift-IR is a
@@ -85,8 +84,8 @@ so whoever runs the probe decides whether to use them.
 | SWO | The UART's clock divider is specified to 100 MHz (UM11126, 4.5.49) | Above 20.1 Mbaud, where nothing inside the divider's limit comes within 0.5% of the rate: 21.4, 24, 25 and 30 Mbaud ran clean with it at 107 to 150 MHz |
 
 SWD rates come from wire captures in mculink-bench's `results/wireclock/2026-10-21.md`. JTAG and
-cJTAG rates come from the firmware's timing report (vendor 0x8A, run in the emulator); four-wire
-JTAG at 30 MHz was also measured on hardware (CJTAGGEN.md). Console loopbacks and SWO captures are
+cJTAG rates come from the firmware's timing report (vendor 0x8A, run in the emulator); JTAG at
+30 MHz was also measured on hardware (CJTAGGEN.md). Console loopbacks and SWO captures are
 recorded in MEASUREMENTS.md. Stock SWD captures are in mculink-stock-notes' `wire.md` and
 mculink-bench's `results/wireclock/2026-10-21.md`. Other stock figures are in MEASUREMENTS.md under
 "The console" and in mculink-bench's `results/throughput/2026-10-21-stock.json`.
@@ -144,7 +143,7 @@ The wire gate requires six things of a build:
 - block replies carry the requested word count, at one word, a full packet and intermediate sizes;
 - the wire event stream matches `tools/baseline/` at both clock paths;
 - line-reset and TAP sequence commands preserve their wire events;
-- the two-pin path emits no unintended transition while the clock is high, which IEEE 1149.7
+- the cJTAG path emits no unintended transition while the clock is high, which IEEE 1149.7
   interprets as an escape;
 - no wire clocks faster than requested, beyond what
   `tools/baseline/known-overshoot.txt` already records.
@@ -163,16 +162,15 @@ done; done
 
 The transfer paths are generated at runtime, and a product image carries no other transfer path.
 `-DSWD_CODEGEN=OFF -DJTAG_CODEGEN=OFF` builds ARM's paths alone, the reference the generated ones
-are held to, marked `+armwire`; CMake refuses one option off without the other. The check holds
-that build to `tools/baseline-armwire/` instead. It
-finds ARM's paths clocking SWD and both JTAG wires faster than requested at 10 and 20 MHz, and
-four-wire JTAG at 50 MHz too. That directory's `known-overshoot.txt` records them. ARM's code
-computes one delay for every wire from a cost model of an SWD bit. A four-wire JTAG clock makes
-one store fewer and runs fast, most of all at 50 MHz, and SWD and the two-pin frame land within
-a cycle of the request.
+are held to, marked `+armwire`; CMake refuses one option off without the other. The check holds that
+build to `tools/baseline-armwire/` instead. It finds ARM's paths clocking SWD, JTAG and cJTAG faster
+than requested at 10 and 20 MHz, and JTAG at 50 MHz too. That directory's `known-overshoot.txt`
+records them. ARM's code computes one delay for every wire from a cost model of an SWD bit. A JTAG
+clock makes one store fewer and runs fast, most of all at 50 MHz, and SWD and the cJTAG frame land
+within a cycle of the request.
 
 Use `tools/equiv.py` to compare a replacement implementation with a reference build. It drives two
-builds over 536 SWD block cases, 188 four-wire JTAG cases, 128 two-pin cases in each format and, with
+builds over 536 SWD block cases, 188 JTAG cases, 128 cJTAG cases in each format and, with
 `--command transfer`, 360 single-register cases. They cover every target acknowledgement, every
 turnaround length and chain layout, with and without the data phase and idle cycles, all sixteen
 address patterns, block sizes from one word to a full packet, and the match values, match masks and
@@ -283,7 +281,7 @@ NXP's SDK drivers (BSD-3-Clause) and newlib-nano: `THIRD-PARTY-NOTICES.md` has t
 
 ## Where to read next
 
-- `DESIGN.md`: design rationale, two-pin support in ARM's code, and the board.
+- `DESIGN.md`: design rationale, cJTAG support in ARM's code, and the board.
 - `BENCH.md`: reading the target's supply, bench hazards, the marker header and failure modes.
 - `MEASUREMENTS.md`: what the bench measured, newest first.
 - [mculink-bench](https://github.com/Escapement-Project/mculink-bench) and

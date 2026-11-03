@@ -1,9 +1,9 @@
-# Generating the JTAG and two-pin paths at runtime
+# Generating the JTAG and cJTAG paths at runtime
 
-The two-pin (IEEE 1149.7) wire as a CC1312R1 needs it, and how the JTAG generator drives it. Read
+The cJTAG (IEEE 1149.7) wire as a CC1312R1 needs it, and how the JTAG generator drives it. Read
 CODEGEN.md first: the SWD generator is the template, and its timing model, scheduler, register
 conventions and SRAMX placement carry over unchanged. This file holds what differs for JTAG, and
-the wire facts the two-pin generator has to respect.
+the wire facts the cJTAG generator has to respect.
 
 ## The wire, as measured on a CC1312R1 (2026-10-16/17)
 
@@ -13,7 +13,7 @@ the wire facts the two-pin generator has to respect.
 - **TDO packet** (measured 2026-10-17): release TMSC (TXEN, then
   the pin) right after the falling edge that starts packet 3. **TDO is valid from 8 cycles
   (53 ns) after that fall**, the same at every period 10-30: a fixed latency,
-  the two-pin counterpart of SWD's A = 7. It stays valid through the rise and at least 7 cycles
+  the cJTAG counterpart of SWD's A = 7. It stays valid through the rise and at least 7 cycles
   past the next fall (driven or merely held; digital sampling cannot tell). Take the wire back
   (pin direction, then TXEN, two stores) after that next fall, then store packet 1's data.
 - **Probe-driven packets**: a 1-cycle (6.7 ns) high phase is accepted. The low phase is set by
@@ -99,14 +99,14 @@ frames. So probe-rs can attach without nRESET.
 ## Detach
 
 To leave the part as a pin reset would (JTAG domain off, its ~400 uA gone, halt-in-boot cleared;
-TRM 6.4, 6.6): clear KeepPoweredinTLR, or never set it in two-pin mode; walk Run-Test/Idle to
+TRM 6.4, 6.6): clear KeepPoweredinTLR, or never set it in cJTAG; walk Run-Test/Idle to
 Test-Logic-Reset with exactly three framed TMS-high clocks; send no TCKC edge after that. probe-rs's
-`icepick.rs` sets KeepPoweredinTLR, so a four-wire session that ends in Test-Logic-Reset leaves the
-domain on and halt-in-boot armed (inferred from the TRM, not measured on four-wire).
+`icepick.rs` sets KeepPoweredinTLR, so a JTAG session that ends in Test-Logic-Reset leaves the
+domain on and halt-in-boot armed (inferred from the TRM, not measured on JTAG).
 
 ## What TI's own configurations say (CCS 21.0 and 12.8, read 2026-10-17)
 
-- `ccs_base/common/targetdb/devices/cc1312r1f3.xml` makes two-pin cJTAG this part's default on
+- `ccs_base/common/targetdb/devices/cc1312r1f3.xml` makes cJTAG this part's default on
   every TI probe, in a faster format than ours: XDS110 OScan2 (its connection file offers only
   OScan1 and OScan2), XDS100v3 OScan5 with its converter at 10 MHz, XDS200 OScan5. We and the
   J-Link use OScan1.
@@ -190,15 +190,15 @@ Clause 25 covers the OScan formats, 10.4 the escapes, and 9.10 the configuration
 
 ## OScan2 generated (2026-10-21/22)
 
-- Wire `JTAG_GEN_OSCAN2` (2) beside four-wire and OScan1; `jtag_gen_wire()` (src/cjtag_dp.c) picks
-  it from the framing, `JTAG_GEN_PINS(wire)` indexes the latency (both two-pin formats read the
-  same TDO packet). `emit_tms` generates `jtag_gen_tms`, `count` one-packet frames with TMS held
-  (fall, TMS store, rise; never masked, since nothing is released), after the scan function, for
-  OScan2 only, so OScan1's SRAMX layout is unchanged. `frames_oscan2` (src/jtag_gen_dp.c) splits a
-  held-TMS run where the tracked TAP enters or leaves Shift. Transfers lay Select-DR, Capture-DR,
-  the Capture-to-Shift clock, Update-DR, Run-Test/Idle and the idle clocks as one-packet frames
-  (`cx_tms_frame`, with the take-back after a released frame); their failure path and the idle
-  loop too. The connect-time latency sweep and vendor 0x8A's measurement run in OScan2 again.
+- Wire `JTAG_GEN_OSCAN2` (2) beside JTAG and OScan1; `jtag_gen_wire()` (src/cjtag_dp.c) picks it
+  from the framing, `JTAG_GEN_PINS(wire)` indexes the latency (both cJTAG formats read the same TDO
+  packet). `emit_tms` generates `jtag_gen_tms`, `count` one-packet frames with TMS held (fall, TMS
+  store, rise; never masked, since nothing is released), after the scan function, for OScan2 only,
+  so OScan1's SRAMX layout is unchanged. `frames_oscan2` (src/jtag_gen_dp.c) splits a held-TMS run
+  where the tracked TAP enters or leaves Shift. Transfers lay Select-DR, Capture-DR, the
+  Capture-to-Shift clock, Update-DR, Run-Test/Idle and the idle clocks as one-packet frames
+  (`cx_tms_frame`, with the take-back after a released frame); their failure path and the idle loop
+  too. The connect-time latency sweep and vendor 0x8A's measurement run in OScan2 again.
 - Checks: gen_host 6282 configurations, 1134 of them OScan2, all with transfers, four builds
   agree; `jtagcheck.py --wire cjtag2` clean at all 41 clocks on `TimedCjtagTarget(oscan2=True)`;
   `equiv.py --wire cjtag2` against ARM's OScan2 copy; the gate runs `cjtag2` in both.
@@ -221,10 +221,10 @@ Clause 25 covers the OScan formats, 10.4 the escapes, and 9.10 the configuration
   Test-Logic-Reset with three framed TMS-high clocks and KeepPoweredinTLR clear, then mode 0 (its
   trailing frame completes the last advance, 1149.7 25.6.2), no-wake commands fail 3/3 and a wake
   without escape attaches 3/3, the same as after OScan1: the domain is off. With KeepPoweredinTLR
-  set the no-wake commands attach (2/2), so the check can tell. A target left live in OScan2
-  (no detach, either SYSCTRL) is attached by the escape-first sequence 12/12, in OScan1 or OScan2.
-  probe-rs's OScan2 activation read 64 ROM words at 1, 5 and 10 MHz byte-identical to a four-wire
-  read, CNFG0 logged each time.
+  set the no-wake commands attach (2/2), so the check can tell. A target left live in OScan2 (no
+  detach, either SYSCTRL) is attached by the escape-first sequence 12/12, in OScan1 or OScan2.
+  probe-rs's OScan2 activation read 64 ROM words at 1, 5 and 10 MHz byte-identical to a JTAG read,
+  CNFG0 logged each time.
 - Attach cost (2026-10-22). probe-rs found an OScan2 attach 13-38 ms slower than
   OScan1 (115-122 against 83 ms at 12.5 MHz) while its 256 KiB reads ran 1.5-3.3% faster. Every
   framing switch regenerated scans and transfers: 16.2-17.5 ms at 12.5 MHz, 5.9-6.3 at 50. An
@@ -237,7 +237,7 @@ Clause 25 covers the OScan formats, 10.4 the escapes, and 9.10 the configuration
   18.5 ms OScan1), where it paid four in OScan2 and two in OScan1 before; the first OScan2 session
   after power-up still learns its clocks. Through probe-rs (its CLI, 256 KiB, 5 interleaved reps): attach OScan1/OScan2 78.2/73.7 ms at 12.5 MHz (was 79.9/117.8),
   80.2/81.8 at 25, 81.7/80.7 at 50; reads 774/737, 563/540, 473/444 ms, OScan2 +5.1, +4.3 and
-  +6.7% (577 KiB/s at 50 MHz); all 30 reads matched four-wire. A session's first transfer still pays one
+  +6.7% (577 KiB/s at 50 MHz); all 30 reads matched JTAG. A session's first transfer still pays one
   generation, in both formats.
 - Before generating OScan5/6: the clock sweep 2026-10-21 put OScan1 at 7.8 us a word at 50 MHz
   and 9.2 at 25 (127-word blocks), so about 1.3 us of a word at 50 MHz scales with the clock.
@@ -343,7 +343,7 @@ Clause 25 covers the OScan formats, 10.4 the escapes, and 9.10 the configuration
   the other TAPs (1 bypass bit for the ICEPick here), 3 ack + 32 data bits, Exit1, Update, idle.
   ~42 JTAG clocks a DPACC/APACC; the IR scan only when the cached IR changes (ARM keeps
   `DAP_Data.jtag_dev.ir`).
-- **Four-wire emitter**: TCK fall/rise stores, TMS and TDI with the fall, TDO sampled in the
+- **JTAG emitter**: TCK fall/rise stores, TMS and TDI with the fall, TDO sampled in the
   window after the fall (window and A to measure, as SWD's).
 - **OScan1 emitter**: each JTAG clock becomes three packets on TCKC/TMSC. Packets 1-2 are probe
   driven: an MPIN fall carrying TMSC (as SWD's probe-driven falls), a rise store. Packet 3: a CLR
@@ -356,10 +356,10 @@ Clause 25 covers the OScan formats, 10.4 the escapes, and 9.10 the configuration
   `count` transfers of one request and stops at the first non-OK ack.
 - **SRAMX**: SWD has 0x0400_0000..0x0400_3FFF and uses part of it; the lab arena has the upper
   16 KB. Estimate ~1.6 KB per generated JTAG transfer variant (126 TCKC clocks, ~3 stores each),
-  four variants (read/write x four-wire/OScan1).
+  four variants (read/write x JTAG/OScan1).
 - **Expected wire throughput**: at the measured 17-19-cycle frame, ~42 JTAG clocks a word cost
-  ~750 cycles = 5 us, ~780 KiB/s wire time for OScan1 (vs ~230 KiB/s with USB today); four-wire
-  42 clocks at P = 4 = 1.1 us a word. USB will bound both, as it does SWD (MEASUREMENTS.md, "The
+  ~750 cycles = 5 us, ~780 KiB/s wire time for OScan1 (vs ~230 KiB/s with USB today); JTAG,
+  42 clocks at P = 4, is 1.1 us a word. USB will bound both, as it does SWD (MEASUREMENTS.md, "The
   USB path at 50 MHz").
 
 ## Learned pacing (2026-10-17)
@@ -369,54 +369,53 @@ Clause 25 covers the OScan formats, 10.4 the escapes, and 9.10 the configuration
   commands; a change of clock, latency, chain position or host idle starts again from none.
   A target that never answers WAIT sees ARM's wire. Vendor 0x8B `mode` (0 off, 1 on, else query)
   answers `status, on, paced`; equiv.py turns it off.
-- Bench, 400 queued 127-word reads, host idle 0, pacing off -> on (learned clocks): four-wire
-  50 MHz 156.9 -> 128.4 ms (5), 25 MHz 156.8 -> 128.5 (5), 10 MHz 294.1 -> 252.0 (2); two-pin
-  50 MHz 350.7 -> 301.5 (2), 25 MHz 430.3 -> 367.7 (1), 15 MHz 530.6 -> 470.5 (1), 10 MHz
-  656.0 -> 657.8 (0: no WAITs there). Fixed idle 6 four-wire 50 MHz was 129.7: pacing finds it.
-  Data checked against the 1 MHz read at every clock on both wires.
-- probe-rs end to end, 256 KiB read at 50 MHz: four-wire 0.33 s, two-pin 0.56 s (0.37 and 0.62
+- Bench, 400 queued 127-word reads, host idle 0, pacing off -> on (learned clocks): JTAG 50 MHz
+  156.9 -> 128.4 ms (5), 25 MHz 156.8 -> 128.5 (5), 10 MHz 294.1 -> 252.0 (2); cJTAG 50 MHz 350.7 ->
+  301.5 (2), 25 MHz 430.3 -> 367.7 (1), 15 MHz 530.6 -> 470.5 (1), 10 MHz 656.0 -> 657.8 (0: no
+  WAITs there). Fixed idle 6 JTAG 50 MHz was 129.7: pacing finds it. Data checked against the 1 MHz
+  read at every clock with JTAG and cJTAG.
+- probe-rs end to end, 256 KiB read at 50 MHz: JTAG 0.33 s, cJTAG 0.56 s (0.37 and 0.62
   without pacing); 10 MHz 0.47 / 1.08 s. 64 KiB flash and verify 0.67 / 0.76 s.
-- Emulator: against a target that always answers WAIT, one clock per command on both wires, and
-  none after a clock change (a throwaway script, not kept).
+- Emulator: against a target that always answers WAIT, one clock per command with JTAG and cJTAG,
+  and none after a clock change (a throwaway script, not kept).
 - A WAIT retry inside the generated code was tried and set aside: with pacing there is next to
   nothing left for it to speed up.
-- **Four-wire TDO is late after a system reset.** probe-rs's four-wire reset (AON_PMCTL SYSRESET)
+- **JTAG's TDO is late after a system reset.** probe-rs's JTAG reset (AON_PMCTL SYSRESET)
   leaves the routed DAP sending TDO about 2 cycles later until the next pin reset: window from
   +10 to next fall + 8, against +8 to next fall + 7 after nRESET (measured by routing the DAP and timing its DPACC scan, and the ICEPick's own TDO). The generated transfers read the acknowledge's last bit at
   latency + 1, so they failed there while ARM's C path and probe-rs's scans, which sample late,
-  did not. Fixed: four-wire latency default 10, and that bit sampled as late as the
-  decision allows (at least latency + 4 on unmasked clocks). Cost: the four-wire clock floor was 6
-  cycles (25 MHz), not 5, until the probe measured the latency at connect. A target that answers
+  did not. Fixed: JTAG latency default 10, and that bit sampled as late as the
+  decision allows (at least latency + 4 on unmasked clocks). Cost: the JTAG clock floor was
+  6 cycles (25 MHz), not 5, until the probe measured the latency at connect. A target that answers
   within 8 cycles runs at 30 MHz again (README.md, "Limits").
-- **probe-rs four-wire reset on the CC13xx never worked**, on any build: `Icepick::new` for four
-  wires reset the TAPs but kept the chain state, which still held the DAP, so every ICEPick scan
-  after the reset was 13 bits instead of 7. Fixed in icepick.rs by setting the ICEPick-only chain
-  after the TAP reset, as the two-pin branch did. A 200 us power-up wait was tried and is not
-  needed.
+- **probe-rs's JTAG reset on the CC13xx never worked**, on any build: `Icepick::new` for JTAG reset
+  the TAPs but kept the chain state, which still held the DAP, so every ICEPick scan after the reset
+  was 13 bits instead of 7. Fixed in icepick.rs by setting the ICEPick-only chain after the TAP
+  reset, as the cJTAG branch did. A 200 us power-up wait was tried and is not needed.
 
 ## The ICEPick join needs time, not a count (2026-10-17)
 
-- probe-rs four-wire failed from 8 MHz on every image: the first DP access read all ones (the
+- probe-rs over JTAG failed from 8 MHz on every image: the first DP access read all ones (the
   Cortex-M TAP not in the chain). Bisected by replaying probe-rs's command stream through dap.py
   with the clock lowered for a prefix: only the routing command matters (IR ROUTER, SD_TAP0 write,
   BYPASS, 10 Run-Test/Idle clocks, one DAP_JTAG_Sequence).
 - The selected TAP joins only on Run-Test/Idle clocks that come about 2.5-3 us after the routing
   write. One contiguous run: 5 MHz 8 clocks pass; 10 MHz 16 fail, 20 pass; 30 MHz 20 fail. A wait
   without clocks after it does not help (the next command's DP access leaves Run-Test/Idle at
-  once). Two-pin frames are slow enough that 10 clocks happened to cover it.
+  once). cJTAG frames are slow enough that 10 clocks happened to cover it.
 - The fix belongs in the host: probe-rs's cJTAG branch joins in `icepick.rs` with 256 clocks
   rather than 10, over 5 us up to 50 MHz.
 
-## Four-wire on this part (measured 2026-10-17)
+## JTAG on this part (measured 2026-10-17)
 
-- After a pin reset the adapter is two-pin JScan: TDO is not driven. Four-wire needs probe-rs
+- After a pin reset the adapter is two-pin JScan: TDO is not driven. JTAG needs probe-rs
   icepick.rs `ctag_to_jtag` first (BYPASS, zero-bit scans x2, 1-bit scan, STC2 = 2-bit scan,
   operand 9 = 9-bit scan, BYPASS, IDCODE).
 - TDO window, sample offset from the falling-edge store that launches the bit (IDCODE reads, 5
   repeats, P = 6, 8, 10, 12, 16, 20, 30): good from +8 to next fall + 6, bad at +7 and at next
   fall + 7. One cycle narrower than the period; the extra cycle at the front is likely bit 0, whose
   output enable switches on at that fall.
-- ARM's four-wire C path reads CPUID through probe-rs at 1..5 MHz and fails from 8 MHz, on the
+- ARM's JTAG C path reads CPUID through probe-rs at 1..5 MHz and fails from 8 MHz, on the
   previous image as well as the generated one: not a regression. Cause: the ICEPick join (below the
   blocks section), a host matter.
 

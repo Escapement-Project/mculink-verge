@@ -163,7 +163,7 @@ bit path does.
 From SRAM it is a cycle fast at the alignment where 32-bit instructions straddle words, from the
 cycle-counter read onwards. It still reproduces every SWD result the bench has for the current
 firmware. Flash is not modelled, and part of the command layer still runs from there. The JTAG and
-two-pin paths have timed targets of their own (`TimedJtagTarget` and `TimedCjtagTarget` in
+cJTAG paths have timed targets of their own (`TimedJtagTarget` and `TimedCjtagTarget` in
 `tools/cycles.py`, checked by `tools/jtagcheck.py`).
 
 ## How to measure more

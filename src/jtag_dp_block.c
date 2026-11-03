@@ -5,7 +5,7 @@
  * From CMSIS-DAP, JTAG_DP.c's JTAG_TransferFunction. Changed by the Escapement Project: inlined
  * into a block loop of its own.
  */
-/** ARM's four-wire JTAG transfer, inlined into its own block loop.
+/** ARM's JTAG transfer, inlined into its own block loop.
  *
  * The transfer itself is ARM's JTAG_TransferFunction transcribed, loops and all. Unrolling its
  * data phase was tried and measured: a read bit went from 6 cycles to 5 as predicted and the
@@ -16,7 +16,7 @@
  * entry, restores them on exit and reloads the GPIO addresses each time, and ARM's block command
  * pays for that once per word. Here the loop and the transfer are in one function.
  *
- * Only the four-wire path. The two-pin copies in src/cjtag_jtag_dp.c are still ARM's source, and
+ * Only the JTAG path. The cJTAG copies in src/cjtag_jtag_dp.c are still ARM's source, and
  * a block command reaches them through ARM's own processing.
  *
  * **The wire must not move.** `uv run tools/equiv.py --wire jtag <arm-build> <this-build>` drives

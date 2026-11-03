@@ -143,8 +143,8 @@ static void test_same_below(void) {
     printf("  same-code claims checked: %u\n", claimed);
 }
 
-/** A stall changes only the builds that say it moves them, all four-wire, and a build with one still
- * samples past the latency it was built for. Two-pin samples come before their window's end. */
+/** A stall changes only the builds that say it moves them, all JTAG, and a build with one still
+ * samples past the latency it was built for. cJTAG samples come before their window's end. */
 static void test_stall(void) {
     static const uint32_t periods[] = {3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 12U, 15U, 20U, 30U, 72U};
     uint32_t moved = 0U;
@@ -181,7 +181,7 @@ static void test_stall(void) {
 }
 
 /** A connection starts from the default latency and measures where the code built for it samples
- * less than two cycles past it (src/jtag_sweep.c, CONNECT_MARGIN). Every four-wire build a stall
+ * less than two cycles past it (src/jtag_sweep.c, CONNECT_MARGIN). Every JTAG build a stall
  * may move is one of those, with the stall or without, so a capture starting or stopping never
  * changes code a connection read through without measuring. */
 static void test_stall_connect(void) {
@@ -227,7 +227,7 @@ int main(void) {
     test_stall_connect();
 
     static const uint32_t periods[] = {3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 12U, 15U, 20U, 40U};
-    static const char* const names[] = {"four-wire", "two-pin"};
+    static const char* const names[] = {"JTAG", "cJTAG"};
     uint32_t failures = 0U;
     for (uint32_t w = 0U; w < 2U; w++) {
         const uint32_t starts[] = {

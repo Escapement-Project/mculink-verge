@@ -2,15 +2,15 @@
 # requires-python = ">=3.11"
 # dependencies = ["unicorn", "capstone"]
 # ///
-"""Hold the JTAG paths, two-pin (OScan1) or four-wire, to the wire's timing, on the timing engine.
+"""Hold the JTAG and cJTAG (OScan1) paths to the wire's timing, on the timing engine.
 
 For each clock asked for, run what a host sends against a target that answers by time
 (tools/cycles.py's TimedCjtagTarget or TimedJtagTarget, with the TDO windows measured on a
 CC1312R1): a DR scan and an IR scan as DAP_JTAG_Sequence commands, the way probe-rs reaches a debug
 port, then DAP_Transfer and DAP_TransferBlock reads and writes. Check that every reply carries
 what the target shifted out, that the target's registers got what was shifted in, that every TDO
-sample landed in its window, and that no clock or packet is shorter than the clock asked for. On
-two pins, also that the wire never moved with TCKC high, stayed driven into a TDO packet, or
+sample landed in its window, and that no clock or packet is shorter than the clock asked for. With
+cJTAG, also that the wire never moved with TCKC high, stayed driven into a TDO packet, or
 entered Test-Logic-Reset.
 
 Reports, per clock: the cycles a JTAG clock takes in the DR scan, the least TDO margin, and what

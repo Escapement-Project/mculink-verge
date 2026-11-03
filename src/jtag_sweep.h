@@ -1,4 +1,4 @@
-/** The four-wire and two-pin read latency, measured on the wire: src/latency.h's search, run with
+/** The JTAG and cJTAG read latency, measured on the wire: src/latency.h's search, run with
  * IDCODE reads. */
 #ifndef JTAG_SWEEP_H
 #define JTAG_SWEEP_H
@@ -41,7 +41,7 @@ static inline bool jtag_sweep_pending(void) { return jtag_sweep_configured; }
  * that does not answer OK, so the command ran nothing but that one, whose acknowledge the probe did
  * not take as OK.
  *
- * Nothing measured at an earlier configuration is reused. A CC13xx's four-wire TDO comes four
+ * Nothing measured at an earlier configuration is reused. A CC13xx's JTAG TDO comes four
  * cycles later after a system reset, which probe-rs follows with DAP_JTAG_Configure. A transfer run
  * at a stale latency need not fail where it can be seen: samples between two bits can read an OK
  * acknowledge, and a misread one leaves Shift-DR early, so that the Update-DR after it makes an
@@ -49,7 +49,7 @@ static inline bool jtag_sweep_pending(void) { return jtag_sweep_configured; }
 uint32_t jtag_sweep_connect(const uint8_t* request, uint8_t* response);
 
 /** Measures the latency of the wire in use at the current clock and chain position, uses what it
- * found (latency_result.latency, when not 0; a cycle more on two pins) and generates for it. A
+ * found (latency_result.latency, when not 0; a cycle more with cJTAG) and generates for it. A
  * running energy capture is held for the measurement (energy_monitor_hold).
  *
  * Each candidate latency is generated, the scan function alone, and reads the IDCODE of the TAP

@@ -1,4 +1,4 @@
-/** The copy of the two-pin JTAG path for the formats whose frames depend on the TAP state, OScan2,
+/** The copy of the cJTAG path for the formats whose frames depend on the TAP state, OScan2,
  * OScan5 and OScan6.
  *
  * Same source as src/cjtag_jtag_dp.c, ARM's JTAG_DP.c with the pin layer shadowed, driving

@@ -127,7 +127,7 @@ def run(
 def run_jtag(
     elf: str, ack: int, read: bool, idle: int, word: int, count: int = 1, index: int = 0, words: int = 2
 ) -> tuple[list[str], bytes]:
-    """The same comparison on four wires, with a TAP that walks the state machine.
+    """The same comparison for JTAG, with a TAP that walks the state machine.
 
     A flat bit list cannot check a JTAG transfer: which bit the probe reads depends on where the
     TAP is, so a wrong walk and a wrong bit look the same. The model here tracks the state machine
@@ -158,7 +158,7 @@ def run_cjtag(
 ) -> tuple[list[str], bytes]:
     """The same comparison again, through OScan1 framing.
 
-    Three TMSC packets carry one JTAG clock, so the TAP underneath is the same one the four-wire
+    Three TMSC packets carry one JTAG clock, so the TAP underneath is the same one the JTAG
     comparison drives; only the way TMS and TDO reach it differs. The model finds the framing from
     the wire -- a frame releases the line exactly once, before its third packet -- rather than from
     anything in the firmware, so it stays in step with either compiled copy.
@@ -198,7 +198,7 @@ def run_jtag_commands(
     chain: tuple[int, ...] = (4,),
     index: int = 0,
 ) -> tuple[list[str], bytes]:
-    """Any commands on four wires or through OScan1 framing, against the TAP run_jtag and
+    """Any commands with JTAG or through OScan1 framing, against the TAP run_jtag and
     run_cjtag use: the replies, joined. The TAP is at chain position `index`; the TAPs nearer TDO
     are in BYPASS during a DR scan, one zero each ahead of its DR."""
     dr = (((ack >> 1) & 1) | ((ack & 1) << 1) | (((ack >> 2) & 1) << 2) | (word << 3)) << index
@@ -207,7 +207,7 @@ def run_jtag_commands(
     probe.command(bytes([ID_CONNECT, 2]))
     probe.command(bytes([ID_JTAG_PACING, 0]))
     probe.command(bytes([ID_JTAG_GEN, 0, 0, JTAG_GEN_PIN]))
-    # On four wires the generated path samples a short clock's TDO after the next falling edge,
+    # With JTAG the generated path samples a short clock's TDO after the next falling edge,
     # which an order-only TAP cannot hold for it; tools/jtagcheck.py times those. 12.5 MHz is the
     # fastest clock that samples within its own.
     probe.command(bytes([ID_SWJ_CLOCK]) + u32((50_000_000 if two_pin else 12_500_000) if fast else 10_000_000))
@@ -401,7 +401,7 @@ def cases_for(wire: str, command: str) -> tuple[list[tuple], str]:
     """Each case: (name, runner, args, kwargs); the runner takes the image first."""
     if wire in ("cjtag", "cjtag2", "cjtag5", "cjtag6", "jtag") and command != "block":
         cases = [(name, run_jtag_commands, (wire, *case), {}) for name, case in jtag_command_cases(command)]
-        summary = f"{'two-pin' if wire in TWO_PIN else 'four-wire'} {command} cases"
+        summary = f"{'cJTAG' if wire in TWO_PIN else 'JTAG'} {command} cases"
     elif command == "transfer":
         kinds = ("read", "write", "match-hit", "match-miss", "timestamped", "address-sweep")
         cases = [
@@ -419,7 +419,7 @@ def cases_for(wire: str, command: str) -> tuple[list[tuple], str]:
                 (0, 1, 2, 4, 7), (True, False), (0, 3), (0x00000000, 0xA5A5_5A5A, 0xFFFFFFFF), (False, True))
         ]
         cases += size_cases(run_cjtag, ack=2, idle=0, word=0xA5A5_5A5A, fast=False, wire_name=wire)
-        summary = "two-pin cases"
+        summary = "cJTAG cases"
     elif wire == "jtag":
         # A chain of one never reaches the bypass branches, which is where a rewritten data phase
         # is least likely to be noticed. (2, 0) puts a bypass after the data, (2, 1) before it.

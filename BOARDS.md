@@ -31,15 +31,15 @@ pins and circuits, and what the firmware does with them.
 ## What runs on a Pro
 
 CAPABILITIES.md lists what the firmware does on a Pro and what each feature needs; the feature
-jumpers work as README.md "Jumpers" describes. Four-wire JTAG reaches J7. The second serial port,
-on J26, is a second CDC interface and 3.3 V only: J26 has no level shifter.
+jumpers work as README.md "Jumpers" describes. SWD, JTAG and cJTAG reach the target on J7. The
+second serial port, on J26, is a second CDC interface and 3.3 V only: J26 has no level shifter.
 
 - **The LEDs**, with the meanings UM11673 gives them where the function exists. LED1 is lit while
-  USB is configured. The status, SWO and VCOM LEDs flicker with traffic. LED5 (FUNC) shows the
-  wire by the shape of its ramp: dark to light for SWD, light to dark for two-pin cJTAG, light to
-  dark to light for four-wire JTAG, solid with the SWD jumper fitted, dark with no port connected.
-  LED6 (SIO) is lit while the host drives a DIO pin or runs SPI. LED7 (energy) stays dark. The fades
-  follow CIE lightness, so they look linear to the eye.
+  USB is configured. The status, SWO and VCOM LEDs flicker with traffic. LED5 (FUNC) shows the wire
+  by the shape of its ramp: dark to light for SWD, light to dark for cJTAG, light to dark to light
+  for JTAG, solid with the SWD jumper fitted, dark with no port connected. LED6 (SIO) is lit while
+  the host drives a DIO pin or runs SPI. LED7 (energy) stays dark. The fades follow CIE lightness,
+  so they look linear to the eye.
 - **Energy capture** needs HW_VER_5 fitted. "Energy measurement" below derives the circuit's
   settings from the documents.
 
@@ -51,9 +51,9 @@ The debug pins (the Pro's schematic, sheet 3):
 
 | signal | pin | note |
 | --- | --- | --- |
-| TCK/SWCLK | P0_0 | |
+| TCK/SWCLK | P0_0 | TCKC for cJTAG |
 | TDI | P0_1 | |
-| TMS/SWDIO | P0_2 | the two-pin wire |
+| TMS/SWDIO | P0_2 | TMSC for cJTAG |
 | TDO/SWO | P0_3 | also `FC3_RXD` (`IOCON_FUNC1`) for SWO, so only one of the two configurations is live at a time: `src/swo.c` hands the pin to Flexcomm 3 while capture runs and back to the secure GPIO when it stops |
 | RESET_TXEN | P0_13 | buffer direction |
 | ISP-EN | P0_14 | the target's ISP line |

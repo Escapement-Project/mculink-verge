@@ -1,4 +1,4 @@
-# The ITM counter for a CC13x2/CC26x2. `make`, then load it with probe-rs over two-pin cJTAG
+# The ITM counter for a CC13x2/CC26x2. `make`, then load it with probe-rs over cJTAG
 # (README.md). TI_SDK is the SimpleLink CC13xx/CC26xx SDK, for driverlib.
 TI_SDK ?= $(HOME)/ti/simplelink_cc13xx_cc26xx_sdk_8_33_00_16
 DRIVERLIB := $(TI_SDK)/source/ti/devices/cc13x2_cc26x2/driverlib/bin/gcc/driverlib.lib

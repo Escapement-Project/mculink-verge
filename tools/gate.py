@@ -6,7 +6,7 @@
 `ninja -C <build> check` holds one image to its baselines. This runs that for gcc and clang, each
 in the default configuration and with SWD_CODEGEN and JTAG_CODEGEN off, because an optimisation
 that holds under one compiler has been seen not to under the other. A generated image also runs its
-two-pin and four-wire clocks against targets that answer by time, at every period up to 40 cycles
+cJTAG and JTAG clocks against targets that answer by time, at every period up to 40 cycles
 and three longer ones, all of its clocks the same way built for energy capture's stall, and every
 one of tools/equiv.py's matrices against the same compiler's ARM paths. It runs the host
 checks and image builds together, then runs image checks, timing sweeps and the equivalence
@@ -211,7 +211,7 @@ def main() -> int:
             for toolchain, directory in timed_images
             for wire in TIMED_WIRES
         )
-    # Built for a stall, as energy capture runs them; nothing else here does. Two-pin builds ignore
+    # Built for a stall, as energy capture runs them; nothing else here does. cJTAG builds ignore
     # the stall, so their check is that no sample comes after the fall that ends its window.
     timed_checks.extend(
         check

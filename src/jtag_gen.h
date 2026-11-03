@@ -1,5 +1,5 @@
-/** The JTAG wire paths, four-wire and two-pin (IEEE 1149.7 OScan1, OScan2, OScan5 and OScan6), generated
- * at run time for the clock the host asked for.
+/** The JTAG and cJTAG wire paths (cJTAG in IEEE 1149.7 OScan1, OScan2, OScan5 and OScan6),
+ * generated at run time for the clock the host asked for.
  *
  * src/jtag_gen.c writes them into SRAMX with every edge and sample placed to the core cycle, as
  * src/swd_gen.c does for SWD. src/jtag_gen_dp.c builds ARM's JTAG entry points on them.
@@ -18,20 +18,20 @@
 #endif
 #define JTAG_GEN_SIZE 0x4000U
 /** Unrolled transfers longer than this loop their data bits instead, where a loop fits. A loop
- * costs four-wire blocks several percent at 25 and 50 MHz on the bench, and saves up to 6 KB
+ * costs JTAG blocks several percent at 25 and 50 MHz on the bench, and saves up to 6 KB
  * between 11 and 22 MHz. */
 #define JTAG_GEN_UNROLLED_MAX 0x3000U
 
-/** A two-pin packet the probe drives is a falling edge, a data store and a rising edge. A
- * four-wire clock is five instructions and runs at no less than five cycles whatever the period. */
+/** A cJTAG packet the probe drives is a falling edge, a data store and a rising edge. A
+ * JTAG clock is five instructions and runs at no less than five cycles whatever the period. */
 #define JTAG_GEN_PERIOD_MIN 3U
 /** Longer periods leave the cycle counts of one frame near 32 bits. DAP_SWJ_Clock refuses the
  * clocks that would need them (src/dap_dispatch.c). */
 #define JTAG_GEN_PERIOD_MAX (1U << 24)
-/** Cycles from the falling edge that launches TDO to the first load that sees it: on two pins the
- * fall that starts the TDO packet, on four wires the clock's own fall. On a CC1312R1 two pins
- * measured 8 after either reset; the Cortex-M DAP behind its ICEPick sends four-wire TDO at 7
- * after a pin reset and 11 after a system reset (CJTAGGEN.md), so four wires default to 10, which
+/** Cycles from the falling edge that launches TDO to the first load that sees it: with cJTAG the
+ * fall that starts the TDO packet, with JTAG the clock's own fall. On a CC1312R1 cJTAG
+ * measured 8 after either reset; the Cortex-M DAP behind its ICEPick sends JTAG's TDO at 7
+ * after a pin reset and 11 after a system reset (CJTAGGEN.md), so JTAG defaults to 10, which
  * read both on the bench. The probe measures from these at every DAP_JTAG_Configure where they
  * leave too little margin (src/jtag_sweep.h). */
 #define JTAG_GEN_LATENCY_DEFAULT 8U
@@ -45,11 +45,11 @@
 
 #define JTAG_GEN_FOUR_WIRE 0U
 #define JTAG_GEN_TWO_PIN 1U // OScan1
-#define JTAG_GEN_OSCAN2 2U  // two-pin in OScan2: one TMS packet a clock outside Shift
-#define JTAG_GEN_OSCAN5 3U  // two-pin in OScan5: nTDI and TDO in Shift, leaving it by an escape
-#define JTAG_GEN_OSCAN6 4U  // two-pin in OScan6: OScan2 outside Shift, OScan5 in it, a PAD on entering
+#define JTAG_GEN_OSCAN2 2U  // cJTAG in OScan2: one TMS packet a clock outside Shift
+#define JTAG_GEN_OSCAN5 3U  // cJTAG in OScan5: nTDI and TDO in Shift, leaving it by an escape
+#define JTAG_GEN_OSCAN6 4U  // cJTAG in OScan6: OScan2 outside Shift, OScan5 in it, a PAD on entering
 #define JTAG_GEN_WIRES 5U
-/** The index of jtag_gen_latency a wire uses: every two-pin format reads the same TDO packet. */
+/** The index of jtag_gen_latency a wire uses: every cJTAG format reads the same TDO packet. */
 #define JTAG_GEN_PINS(wire) ((wire) == JTAG_GEN_FOUR_WIRE ? JTAG_GEN_FOUR_WIRE : JTAG_GEN_TWO_PIN)
 
 struct jtag_gen_config {
@@ -60,14 +60,14 @@ struct jtag_gen_config {
     uint32_t after;    // and after it
     uint32_t idle;     // Run-Test/Idle clocks after each transfer
     uint32_t earliest; // 1: every sample as early as the latency allows, to measure it; scans only
-    uint32_t stall;    // see gen_stall; four-wire only, since two-pin samples precede their window's end
+    uint32_t stall;    // see gen_stall; JTAG only, since cJTAG samples precede their window's end
 };
 
 /** Clocks `count` JTAG clocks, 1 to JTAG_GEN_FRAMES_MAX, with TMS held at `tms` (0 or 1) and TDI
  * from `tdi`, least significant bit first. Returns TDO the same way.
  *
- * Two-pin: entered and left with TCKC low and TMSC driven, which is what cJTAG_Enter leaves and
- * every frame ends with. Four-wire: entered and left with TCK high, as ARM's clocks leave it. */
+ * cJTAG: entered and left with TCKC low and TMSC driven, which is what cJTAG_Enter leaves and
+ * every frame ends with. JTAG: entered and left with TCK high, as ARM's clocks leave it. */
 typedef uint32_t (*jtag_gen_scan_fn)(uint32_t tdi, uint32_t count, uint32_t tms);
 
 /** OScan2 and OScan6: `count` frames of one TMS packet each, for clocks outside Shift-DR and Shift-IR,
@@ -186,20 +186,20 @@ void jtag_gen_learn(uint32_t wire);
 
 /** What the last build produced, for a host to read back. */
 struct jtag_gen_info {
-    uint32_t period;     // cycles a clock (four-wire) or a packet the probe drives (two-pin)
+    uint32_t period;     // cycles a clock (JTAG) or a packet the probe drives (cJTAG)
     uint32_t frame;      // cycles a JTAG clock takes in a run
     uint32_t code_bytes; // out of JTAG_GEN_SIZE
     bool masked;         // runs keep interrupts masked throughout
     bool ok;             // the last configuration generated
     bool transfers;      // and its transfers too
     bool looped;         // with their data bits in a loop, where unrolled they did not fit
-    // Four-wire: a sample may come after the fall that ends its bit's window, so a stall (gen_stall)
-    // changes the code. Two-pin samples always come before it.
+    // JTAG: a sample may come after the fall that ends its bit's window, so a stall (gen_stall)
+    // changes the code. cJTAG samples always come before it.
     bool stall_moves;
     // The real latencies the scans, the read transfers and the write transfers read right for:
     // every one up to these, the fewest cycles any of their samples comes after the fall that
-    // launched its bit. The other end of the window is taken as fixed: on four wires TDO holds at
-    // least FOUR_WIRE_HOLD cycles past the next fall, which no sample passes, and on two pins
+    // launched its bit. The other end of the window is taken as fixed: with JTAG, TDO holds at
+    // least FOUR_WIRE_HOLD cycles past the next fall, which no sample passes, and with cJTAG
     // every sample comes before it.
     int32_t scan_last;
     int32_t read_last;

@@ -80,7 +80,7 @@ static struct jtag_transfer_fns resolve_transfers(void) {
     return (struct jtag_transfer_fns){refused_IR, refused_Transfer};
 }
 #else
-/** Which of the copies a call goes to: four-wire, OScan1 paced or not, or the TAP-tracked one.
+/** Which of the copies a call goes to: JTAG, OScan1 paced or not, or the TAP-tracked one.
  *
  * The OScan1 choice is made here rather than inside the frame because making it there costs a
  * cycle in the paced path, which is enough to take a 10 MHz request past the clock the host asked

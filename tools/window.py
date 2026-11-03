@@ -7,7 +7,7 @@
 `cycles.py --explain` names the longest gap in a transfer. That one is the first word of a block
 and carries the command dispatch, so it is paid once and says nothing about the cost per word. The
 gap that costs is whichever one repeats, and the per-bit classes under it -- a read bit at five
-cycles against a write bit at four, a driven two-pin bit at nine against a sampled one at six --
+cycles against a write bit at four, a driven cJTAG bit at nine against a sampled one at six --
 are where a difference between two paths actually lives.
 
 So: group every gap by length, show the distribution, and print the instructions of one gap of the

@@ -16,7 +16,7 @@
  *  - LED2 SWO and LED4 VCOM: dark, flickering on traffic: SWO bytes going to the host, console
  *    bytes either way on either console.
  *  - LED5 FUNC: the wire in use, by the shape of a repeating ramp. SWD rises from dark to light,
- *    two-pin cJTAG falls from light to dark, four-wire JTAG goes light to dark to light. Solid with
+ *    cJTAG falls from light to dark, JTAG goes light to dark to light. Solid with
  *    the SWD jumper fitted, dark with no port connected.
  *  - LED6 SIO: lit while the host drives any of J19's DIO pins or runs SPI through those pins.
  *  - LED7 NRG: no indication is driven.

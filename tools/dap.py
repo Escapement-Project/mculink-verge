@@ -373,9 +373,9 @@ def cmd_identify(args) -> int:
     version, flags, length = body[5], body[6], body[7]
     build = body[8 : 8 + length].decode(errors="replace")
     supported = "yes" if flags & 1 else "no"
-    active = "yes" if flags & 2 else "no"  # two-pin framing, in whichever format
+    active = "yes" if flags & 2 else "no"  # cJTAG framing, in whichever format
     print(f"  magic CJTAG, format {version}, flags 0x{flags:02x}")
-    print(f"  OScan1 supported {supported}, two-pin framing active now {active}")
+    print(f"  OScan1 supported {supported}, cJTAG framing active now {active}")
     print(f"  build {build!r}")
     # Format 3 adds the board and 4 the scan formats. Read each at its format only: a v1 HID reply
     # is padded.
@@ -384,7 +384,7 @@ def cmd_identify(args) -> int:
         print(f"  board {BOARDS.get(board, f'unknown ({board})')}")
     if version >= 4 and len(body) >= 13 + length:
         formats = int.from_bytes(body[9 + length : 13 + length], "little")
-        print(f"  two-pin scan formats {[n for n in range(32) if formats >> n & 1]} (SCNFMT)")
+        print(f"  cJTAG scan formats {[n for n in range(32) if formats >> n & 1]} (SCNFMT)")
     probe.release()
     return 0
 
@@ -1251,7 +1251,7 @@ def latencies(mask: int) -> str:
 
 
 # The generator's wires, JTAG_GEN_* (src/jtag_gen.h).
-JLOG_WIRES = ("four-wire", "OScan1", "OScan2", "OScan5", "OScan6")
+JLOG_WIRES = ("JTAG", "OScan1", "OScan2", "OScan5", "OScan6")
 
 
 def describe_sweep(sweep: dict, cpu_hz: int = 150_000_000, word: str = "DPIDR") -> str:
@@ -1351,7 +1351,7 @@ def cmd_jgen(args) -> int:
         print(f"  latencies {args.two_pin}/{args.four_wire}, mode {mode} refused")
     print(
         f"  clock asked {state['hz'] / 1e6:.3f} MHz: period {state['period']}, JTAG clock {state['frame']} cycles; "
-        f"latency two-pin {state['two_pin']}, four-wire {state['four_wire']}; "
+        f"latency cJTAG {state['two_pin']}, JTAG {state['four_wire']}; "
         f"{'masked' if state['masked'] else 'unmasked'}; {'generated' if state['ok'] & 1 else 'NOT generated'}"
         f"{', transfers' if state['ok'] & 2 else ''}{', looped' if state['ok'] & 4 else ''}, "
         f"{state['code_bytes']} bytes; {state['builds']} builds, {state['failures']} failures"
@@ -1870,7 +1870,7 @@ def sweep_block_reads(probe: Probe, index: int, args) -> None:
 
 
 def cmd_cjtag(args) -> int:
-    """Activate OScan1, by default with TI's sequence, then read the first TAP's IDCODE over two pins.
+    """Activate OScan1, by default with TI's sequence, then read the first TAP's IDCODE over cJTAG.
 
     The TAP is reset with TMS high and walked straight to Shift-DR, which is how the working J-Link
     read does it: a reset leaves IDCODE selected, so no instruction is shifted. With framing on,
@@ -2105,8 +2105,8 @@ def main() -> int:
     gen.set_defaults(run=cmd_gen)
 
     jgen = sub.add_parser("jgen", help="the generated JTAG paths: state, latencies, measurement")
-    jgen.add_argument("--two-pin", type=int, default=0, help="set the two-pin latency, in core cycles")
-    jgen.add_argument("--four-wire", type=int, default=0, help="set the four-wire latency, in core cycles")
+    jgen.add_argument("--two-pin", type=int, default=0, help="set the cJTAG latency, in core cycles")
+    jgen.add_argument("--four-wire", type=int, default=0, help="set the JTAG latency, in core cycles")
     jgen.add_argument("--measure", action="store_true", help="have the probe measure the wire in use")
     jgen.add_argument("--pin", action="store_true", help="stop the probe measuring the latencies on its own")
     jgen.add_argument("--automatic", action="store_true", help="let the probe measure the latencies on its own")
@@ -2115,7 +2115,7 @@ def main() -> int:
     jlog.add_argument("--last", type=int, default=16, help="how many, newest back (the probe keeps 16)")
     jlog.set_defaults(run=cmd_jlog)
 
-    cjtag = sub.add_parser("cjtag", help="activate OScan1 and read an IDCODE over two pins")
+    cjtag = sub.add_parser("cjtag", help="activate OScan1 and read an IDCODE over cJTAG")
     cjtag.add_argument("--hz", type=int, default=1_000_000, help="TCKC rate to ask for")
     cjtag.add_argument("--ir-length", type=int, default=6, help="the first TAP's IR (ICEPick: 6)")
     cjtag.add_argument("--reset-clocks", type=int, default=9, help="TMS-high clocks in the reset")

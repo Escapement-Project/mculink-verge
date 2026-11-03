@@ -12,7 +12,7 @@
  * addresses each time. Expanding the loop next to a particular transfer lets all of that happen
  * once per block instead.
  *
- * Three expansions use it: four wires in src/jtag_dp_block.c, and the two OScan1 copies in
+ * Three expansions use it: JTAG in src/jtag_dp_block.c, and the two OScan1 copies in
  * src/cjtag_jtag_dp.c. The logic is ARM's, transcribed once here rather than three times.
  */
 #ifndef JTAG_BLOCK_H
@@ -27,7 +27,7 @@
  * reasoning is in src/hot.h; the four SWD entry points were measured paying one and two flash
  * accesses on two of every four data bits, and these have the same straight-line shape.
  *
- * The two-pin copies add `flatten`. Their transfer is larger than the SWD and four-wire ones, so
+ * The cJTAG copies add `flatten`. Their transfer is larger than the SWD and JTAG ones, so
  * the compiler leaves it out of line and the block loop calls it: a nine-register prologue and
  * epilogue once a word, which is the exact cost this header exists to pay once a block. A
  * per-file `-finline-limit` cannot reach it, because link-time optimisation decides inlining at

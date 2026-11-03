@@ -16,7 +16,7 @@ Code that predates the rule and breaks it, which is the work list:
 
 - ARM's SWD paths: the unrolled C in `.ramfunc` and SW_DP.c's transfer. Only the ARM reference
   build (both generators off) carries them, as the wire tools/equiv.py holds the generated paths to.
-- The four-wire JTAG and two-pin paths (`JTAG_DP.c`, compiled three times) and their pacing:
+- The JTAG and cJTAG paths (`JTAG_DP.c`, compiled three times) and their pacing:
   likewise the ARM reference build's alone.
 - The sequence commands `DAP_SWJ_Sequence` and `DAP_SWD_Sequence`, which every build runs on ARM's
   C. `DAP_JTAG_Sequence` runs on the generated scans.
@@ -44,6 +44,11 @@ the other core on a shared port has moved a wire edge twice.
 generator under ASan and UBSan with gcc and clang, and for QEMU's Cortex-M33 board with both, and
 requires all four to generate identical code. New logic that does not touch hardware gets the same
 treatment.
+
+**Name the wire protocols: SWD, JTAG and cJTAG.** In prose, comments and output alike. Not
+"four-wire JTAG", "two-pin cJTAG" or "the two-pin path": JTAG is always four-wire and cJTAG always
+two-pin here, and "two-pin" alone could be SWD. Keep a pin count only where IEEE 1149.7's own pin
+modes are the subject, such as STC2 switching a part to four-pin.
 
 **Nothing read out of NXP's firmware image goes in this repository.** Describe the stock firmware
 only by what USB or the wire shows, and say how it was observed. mculink-stock-notes holds those

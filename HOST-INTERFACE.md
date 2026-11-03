@@ -1,6 +1,6 @@
 # Host interface
 
-The firmware implements CMSIS-DAP for SWD, four-wire JTAG, two-pin cJTAG, SWO capture and target
+The firmware implements CMSIS-DAP for SWD, JTAG, cJTAG, SWO capture and target
 serial ports. Standard commands follow CMSIS-DAP. This page covers the vendor commands that other
 supported host tools use. Command and reply buffers include the command byte at index 0.
 
@@ -101,7 +101,7 @@ The command starts with `[0x83, mode]`. Supported modes are:
 
 | Mode | Extra request bytes | Action |
 | --- | --- | --- |
-| 0 | None | Stop two-pin framing and return to four-wire framing. |
+| 0 | None | Stop cJTAG framing and return to JTAG. |
 | 2 | None | Start OScan1 framing after the host has activated OScan1 on the target. |
 | 3 | `[format, tap_state]` | Start framing for the selected SCNFMT and TAP state after the host has switched the target. |
 | 4 | Four-byte little-endian format mask; bit `k` selects SCNFMT `k` | Change the formats offered to hosts until the probe restarts. OScan1 remains offered. |
@@ -694,7 +694,7 @@ some builds: `0x84` with `MARKER` (on by default), `0x88` with `CODE_LAB`, `0x89
 | `0x87` | sample | DPIDR reads with the SWDIO sample placed by the host; an instrument |
 | `0x88` | code lab | runs host-supplied code from RAM; built only with `-DCODE_LAB=ON` |
 | `0x89` | SWD generation | reports the generated SWD paths, and sets or measures the read latency they are generated for |
-| `0x8A` | JTAG generation | the same for the generated JTAG and two-pin paths; its report is the firmware's timing report |
+| `0x8A` | JTAG generation | the same for the generated JTAG and cJTAG paths; its report is the firmware's timing report |
 | `0x8B` | JTAG pacing | switches the generated JTAG transfers' learned idle clocks |
 | `0x8C` | staging | switches whether CPU 0 stages commands for CPU 1 |
 | `0x8D` | JTAG log | reads back what each JTAG generation was for |

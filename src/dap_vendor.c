@@ -49,7 +49,7 @@
 #define ID_VENDOR_LAB ID_DAP_Vendor8
 /// Reports the generated SWD paths and sets the read latency they are generated for. See below.
 #define ID_VENDOR_SWD_GEN ID_DAP_Vendor9
-/// The same for the generated two-pin frames.
+/// The same for the generated cJTAG frames.
 #define ID_VENDOR_JTAG_GEN ID_DAP_Vendor10
 /// Switches the generated JTAG transfers' learned pacing. See below.
 #define ID_VENDOR_JTAG_PACING ID_DAP_Vendor11
@@ -108,10 +108,10 @@
 static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID_REPORT_SIZE,
                "the build string pushes vendor 0x82's last fields out of a HID report");
 
-/// Two-pin OScan1 JTAG is implemented. Cleared on an on-board MCU-Link, where nobody has framed
+/// cJTAG in OScan1 is implemented. Cleared on an on-board MCU-Link, where nobody has framed
 /// OScan1 through the buffers yet.
 #define CJTAG_CAP_OSCAN1 (1U << 0)
-/// Two-pin framing is on right now, in whichever format: ID_VENDOR_CJTAG_CONTROL's state.
+/// cJTAG framing is on right now, in whichever format: ID_VENDOR_CJTAG_CONTROL's state.
 #define CJTAG_CAP_OSCAN1_ACTIVE (1U << 1)
 /// ID_VENDOR_TARGET is implemented.
 #define CJTAG_CAP_TARGET_SENSE (1U << 2)
@@ -120,7 +120,7 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
 /// ID_VENDOR_CJTAG_CONTROL takes mode 2: framing on, with the activation left to the host.
 /// Cleared with CJTAG_CAP_OSCAN1; it is the one bit probe-rs checks before running cJTAG.
 #define CJTAG_CAP_OSCAN1_ENTER (1U << 4)
-/// Two-pin frames are generated at run time, and ID_VENDOR_JTAG_GEN is implemented.
+/// cJTAG frames are generated at run time, and ID_VENDOR_JTAG_GEN is implemented.
 #define CJTAG_CAP_JTAG_CODEGEN (1U << 5)
 /// ID_VENDOR_DIO acts: a Pro whose J15 (USB-SIO off) was not fitted when the probe started. The
 /// jumpers are read once at boot, so this describes the running image.
@@ -199,14 +199,14 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
  * index (src/jtag_sweep.h), which leaves that TAP's IR at IDCODE.
  *
  * It answers `status, two_pin, four_wire, masked, ok`, then little-endian u32s: the clock asked for
- * in Hz, the period (a four-wire clock, or a two-pin packet) and a JTAG clock in core cycles, the
+ * in Hz, the period (a JTAG clock, or a cJTAG packet) and a JTAG clock in core cycles, the
  * generated code's size in bytes, and how many configurations were generated and how many could
  * not be. Then the last measurement:
  *
  *     [30]      1 while the probe measures on its own, 0 once pinned
  *     [31]      what it found, LATENCY_* (latency.h)
  *     [32]      the wire it measured, JTAG_GEN_* (jtag_gen.h)
- *     [33]      the latency it measured, or 0 if it kept the one in use; two pins use one more, at
+ *     [33]      the latency it measured, or 0 if it kept the one in use; cJTAG uses one more, at
  *               most 64 (src/jtag_sweep.c)
  *     [34]      generations it ran reads with, at most 255, every attempt's (as ID_VENDOR_SWD_GEN)
  *     [35]      periods it measured at, the host's included, every attempt's
@@ -347,7 +347,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
     }
 
     case ID_VENDOR_CJTAG_CONTROL: {
-        // 0 returns to four-wire framing, and 2 frames OScan1 after an activation the host drove
+        // 0 returns to JTAG framing, and 2 frames OScan1 after an activation the host drove
         // itself. 1 is not a mode: the probe drives no activation of its own. 3 takes two more bytes, a scan format (SCNFMT) and the TAP state it starts in
         // (enum cjtag_tap), and frames that: the host has switched the target's format itself.
         // Mode 3 is a mode of its own rather than a byte after mode 2 because a vendor command

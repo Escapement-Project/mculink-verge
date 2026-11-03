@@ -200,7 +200,7 @@ class Counts:
     tck_rise: int = 0
     tck_fall: int = 0
     swdio_release: int = 0
-    # A wire transition while the clock is high. Harmless on SWD and four-wire JTAG; on a 1149.7
+    # A wire transition while the clock is high. Harmless on SWD and JTAG; on a 1149.7
     # wire it is an escape edge, which is the whole reason this firmware exists.
     moves_while_high: int = 0
     escape_edges: int = 0  # of those, the EOT escapes OScan5 leaves Shift with
@@ -464,7 +464,7 @@ class IdcodeTap(RecordingTap):
 
 
 class TimedCjtagTarget:
-    """A two-pin target (IEEE 1149.7, OScan1, OScan2, OScan5 or OScan6) that answers by time.
+    """A cJTAG target (IEEE 1149.7, OScan1, OScan2, OScan5 or OScan6) that answers by time.
 
     A JTAG clock is three TCKC packets; with `oscan2`, only in Shift-DR and Shift-IR, and one TMS
     packet everywhere else, with nothing driven back. With `oscan5`, two in Shift, nTDI and TDO,
@@ -612,11 +612,11 @@ class TimedCjtagTarget:
 
 
 class TimedJtagTarget:
-    """A four-wire JTAG target that answers by time.
+    """A JTAG target that answers by time.
 
     It reads TMS and TDI on each rising TCK edge and launches TDO on each falling one. The probe
     sees a bit from `latency` cycles after the falling-edge store that launched it until `hold`
-    cycles after the next one (a CC1312R1 in four-pin mode: 8, and 6); in between the two it reads
+    cycles after the next one (a CC1312R1 switched to JTAG: 8, and 6); in between the two it reads
     the old bit, and the read's late margin says so.
     """
 
@@ -839,7 +839,7 @@ class Machine:
         self.restart_at = restart_at
         self.resync_on_release = False
         self.tap: "JtagTap | None" = None
-        # The same TAP reached through OScan1 framing instead of four wires, or OScan2's.
+        # The same TAP reached through OScan1 framing instead of JTAG, or OScan2's.
         self.cjtag_tap: "JtagTap | None" = None
         self.cjtag_oscan2 = False
         self.cjtag_oscan5 = False
@@ -852,7 +852,7 @@ class Machine:
         self._frame_tms = 0
         # The TDO the target holds for the whole of a frame's third packet, rising edge included.
         self._frame_tdo = 0
-        # Four-wire TDO from one falling edge to the next: a sample after the rising edge reads the
+        # JTAG TDO from one falling edge to the next: a sample after the rising edge reads the
         # bit the fall launched, as on the wire, not the one the rising edge shifted in behind it.
         self._tdo_latch = 0
         self.explain = False
@@ -1375,7 +1375,7 @@ def u16(v: int) -> bytes:
     return v.to_bytes(2, "little")
 
 
-# The two-pin wires: OScan1, which the probe frames from vendor 0x83 mode 2, and OScan2, 5 and 6,
+# The cJTAG wires: OScan1, which the probe frames from vendor 0x83 mode 2, and OScan2, 5 and 6,
 # which it frames from mode 3. Either way the TAP starts in Run-Test/Idle, as a host leaves it after
 # driving the activation itself.
 TWO_PIN = ("cjtag", "cjtag2", "cjtag5", "cjtag6")
@@ -1420,7 +1420,7 @@ def dap_setup(probe: "Machine") -> None:
 def build(elf: str, wire: str, read: bool, model: Model, record_stats: bool = True) -> Machine:
     """A machine with a target model attached, found from the wire rather than from symbols.
 
-    SWD re-synchronises on the turnaround, the only place the probe lets go. JTAG and the two-pin
+    SWD re-synchronises on the turnaround, the only place the probe lets go. JTAG and the cJTAG
     path drive a modelled TAP, which needs no marker at all. Keying any of it off a function entry
     worked until the optimiser inlined that function, and then the run silently took an error path
     and reported a much better number.
@@ -1755,7 +1755,7 @@ def jtag_read_right(probe: "Machine", tag: str) -> list[str]:
 
 
 def latency_in_use(wire: str, measured: int) -> int:
-    """What the probe builds for after measuring `measured`: a cycle later on two pins
+    """What the probe builds for after measuring `measured`: a cycle later with cJTAG
     (src/jtag_sweep.c, TWO_PIN_SLACK)."""
     return measured + 1 if wire in TWO_PIN else measured
 
@@ -1858,7 +1858,7 @@ def table(elf: str, model: Model, cpu_hz: int, words: int) -> int:
     request is worth making: the steps matter far more than any remaining optimisation, and a
     change that flattens one would otherwise show up as a small loss at a single clock.
     """
-    wires = [("SWD", "swd"), ("JTAG", "jtag"), ("two-pin", "cjtag")]
+    wires = [("SWD", "swd"), ("JTAG", "jtag"), ("cJTAG", "cjtag")]
     print(f"| asked | {' | '.join(f'{n} {d}' for n, _ in wires for d in ('read', 'write'))} |")
     print("| --- " * (1 + 2 * len(wires)) + "|")
     for mhz in TABLE_CLOCKS:
@@ -1888,7 +1888,7 @@ def check(
     """The gate: an optimisation may change the timing and must not change anything else.
 
     Three things are checked. The wire event stream has to match what is recorded, which is what
-    makes a change to the bit paths reviewable without reading the generated code. The two-pin path
+    makes a change to the bit paths reviewable without reading the generated code. The cJTAG path
     has to emit no transition while the clock is high, because that is an escape edge and the
     reason this firmware exists. And no wire may clock faster than the host asked for, except where
     that is already recorded as known -- a new one is a regression.
@@ -1915,7 +1915,7 @@ def check(
 
     # The sequence commands are how a host resets a line, switches protocol and walks a TAP by
     # hand, so they run on every attach -- and no transfer reaches the code that serves them. In
-    # particular the two-pin JTAG_Sequence entry point has nothing else exercising it.
+    # particular the cJTAG copy's JTAG_Sequence entry point has nothing else exercising it.
     for wire, name, payload in (
         (
             "swd",
@@ -2001,7 +2001,7 @@ def check(
             failures += measure_latency(elf, model, latency, hz)
         failures += connect_measures(elf, model, 11, 37_500_000)
         failures += connect_rescued(elf, model, 12, 25_000_000)
-    # The same with IDCODE reads, on four wires, OScan1, and OScan5 and OScan6 in Shift.
+    # The same with IDCODE reads, with JTAG, OScan1, and OScan5 and OScan6 in Shift.
     if "jtag_sweep_last" in symbols(elf):
         if "jtag" in wires:
             for latency, hz in ((7, 30_000_000), (13, 25_000_000)):

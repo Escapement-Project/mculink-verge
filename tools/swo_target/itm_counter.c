@@ -4,9 +4,9 @@
  * word by word: a packet is 0x03 then the counter, little-endian. Each write waits for the port's
  * FIFO, so the target never drops a word and any gap in the counter is the probe's.
  *
- * SWV leaves on DIO16, JTAG's TDO, which is an ordinary DIO while cJTAG stays in two-pin mode
+ * SWV leaves on DIO16, JTAG's TDO, which is an ordinary DIO while the part stays in cJTAG
  * (swcu185g 6.3), so it reaches the probe's TDO/SWO input on the existing harness. Debug over
- * four-wire JTAG takes the pin back.
+ * JTAG takes the pin back.
  *
  * The host steers it through `swo_ctl` at the start of SRAM. A probe-rs detach writes DEMCR to 0,
  * which switches the ITM off, so the loop reconfigures whenever it finds TRCENA clear as well as

@@ -10,7 +10,7 @@ itself, and mculink-bench the comparisons with stock.
 Measured 2026-10-19 to 2026-10-21, on the dual-core image's DMA capture.
 
 **Done 2026-10-19, on the dual-core image's DMA capture (`src/swo.c`).** Target:
-LAUNCHXL-CC1312R1 over two-pin cJTAG, running `tools/swo_target/itm_counter.c`, which sends a
+LAUNCHXL-CC1312R1 over cJTAG, running `tools/swo_target/itm_counter.c`, which sends a
 counter on ITM port 0 out of DIO16 (TDO) as fast as the port takes it, so every byte is checkable
 and the target drops nothing. The analyser on the line read 1.0000 and 7.9999 Mbaud from
 back-to-back frames, saturated, counter unbroken.
@@ -525,7 +525,7 @@ and is not affected. The right shape is after the edge with a mask at the fast s
 before the edge, unmasked, at the slow ones. That is a second copy of the delayed path, and as
 unrolled C it does not fit in SRAM. Generating the bit paths made it free (CODEGEN.md).
 
-Four-wire JTAG reads TDO, which changes on the falling edge, before the rising one: half a period
+JTAG reads TDO, which changes on the falling edge, before the rising one: half a period
 rather than a whole one.
 
 A failed connect still clocks the wire for five seconds while probe-rs retries, and those groups

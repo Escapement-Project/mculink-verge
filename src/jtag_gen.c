@@ -1,5 +1,5 @@
-/** Generate the JTAG wire paths at run time, placed to the cycle: four-wire, and two-pin
- * (IEEE 1149.7 OScan1, OScan2, OScan5 and OScan6).
+/** Generate the JTAG and cJTAG wire paths at run time, placed to the cycle, with cJTAG in
+ * IEEE 1149.7 OScan1, OScan2, OScan5 and OScan6.
  *
  * CJTAGGEN.md has the wire this places by, measured on a CC1312R1. TIMING.md has the cycle rules,
  * and src/swd_gen.c is the SWD counterpart. In brief:
@@ -9,11 +9,11 @@
  *   of one). Every block has the same instructions in the same cycles and only their shift amounts
  *   differ, so the entry is a multiply away and no clock pays
  *   for a loop.
- * - Four-wire: a clock is a store to the masked port register that lowers TCK and sets TDI
+ * - JTAG: a clock is a store to the masked port register that lowers TCK and sets TDI
  *   together, then a rising-edge store; TMS is set once for the call. TDO is on its pin from
  *   `latency` cycles after the falling edge that launched it until a few cycles past the next
  *   one, so a short clock samples it after that next edge and runs masked.
- * - Two-pin: a clock is a frame of three TCKC packets, nTDI and TMS from the probe, then TDO from
+ * - cJTAG: a clock is a frame of three TCKC packets, nTDI and TMS from the probe, then TDO from
  *   the target. TMSC moves only while TCKC is low, because a move while it is high is an escape,
  *   which the target's adapter acts on: so a packet the probe drives is a falling-edge store, a
  *   data store and a rising-edge store. The probe lets go right after the fall that starts the TDO
@@ -40,11 +40,11 @@
 /* What the generated function keeps in registers. */
 #define R_TDI 0U   // TDI, shifted so that block k sends bit k; the result at the end
 #define R_SKIP 1U  // the count on entry; then the blocks skipped, 32 less it
-#define R_TMS 2U   // TMS, 0 or 1; four-wire keeps the caller's port mask here after setting TMS
-#define R_TXEN 3U  // two-pin: the TMSC buffer's direction pin. Four-wire: a scratch register
+#define R_TMS 2U   // TMS, 0 or 1; JTAG keeps the caller's port mask here after setting TMS
+#define R_TXEN 3U  // cJTAG: the TMSC buffer's direction pin. JTAG: a scratch register
 #define R_ACC 4U   // TDO, bit k from block k
 #define R_ONE 5U   // TCK's mask: also the 1 a byte-register store takes
-#define R_PIN 6U   // two-pin: TMSC's mask. Four-wire: TDI's
+#define R_PIN 6U   // cJTAG: TMSC's mask. JTAG: TDI's
 #define R_DELAY 7U // delay loops
 #define R_GPIO 8U  // the byte pin registers
 #define R_PORT 9U  // MPIN0, with SET0, CLR0, DIRSET0 and DIRCLR0 at the offsets below
@@ -82,15 +82,15 @@ static_assert((TMSC < 256U) && (TDI < 256U), "R_PIN is loaded as an 8-bit immedi
 
 /** Cycles a sample keeps from either end of its window. The latencies were measured on one die. */
 #define MARGIN 1U
-/** Four-wire: cycles past the next falling edge that TDO still holds the bit (measured). */
+/** JTAG: cycles past the next falling edge that TDO still holds the bit (measured). */
 #define FOUR_WIRE_HOLD 6U
-/** Four-wire: the acknowledge's last bit is loaded, folded in and compared, and the branch taken,
+/** JTAG: the acknowledge's last bit is loaded, folded in and compared, and the branch taken,
  * in this many cycles before the next falling edge. */
 #define FOUR_WIRE_DECIDE 5U
-/** Four-wire: cycles past the latency that the acknowledge's last bit is sampled on a clock long
+/** JTAG: cycles past the latency that the acknowledge's last bit is sampled on a clock long
  * enough to run unmasked, where the margin costs at most a few cycles a transfer. */
 #define FOUR_WIRE_DECIDE_SLACK 3U
-/** Two-pin periods below this run with interrupts masked for the whole call. A frame there has no
+/** cJTAG periods below this run with interrupts masked for the whole call. A frame there has no
  * cycle to spare for masking around each release, and a call takes a few microseconds. */
 #define TWO_PIN_MASK_WHOLE_BELOW 9U
 
@@ -99,12 +99,12 @@ static_assert((TMSC < 256U) && (TDI < 256U), "R_PIN is loaded as an 8-bit immedi
 /** What a block's instructions do. Their cycles are the same in every block; their operands are
  * not. */
 enum slot {
-    S_FALL,      // four-wire: the masked-port store; two-pin: the fall that ends a TDO packet
-    S_TAKE_PIN,  // two-pin: the wire back, pin first
+    S_FALL,      // JTAG: the masked-port store; cJTAG: the fall that ends a TDO packet
+    S_TAKE_PIN,  // cJTAG: the wire back, pin first
     S_TAKE_TXEN, // then its buffer
-    S_NTDI,      // two-pin: packet 1's bit
+    S_NTDI,      // cJTAG: packet 1's bit
     S_RISE,
-    S_TMS,       // two-pin: packet 2's bit
+    S_TMS,       // cJTAG: packet 2's bit
     S_RELEASE_TXEN,
     S_RELEASE_PIN,
     S_MASK,
@@ -112,7 +112,7 @@ enum slot {
     S_DATA,    // the next clock's TDI
     S_CONSUME, // a sample into its bit
     S_SAMPLE,
-    S_ESCAPE, // two-pin: one edge of the EOT escape (OScan5, OScan6), TMSC turned over with TCKC high
+    S_ESCAPE, // cJTAG: one edge of the EOT escape (OScan5, OScan6), TMSC turned over with TCKC high
 };
 
 #define SLOTS_MAX 24U
@@ -165,7 +165,7 @@ static bool finish(struct block* b, uint32_t cycles) {
     return true;
 }
 
-/** A four-wire clock of `cycles` with its sample `at` cycles after the clock's fall, if all five
+/** A JTAG clock of `cycles` with its sample `at` cycles after the clock's fall, if all five
  * instructions fit. */
 static bool try_four_wire(struct block* b, uint32_t cycles, uint32_t at) {
     const uint32_t sample = at % cycles;
@@ -199,7 +199,7 @@ static bool try_four_wire(struct block* b, uint32_t cycles, uint32_t at) {
     return finish(b, cycles);
 }
 
-/** A four-wire clock. The shortest clock that fits wins. Within one, a sample before the next
+/** A JTAG clock. The shortest clock that fits wins. Within one, a sample before the next
  * fall, which no interrupt can overtake, as late as possible; failing that, a masked one after
  * it, as near the middle of the window as fits. The window is [fall + latency, next fall +
  * FOUR_WIRE_HOLD], less MARGIN at each end and `stall` more at its end: a sample after the next
@@ -240,7 +240,7 @@ static bool layout_four_wire(struct block* b, uint32_t period, uint32_t latency,
     return false;
 }
 
-/** The packets of a two-pin frame: OScan1's three; in OScan5's and OScan6's Shift states nTDI and
+/** The packets of a cJTAG frame: OScan1's three; in OScan5's and OScan6's Shift states nTDI and
  * TDO, the last of a Shift run with an EOT escape on its nTDI packet (1149.7 Table 25-1, Figure
  * 25-11); and in OScan6 a PAD packet between them in the first after entering Shift, which is
  * OScan1's three for timing, the PAD in the TMS packet's place. */
@@ -251,7 +251,7 @@ static bool shape_escapes(enum frame_shape shape) { return (shape == SHAPE_EOT) 
 /** Whether the probe drives a packet between nTDI and TDO: TMS, or OScan6's PAD. */
 static bool shape_middle(enum frame_shape shape) { return (shape == SHAPE_THREE) || (shape == SHAPE_EOT_PAD); }
 
-/** A two-pin frame, from the fall that ends the last frame's TDO packet. */
+/** A cJTAG frame, from the fall that ends the last frame's TDO packet. */
 static bool layout_two_pin(struct block* b, uint32_t period, uint32_t latency, bool earliest,
                            enum frame_shape shape) {
     const uint32_t p = period;
@@ -346,7 +346,7 @@ static uint32_t insn(enum slot slot, uint32_t k, const struct block* b, bool two
     case S_UNMASK:
         return t_msr_primask(R_ZERO);
     case S_DATA:
-        // Bit k + 1 for the next block. Two-pin wants its inverse as 0 or 1; four-wire wants it
+        // Bit k + 1 for the next block. cJTAG wants its inverse as 0 or 1; JTAG wants it
         // at TDI's place in the port, where a zero shift has to be LSL: LSR #0 encodes LSR #32.
         if (k + 1U >= b->blocks) {
             return FILLER;
@@ -380,7 +380,7 @@ static void emit_block(struct gen_emitter* e, const struct block* b, uint32_t k,
             const bool sample_left = (slot == S_SAMPLE) && (k - b->lag < b->blocks);
             const bool consume_left = (slot == S_CONSUME) && (k - b->consume_lag < b->blocks);
             // The fall that ends the last TDO packet, and the take-back after it, are a frame's
-            // own, and two-pin owes them once more.
+            // own, and cJTAG owes them once more.
             const bool two_pin_tail =
                 two_pin && (k == b->blocks) && (b->at[i].cycle <= 2U) && (slot != S_NTDI);
             if (!sample_left && !consume_left && !two_pin_tail) {
@@ -538,20 +538,20 @@ static bool emit_tms(struct gen_emitter* e, uint32_t period) {
 #define X_REQ 0U   // RnW, A2 and A3 in bits 0 to 2
 #define X_BUF 1U   // words read or written, post-incremented
 #define X_COUNT 2U // transfers still to do, the current one included
-#define X_TXEN 3U  // two-pin: the TMSC buffer's direction pin
+#define X_TXEN 3U  // cJTAG: the TMSC buffer's direction pin
 #define X_WORD 4U
 #define X_ONE 5U   // TCK's mask: also the 1 a byte-register store takes
-#define X_PIN 6U   // four-wire: TDI's mask; two-pin: TMSC's
+#define X_PIN 6U   // JTAG: TDI's mask; cJTAG: TMSC's
 #define X_DELAY 7U
 #define X_GPIO 8U
 #define X_PORT 9U
 #define X_DATA 10U // the next clock's TDI as the wire takes it: a port word, or nTDI
 #define X_ACK 11U  // the acknowledge; on OK, a scratch register
 #define X_S0 12U   // samples
-#define X_S1 T_LR  // four-wire: a second sample register; two-pin: zero
+#define X_S1 T_LR  // JTAG: a second sample register; cJTAG: zero
 #define X_ZERO T_LR
 
-/** Four-wire: TMS's bit in a port word. */
+/** JTAG: TMS's bit in a port word. */
 #define TMS_WORD TMSC
 
 #define XLABEL_LOOP 0U
@@ -564,20 +564,20 @@ static bool emit_tms(struct gen_emitter* e, uint32_t period) {
 struct xfer {
     struct gen_schedule q;
     bool two_pin;
-    bool oscan2;   // two-pin frames outside Shift are one TMS packet
-    bool oscan5;   // two-pin frames in Shift are nTDI and TDO, and leave it by an EOT escape
+    bool oscan2;   // cJTAG frames outside Shift are one TMS packet
+    bool oscan5;   // cJTAG frames in Shift are nTDI and TDO, and leave it by an EOT escape
     bool oscan6;   // and the first after entering Shift has a PAD packet
     bool entering; // OScan6: the last frame was outside Shift
-    bool released; // two-pin: the last frame ended with the wire released
+    bool released; // cJTAG: the last frame ended with the wire released
     bool masked;
-    uint32_t p, low, high; // a four-wire clock, or a two-pin packet the probe drives
+    uint32_t p, low, high; // a JTAG clock, or a cJTAG packet the probe drives
     uint32_t latency;
     uint32_t stall;
     uint32_t t;      // the earliest cycle the next clock or frame may start on
     uint32_t ready;  // the earliest cycle the next clock's data is in its register
-    uint32_t fall;   // four-wire: the last clock's falling edge
+    uint32_t fall;   // JTAG: the last clock's falling edge
     uint32_t rise;   // the last rising edge
-    uint32_t d1;     // two-pin: the last frame's last store from its nTDI register, nTDI or OScan6's PAD
+    uint32_t d1;     // cJTAG: the last frame's last store from its nTDI register, nTDI or OScan6's PAD
     uint32_t first;  // the first clock's falling edge, or the first frame's start
     uint32_t start;  // the last clock's falling edge, or the last frame's start
     uint32_t data_at[32]; // and each data bit's
@@ -587,20 +587,20 @@ struct xfer {
     bool uniform;
     uint32_t counter;
     bool pend;       // the last clock's TDO waits for its sample
-    uint32_t pend_at; // four-wire: that clock's fall; two-pin: the latest cycle it may be sampled on
+    uint32_t pend_at; // JTAG: that clock's fall; cJTAG: the latest cycle it may be sampled on
     uint32_t pend_dst, pend_bit;
     uint32_t sreg;
     uint32_t chain;   // the last fold-in, which the next one follows
     uint32_t busy[2]; // the fold-in of each sample register's last sample
     uint32_t branch;
-    uint32_t tdo_fall; // two-pin: the fall that starts the last frame's TDO packet
+    uint32_t tdo_fall; // cJTAG: the fall that starts the last frame's TDO packet
     uint32_t offset;   // the fewest cycles any sample comes after the fall that launched its bit
     bool bound;        // the latency decided where something went
 };
 
 static struct xfer xs;
 
-/** Whether a four-wire clock not laid yet puts an edge on `cycle`, if the clocks to come are like
+/** Whether a JTAG clock not laid yet puts an edge on `cycle`, if the clocks to come are like
  * the last one. */
 static bool x_grid(const struct xfer* x, uint32_t cycle) {
     if (x->two_pin || (cycle < x->t)) {
@@ -674,7 +674,7 @@ static void x_take(struct xfer* x, uint32_t at) {
     x->pend = false;
 }
 
-/* Four-wire. */
+/* JTAG. */
 
 /** Bit `bit` of `rm` into TDI's place, everything else clear. */
 static uint32_t tdi_word(uint32_t rd, uint32_t rm, uint32_t bit) {
@@ -830,7 +830,7 @@ static void fx_transfer(struct xfer* x, bool read, uint32_t before, uint32_t aft
     }
 }
 
-/* Two-pin. */
+/* cJTAG. */
 
 /** A frame from the fall that ends the last TDO packet: nTDI from `ntdi`, TMS from `tms` (a
  * register holding 1 or 0) where the shape has a TMS packet. With `decide`, the acknowledge is
@@ -1110,7 +1110,7 @@ static void slow_tms_frame(struct gen_emitter* e, const struct xfer* x, uint32_t
     gen_delay(e, later(x->p, x->high) - 1U);
 }
 
-/** The fall that ends the last TDO packet and the take-back, which leave a two-pin call as it
+/** The fall that ends the last TDO packet and the take-back, which leave a cJTAG call as it
  * found the wire. */
 static void slow_tail(struct gen_emitter* e) {
     gen_emit(e, t_str(X_ONE, X_PORT, OFF_CLR));
@@ -1198,7 +1198,7 @@ static void x_patch(struct xfer* x, uint32_t cycle, uint32_t insn) {
     }
 }
 
-/** Lays out one transfer in `xs` with a four-wire clock or two-pin packet of `p` cycles. */
+/** Lays out one transfer in `xs` with a JTAG clock or cJTAG packet of `p` cycles. */
 static bool lay_xfer(const struct xfer_cfg* c, bool read, uint32_t p) {
     struct xfer* x = &xs;
     *x = (struct xfer){.two_pin = c->two_pin,
@@ -1218,7 +1218,7 @@ static bool lay_xfer(const struct xfer_cfg* c, bool read, uint32_t p) {
     } else {
         x->low = p / 2U;
         x->masked = p <= c->latency + MARGIN + 1U;
-        // A masked four-wire clock samples from the latency on, after the next fall.
+        // A masked JTAG clock samples from the latency on, after the next fall.
         x->bound = x->masked;
     }
     x->high = p - x->low;
@@ -1235,8 +1235,8 @@ static bool lay_xfer(const struct xfer_cfg* c, bool read, uint32_t p) {
 
 static bool emit_xfer(struct gen_emitter* e, const struct xfer_cfg* c, bool read) {
     struct xfer* x = &xs;
-    // A four-wire clock too short for the TDO window runs longer, as the scan engine's does. A
-    // two-pin frame finds its own room.
+    // A JTAG clock too short for the TDO window runs longer, as the scan engine's does. A
+    // cJTAG frame finds its own room.
     const uint32_t shortest = c->two_pin ? c->period : later(c->period, 5U);
     const uint32_t longest = c->two_pin ? shortest : later(shortest, c->latency + FOUR_WIRE_HOLD);
     uint32_t p = shortest;
@@ -1325,7 +1325,7 @@ static bool emit_xfer(struct gen_emitter* e, const struct xfer_cfg* c, bool read
         slow_tail(e);
     }
     const uint32_t exit = e->pos;
-    // ARM leaves TDI high after a transfer, on the pin itself on four wires.
+    // ARM leaves TDI high after a transfer, on the pin itself with JTAG.
     if (!c->two_pin) {
         gen_emit(e, t_strb(X_ONE, X_GPIO, (uint32_t)offsetof(GPIO_Type, B[0][TDI_PIN])));
     }
@@ -1546,7 +1546,7 @@ struct jtag_gen_log_entry jtag_gen_log[JTAG_GEN_LOG_SIZE];
 
 // The last builds that asked for transfers, whether or not they fitted, kept so that a host coming
 // back to a configuration gets it back with a copy rather than a build: a session switches to its
-// two-pin wire and back to four-wire at either end, and each switch writes over SRAMX. A build
+// cJTAG wire and back to JTAG at either end, and each switch writes over SRAMX. A build
 // depends on its configuration alone, which regenerate already relies on when it keeps the code in
 // place. Its scans serve a scan-only request as well. Two, because a connect builds at the default
 // latency and again at the one its measurement leads to, which can differ from 25 MHz up; the

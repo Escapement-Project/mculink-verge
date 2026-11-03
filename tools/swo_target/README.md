@@ -1,7 +1,7 @@
 # SWO trace source for a CC13x2/CC26x2 LaunchPad
 
 `itm_counter.c` streams an incrementing 32-bit counter through ITM port 0 on DIO16 (JTAG TDO).
-`itm_check.py` verifies each captured word. Use two-pin cJTAG for debugging; four-wire JTAG needs
+`itm_check.py` verifies each captured word. Use cJTAG for debugging; JTAG needs
 DIO16 for TDO.
 
 Build and load, from this directory, with probe-rs built from the cJTAG branch of

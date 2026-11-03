@@ -37,13 +37,13 @@ Everything here was measured on the bench 2026-10-16 unless marked otherwise. ME
   The latency measurement builds without a stall: it holds the conversions. On a board that can
   capture, a connection measures an unmeasured target at every masked period: a capture starting
   or stopping changes which latencies the build serves, and only a measured one is served by both.
-- The JTAG generator honours the same stall on four wires: a sample after the next fall keeps it
+- The JTAG generator honours the same stall on JTAG: a sample after the next fall keeps it
   clear of TDO's hold (next fall + 6, less MARGIN), and the clock lengthens where nothing fits.
   `jtag_gen_info.stall_moves` says a build may change. A JTAG connection starts from the default
   latency, where every such build already leaves under CONNECT_MARGIN, so it measures there
-  (tools/jtag_latency_test.c, test_stall_connect). Two-pin layouts ignore the stall: their samples
+  (tools/jtag_latency_test.c, test_stall_connect). cJTAG layouts ignore the stall: their samples
   come before the fall that ends their window, which the gate's `jtagcheck --stall 2` checks on
-  every two-pin wire.
+  every cJTAG format.
 - Clock = fall store + rise store `str r5, [r9, #SET]`. Probe-driven falls are MPIN stores
   carrying SWDIO (MASK0 = ~(SWCLK|SWDIO), set at build; nothing else uses MPIN), so data changes
   with the fall: trace order W-then-v matches ARM's, and setup = low, hold = high. Target-driven

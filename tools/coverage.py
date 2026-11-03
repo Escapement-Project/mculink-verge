@@ -115,7 +115,7 @@ def attach_icepick(probe: dap.Probe, two_pin: bool, scan_format: int = dap.OSCAN
         wake = [("escape", 10), ("raw", "1" * 20), ("raw", "0"), ("pause", 200)]
         dap.run_ti_activation(probe, wake + dap.ti_steps(scan_format, "command"))
     else:
-        # The part leaves reset in cJTAG mode. probe-rs's ctag_to_jtag switches it to four pins:
+        # The part leaves reset in cJTAG mode. probe-rs's ctag_to_jtag switches it to JTAG:
         # two zero-bit scans, then DR scans of 1, 2 and 9 bits.
         probe.jtag_sequence([(51, 1, False, (1 << 51) - 1), (1, 0, False, 1)])
         walk = dap.TapWalk().scan(True, 0x3F, 6).idle(1)
@@ -152,7 +152,7 @@ def attach_icepick(probe: dap.Probe, two_pin: bool, scan_format: int = dap.OSCAN
 
 def finish(probe: dap.Probe) -> None:
     """End as probe-rs's power_down does: framed TMS-high clocks to Test-Logic-Reset, which takes a
-    two-pin target out of OScan1, then framing off. A later four-wire attach needs that."""
+    cJTAG target out of OScan1, then framing off. A later JTAG attach needs that."""
     if probe.wire != "swd":
         probe.jtag_sequence([(8, 1, False, 0xFF)])
     probe.command(bytes([dap.DAP_VENDOR_CJTAG_CONTROL, 0]))
