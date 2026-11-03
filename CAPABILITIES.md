@@ -23,10 +23,12 @@ trace is not implemented.
 
 ## Performance figures
 
-The [limits table](README.md#limits) labels each figure by its evidence. Its SWD values come from
-the 2026-10-20 normal-path comparison; they do not measure the current source revision. A separate
-timer-driven read experiment on 2026-10-21 reached 50 MHz, then was removed. The J-Link results are
-a separate probe and target comparison and do not replace an MCU-Link run.
+The [limits table](README.md#limits) says where each figure comes from. Its SWD figures were
+measured on 2026-10-20, on an older build than this source.
+
+mculink-bench's [measurements page](https://github.com/Escapement-Project/mculink-bench) compares
+this firmware with stock and with a SEGGER J-Link Ultra, through the same probe-rs workload on the
+same target.
 
 The firmware reports its maximum SWO baud as 30 Mbaud. Bench captures reached 30 Mbaud on the full
 MCU-Link and 24 Mbaud on the Pro. The Pro result is limited by the available trace source, which

@@ -20,8 +20,8 @@ record the builds and methods.
 
 | Transport | Ours | Evidence | Ours depends on | NXP's stock V3.172 |
 | --- | --- | --- | --- | --- |
-| SWD writes | 50 MHz | Bench, normal path, 2026-10-20 | Nothing | 10.7 MHz |
-| SWD reads | 37.5 MHz | Bench, normal path, 2026-10-20 | The Pro's energy capture: 30 MHz while it runs (bench, 2026-10-29) | 9.6 MHz |
+| SWD writes | 50 MHz | Bench, 2026-10-20 | Nothing | 10.7 MHz |
+| SWD reads | 37.5 MHz | Bench, 2026-10-20 | The Pro's energy capture: 30 MHz while it runs (bench, 2026-10-29) | 9.6 MHz |
 | JTAG, four wires (reads and writes) | 30 MHz | Bench and firmware timing report | The target's TDO delay; the Pro's energy capture (emulator, 2026-10-29) | Not measured yet |
 | cJTAG, two pins (reads and writes) | 50 MHz per wire packet; per JTAG clock in Shift, 7.9 MHz in OScan1 and OScan2, 9.4 MHz in OScan5 and OScan6 | Firmware timing report; target-dependent | The target's TDO delay | Not supported |
 | Console (VCOM) | 19.2 Mbaud | Bench loopback | Nothing | 3 Mbaud or more; its limit not measured yet |
@@ -91,11 +91,6 @@ was also measured on hardware (CJTAGGEN.md). Console loopbacks and SWO captures 
 BENCH.md. Stock SWD captures are in mculink-stock-notes' `wire.md` and mculink-bench's README.
 Other stock figures are in BENCH.md under "The console" and in
 mculink-bench's `results/throughput/2026-10-21-stock.json`.
-
-Capture identities protect conditional stop and stream cleanup from a competing restart. New
-hosts require that capability for automatic cleanup. Legacy unconditional stop remains available.
-Identity initialization runs once before the first capture, outside wire windows. It does not
-change the transport clock limits above.
 
 ## Build
 

@@ -489,9 +489,13 @@ message remains before the reply. Hosts discard messages saved before the reply 
 the new header. Mode 9's header identity must match its start reply. Mode 10 grants a token only
 when its header arrives. A missing attach header does not authorize a status read for cleanup.
 
-Mode 13 ends a matching stream with the same reason as mode 7. Restart ends it as before.
-A host retains its token for conditional failure cleanup, then discards it on end or disconnect.
-Historical archive identities never authorize live cleanup.
+Mode 13 ends the stream as mode 7 does, with reason 1 in its end message, but only when the
+identity matches. A restart still ends the stream, with reason 3.
+
+A host keeps the identity from its start reply or the stream's header so it can clean up after a
+failure. It drops the identity when the stream ends or the probe disconnects. An identity read
+back from a saved recording, such as a verge capture file, belongs to that recording: never use it
+to stop or end a live capture.
 
 The points are the ones `0x90` mode 4 reports.
 
