@@ -35,6 +35,10 @@
  * all: a read another master stalled on the bit paths' port contradicts the rest (BUSES.md). A
  * stall that fails one build can end as a boundary instead, which still ends on a build that read
  * right.
+ *
+ * A stall can also fail a build that serves the real latency and leave exactly one latency, which
+ * is then not the real one. Nothing contradicts it, so the search ends LATENCY_MEASURED there. The
+ * connection's first read fails, and the next connection measures again (src/swd_sweep.c).
  */
 #ifndef LATENCY_H
 #define LATENCY_H

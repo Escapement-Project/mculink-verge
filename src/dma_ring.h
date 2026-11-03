@@ -12,6 +12,12 @@
  * so with one flag two completions before the interrupt runs would count as one. Alternating, they
  * show as both flags, and the count is known to be lost. A ring's segments are even in number, so
  * each descriptor raises the same flag every lap.
+ *
+ * Only a debugger can hold the interrupt long enough to defeat this. Halted between reading a flag
+ * and clearing it while an odd number of three or more completions land, the clear takes them with
+ * the phase intact: the count ends short and nothing reports it. Halted between the clear and the
+ * count while a host polls SWO, CPU 1 can restart the ring, and the old segment is then counted
+ * into the new one: up to a segment of old data goes out.
  */
 #ifndef DMA_RING_H
 #define DMA_RING_H
