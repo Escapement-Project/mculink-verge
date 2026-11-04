@@ -622,16 +622,23 @@ def cmd_energy(args) -> int:
     """The Pro's energy capture through vendor 0x90 (HOST-INTERFACE.md).
 
     `watch` starts a capture at `--rate`, prints the newest sample every `--every` seconds for
-    `--seconds`, then the total, and stops. The probe calibrates as it boots. A start calibrates
+    `--seconds`, then the total, and stops. `--range high` holds the high range for that capture
+    (mode 14 before the start). The probe calibrates as it boots. A start calibrates
     again, disconnecting J9 for about 0.2 s, only after a failed calibration or when the jumper
     setting has changed.
     """
     probe = one(args)
     if args.action in ("start", "watch"):
+        high = args.range == "high"
+        # Firmware without mode 14 refuses it and always switches automatically.
+        result, _ = energy(probe, bytes([14, int(high)]))
+        if result != 0 and high:
+            raise RuntimeError(f"mode 14: {energy_result(result)}; this firmware cannot hold the high range")
         result, body = energy(probe, bytes([0]) + args.rate.to_bytes(4, "little"))
         if result != 0:
             raise RuntimeError(f"start: {energy_result(result)}")
-        print(f"started at {int.from_bytes(body[:4], 'little')} pairs/s")
+        held = "holding the high range" if high else "switching ranges automatically"
+        print(f"started at {int.from_bytes(body[:4], 'little')} pairs/s, {held}")
     if args.action == "latest":
         print(show_energy_sample(probe))
     elif args.action == "calibration":
@@ -2021,6 +2028,8 @@ def main() -> int:
     energy_parser = sub.add_parser("energy", help="the Pro's energy capture: start, read, stop")
     energy_parser.add_argument("action", choices=("start", "latest", "total", "stop", "watch", "calibration"))
     energy_parser.add_argument("--rate", type=int, default=1000, help="pairs per second to start at")
+    energy_parser.add_argument("--range", choices=("auto", "high"), default="auto",
+                               help="switch current ranges automatically, or hold the high range for this capture")
     energy_parser.add_argument("--seconds", type=float, default=5.0, help="how long `watch` runs")
     energy_parser.add_argument("--every", type=float, default=0.5, help="seconds between `watch` samples")
     energy_parser.set_defaults(run=cmd_energy)
