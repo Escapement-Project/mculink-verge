@@ -1,7 +1,5 @@
 #include "gen.h"
 
-#include <string.h>
-
 #include "thumb.h"
 
 uint32_t gen_owner = GEN_OWNER_NONE;
@@ -20,9 +18,18 @@ void gen_schedule_reset(struct gen_schedule* s, struct gen_event* ev, uint32_t c
     s->failed = false;
 }
 
+/** Events a lookup checks from the end before it searches the rest. The generators lay events
+ *  close to the order of their cycles and ask mostly about cycles near the last. */
+#define GEN_TAIL 4U
+
 static uint32_t lower_bound(const struct gen_schedule* s, uint32_t cycle) {
-    uint32_t lo = 0U;
     uint32_t hi = s->n;
+    for (uint32_t k = 0U; (k < GEN_TAIL) && (hi != 0U); k++, hi--) {
+        if (s->ev[hi - 1U].cycle < cycle) {
+            return hi;
+        }
+    }
+    uint32_t lo = 0U;
     while (lo < hi) {
         const uint32_t mid = (lo + hi) / 2U;
         if (s->ev[mid].cycle < cycle) {
@@ -54,7 +61,10 @@ void gen_put(struct gen_schedule* s, uint32_t cycle, uint32_t insn) {
         s->failed = true;
         return;
     }
-    memmove(&s->ev[i + 1U], &s->ev[i], (s->n - i) * sizeof s->ev[0]);
+    // Rarely more than an event or two, and newlib-nano's memmove copies bytes.
+    for (uint32_t k = s->n; k > i; k--) {
+        s->ev[k] = s->ev[k - 1U];
+    }
     s->ev[i] = (struct gen_event){cycle, insn};
     s->n++;
 }
