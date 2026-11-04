@@ -57,10 +57,11 @@
 #define COMMAND_PATH
 #endif
 
-/** The SWD generator and the schedule both generators share (src/gen.c, src/swd_gen.c): branchy C
- *  that runs when a configuration changes and in every connect-time latency search, where flash
- *  wait states doubled the time of each build. In SRAM after every bit path, so it moves none of
- *  them. tools/image.py checks everything it calls stays in SRAM, the compiler's memset aside. */
+/** The SWD generator, the JTAG generator's scans and the schedule both share (src/gen.c,
+ *  src/swd_gen.c, src/jtag_gen.c): branchy C that runs when a configuration changes and in every
+ *  connect-time latency search, where flash wait states doubled the time of each SWD build. In SRAM
+ *  after every bit path, so it moves none of them. tools/image.py checks everything they call stays
+ *  in SRAM, the compiler's memset and the JTAG transfer emitter aside. */
 #ifdef RAMFUNC_BIT_PATHS
 #define GEN_PATH __attribute__((section(".data_gen_path")))
 #else

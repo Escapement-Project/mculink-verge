@@ -140,7 +140,7 @@ static uint32_t later(uint32_t a, uint32_t b) { return a > b ? a : b; }
 static void put(uint32_t cycle, enum slot slot) { gen_put(&layout, cycle, (uint32_t)slot); }
 
 /** `slot` on the first free cycle from `earliest`, below `before`. */
-static uint32_t place(uint32_t earliest, uint32_t before, enum slot slot) {
+GEN_PATH static uint32_t place(uint32_t earliest, uint32_t before, enum slot slot) {
     while (gen_taken(&layout, earliest)) {
         earliest++;
     }
@@ -152,7 +152,7 @@ static uint32_t place(uint32_t earliest, uint32_t before, enum slot slot) {
     return earliest;
 }
 
-static bool finish(struct block* b, uint32_t cycles) {
+GEN_PATH static bool finish(struct block* b, uint32_t cycles) {
     if (layout.failed || (layout.n > SLOTS_MAX)) {
         return false;
     }
@@ -167,7 +167,7 @@ static bool finish(struct block* b, uint32_t cycles) {
 
 /** A JTAG clock of `cycles` with its sample `at` cycles after the clock's fall, if all five
  * instructions fit. */
-static bool try_four_wire(struct block* b, uint32_t cycles, uint32_t at) {
+GEN_PATH static bool try_four_wire(struct block* b, uint32_t cycles, uint32_t at) {
     const uint32_t sample = at % cycles;
     gen_schedule_reset(&layout, gen_events, SLOTS_MAX + 8U);
     put(0U, S_FALL);
@@ -205,7 +205,7 @@ static bool try_four_wire(struct block* b, uint32_t cycles, uint32_t at) {
  * FOUR_WIRE_HOLD], less MARGIN at each end and `stall` more at its end: a sample after the next
  * fall that another master holds reads the next bit past it. With `earliest`, the sample goes as
  * early in it as fits. */
-static bool layout_four_wire(struct block* b, uint32_t period, uint32_t latency, uint32_t stall, bool earliest) {
+GEN_PATH static bool layout_four_wire(struct block* b, uint32_t period, uint32_t latency, uint32_t stall, bool earliest) {
     const uint32_t first = latency + MARGIN;
     b->blocks = BLOCKS;
     // Only the first clock length's unmasked search, from the latest cycle down, is the same at a
@@ -246,13 +246,13 @@ static bool layout_four_wire(struct block* b, uint32_t period, uint32_t latency,
  * OScan1's three for timing, the PAD in the TMS packet's place. */
 enum frame_shape { SHAPE_THREE, SHAPE_SHIFT, SHAPE_EOT, SHAPE_EOT_PAD };
 
-static bool shape_escapes(enum frame_shape shape) { return (shape == SHAPE_EOT) || (shape == SHAPE_EOT_PAD); }
+GEN_PATH static bool shape_escapes(enum frame_shape shape) { return (shape == SHAPE_EOT) || (shape == SHAPE_EOT_PAD); }
 
 /** Whether the probe drives a packet between nTDI and TDO: TMS, or OScan6's PAD. */
-static bool shape_middle(enum frame_shape shape) { return (shape == SHAPE_THREE) || (shape == SHAPE_EOT_PAD); }
+GEN_PATH static bool shape_middle(enum frame_shape shape) { return (shape == SHAPE_THREE) || (shape == SHAPE_EOT_PAD); }
 
 /** A cJTAG frame, from the fall that ends the last frame's TDO packet. */
-static bool layout_two_pin(struct block* b, uint32_t period, uint32_t latency, bool earliest,
+GEN_PATH static bool layout_two_pin(struct block* b, uint32_t period, uint32_t latency, bool earliest,
                            enum frame_shape shape) {
     const uint32_t p = period;
     const uint32_t low = p == 3U ? 2U : p / 2U;
@@ -323,7 +323,7 @@ static bool layout_two_pin(struct block* b, uint32_t period, uint32_t latency, b
 }
 
 /** The instruction `slot` stands for in block `k`, of the clock count `blocks`. */
-static uint32_t insn(enum slot slot, uint32_t k, const struct block* b, bool two_pin) {
+GEN_PATH static uint32_t insn(enum slot slot, uint32_t k, const struct block* b, bool two_pin) {
     switch (slot) {
     case S_FALL:
         return two_pin ? t_str(R_ONE, R_PORT, OFF_CLR) : t_str(R_DATA, R_PORT, OFF_MPIN);
@@ -371,7 +371,7 @@ static uint32_t insn(enum slot slot, uint32_t k, const struct block* b, bool two
 
 /** Block `k`, or past the last block only what is left of the earlier clocks: their samples and
  * the folding in. */
-static void emit_block(struct gen_emitter* e, const struct block* b, uint32_t k, bool two_pin) {
+GEN_PATH static void emit_block(struct gen_emitter* e, const struct block* b, uint32_t k, bool two_pin) {
     uint32_t now = 0U;
     for (uint32_t i = 0U; i < b->n; i++) {
         const enum slot slot = (enum slot)b->at[i].slot;
@@ -397,14 +397,14 @@ static void emit_block(struct gen_emitter* e, const struct block* b, uint32_t k,
 }
 
 /** The constant a movw/movt pair at `at` loads, filled in once it is known. */
-static void patch_const(struct gen_emitter* e, uint32_t at, uint32_t rd, uint32_t value) {
+GEN_PATH static void patch_const(struct gen_emitter* e, uint32_t at, uint32_t rd, uint32_t value) {
     if (at + 1U < e->pos) {
         e->code[at] = t_movw(rd, value & 0xFFFFU);
         e->code[at + 1U] = t_movt(rd, value >> 16);
     }
 }
 
-static bool emit_scan(struct gen_emitter* e, const struct block* b, bool two_pin) {
+GEN_PATH static bool emit_scan(struct gen_emitter* e, const struct block* b, bool two_pin) {
     if (b->blocks == 0U) {
         return false;
     }
@@ -482,7 +482,7 @@ static bool emit_scan(struct gen_emitter* e, const struct block* b, bool two_pin
  * as emit_scan's are. Nothing is released, so nothing runs masked: an interrupt only lengthens a
  * phase. The first block's fall finds TCKC already low; the last packet's fall comes after the
  * blocks, so the function leaves TCKC low. */
-static bool emit_tms(struct gen_emitter* e, uint32_t period) {
+GEN_PATH static bool emit_tms(struct gen_emitter* e, uint32_t period) {
     const uint32_t low = period == 3U ? 2U : period / 2U;
     const uint32_t high = period - low;
     const uint32_t rise = later(2U, low);
@@ -1376,7 +1376,7 @@ static bool emit_xfer(struct gen_emitter* e, const struct xfer_cfg* c, bool read
     return !e->failed;
 }
 
-bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan, jtag_gen_xfer_fn* read,
+GEN_PATH __attribute__((noinline)) bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan, jtag_gen_xfer_fn* read,
                     jtag_gen_xfer_fn* write) {
     if ((config->period < JTAG_GEN_PERIOD_MIN) || (config->period > JTAG_GEN_PERIOD_MAX) || (config->latency == 0U) ||
         (config->latency > 64U) || (config->wire > JTAG_GEN_OSCAN6) || (config->before > 7U) ||

@@ -2533,11 +2533,15 @@ def main() -> int:
                     ("serve", "DAP_ExecuteCommandSized", "execute_one", "DAP_ProcessCommand", "transfer_block", "SWD_TransferBlock",
                      "SWD_TransferCommand", "JTAG_TransferCommand", "memcpy") + jtag_gen,
                     allow=("arm_command", "arm_DAP_ProcessCommand", "regenerate", "swd_sweep_connect", "jtag_sweep_connect"))
-    # The SWD generator, where it is built: every connect-time latency search runs it many times
+    # The generators, where they are built: every connect-time latency search runs one many times
     # (src/hot.h, GEN_PATH). Allowed: what each compiler calls to zero a struct.
-    if any(name.split(".")[0] == "swd_gen_build" for name in symbols_with_size(args.core1)):
-        check_sram_code(c, args.core1, "CPU 1 generates SWD transfers", ("swd_gen_build",),
-                        allow=("memset", "__aeabi_memclr4"), calls=True)
+    # The JTAG generator's transfer emitter stays in flash: a search builds scans alone, and
+    # transfers come back from the saved build when a configuration returns.
+    for entry, what, flash in (("swd_gen_build", "SWD transfers", ()),
+                               ("jtag_gen_build", "JTAG and cJTAG scans", ("emit_xfer",))):
+        if any(name.split(".")[0] == entry for name in symbols_with_size(args.core1)):
+            check_sram_code(c, args.core1, f"CPU 1 generates {what}", (entry,),
+                            allow=("memset", "__aeabi_memclr4") + flash, calls=True)
     check_clocks(c, args.elf, slots)
     check_led(c, args.elf, slots)
     check_pro_leds(c, args.elf, slots)
