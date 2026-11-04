@@ -1888,7 +1888,8 @@ def table(elf: str, model: Model, cpu_hz: int, words: int) -> int:
     whole range shows which request is worth making, and a change that flattens a step would
     otherwise show up as a small loss at a single clock.
     """
-    wires = [("SWD", "swd"), ("JTAG", "jtag"), ("cJTAG", "cjtag")]
+    # cJTAG's slowest format on the wire and its fastest.
+    wires = [("SWD", "swd"), ("JTAG", "jtag"), ("OScan1", "cjtag"), ("OScan6", "cjtag6")]
     print(f"| asked | {' | '.join(f'{n} {d}' for n, _ in wires for d in ('read', 'write'))} |")
     print("| --- " * (1 + 2 * len(wires)) + "|")
     for mhz in TABLE_CLOCKS:

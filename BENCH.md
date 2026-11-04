@@ -108,16 +108,24 @@ header orientation-free. `--mask` takes pins from the marker so a single one can
 
 ## What the emulator predicts, so you can check it
 
-KiB/s of wire time over a 64-word SWD block, on the generated transfers, timed by the m33 model.
+KiB/s of wire time over a 64-word block, on the generated transfers, timed by the m33 model.
 Regenerate with `uv run tools/cycles.py --table --words 64`.
 
-| asked | SWD read | SWD write |
-| --- | --- | --- |
-| 5 MHz | 415 | 416 |
-| 10 MHz | 817 | 827 |
-| 16 MHz | 1194 | 1227 |
-| 25 MHz | 1911 | 1981 |
-| 50 MHz | 2723 | 3362 |
+JTAG runs at the probe's default read latency, 10 cycles, which holds it to 25 MHz. A connection
+measures the target's latency, and a target that answers within 8 cycles runs at 30 MHz (README.md,
+"Limits").
+
+cJTAG is shown in two formats. OScan1 has the longest frames on the wire and OScan6 the shortest.
+The modelled target never answers WAIT. A CC1312R1 answers WAIT more often to OScan6's shorter
+frames, and from 25 MHz it reads slower in OScan6 than in OScan5 (README.md, "Limits").
+
+| asked | SWD read | SWD write | JTAG read | JTAG write | OScan1 read | OScan1 write | OScan6 read | OScan6 write |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 5 MHz | 415 | 416 | 461 | 462 | 157 | 157 | 236 | 236 |
+| 10 MHz | 817 | 827 | 890 | 893 | 311 | 311 | 460 | 461 |
+| 16 MHz | 1194 | 1227 | 1274 | 1280 | 460 | 461 | 670 | 672 |
+| 25 MHz | 1911 | 1981 | 1939 | 1952 | 574 | 594 | 758 | 794 |
+| 50 MHz | 2723 | 3362 | 1939 | 1952 | 718 | 749 | 864 | 910 |
 
 Single-register transfers are a different command and move independently:
 `uv run tools/cycles.py --wire swd --transfer --words 16` gives 634/642 at 10 MHz and
