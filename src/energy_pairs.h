@@ -40,26 +40,24 @@ static inline uint32_t energy_stand_in_na(uint32_t next_na, uint32_t before_na, 
     return (uint32_t)(((uint64_t)next_na * (65536U - weight_q16) + (uint64_t)before_na * weight_q16 + 32768U) >> 16U);
 }
 
-static inline void energy_consume_result(struct energy_integration* energy, uint32_t result, energy_total_t* total) {
-    if (!energy_sample_feed(&energy->decoder, result)) {
-        return;
-    }
-    bool const read_low = energy_low_range(energy->decoder.last_range);
+/** The pair `decoder` has just completed. */
+static inline void energy_consume_pair(struct energy_integration* energy, const energy_sample_decoder_t* decoder,
+                                       energy_total_t* total) {
+    bool const read_low = energy_low_range(decoder->last_range);
     uint8_t const flags = read_low ? ENERGY_STREAM_PAIR_LOW
-                          : energy->decoder.last_current < energy->under_range_code ? ENERGY_STREAM_PAIR_UNDER_RANGE
-                                                                                     : 0U;
-    energy_stream_pair(&energy->stream, energy->decoder.sequence, energy->decoder.last_voltage,
-                       energy->decoder.last_current, flags);
+                          : decoder->last_current < energy->under_range_code ? ENERGY_STREAM_PAIR_UNDER_RANGE
+                                                                              : 0U;
+    energy_stream_pair(&energy->stream, decoder->sequence, decoder->last_voltage, decoder->last_current, flags);
     if (!energy->calibrated) {
         return;
     }
-    bool const low = energy_low_range(energy->decoder.last_range);
-    uint32_t const shunt_na = energy_shunt_na(energy->decoder.last_current, low ? &energy->low_range : &energy->high_range);
+    bool const low = energy_low_range(decoder->last_range);
+    uint32_t const shunt_na = energy_shunt_na(decoder->last_current, low ? &energy->low_range : &energy->high_range);
     energy->on_high_range = !low;
     if (!low && (shunt_na >= energy->rearm_below_na)) {
         energy->rearm_blocked = true;
     }
-    uint32_t const mv = energy_voltage_mv(energy->decoder.last_voltage, energy->full_scale_mv);
+    uint32_t const mv = energy_voltage_mv(decoder->last_voltage, energy->full_scale_mv);
     bool const switched = low != energy->previous_low;
     bool const before_known = energy->previous_known;
     uint32_t const before_na = energy->previous_na;
@@ -85,6 +83,12 @@ static inline void energy_consume_result(struct energy_integration* energy, uint
         return;
     }
     energy_add_pair(total, mv, shunt_na);
+}
+
+static inline void energy_consume_result(struct energy_integration* energy, uint32_t result, energy_total_t* total) {
+    if (energy_sample_feed(&energy->decoder, result)) {
+        energy_consume_pair(energy, &energy->decoder, total);
+    }
 }
 
 /** A pair still waiting for the next one when capture pauses: its own reading is all there is. */

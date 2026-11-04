@@ -89,18 +89,24 @@ static inline bool energy_consume_until(struct energy_integration* energy, uint3
     energy_total_t total = energy_accumulator_values();
     uint32_t index = (energy->consumed_bytes / sizeof(uint32_t)) & (ring_words - 1U);
     uint32_t left = bytes / sizeof(uint32_t);
+    // A copy the compiler can keep in registers. CPU 1 reads the decoder only under the sequence
+    // count, which stays odd until it is written back below.
+    energy_sample_decoder_t decoder = energy->decoder;
     // To the ring's end, then on from its start.
     while (left != 0U) {
         uint32_t const run = left < (ring_words - index) ? left : (ring_words - index);
         volatile uint32_t const* word = &energy->ring[index];
         volatile uint32_t const* const end = word + run;
         while (word != end) {
-            energy_consume_result(energy, *word, &total);
+            if (energy_sample_feed(&decoder, *word)) {
+                energy_consume_pair(energy, &decoder, &total);
+            }
             word++;
         }
         left -= run;
         index = 0U;
     }
+    energy->decoder = decoder;
     energy->consumed_bytes = written;
     energy_accumulator_publish(&total, energy->scale_q32);
     energy_accumulator_write_end();
