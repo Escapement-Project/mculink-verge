@@ -192,8 +192,8 @@ static uint8_t* append(uint8_t* out, uint8_t const* descriptor, size_t length) {
 /** Verge Aux's interface number, for the MS OS 2.0 set: whatever the interfaces before it leave. */
 static uint8_t aux_interface;
 
-/** Built on each request from the functions present, in this interface order: CMSIS-DAP v2,
- *  VCOM, CMSIS-DAP v1, VCOM2, then Verge Aux. src/vcom.c numbers its CDC instances by the same rule.
+/** Built on each request from the functions present, in interface order (ARCHITECTURE.md, "The
+ *  configuration", gives the order and why). src/vcom.c numbers its CDC instances by the same rule.
  *  `bulk` is every bulk endpoint's size: high speed allows only 512, full speed at most 64. TinyUSB
  *  checks neither in a release build. */
 static uint8_t const* build_configuration(uint8_t* config, uint8_t type, uint16_t bulk) {

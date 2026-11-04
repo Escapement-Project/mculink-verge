@@ -1147,11 +1147,10 @@ def usb_string(probe: Machine, index: int) -> str:
 
 
 def expected_layout(board: int, jumpers: int) -> tuple[int, set[int], int]:
-    """Interfaces, endpoints and functions of the one layout: CMSIS-DAP v2 on EP1 and v1 on EP3,
-    VCOM on EP2 with its notification at 0x86, VCOM2 on EP4 with its notification at 0x87, and Verge
-    Aux on EP5, last. A function the board lacks or a jumper turns off is left out: the SWD jumper
-    takes both CMSIS-DAP interfaces, as stock's does, and leaves Verge Aux. The functions are
-    bcdDevice's low byte: 1 debug, 2 VCOM, 4 VCOM2, 8 Verge Aux."""
+    """Interfaces, endpoints and functions of the one layout, ARCHITECTURE.md's "The configuration".
+    A function the board lacks or a jumper turns off is left out: the SWD jumper takes both CMSIS-DAP
+    interfaces, as stock's does, and leaves Verge Aux. The functions are bcdDevice's low byte: 1
+    debug, 2 VCOM, 4 VCOM2, 8 Verge Aux."""
     interfaces, endpoints, functions = 0, set(), 0
     if not jumpers & 2:
         interfaces += 2
