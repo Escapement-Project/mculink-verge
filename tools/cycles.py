@@ -614,8 +614,9 @@ class TimedJtagTarget:
 
     It reads TMS and TDI on each rising TCK edge and launches TDO on each falling one. The probe
     sees a bit from `latency` cycles after the falling-edge store that launched it until `hold`
-    cycles after the next one (a CC1312R1 switched to JTAG: 8, and 6); in between the two it reads
-    the old bit, and the read's late margin says so.
+    cycles after the next one; in between the two it reads the old bit, and the read's late margin
+    says so. A CC1312R1 switched to JTAG after a pin reset gives 7 and 6 (CJTAG.md); the default
+    latency, 8, is an earlier measurement's.
     """
 
     def __init__(self, tap: "RecordingTap", latency: int = 8, hold: int = 6):

@@ -228,23 +228,23 @@ than the adapter wants swallows the next command scans.
 - The fix belongs in the host: probe-rs's cJTAG branch joins in `icepick.rs` with 256 clocks
   rather than 10, over 5 us up to 50 MHz.
 
-## JTAG on this part (measured 2026-10-17)
+## JTAG on this part (measured 2026-10-17, windows again 2026-10-19)
 
 - After a pin reset the adapter is two-pin JScan: TDO is not driven. JTAG needs probe-rs
   icepick.rs `ctag_to_jtag` first (BYPASS, zero-bit scans x2, 1-bit scan, STC2 = 2-bit scan,
   operand 9 = 9-bit scan, BYPASS, IDCODE).
-- TDO window, sample offset from the falling-edge store that launches the bit (IDCODE reads, 5
-  repeats, P = 6, 8, 10, 12, 16, 20, 30): good from +8 to next fall + 6, bad at +7 and at next
-  fall + 7. One cycle narrower than the period; the extra cycle at the front is likely bit 0, whose
-  output enable switches on at that fall.
+- TDO window, sample offset from the falling-edge store that launches the bit (IDCODE reads, 10
+  repeats): the DAP's from +7 to next fall + 6 after a pin reset, the ICEPick's from +6 to next
+  fall + 5. A first pass on 2026-10-17 put the DAP's at +8, from DPACC reads, which read right
+  early or late.
 - ARM's JTAG C path reads CPUID through probe-rs at 1..5 MHz and fails from 8 MHz, on the
   previous image as well as the generated one: not a regression. Cause: the ICEPick join (above), a
   host matter.
 - **JTAG's TDO is late after a system reset.** probe-rs's JTAG reset (AON_PMCTL SYSRESET)
-  leaves the routed DAP sending TDO about 2 cycles later until the next pin reset: window from
-  +10 to next fall + 8, against +8 to next fall + 7 after nRESET (measured by routing the DAP and timing its DPACC scan, and the ICEPick's own TDO). The generated transfers read the acknowledge's last bit at
-  latency + 1, so they failed there while ARM's C path and probe-rs's scans, which sample late,
-  did not. Fixed: JTAG latency default 10, and that bit sampled as late as the
+  leaves the routed DAP sending TDO later until the next pin reset: window from +11 (+10
+  marginal) to next fall + 8, and the ICEPick's from +10. The generated transfers read the
+  acknowledge's last bit at latency + 1, so they failed there while ARM's C path and probe-rs's
+  scans, which sample late, did not. Fixed: JTAG latency default 10, and that bit sampled as late as the
   decision allows (at least latency + 4 on unmasked clocks). Cost: the JTAG clock floor was
   6 cycles (25 MHz), not 5, until the probe measured the latency at connect. A target that answers
   within 8 cycles runs at 30 MHz again (README.md, "Limits").
