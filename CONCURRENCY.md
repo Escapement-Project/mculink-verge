@@ -227,8 +227,10 @@ The DMA interrupt sets `energy_range_retry_pending` when a segment shows the cur
 below the low range's limit. CPU 0's loop then clocks the range latch (P0_17), with every interrupt
 off from its last timing check to the edge, reading CTimer 2 to find a gap between pairs. CPU 1
 clears `energy_range_retry_enabled` and the pending flag before it pauses a capture, and a start
-sets enabled again. A re-arm already past its check of enabled can still clock the latch after
-that; the start's own edge, which it sends whatever P0_17 was left at, covers it. Once CPU 1 has
+that switches automatically sets enabled again. A re-arm already past its check of enabled can still
+clock the latch after that; the start's own edge, which it sends whatever P0_17 was left at, covers
+it. A start that holds the high range leaves enabled clear and holds U18's reset first, so a late
+edge cannot reach the latch. Once CPU 1 has
 the quiet acknowledgement, which comes from the same loop, no re-arm is under way.
 
 ### A latency measurement

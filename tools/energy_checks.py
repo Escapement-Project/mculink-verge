@@ -90,7 +90,8 @@ def machine(elf, symbols):
 
 
 # struct energy_integration's members (src/dap_shared.h), which image.py lays out.
-INTEGRATION_FIELDS = ("low_range", "high_range", "scale_q32", "full_scale_mv", "rearm_below_na", "segments_at_start",
+INTEGRATION_FIELDS = ("high_range_only", "under_range_code", "low_range", "high_range", "scale_q32", "full_scale_mv", "rearm_below_na",
+                      "segments_at_start",
                       "segment_words", "calibrated", "running", "consumed_bytes", "decoder", "on_high_range", "rearm_blocked",
                       "previous_low", "held", "held_mv", "held_na", "held_weight_q16", "held_before_na",
                       "previous_known", "previous_na", "switch_weight_q16", "rearm_between_pairs", "trigger_ticks",
@@ -207,7 +208,9 @@ class Circuit:
 class Gpio:
     """Ports 0 and 1 of the ordinary GPIO, with U18 behind them: clock P0_17, reset P0_29, Q on
     P0_30. `comparator` gives CMP0_OUT's level, which P0_29 carries in function 7. `took_29` records
-    whether anything made P0_29 an output."""
+    whether anything made P0_29 an output. After `watch_29`, `trace` gets what drives P0_29 after
+    each GPIO or IOCON write, and an IOCON write that pulls U18's reset low clears the latch. Without
+    it, only GPIO writes reach the latch."""
 
     def __init__(self, probe, comparator=lambda: 1):
         self.probe = probe
@@ -216,11 +219,32 @@ class Gpio:
         self.q = 0
         self.comparator = comparator
         self.took_29 = False
+        self.trace = None
         probe.uc.mem_unmap(ORDINARY_GPIO, 0x4000)
         probe.uc.mmio_map(ORDINARY_GPIO, 0x4000, self.read, None, self.write, None)
 
     def function_29(self):
         return int.from_bytes(self.probe.uc.mem_read(IOCON_BASE + 29 * 4, 4), "little") & 0xF
+
+    def driver_29(self, function=None):
+        """"comparator", or the GPIO driving "low" or "high", or "floating": a GPIO input with no pull."""
+        function = self.function_29() if function is None else function
+        if function == 7:
+            return "comparator"
+        if function == 0 and self.dir[0] >> 29 & 1:
+            return "high" if self.out[0] >> 29 & 1 else "low"
+        return "floating" if function == 0 else f"function {function}"
+
+    def watch_29(self):
+        self.trace = []
+
+        def iocon(uc, access, at, size, value, data):
+            driver = self.driver_29(value & 0xF)
+            self.trace.append(driver)
+            if driver == "low" or driver == "comparator" and not self.comparator():
+                self.q = 0
+
+        return self.probe.uc.hook_add(UC_HOOK_MEM_WRITE, iocon, begin=IOCON_BASE + 29 * 4, end=IOCON_BASE + 29 * 4 + 3)
 
     def reset_level(self):
         if self.function_29() == 0 and self.dir[0] >> 29 & 1:
@@ -258,6 +282,8 @@ class Gpio:
         elif register == 0x2400:
             self.dir[port] &= ~value
         self.took_29 |= bool(self.dir[0] >> 29 & 1)
+        if self.trace is not None and port == 0:
+            self.trace.append(self.driver_29())
         if not self.reset_level():
             self.q = 0
         elif not clock and self.out[0] >> 17 & 1:
@@ -632,7 +658,9 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     def result(command, code):
         return 0x80070000 | command << 24 | code
 
-    def setup():
+    def setup(ranges=0):
+        """`ranges` sets 0x90 mode 14's setting for the starts: automatic (0) unless said. None
+        keeps the image's own."""
         probe = dual_machine(elf0, symbols0, elf1, symbols1)
         dma = Dma(probe)
         adc = Adc(probe)
@@ -673,6 +701,8 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
             local(name, value)
         if "identity_initialized" in probe.sym:
             local("identity_initialized", 1)
+        if ranges is not None:
+            local("next_ranges", ranges)
         # What a start publishes for CPU 0: the plain board's full scale, the 350 mA setting's limit.
         # The capture is under way on the high range, which every sample here reads.
         for field, value, size in (("running", 1, 1), ("calibrated", 1, 1), ("scale_q32", FIXTURE_SCALE, 8),
@@ -780,6 +810,70 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         probe.uc.hook_del(hook)
     c.note("ADC monitor command registers at averaging boundaries use the actual timer rate; segments hold"
            " about 1 ms of pairs")
+
+    # The range setting (0x90 mode 14). Automatic, the boot default, gives P0_29 to the comparator
+    # and clocks the latch to the low range. High only holds U18's reset low from P0_29 as an
+    # output, so no clock reaches the latch and CPU 0 never re-arms. The setting is the next new
+    # start's alone: a resume keeps its capture's, and the start after takes automatic again. A
+    # refused value changes nothing. Neither way may P0_29 float or drive U18's reset high on the
+    # way: the output register starts with P0_29 set, as if left so.
+    for ranges in (None, 0, 1):
+        probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup(ranges=None)
+        gpio = Gpio(probe)
+        probe.uc.mem_write(IOCON_BASE + 29 * 4, u32(7))  # CMP0_OUT, as pins_init leaves it
+        gpio.out[0] |= 1 << 29
+        pin_hook = gpio.watch_29()
+        if ranges is not None:
+            reply = probe.command(bytes([0x90, 14, ranges]))
+            c.check(reply == bytes([0x90, 0, 0]), f"ranges {ranges}: mode 14 replied {reply.hex()}")
+        refused = probe.command(bytes([0x90, 14, 2]))
+        c.check(refused == bytes([0x90, 0, 5]), f"mode 14 took 2, the low range alone: {refused.hex()}")
+
+        def state():
+            held = gpio.function_29() == 0 and gpio.dir[0] >> 29 & 1 and not gpio.out[0] >> 29 & 1
+            freed = gpio.function_29() == 7 and not gpio.dir[0] >> 29 & 1
+            return (bool(held), bool(freed), gpio.q, get("energy_range_retry_enabled", 1),
+                    probe.energy.get("high_range_only", 1), probe.energy.get("previous_low", 1))
+
+        def expect(high, label):
+            wanted = (True, False, 0, 0, 1, 0) if high else (False, True, 1, 1, 0, 1)
+            c.check(state() == wanted, f"{label}: (held, comparator, latch, re-arm, flag, range before) {state()}")
+            unsafe = [driver for driver in gpio.trace if driver not in ("comparator", "low")]
+            c.check(not unsafe, f"{label}: P0_29 on the way {gpio.trace}")
+            gpio.trace.clear()
+
+        high = ranges == 1
+        name = "high only" if high else "automatic"
+        c.check(probe.call("energy_capture_start", 1) == 1, f"{name}: start failed")
+        expect(high, name)
+        # The other setting, asked for while this capture runs, waits for the next new start.
+        c.check(probe.command(bytes([0x90, 14, 0 if high else 1]))[2] == 0, f"{name}: mode 14 refused")
+        pause()
+        c.check(probe.call("energy_capture_start", 0) == 1, f"{name}: resume failed")
+        expect(high, f"{name}, resumed after mode 14 asked for the other")
+        pause()
+        c.check(probe.call("energy_capture_start", 1) == 1, f"{name}: next start failed")
+        expect(not high, f"{name}, the next start")
+        # No mode 14 since: automatic.
+        pause()
+        c.check(probe.call("energy_capture_start", 1) == 1, f"{name}: the start after failed")
+        expect(False, f"{name}, the start after with no mode 14")
+        probe.uc.hook_del(pin_hook)
+        probe.uc.hook_del(hook)
+    # The under-range threshold a start publishes: the floor plus calibration's margin, and none
+    # without a calibration.
+    for calibrated in (1, 0):
+        probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+        local("current_calibrated", calibrated)
+        local("high_floor_code", 100)
+        c.check(probe.call("energy_capture_start", 1) == 1, "under-range threshold: start failed")
+        threshold = probe.energy.get("under_range_code", 2)
+        c.check(threshold == (164 if calibrated else 0),
+                f"{'calibrated' if calibrated else 'uncalibrated'}: under-range threshold {threshold}")
+        probe.uc.hook_del(hook)
+    c.note("energy ranges: automatic by default gives the comparator the latch and starts low; high only holds U18"
+           " clear from P0_29 with no re-arm, P0_29 never floating or high on the way; mode 14 is the next new"
+           " start's alone; it refuses the low range alone")
 
     # A start hands CPU 0 what CPU 1 holds, whatever the struct held before: the tables, whether
     # they are good, the rate's scale, the board's full scale and the setting's re-arm limit.
@@ -1455,6 +1549,10 @@ def check_calibration(c, elf, symbols, offsets, model_syscon):
     for setting_ma, (low_loads, high_loads, high_points) in plans.items():
         probe, gpio, circuit, adc, ok, tables = run(setting_ma)
         c.check(ok, f"{setting_ma} mA: calibration failed on nominal parts")
+        # The high range's no-load reading, kept for the stream's under-range mark.
+        floor = int.from_bytes(probe.uc.mem_read(probe.sym["high_floor_code"], 2), "little")
+        c.check(floor == circuit.current_code(3.3 / 660e3, False),
+                f"{setting_ma} mA: kept a floor of {floor}, against {circuit.current_code(3.3 / 660e3, False)}")
         c.check(tables[True][3] == len(low_loads) + 1 and tables[False][3] == high_points,
                 f"{setting_ma} mA: points {tables[True][3]} low, {tables[False][3]} high")
         loads_seen = {low: {pin for q, loads in adc.states if q == low for pin in Circuit.LOADS if loads >> pin & 1}
@@ -1578,6 +1676,14 @@ def check_stream(c, setup, result, offsets, local_symbols):
                 and u32_at(h, 9) == 1 and h[13] == 1, f"stream: header fields {h[:14].hex()}")
         c.check(h[14] == 2 and u16_at(h, 15) == 0 and u16_at(h, 21) == 65535 and h[39] == 2 and h[64] == 0,
                 f"stream: header tables {h[14:66].hex()}")
+    # High only (0x90 mode 14): the range before the first pair is the high one, and the flags say
+    # the capture holds it.
+    held, _, _, _, _, held_local, *_, held_hook = setup(ranges=1)
+    c.check(start(held, held_local, stamp), "stream: a high-only start failed")
+    header = messages(held)
+    c.check(len(header) == 1 and len(header[0]) == 75 and header[0][13] == 0 and header[0][70] & 4 == 4,
+            f"stream: a high-only start's header {header[0].hex() if header else None}")
+    held.uc.hook_del(held_hook)
     # CPU 1 drains ten pairs at a pause: one message, timed from the start's stamp.
     feed(pairs(10))
     written(30)
@@ -1589,6 +1695,20 @@ def check_stream(c, setup, result, offsets, local_symbols):
     if got and len(got[0]) == 16 + 50:
         c.check(all(u16_at(got[0], 16 + 5 * i) == 1000 + i and u16_at(got[0], 18 + 5 * i) == 2000 + i and
                     got[0][20 + 5 * i] == i % 2 for i in range(10)), "stream: drained pair codes or ranges")
+    # A high-range pair under the start's threshold, the floor plus calibration's margin, is marked
+    # under range: bit 1 instead of 0. One on the threshold is not. Low-range pairs keep bit 0 alone.
+    marked, _, _, _, _, marked_local, marked_written, marked_feed, marked_pause, _, marked_hook = setup()
+    marked_local("high_floor_code", 2004 - 64)
+    c.check(start(marked, marked_local, stamp), "stream: a start with a floor failed")
+    messages(marked)
+    marked_feed(pairs(10))
+    marked_written(30)
+    marked_pause()
+    got = messages(marked)
+    flags = [got[0][20 + 5 * i] for i in range(10)] if got and len(got[0]) == 16 + 50 else None
+    c.check(flags == [1 if i % 2 else 2 if 2000 + i < 2004 else 0 for i in range(10)],
+            f"stream: under-range marks around a threshold of 2004 {flags}")
+    marked.uc.hook_del(marked_hook)
     # The resume restarts the timer 5 ms of counts after the start's stamp; CPU 0's interrupt
     # integrates a whole segment: the first message after it says time jumped.
     probe.uc.mem_write(CTIMER4_TC, u32((stamp + 480_000) & 0xFFFFFFFF))

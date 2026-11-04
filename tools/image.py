@@ -925,7 +925,8 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: 
     stream_shared = shared_offsets(slots, "energy_integration", "energy_available", "energy_dma_error",
                                    "energy_control_ack", small_enums=short_enums(elf0))
     stream_layout = shared_offsets(slots, "running", "setting", "full_scale_mv", "previous_low", "previous_known",
-                                   "previous_na", "switch_weight_q16", "rearm_between_pairs", "low_range",
+                                   "previous_na", "switch_weight_q16", "rearm_between_pairs", "high_range_only",
+                                   "low_range",
                                    "high_range", "decoder", "stream.written", "stream.sent", "stream.length",
                                    "stream.active", "stream.next_sequence", "stream.period",
                                    "stream.clock_hz", "stream.timeline_pending", "capture_id", "capture_id_sequence", small_enums=short_enums(elf0),

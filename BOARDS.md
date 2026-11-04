@@ -138,7 +138,9 @@ Sources.
   the sheet's own equation. It goes to ADC0_8 on PIO0_16 and to the comparator's input D on
   PIO1_14.
 - **The voltage.** Two 330 kΩ resistors halve the voltage on the target side of the sense
-  resistors, and a buffer takes it to ADC0_0 on PIO0_23. The divider draws its current through the sense
+  resistors, and a buffer takes it to ADC0_0 on PIO0_23. C61, 1 nF across the lower resistor,
+  filters it with a time constant of 165 µs, so the reading follows a step in the supply that much
+  late (sheet 7). The divider draws its current through the sense
   resistor: 5.0 µA at 3.3 V and 2.7 µA at 1.8 V, as the sheet's note on bleeding resistors says.
 - **The reference.** An LM4040 at 3.0 V drives the VREF net (sheet 2). VREF is the ADC's VREFP.
   It also reaches the comparator's ladder input, ACMPVREF on PIO1_19 (sheet 3). And it feeds a
@@ -204,10 +206,18 @@ the probe's target supply can give.
   whenever it gets to it.
 - **What a switch down does to the target.** The low range's resistor goes back in series, and
   the target's supply falls by the drop above. The target's decoupling gives up part of its
-  current while the supply settles, so for about a millisecond the reading dips. The current
-  rises further on the low range before a switch up, as the decoupling feeds the target, until
-  it reaches the threshold. The switch up then recharges the decoupling in a spike of a few
-  microseconds. The energy total misses most of that spike (Accuracy limits).
+  current while the supply settles, so for about a millisecond the reading dips. On the L1306
+  LaunchPad the reading fell from 1.13 mA to 0.31 mA and came back with a time constant of
+  0.22 ms. That is 50 Ω times about 4 µF, the LaunchPad's decoupling: 4.4 µF from the time
+  constant, 3.8 µF from the charge the dip missed.
+  The current rises further on the low range before a switch up, as the decoupling feeds the
+  target, until it reaches the threshold. The switch up then recharges the decoupling in a spike of
+  a few microseconds. The energy total misses most of that spike (Accuracy limits).
+- **Holding the high range.** `0x90` mode 14 can hold the high range for a capture instead
+  (HOST-INTERFACE.md). The firmware drives U18's reset low from PIO0_29 as a GPIO output, as
+  calibration does, so the latch stays clear whatever the comparator says, and CPU 0 never
+  re-arms. Nothing switches, so none of the above happens to the target. The cost is that small
+  currents read unreliably (Accuracy limits).
 
 ### Calibration
 
@@ -230,10 +240,9 @@ With 5 ms it read it right.
   scale (the table below).
 - **The point with no load.** With no load on, only the divider's 5 µA flows. The low ranges take
   that as a point too. The high ranges cannot: their sense resistors turn 5 µA into microvolts, and
-  the amplifier's output does not go that low. On one unit it stopped at about 57 ADC codes, which
-  in the 350 mA setting's high range is about 0.3 mA. The divider keeps the low ranges clear of
-  that floor whenever the target is powered: 2.7 µA at 1.8 V is still 88 codes in the 350 mA
-  setting and 355 in the 50 mA setting.
+  the amplifier's output does not go that low. On one unit it stopped at about 57 ADC codes. The
+  divider keeps the low ranges clear of that floor whenever the target is powered: 2.7 µA at 1.8 V
+  is still 88 codes in the 350 mA setting and 355 in the 50 mA setting.
 - **Below the lowest point.** A table extends its first segment below its lowest point. The
   amplifier's output bends up as it nears its floor, so a reading there comes out high. Extended
   down from R3, the 350 mA setting's high range read R1's 0.5 mA 4% high on one unit, so R1 can be
@@ -283,6 +292,13 @@ With 5 ms it read it right.
   resistance right; a current past that boot's full scale saturates.
 - The low range lowers the target's supply (the drop across the sense resistors), so a target
   whose current follows its supply draws differently on the two ranges, and is read that way.
+- The high range reads unreliably within 64 codes of the amplifier's output floor (Calibration,
+  "The point with no load"), where calibration keeps no point. The stream marks a high-range pair
+  there under range, in either range setting. In the 350 mA setting the mark starts at about
+  0.36 mA. Scaled to the 50 mA setting's shunt it is about 46 µA, which has not been measured. A
+  target asleep at 166 µA, as the low range read it, read between 137 and 363 µA under the mark. A
+  capture that holds the high range reads every current under the mark this way. One that switches
+  automatically does so only between a fall and its switch down.
 - The calibration switches are counted at their typical on-resistance. Their spread moves the
   350 mA setting's high range by up to about 0.3%, through R4.
 - The sheet gives no tolerance for the divider. It moves the current taken off each sample, which

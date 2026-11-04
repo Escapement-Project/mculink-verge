@@ -75,6 +75,14 @@ int main(void) {
         prefixes(bytes, 3U, 2U);
         assert(check(bytes, sizeof(bytes), 2U, true).consumed == 3U);
     }
+    {
+        // Mode 14 carries its setting in the request, so a batch reads the next command after it.
+        uint8_t bytes[64] = {0x90U, 14U, 1U};
+        prefixes(bytes, 3U, 3U);
+        assert(check(bytes, 3U, 3U, true).produced == 3U);
+        check(bytes, 3U, 2U, false);
+        assert(check(bytes, sizeof(bytes), 3U, true).consumed == 3U);
+    }
     for (uint32_t capacity = 64U; capacity <= 512U; capacity += 448U) {
         prefixes((uint8_t[]){0x11, 0x80, 0x96, 0x98, 0}, 5U, capacity);
         prefixes((uint8_t[]){0x06, 0, 1, 0, 0, 0x80, 0xff, 0, 0x80}, 9U, capacity);

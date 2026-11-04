@@ -55,6 +55,16 @@ static inline void energy_latch_clock(void) {
  *  or the setting has changed. Waits for CPU 0 to reach its loop. */
 void energy_monitor_calibrate(void);
 
+/** What a capture may measure the current on (`0x90` mode 14, HOST-INTERFACE.md). Automatic is the
+ *  default. A low range alone is not offered: holding it would take the comparator's switch up,
+ *  the only protection a target drawing past its full scale has, off U18's reset. */
+#define ENERGY_RANGES_AUTO 0U
+#define ENERGY_RANGES_HIGH 1U
+
+/** Sets the ranges the next capture's start uses; after it, automatic again. A running capture
+ *  keeps its own. */
+[[nodiscard]] energy_monitor_status_t energy_monitor_set_ranges(uint8_t ranges);
+
 /** Start timer-triggered ADC capture at `rate_hz` paired samples per second. */
 [[nodiscard]] energy_monitor_status_t energy_monitor_start(uint32_t rate_hz);
 /** The same, with Verge Aux's stream beginning at its first pair (src/energy_stream.h) and reporting

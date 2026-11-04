@@ -74,6 +74,20 @@ static void test_header(void) {
     assert(take(&stream, &length) == NULL);
 }
 
+/** A capture that holds the high range sets the flags' bit 2, beside the others. */
+static void test_high_range_only_header(void) {
+    static struct energy_stream stream;
+    reset_stream(&stream);
+    energy_stream_header_t const header = {
+        .rate_hz = CLOCK_HZ / PERIOD, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = 1U,
+        .previous_low = false, .low = &low, .high = &high, .switch_weight_q16 = 24576U,
+        .rearm_between_pairs = true, .high_range_only = true};
+    assert(energy_stream_begin(&stream, &header));
+    uint16_t length = 0U;
+    uint8_t const* m = take(&stream, &length);
+    assert(m != NULL && length == ENERGY_STREAM_HEADER_BYTES && m[13] == 0U && m[70] == 5U);
+}
+
 static void test_identified_header(void) {
     static struct energy_stream stream;
     reset_stream(&stream);
@@ -902,6 +916,7 @@ static void test_ns(void) {
 
 int main(void) {
     test_header();
+    test_high_range_only_header();
     test_identified_header();
     test_pairs();
     test_ten_ms();

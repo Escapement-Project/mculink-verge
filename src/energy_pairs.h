@@ -44,8 +44,12 @@ static inline void energy_consume_result(struct energy_integration* energy, uint
     if (!energy_sample_feed(&energy->decoder, result)) {
         return;
     }
+    bool const read_low = energy_low_range(energy->decoder.last_range);
+    uint8_t const flags = read_low ? ENERGY_STREAM_PAIR_LOW
+                          : energy->decoder.last_current < energy->under_range_code ? ENERGY_STREAM_PAIR_UNDER_RANGE
+                                                                                     : 0U;
     energy_stream_pair(&energy->stream, energy->decoder.sequence, energy->decoder.last_voltage,
-                       energy->decoder.last_current, energy_low_range(energy->decoder.last_range));
+                       energy->decoder.last_current, flags);
     if (!energy->calibrated) {
         return;
     }

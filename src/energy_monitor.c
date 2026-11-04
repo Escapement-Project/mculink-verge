@@ -61,6 +61,9 @@ static_assert(ENERGY_SEGMENTS == 2U, "a completion flag for each half");
 
 static uint32_t requested_rate_hz;
 static uint32_t actual_rate_hz;
+/** What the next capture's start uses (`0x90` mode 14). That start takes it and leaves automatic,
+ *  so a host that never asks always gets the default. */
+static uint8_t next_ranges = ENERGY_RANGES_AUTO;
 /** Set by energy_monitor_start_stream for the start it makes: Verge Aux's stream begins with it. */
 static bool stream_on_start;
 static uint8_t stream_dio_mask;
@@ -85,6 +88,8 @@ static bool inputmux_ready;
 static target_sense_current_range_t current_range;
 static energy_calibration_t low_range_calibration;
 static energy_calibration_t high_range_calibration;
+/** The high range's no-load reading, the amplifier's output floor; 0 until a calibration reads it. */
+static uint16_t high_floor_code;
 static bool current_calibrated;
 static bool accumulator_started;
 
@@ -330,6 +335,22 @@ static bool calibration_range(const calibration_load_t* const* loads, uint32_t m
     return calibration->count >= 2U;
 }
 
+/** U18's reset, CTRL_HIGH_CURR_DIS (PIO0_29): held low by the pin to keep the high range, or the
+ *  comparator's, which clears the latch by itself past the threshold (BOARDS.md, "Range
+ *  switching"). Calibration drives the pin itself and hands it back to the comparator. */
+static void hold_high_range(bool hold) {
+    uint32_t const p29 = 1UL << 29U;
+    if (hold) {
+        // Low before the pin takes over, so the latch sees no release on the way.
+        GPIO->CLR[0] = p29;
+        GPIO->DIRSET[0] = p29;
+        IOCON->PIO[0][29] = IOCON_FUNC0 | IOCON_MODE_INACT | IOCON_DIGITAL_EN;
+    } else {
+        IOCON->PIO[0][29] = IOCON_FUNC7 | IOCON_SLEW_FAST | IOCON_DIGITAL_EN;
+        GPIO->DIRCLR[0] = p29;
+    }
+}
+
 /** U18's Q, CTRL_HIGH_CURR, read back on P0_30: high while Q3 is off and only the low range's
  *  shunt carries the current. */
 static bool latch_in_low_range(void) {
@@ -341,6 +362,7 @@ __attribute__((noinline)) static bool current_calibrate(void) {
     current_calibrated = false;
     low_range_calibration = (energy_calibration_t){0};
     high_range_calibration = (energy_calibration_t){0};
+    high_floor_code = 0U;
     if (current_range == TARGET_SENSE_CURRENT_RANGE_UNKNOWN) {
         return false;
     }
@@ -371,6 +393,7 @@ __attribute__((noinline)) static bool current_calibrate(void) {
     bool const high_ok = !latch_in_low_range() && (calibration_point(&no_load, &floor_code, &floor_na) == POINT_OK) &&
                          calibration_range(wide ? loads_350_high : loads_50_high,
                                            floor_code + CALIBRATION_FLOOR_MARGIN, &high_range_calibration);
+    high_floor_code = floor_code;
 
     GPIO->CLR[1] = CAL_DISC | loads;
     IOCON->PIO[0][29] = IOCON_FUNC7 | IOCON_SLEW_FAST | IOCON_DIGITAL_EN;
@@ -600,7 +623,7 @@ static void capture_stream_begin(struct energy_integration* energy, bool identif
         .setting = energy->setting,
         .full_scale_mv = (uint16_t)energy->full_scale_mv,
         .first_sequence = 1U,
-        .previous_low = true,
+        .previous_low = energy->previous_low,
         .low = &low_range_calibration,
         .high = &high_range_calibration,
         .dio_mask = pins,
@@ -610,6 +633,7 @@ static void capture_stream_begin(struct energy_integration* energy, bool identif
         .capture_id = identified ? &next_identity : nullptr,
         .switch_weight_q16 = energy->switch_weight_q16,
         .rearm_between_pairs = energy->rearm_between_pairs,
+        .high_range_only = energy->high_range_only,
     };
     (void)energy_stream_begin(stream, &header);
 }
@@ -625,11 +649,16 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     DMA0->COMMON[0].INTA = ENERGY_DMA_MASK;
     DMA0->COMMON[0].INTB = ENERGY_DMA_MASK;
     energy->segments_at_start = dap_shared.energy_segments;
+    if (new_session) {
+        energy->high_range_only = next_ranges == ENERGY_RANGES_HIGH;
+        next_ranges = ENERGY_RANGES_AUTO;
+    }
+    hold_high_range(energy->high_range_only);
     dap_shared.energy_range_retry_pending = 0U;
-    dap_shared.energy_range_retry_enabled = 1U;
+    dap_shared.energy_range_retry_enabled = energy->high_range_only ? 0U : 1U;
     energy->on_high_range = false;
     energy->rearm_blocked = false;
-    energy->previous_low = true;
+    energy->previous_low = !energy->high_range_only;
     energy->held = false;
     energy->previous_known = false;
     switch_timing(energy, requested_rate_hz, actual_rate_hz);
@@ -642,6 +671,8 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     energy->calibrated = current_calibrated;
     energy->full_scale_mv = target_sense_full_scale_mv();
     energy->rearm_below_na = rearm_below_na();
+    // Where calibration would not keep a point: a high-range reading there is unreliable.
+    energy->under_range_code = current_calibrated ? (uint16_t)(high_floor_code + CALIBRATION_FLOOR_MARGIN) : 0U;
     energy->setting = (current_range == TARGET_SENSE_CURRENT_RANGE_350_MA) ? 1U
                       : (current_range == TARGET_SENSE_CURRENT_RANGE_50_MA) ? 2U : 0U;
     stamp_init();
@@ -702,7 +733,9 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     DMA0->CHANNEL[ENERGY_DMA_CHANNEL].XFERCFG =
         ENERGY_SEGMENT_XFERCFG(energy->segment_words, 0U) | DMA_CHANNEL_XFERCFG_SWTRIG_MASK;
     // An edge whatever P0_17 was left at: CPU 0's re-arm can raise it after a pause lowered it.
-    energy_latch_clock();
+    if (!energy->high_range_only) {
+        energy_latch_clock();
+    }
     uint32_t ticks = 0U;
     uint32_t const started = timer_start(requested_rate_hz, &ticks);
     energy_stream_timeline_run(stream, new_session, CLOCK_GetFroHfFreq(), ticks, started);
@@ -915,6 +948,17 @@ energy_monitor_status_t energy_monitor_start_identified(uint32_t rate_hz, bool s
                                                   : energy_monitor_start(rate_hz);
     stream_identified = false;
     return status;
+}
+
+energy_monitor_status_t energy_monitor_set_ranges(uint8_t ranges) {
+    if (!dap_shared.energy_available) {
+        return ENERGY_MONITOR_UNAVAILABLE;
+    }
+    if ((ranges != ENERGY_RANGES_AUTO) && (ranges != ENERGY_RANGES_HIGH)) {
+        return ENERGY_MONITOR_BAD_ARGUMENT;
+    }
+    next_ranges = ranges;
+    return ENERGY_MONITOR_OK;
 }
 
 energy_monitor_status_t energy_monitor_identity(energy_capture_id_t* id, uint32_t* rate) {

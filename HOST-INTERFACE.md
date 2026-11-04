@@ -82,7 +82,8 @@ the Pro's J15 jumper disabled USB-SIO when the probe started.
 
 Format 6 extended-capability bit 0 advertises energy capture on Pro units with HW_VER_5 fitted.
 Bit 8 advertises capture identities and conditional stops (`0x90` modes 8–13). It is set with
-bit 0.
+bit 0. Bit 9 advertises the range setting (`0x90` mode 14), the stream header's flag bit 2 and the
+pairs' under-range bit. It is set with bit 0.
 
 Bit 2 advertises accumulated energy reads through `0x90` mode 3. Bits 3 and 4 advertise SPI and I2C
 bridges on Pro units when J15 leaves USB-SIO enabled. Bit 5 advertises calibrated fields appended to
@@ -178,6 +179,7 @@ reply reports the timer's effective pair rate.
 | `[0x90, 2]` | Stop capture. Repeated stop requests are safe. |
 | `[0x90, 3]` | Read accumulated energy in nJ and the number of integrated pairs. |
 | `[0x90, 4, range]` | Read the calibration points of the low range (0) or the high range (1). |
+| `[0x90, 14, ranges]` | Set the current ranges the next start uses: 0 switches automatically, 1 holds the high range. Later starts switch automatically again. |
 
 Every recognized request returns `DAP_OK` followed by a result byte. Start replies with the
 effective rate as a u32 after the result. Latest replies with voltage code (u16), current code
@@ -194,6 +196,30 @@ Each pair contributes one sample period using the fixed effective capture rate. 
 is paused does not contribute. Neither does a read-latency measurement, which holds the conversion
 trigger: at a connection at fast clocks, again when a measurement contradicts itself, and on vendor
 `0x89` or `0x8A` mode 1. Reads do not reset the total, which remains readable after stop.
+
+Mode 14 sets which current ranges the next capture uses. 0, the default, switches automatically:
+the comparator moves to the high range as the current rises, and the firmware moves back to the
+low range once it falls (BOARDS.md, "Range switching"). 1 holds the high range for the whole
+capture. The next start takes the setting and puts the probe back to switching automatically, so
+a host that wants the high range sends mode 14 before every start. A running capture keeps the
+setting it started with, through every pause and resume; mode 14 sent while it runs is for the
+next start. Any other value returns `BAD_ARGUMENT` (5) and changes nothing. The low range alone is not offered: holding it would take
+away the switch up that protects a target drawing more than the low range's full scale. The reply is
+`[0x90, DAP_OK, result]`.
+
+The two settings trade differently:
+
+- **Switching automatically** reads small currents finely: 31 nA a code in the 350 mA setting and
+  7.6 nA in the 50 mA setting. But each switch disturbs the reading. For about a millisecond after
+  a switch down, the reading dips while the target's decoupling settles to the low range's lower
+  supply. And the energy total misses most of the recharge at a switch up (BOARDS.md, "Accuracy
+  limits").
+- **Holding the high range** disturbs nothing, so the reading follows the target's own current.
+  But the high range reads small currents unreliably. The stream marks a high-range pair under
+  range ("Pairs: `0xa0`") below about 0.36 mA in the 350 mA setting. Scaled to the 50 mA setting's
+  shunt, that is about 46 µA, which has not been measured. A target asleep at 166 µA, as the low
+  range read it, read between 137 and 363 µA on the high range. The energy total counts marked
+  pairs at their reading.
 
 Mode 4 returns `[0x90, DAP_OK, result, count, points]` in 28 bytes. `points` is four entries of an
 ADC code (u16) and the current through the sense resistor at that code in nA (u32), lowest first;
@@ -509,7 +535,7 @@ it. Format 1 has 75 bytes; format 2 has 99. Firmware from before step 5's fields
 | 6 | Jumper setting: 1 for 350 mA, 2 for 50 mA, 0 unknown |
 | 7–8 | Voltage full scale in mV, u16 |
 | 9–12 | Sequence number of the first pair the stream sends, u32 |
-| 13 | Range of the pair before that one: 1 low, 0 high; 1 at the start of a capture |
+| 13 | Range of the pair before that one: 1 low, 0 high. At the start of a capture, 1 when it switches automatically and 0 when it holds the high range |
 | 14 | Low range: point count `n`, up to 4 |
 | 15–38 | Low range: four points of code (u16) then current through the sense resistor in nA (u32), lowest first; points past `n` are zero |
 | 39 | High range: point count |
@@ -518,7 +544,7 @@ it. Format 1 has 75 bytes; format 2 has 99. Firmware from before step 5's fields
 | 65 | Their levels when the stream started; pins not reporting read 0 |
 | 66–67 | Edge time resolution in ns, u16; 0 when no pin reports |
 | 68–69 | Step 5's weight `w`, u16, 0 to 32,768 |
-| 70 | Step 5's flags: bit 0, a pair that switched down keeps its own current; bit 1, offsets 71–74 hold a current |
+| 70 | Step 5's flags: bit 0, a pair that switched down keeps its own current; bit 1, offsets 71–74 hold a current; bit 2, the capture holds the high range (`0x90` mode 14) |
 | 71–74 | Current through the sense resistor of the pair before the first one sent (step 3), nA, u32; 0 without bit 1 |
 
 Modes 9/10 select format 2. Offsets 0–67 keep this layout, with version 2. Offsets 68–91
@@ -554,7 +580,7 @@ The points are the ones `0x90` mode 4 reports.
 | 2–5 | Sequence number of this message's first pair, u32 |
 | 6–13 | Time of this message's first pair, in ns since the capture started, u64 |
 | 14–15 | Pair count `k`, u16, 1 to 99 |
-| 16 onward | `k` pairs of 5 bytes each: voltage code (u16), current code (u16), then a byte with bit 0 set on the low range |
+| 16 onward | `k` pairs of 5 bytes each: voltage code (u16), current code (u16), then a byte: bit 0 set on the low range; bit 1 set on a high-range pair under range, whose reading is unreliable |
 
 Pair `i` of a message (from 0) has sequence number `first + i` and was taken at
 `time + i × 1,000,000,000 / rate` ns. Its voltage and current are converted together from then,
@@ -564,6 +590,13 @@ target's supply voltage, and the next message sets flag bit 0. It holds the conv
 measures a read latency, as a debugger connects at a fast clock, and the next message sets bit 1.
 Either way the message's time shows how long it took. Only a pause ends the pairs' run for step 5
 below.
+
+A pair read on the high range is under range when its current code is less than 64 codes above the
+high range's no-load reading at the last calibration. Calibration keeps no point there, and the
+amplifier's output stops at that reading, so a reading there is unreliable. Both range settings
+mark these pairs. A capture that switches automatically reads some after the current falls,
+before it switches down. Nothing is marked under range without a calibration. Low-range pairs are
+never under range.
 
 A message holds at most 99 pairs and less than 10 ms of them, so it is shorter than 512 bytes. The
 probe sends it once it is full, or once the pairs it has taken in reach 10 ms. It takes pairs in a
@@ -669,8 +702,9 @@ digests of the conversion, and pair sequences with the totals they give.
      message after it sets flag bit 0, or when the stream ends. A hold, bit 1, does not end the run,
      and the pair before stays the pair before.
    - The header gives the range before the first pair a stream sends and, with its flag bit 1, the
-     step 3 current of the pair before it. After a pause the range before is the low range again,
-     as at a start: the probe sets the range to low as it resumes. A pause, a start and lost pairs
+     step 3 current of the pair before it. After a pause the range before is the low range again
+     in a capture that switches automatically, as at a start: the probe sets the range to low as it
+     resumes. A capture that holds the high range stays on it. A pause, a start and lost pairs
      leave no pair before.
 
 A host that wants the probe's total adds `mv × target_na` picowatts for each pair, scaled by

@@ -85,7 +85,8 @@
  *     [9+n]   scan formats, u32 LE    bit n: SCNFMT n offered (cJTAG_Offered); format 4 on
  *     [13+n]  extended capabilities   u32 LE; bit 0: energy capture; bit 2: accumulated energy;
  *                                     bits 3–4: SPI and I2C; bit 5: calibrated energy fields;
- *                                     bit 6: DIO on Verge Aux; bit 7: markers
+ *                                     bit 6: DIO on Verge Aux; bit 7: markers; bit 8: capture
+ *                                     identities; bit 9: the range setting
  *
  * A host checks the magic to know it is us, the flags to know what it may use, and the build
  * string to know which image it is talking to. The capability flags are what makes this worth
@@ -144,6 +145,8 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
 /// ID_VENDOR_MARK and the stream's markers message, set with CJTAG_EXT_CAP_ENERGY.
 #define CJTAG_EXT_CAP_MARKS (1U << 7)
 #define CJTAG_EXT_CAP_CAPTURE_ID (1U << 8)
+/// ID_VENDOR_ENERGY mode 14 sets the ranges a capture may use, and a stream header says which.
+#define CJTAG_EXT_CAP_ENERGY_RANGES (1U << 9)
 #ifdef SWD_CODEGEN
 #define CJTAG_CAPS_SWD CJTAG_CAP_SWD_CODEGEN
 #else
@@ -336,7 +339,8 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         }
         uint32_t const extended = (dap_shared.energy_available
                                        ? CJTAG_EXT_CAP_ENERGY | CJTAG_EXT_CAP_ENERGY_CALIBRATED |
-                                             CJTAG_EXT_CAP_ENERGY_ACCUMULATED | CJTAG_EXT_CAP_MARKS | CJTAG_EXT_CAP_CAPTURE_ID
+                                             CJTAG_EXT_CAP_ENERGY_ACCUMULATED | CJTAG_EXT_CAP_MARKS |
+                                             CJTAG_EXT_CAP_CAPTURE_ID | CJTAG_EXT_CAP_ENERGY_RANGES
                                        : 0U) |
                                   (pro_bus_available() ? CJTAG_EXT_CAP_SPI | CJTAG_EXT_CAP_I2C : 0U) |
                                   (dio_available() ? CJTAG_EXT_CAP_DIO_AUX : 0U);
@@ -544,6 +548,10 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         if (mode == 11U) {
             response[2] = (uint8_t)energy_monitor_stop_identified(request + 2U);
             return (26U << 16) | 3U;
+        }
+        if (mode == 14U) {
+            response[2] = (uint8_t)energy_monitor_set_ranges(request[2]);
+            return (3U << 16) | 3U;
         }
         if (mode == 12U) {
             energy_capture_id_t capture_id = {0};

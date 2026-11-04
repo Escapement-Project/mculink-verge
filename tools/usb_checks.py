@@ -729,6 +729,17 @@ def check_aux_stream(c, elf0, elf1, symbols0, symbols1, fields, layout):
     c.check(len(sent) == 2 and sent[0] == b"\x90\x00\x00" and len(sent[1]) == 99
             and sent[1][:2] == b"\xa1\x02" and sent[1][68:92] == token,
             f"protected attach boundary: {[m.hex() for m in sent]}")
+    # An attach's header, which CPU 0 builds, says whether the capture holds the high range (0x90
+    # mode 14): the flags at 94 in format 2.
+    for held in (False, True):
+        attached = fresh()
+        capture(attached)
+        attached.cpu0.uc.mem_write(attached.energy + layout["capture_id"], token)
+        field(attached, "high_range_only", int(held), 1)
+        arrive(attached, b"\x90\x0a\x00")
+        header = [m for m in drain(attached) if m[:1] == b"\xa1"]
+        c.check(len(header) == 1 and len(header[0]) == 99 and bool(header[0][94] & 4) == held,
+                f"an attach's header with the high range {'held' if held else 'free'}: {[m.hex() for m in header]}")
     for candidate, result in ((stale, 8), (bytes(24), 8), (token, 0), (token, 0)):
         before = bytes(usb.cpu0.uc.mem_read(usb.energy, symbols0["energy_integration"][1]))
         arrive(usb, b"\x90\x0d" + candidate)

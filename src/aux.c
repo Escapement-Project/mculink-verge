@@ -206,6 +206,7 @@ __attribute__((section(".ramfunc"))) static bool stream_command(void) {
             .rearm_between_pairs = energy->rearm_between_pairs,
             .previous_known = energy->previous_known,
             .previous_na = energy->previous_na,
+            .high_range_only = energy->high_range_only,
         };
         // A full ring: the host is not reading, and the header would be lost too.
         result = energy_stream_begin(stream, &header) ? 0U : 7U;

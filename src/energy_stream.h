@@ -30,6 +30,10 @@
 #define ENERGY_STREAM_MESSAGE_MAX 512U
 #define ENERGY_STREAM_PAIRS_MAX 99U
 #define ENERGY_STREAM_PAIR_BYTES 5U
+/** A pair's last byte: read on the low range, and read on the high range too near the amplifier's
+ *  floor to trust (`under_range_code`). */
+#define ENERGY_STREAM_PAIR_LOW 1U
+#define ENERGY_STREAM_PAIR_UNDER_RANGE 2U
 #define ENERGY_STREAM_PAIRS_FIXED 16U
 /** Format 1's fields, then step 5's: weight, flags and the current before (HOST-INTERFACE.md). */
 #define ENERGY_STREAM_HEADER_BYTES 75U
@@ -250,6 +254,8 @@ typedef struct {
     bool rearm_between_pairs;
     bool previous_known;
     uint32_t previous_na;
+    /** The capture holds the high range (`0x90` mode 14). */
+    bool high_range_only;
 } energy_stream_header_t;
 
 ENERGY_STREAM_INLINE void energy_stream_barrier(void) {
@@ -450,7 +456,8 @@ ENERGY_STREAM_INLINE bool energy_stream_begin(struct energy_stream* stream, ener
         }
     }
     out = energy_stream_u16(out, (uint16_t)header->switch_weight_q16);
-    *out++ = (uint8_t)((header->rearm_between_pairs ? 1U : 0U) | (header->previous_known ? 2U : 0U));
+    *out++ = (uint8_t)((header->rearm_between_pairs ? 1U : 0U) | (header->previous_known ? 2U : 0U) |
+                       (header->high_range_only ? 4U : 0U));
     out = energy_stream_u32(out, header->previous_known ? header->previous_na : 0U);
     energy_stream_publish(stream, header->capture_id != NULL ? ENERGY_STREAM_ID_HEADER_BYTES : ENERGY_STREAM_HEADER_BYTES);
     // Whatever the pin interrupt recorded before is an earlier stream's.
@@ -584,7 +591,7 @@ ENERGY_STREAM_INLINE uint64_t energy_stream_time(struct energy_stream* stream, u
  *  one (energy_stream_batch_begin), so a stream started mid-capture knows the time; appended while
  *  a stream runs. */
 ENERGY_STREAM_INLINE void energy_stream_pair(struct energy_stream* stream, uint32_t sequence, uint16_t voltage,
-                                             uint16_t current, bool low) {
+                                             uint16_t current, uint8_t flags) {
     if (stream->untimed) {
         return;
     }
@@ -619,7 +626,7 @@ ENERGY_STREAM_INLINE void energy_stream_pair(struct energy_stream* stream, uint3
     if (!stream->open_dropped) {
         uint8_t* out = stream->open_payload + stream->open_pairs * ENERGY_STREAM_PAIR_BYTES;
         out = energy_stream_u32(out, (uint32_t)voltage | ((uint32_t)current << 16U));
-        *out = low ? 1U : 0U;
+        *out = flags;
     }
     stream->open_pairs++;
     if (stream->open_pairs == ENERGY_STREAM_PAIRS_MAX) {

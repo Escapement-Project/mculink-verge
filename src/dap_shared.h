@@ -87,10 +87,16 @@ struct energy_integration {
     /** What the samples since the last segment say about re-arming the low range. */
     bool on_high_range;
     bool rearm_blocked;
+    /** The capture holds the high range: U18's reset is held, so the latch never switches
+     *  (`0x90` mode 14). Set by a new capture's start, before CPU 0 takes the state. */
+    bool high_range_only;
+    /** A high-range current code under this is too near the amplifier's floor to trust, whatever
+     *  the range setting: the stream marks the pair under range. 0 marks none. */
+    uint16_t under_range_code;
     /** A pair whose range differs from the one before may have converted its current across the
-     *  switch, so it waits for the next pair's current (src/energy_pairs.h). A start sets the range
-     *  before to low, because it clocks the latch to the low range. A down-switch between pairs
-     *  does not wait. */
+     *  switch, so it waits for the next pair's current (src/energy_pairs.h). A start that may use
+     *  the low range sets the range before to low, because it clocks the latch to the low range. A
+     *  down-switch between pairs does not wait. */
     bool previous_low;
     bool held;
     uint32_t held_mv;
