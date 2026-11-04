@@ -148,7 +148,7 @@ This command is available only on the Pro. Other boards and unknown modes return
 (`0xff`) without changing the output. `DAP_OK` is `0x00`.
 
 J5 selects 1.8 V when shorted and 3.3 V when open. J6 must connect the regulator output to the
-target. The regulator is rated for up to 400 mA. Read the voltage at J6 pin 1 and target-detect
+target. The regulator is rated for up to 400 mA. Read the voltage at J7 pin 1 and target-detect
 state separately with `0x86`; the `0x8F` reply confirms the control state, not the voltage at the
 target. After enabling the supply, allow the regulator and target rail to settle before accessing
 the target.

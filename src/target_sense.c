@@ -10,12 +10,13 @@
 #include "core_clock.h"
 #include "energy_monitor.h"
 
-/** DBGIF_VREF: half of the buffered J6 pin 1, through R22/R23. */
+/** DBGIF_VREF: half of the debug connector's pin 1, buffered. J6 through R22/R23 on the plain
+ *  board; J7 through U10 and R47/R48 on the Pro. */
 #define SENSE_VREF_PORT 0U
 #define SENSE_VREF_PIN 31U
 
-/** DBGIF_DETECT: J6 pin 9 through 2K. Nothing on the board pulls it up, so the pin's own pull-up
- *  is what makes an empty connector read high. */
+/** DBGIF_DETECT: the debug connector's pin 9 (J6, or J7 on the Pro) through 2K. Nothing on the
+ *  board pulls it up, so the pin's own pull-up is what makes an empty connector read high. */
 #define SENSE_DETECT_PORT 0U
 #define SENSE_DETECT_PIN 22U
 
