@@ -892,9 +892,11 @@ def check_hid_padding(c: Checker, elf: str, slots: int) -> None:
     c.note("HID long/short/malformed Info replies, zero padding and packet size across both staging modes and all slots")
 
 
-def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: bool = False) -> None:
+def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: bool = False,
+                        timing_diagnostics: bool = False) -> None:
     from usb_checks import (check_aux, check_aux_stream, check_completion_chains, check_descriptors, check_full_speed,
-                            check_interfaces_apart, check_rechirp, check_transport, check_unconfigured)
+                            check_interfaces_apart, check_rechirp, check_transport, check_unconfigured,
+                            check_unsent_untimed)
     from usb_idle_checks import check_idle, check_idle_rearm, check_idle_reply, check_idle_serviced
     from usb_lifecycle import check_sequences
 
@@ -910,6 +912,10 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: 
     check_transport(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_interfaces_apart(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_completion_chains(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
+    if timing_diagnostics:
+        stage = shared_offsets(slots, "timing.tx_count", "timing.tx_in_flight_cycles", small_enums=short_enums(elf0),
+                               struct_type="dap_stage_t", timing_diagnostics=True)
+        check_unsent_untimed(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, stage)
     check_full_speed(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
     check_descriptors(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
     check_rechirp(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
@@ -2515,7 +2521,7 @@ def main() -> int:
     check_rng(c, args.core1, symbols_with_size(args.core1), slots)
     check_console_recovery(c, args.elf, slots)
     check_hid_padding(c, args.core1, slots)
-    check_usb_transport(c, args.elf, args.core1, slots, args.code_lab)
+    check_usb_transport(c, args.elf, args.core1, slots, args.code_lab, args.timing_diagnostics)
     check_identity(c, args.core1, args.code_lab)
     check_board(c, args.core1, slots)
     check_dio(c, args.core1, slots)

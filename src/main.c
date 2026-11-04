@@ -357,6 +357,10 @@ __attribute__((section(".ramfunc"))) static void send_bulk_head(void) {
     __DMB();
     // An unconfigured device has no host to take this reply, including one CPU 1 just finished.
     if (!tud_mounted() || dap_usb_stale(dap_shared.response_seq[head], dap_shared.first_live_seq)) {
+#ifdef DAP_TIMING_DIAGNOSTICS
+        // It never left, so it has no time on the wire to count.
+        dap_stage.response_timing_excluded[head] = 1U;
+#endif
         bulk_reply_sent();
         return;
     }

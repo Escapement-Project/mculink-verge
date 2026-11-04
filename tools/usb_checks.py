@@ -398,6 +398,40 @@ def check_completion_chains(c, elf0, elf1, symbols0, symbols1, fields):
     c.note("a bulk or HID reply's completion sends the next one waiting")
 
 
+def check_unsent_untimed(c, elf0, elf1, symbols0, symbols1, fields, stage):
+    """Timing diagnostics count a bulk reply's time on the wire only for a reply that went. One
+    released unsent, for a host that has gone or a device that lost its configuration, has none
+    to count."""
+    ctimer0_tc = 0x40008008  # dap_timing_now's clock
+
+    def counters(usb):
+        at = usb.staging[0] + stage["timing.tx_count"]
+        return (int.from_bytes(usb.cpu0.uc.mem_read(at, 4), "little"),
+                int.from_bytes(usb.cpu0.uc.mem_read(usb.staging[0] + stage["timing.tx_in_flight_cycles"], 4), "little"))
+
+    for how in ("a new host", "no configuration"):
+        usb = Usb(elf0, elf1, symbols0, symbols1, fields)
+        usb.cpu0.uc.mem_write(ctimer0_tc, u32(1000))
+        usb.receive(b"\x00\xfe")
+        usb.dispatch()
+        usb.call0("send_head")
+        usb.cpu0.uc.mem_write(ctimer0_tc, u32(1500))
+        usb.call0("tud_vendor_tx_cb", 0, 3)
+        sent = counters(usb)
+        c.check(sent == (1, 500), f"{how}: a sent reply counted (sends, cycles) {sent}, wanted (1, 500)")
+        usb.receive(b"\x00\xfe")
+        usb.dispatch()
+        if how == "a new host":
+            usb.call0("tud_mount_cb")
+        else:
+            usb.configured = False
+        usb.cpu0.uc.mem_write(ctimer0_tc, u32(4000))
+        usb.call0("send_head")
+        c.check(usb.get("response_head", 1) == usb.get("response_tail", 1), f"{how}: the unsent reply was not released")
+        c.check(counters(usb) == sent, f"{how}: an unsent reply was timed as a send: {sent} became {counters(usb)}")
+    c.note("timing diagnostics leave out a bulk reply released unsent")
+
+
 def check_unconfigured(c, elf0, elf1, symbols0, symbols1, fields, slots):
     for hid in (False, True):
         usb = Usb(elf0, elf1, symbols0, symbols1, fields)
