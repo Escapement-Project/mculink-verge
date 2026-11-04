@@ -40,6 +40,8 @@ typedef struct {
     /** Power summed since the last energy_total_fold, in picowatts. Under 2^54 for a batch: a
      *  ring of pairs, each under 2^45. */
     uint64_t pending_pw;
+    /** Pairs summed since the last energy_total_fold, which adds them to `pairs`. */
+    uint32_t pending_pairs;
 } energy_total_t;
 
 static inline bool energy_sample_feed(energy_sample_decoder_t* decoder, uint32_t result) {
@@ -117,17 +119,19 @@ static inline void energy_total_add(energy_total_t* total, uint64_t power_pw, ui
     energy_total_count(total);
 }
 
-/** Adds one sample's power to the batch's sum; energy_total_fold turns the sum into energy. The
- *  carry is exact, so the total comes out as energy_total_add a sample at a time gives it, with
- *  one multiply a batch rather than a sample. */
+/** Adds one sample's power to the batch's sum; energy_total_fold turns the sum into energy and
+ *  counts the batch's pairs. The carry is exact, so the total comes out as energy_total_add a
+ *  sample at a time gives it, with one multiply a batch rather than a sample. */
 static inline void energy_total_sum(energy_total_t* total, uint64_t power_pw) {
     total->pending_pw += power_pw;
-    energy_total_count(total);
+    total->pending_pairs++;
 }
 
 static inline void energy_total_fold(energy_total_t* total, uint64_t scale_q32) {
     energy_total_carry(total, total->pending_pw, scale_q32);
+    total->pairs = UINT64_MAX - total->pairs < total->pending_pairs ? UINT64_MAX : total->pairs + total->pending_pairs;
     total->pending_pw = 0U;
+    total->pending_pairs = 0U;
 }
 
 #endif

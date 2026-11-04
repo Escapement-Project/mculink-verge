@@ -46,7 +46,7 @@ static void test_range_switches(void) {
     // Up, with a blended code: it takes the next pair's current. A fold here, with the pair held
     // across it, changes nothing: folds come at every batch's end.
     feed_pair(&energy, &total, 31000U, 59000U, false);
-    assert(total.pairs == 1U);
+    assert(total.pairs + total.pending_pairs == 1U);
     energy_total_fold(&total, energy.scale_q32);
     feed_pair(&energy, &total, 32000U, 300U, false);
     expect_pair(&expected, 31000U, nanoamps(300U, false));
@@ -61,7 +61,7 @@ static void test_range_switches(void) {
     expect_pair(&expected, 35000U, nanoamps(300U, false));
     // Down on the last pair before a pause: its own reading.
     feed_pair(&energy, &total, 36000U, 20000U, true);
-    assert(total.pairs == 6U);
+    assert(total.pairs + total.pending_pairs == 6U);
     energy_flush_held(&energy, &total);
     expect_pair(&expected, 36000U, nanoamps(20000U, true));
     energy_total_fold(&total, energy.scale_q32);
@@ -95,7 +95,7 @@ static void test_weighted_switches(void) {
     expect_pair(&expected, 30100U, nanoamps(400U, false));
     // Down between pairs: its own reading, at once.
     feed_pair(&energy, &total, 31000U, 7000U, true);
-    assert(total.pairs == 3U && !energy.held);
+    assert(total.pairs + total.pending_pairs == 3U && !energy.held);
     expect_pair(&expected, 31000U, nanoamps(7000U, true));
     feed_pair(&energy, &total, 31500U, 40000U, true);
     expect_pair(&expected, 31500U, nanoamps(40000U, true));
