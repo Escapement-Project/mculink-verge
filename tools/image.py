@@ -1810,18 +1810,20 @@ def foreign_instructions(elf: str) -> list[str]:
 
     From objdump rather than capstone over each function's bytes: a function's size takes in its
     literal pool, and its constants decode as instructions. The ELF's mapping symbols say which
-    bytes are data, and objdump reads them.
+    bytes are data, and objdump reads them. It prints data as its bytes and their characters, so
+    only a line with a mnemonic in the field after the bytes is an instruction: a table whose
+    characters start with a v is not one.
     """
     found = []
     function = "?"
-    listing = subprocess.run(["arm-none-eabi-objdump", "-d", "--no-show-raw-insn", elf],
+    listing = subprocess.run(["arm-none-eabi-objdump", "-d", elf],
                              capture_output=True, text=True, check=True).stdout
     for line in listing.splitlines():
         header = re.match(r"^[0-9a-f]+ <(.+)>:$", line)
         if header:
             function = header.group(1)
             continue
-        m = re.match(r"^\s*([0-9a-f]+):\s+([a-z][a-z0-9.]*)", line)
+        m = re.match(r"^\s*([0-9a-f]+):\t[0-9a-f ]+\t([a-z][a-z0-9.]*)", line)
         if not m:
             continue
         name = m.group(2).split(".")[0]
