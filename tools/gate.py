@@ -8,9 +8,11 @@ in the default configuration and with SWD_CODEGEN and JTAG_CODEGEN off, because 
 that holds under one compiler has been seen not to under the other. A generated image also runs its
 cJTAG and JTAG clocks against targets that answer by time, at every period up to 40 cycles
 and three longer ones, all of its clocks the same way built for energy capture's stall, and every
-one of tools/equiv.py's matrices against the same compiler's ARM paths. It runs the host
-checks and image builds together, then runs image checks, timing sweeps and the equivalence
-matrices together. Each timing sweep simulates its independent clock points in parallel.
+one of tools/equiv.py's matrices against the same compiler's ARM paths. Two more gcc images, one
+with DAP_TIMING_DIAGNOSTICS and one with CODE_LAB, run tools/image.py alone: their checks need the
+option, and nothing else in them differs. It runs the host checks and image builds together, then
+runs image checks, timing sweeps and the equivalence matrices together. Each timing sweep simulates
+its independent clock points in parallel.
 
 The parallel stages share a CPU budget across host checks, builds, emulator wire checks, timed
 sweeps and the equivalence matrices. Builds go to build-gate/.
@@ -62,6 +64,9 @@ HOST_CHECKS = (
     (GENERATOR_CHECK, ["uv", "run", "tools/gen_host.py"]),
 )
 IMAGES = [(toolchain, codegen) for toolchain in ("gcc", "clang") for codegen in (False, True)]
+# Built as gcc's default image with one option on, and image-checked only.
+VARIANTS = (("timing", ("-DDAP_TIMING_DIAGNOSTICS=ON", "-DCODE_LAB=OFF")),
+            ("lab", ("-DCODE_LAB=ON", "-DDAP_TIMING_DIAGNOSTICS=OFF")))
 TIMED_WIRES = ("cjtag", "cjtag2", "cjtag5", "cjtag6", "jtag")
 
 
@@ -99,15 +104,16 @@ def unaligned_access_allowed(directory: str) -> list[str]:
 
 
 def build_image(
-    toolchain: str, codegen: bool, jobs: int, cycles_jobs: int
-) -> tuple[str, bool, str, float, str | None, str, bool]:
-    directory = os.path.join(BUILD, name(toolchain, codegen))
+    toolchain: str, codegen: bool, jobs: int, cycles_jobs: int, variant: tuple[str, tuple[str, ...]] | None = None
+) -> tuple[str, bool, str, float, str | None, str, bool, str | None]:
+    called = f"{toolchain}-{variant[0]}" if variant else name(toolchain, codegen)
+    directory = os.path.join(BUILD, called)
     flag = "ON" if codegen else "OFF"
     check_jobs = cycles_jobs if codegen else min(2, cycles_jobs)
     started = time.monotonic()
     configure = ["cmake", "-B", directory, "-G", "Ninja", "-DBOARD=mcu_link",
                  f"-DTOOLCHAIN={toolchain}", f"-DSWD_CODEGEN={flag}", f"-DJTAG_CODEGEN={flag}",
-                 f"-DCYCLES_CHECK_JOBS={check_jobs}"]
+                 f"-DCYCLES_CHECK_JOBS={check_jobs}", *(variant[1] if variant else ())]
     if toolchain == "clang" and not codegen:
         configure.append("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON")
     configure.append(".")
@@ -120,8 +126,8 @@ def build_image(
         if allowed:
             ok = False
             output += "built with unaligned access allowed: " + ", ".join(allowed) + "\n"
-    return (f"build {name(toolchain, codegen)}", ok, output, time.monotonic() - started,
-            directory if ok else None, toolchain, codegen)
+    return (f"build {called}", ok, output, time.monotonic() - started,
+            directory if ok else None, toolchain, codegen, variant[0] if variant else None)
 
 
 def main() -> int:
@@ -151,6 +157,7 @@ def main() -> int:
         images = []
     elif args.part == "all" and not args.toolchain:
         images = IMAGES
+    variants = list(VARIANTS) if ("gcc", True) in images else []
     generated_images = sum(codegen for _, codegen in images)
     generator_jobs = 1
     if run_host and cpu_count >= 4:
@@ -159,7 +166,7 @@ def main() -> int:
         generator_jobs = 4
     host_check_count = len(HOST_CHECKS) if run_host else 0
     build_jobs = max(1, (cpu_count - min(host_check_count, cpu_count) - (generator_jobs - 1))
-                     // max(1, len(images)))
+                     // max(1, len(images) + len(variants)))
     # Wide runners share one clock pool; small runners reuse outer task slots per wire.
     pool_all_wires = cpu_count >= 16
     if pool_all_wires and generated_images:
@@ -176,17 +183,23 @@ def main() -> int:
              if label == GENERATOR_CHECK else check_args)
             for label, check_args in HOST_CHECKS
         ]
-    initial_workers = min(len(host_checks) + len(images), max(1, cpu_count - reserved_generator_workers))
+    initial_workers = min(len(host_checks) + len(images) + len(variants),
+                          max(1, cpu_count - reserved_generator_workers))
     with concurrent.futures.ThreadPoolExecutor(max_workers=initial_workers) as pool:
         initial.update({pool.submit(run, args): label for label, args in host_checks})
         initial.update({pool.submit(build_image, toolchain, codegen, build_jobs, cycles_jobs): None
                         for toolchain, codegen in images})
+        initial.update({pool.submit(build_image, "gcc", True, build_jobs, cycles_jobs, variant): None
+                        for variant in variants})
+        built_variants = []
         for future in concurrent.futures.as_completed(initial):
             label = initial[future]
             result = future.result()
             if label is None:
-                label, ok, output, seconds, directory, toolchain, codegen = result
-                if directory is not None:
+                label, ok, output, seconds, directory, toolchain, codegen, variant = result
+                if directory is not None and variant is not None:
+                    built_variants.append((f"{toolchain}-{variant}", directory))
+                elif directory is not None:
                     built.append((toolchain, codegen, directory))
             else:
                 ok, output, seconds = result
@@ -194,6 +207,8 @@ def main() -> int:
 
     image_checks = [(f"emulator gate {name(toolchain, codegen)}", ["ninja", "-C", directory, "check"])
                     for toolchain, codegen, directory in built]
+    image_checks += [(f"image checks {called}", ["ninja", "-C", directory, "check_image"])
+                     for called, directory in built_variants]
     timed_images = [(toolchain, directory) for toolchain, codegen, directory in built if codegen]
     timed_checks = []
     if pool_all_wires and timed_images:
