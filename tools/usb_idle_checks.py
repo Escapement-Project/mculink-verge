@@ -238,3 +238,91 @@ def check_idle_serviced(c, elf, symbols):
     c.check(state["waits"] == 1 and state["tasks"] == 1 and state["raised_at_wait"] == 0,
             f"idle after a serviced raise: {state}")
     c.note("CPU 0 idle: a pass clears a raise it serviced, and the loop then waits")
+
+
+PMC_AOREG1 = 0x40020084
+SCB_AIRCR = 0xE000ED0C
+
+
+def check_reboot(c, elf, symbols):
+    """A host's reboot request on endpoint 0 takes the probe off the bus once its status stage is
+    done, keeps it off for 20 ticks and resets it, into the ROM bootloader when asked (src/reboot.c).
+    Anything but the request src/reboot_usb.h defines is refused and does nothing."""
+    # The bits below AOREG1's boot mode field hold reset causes, which a reboot leaves alone.
+    causes = 0x1234
+    reboot = lambda mode, index=0, length=0, kind=0x40: bytes([kind, 0x03]) + bytes(
+        [mode, 0, index, 0, length, 0])
+    cases = (("firmware", reboot(0), 0), ("bootloader", reboot(1), 0x0A), ("mode 2", reboot(2), None),
+             ("an index", reboot(0, index=1), None), ("a data stage", reboot(0, length=1), None),
+             ("device to host", reboot(0, kind=0xC0), None))
+    for name, request, mode in cases:
+        probe = machine(elf, symbols)
+        for sentinel in ("usb_pending", "active_mode"):
+            if sentinel in probe.sym:
+                probe.uc.mem_write(probe.sym[sentinel], b"\xff")
+        probe.uc.mem_write(PMC_AOREG1, u32(causes))
+        ticks = probe.sym["system_ticks"]
+        state = {"status": 0, "off": [], "waits": 0, "since_task": 0, "stop_at": 0}
+        stubbed = {probe.sym[n] for n in ("energy_control_task", "energy_range_retry_task", "dio_edges_task",
+                                          "aux_task", "tud_task_event_ready", "vcom_ready", "dio_edges_waiting",
+                                          "aux_has_work", "lab_hammer", "usb_speed_task") if n in probe.sym}
+
+        def now(uc):
+            return int.from_bytes(uc.mem_read(ticks, 4), "little")
+
+        def hook(uc, at, size, data):
+            state["since_task"] += 1
+            result = 0
+            if at == probe.sym["tud_task_ext"]:
+                state["since_task"] = 0
+            elif at == probe.sym["tud_control_status"]:
+                state["status"] += 1
+                result = 1
+            elif at == probe.sym["tud_disconnect"]:
+                state["off"].append(now(uc))
+            elif at == probe.sym["wait_for_work"]:
+                # Time passes only while the loop waits, as when nothing but the tick wakes it.
+                state["waits"] += 1
+                uc.mem_write(ticks, u32(now(uc) + 1))
+                if state["waits"] >= state["stop_at"]:
+                    uc.emu_stop()
+            elif at not in stubbed:
+                # A reset spins where it is and never comes round to the next task.
+                if state["since_task"] > 20_000:
+                    uc.emu_stop()
+                return
+            uc.reg_write(UC_ARM_REG_R0, result)
+            uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+
+        def run(waits):
+            state["stop_at"], state["since_task"] = state["waits"] + waits, 0
+            probe.call("serve", timeout_insns=2_000_000)
+
+        probe.uc.reg_write(UC_ARM_REG_BASEPRI, 0)
+        probe.uc.hook_add(UC_HOOK_CODE, hook)
+        probe.uc.ctl_flush_tb()
+        probe.uc.mem_write(SCRATCH, request)
+        probe.uc.mem_write(ticks, u32(1000))
+        accepted = probe.call("tud_vendor_control_xfer_cb", 0, 1, SCRATCH) & 0xFF
+        run(5)
+        early = list(state["off"])
+        if accepted:
+            probe.call("tud_vendor_control_xfer_cb", 0, 3, SCRATCH)
+        run(40)
+        aoreg1 = int.from_bytes(probe.uc.mem_read(PMC_AOREG1, 4), "little")
+        aircr = int.from_bytes(probe.uc.mem_read(SCB_AIRCR, 4), "little")
+        reset = aircr >> 16 == 0x05FA and aircr & 4
+        if mode is None:
+            c.check(not accepted and state["status"] == 0 and not state["off"] and not reset and aoreg1 == causes,
+                    f"reboot with {name}: accepted {accepted}, status {state['status']}, off at {state['off']},"
+                    f" AIRCR {aircr:#x}, AOREG1 {aoreg1:#x}")
+            continue
+        c.check(accepted and state["status"] == 1, f"reboot to {name}: setup accepted {accepted}, status {state['status']}")
+        c.check(not early, f"reboot to {name}: off the bus before the status stage, at {early}")
+        c.check(len(state["off"]) == 1, f"reboot to {name}: disconnected {len(state['off'])} times")
+        held = now(probe.uc) - state["off"][0] if state["off"] else None
+        c.check(reset and held == 20,
+                f"reboot to {name}: reset {bool(reset)} (AIRCR {aircr:#x}) {held} ticks after leaving the bus, wanted 20")
+        c.check(aoreg1 == causes | (mode << 16), f"reboot to {name}: AOREG1 {aoreg1:#x}, wanted {causes | (mode << 16):#x}")
+    c.note("EP0 reboot: off the bus after the status stage, reset 20 ticks later, into ISP when asked;"
+           " malformed requests refused")

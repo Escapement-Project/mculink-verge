@@ -897,7 +897,7 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: 
     from usb_checks import (check_aux, check_aux_stream, check_completion_chains, check_descriptors, check_full_speed,
                             check_interfaces_apart, check_rechirp, check_transport, check_unconfigured,
                             check_unsent_untimed)
-    from usb_idle_checks import check_idle, check_idle_rearm, check_idle_reply, check_idle_serviced
+    from usb_idle_checks import check_idle, check_idle_rearm, check_idle_reply, check_idle_serviced, check_reboot
     from usb_lifecycle import check_sequences
 
     fields = ("transfer_abort", "request", "request_tail", "rx_armed_slot", "next_request_seq", "first_live_seq",
@@ -908,6 +908,7 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: 
     check_idle_rearm(c, elf0, symbols_with_size(elf0), offsets)
     check_idle_reply(c, elf0, symbols_with_size(elf0), offsets)
     check_idle_serviced(c, elf0, symbols_with_size(elf0))
+    check_reboot(c, elf0, symbols_with_size(elf0))
     check_unconfigured(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_transport(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_interfaces_apart(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
