@@ -35,6 +35,7 @@
 
 #include "DAP.h"
 #include "gen.h"
+#include "hot.h"
 #include "thumb.h"
 
 /* What the generated functions keep in registers for their whole run. */
@@ -123,7 +124,7 @@ struct sched {
 /* Static rather than on the stack: it is the largest thing here. */
 static struct sched sched;
 
-static void sched_reset(struct sched* s, const struct gen_cfg* cfg) {
+GEN_PATH static void sched_reset(struct sched* s, const struct gen_cfg* cfg) {
     s->cfg = cfg;
     gen_schedule_reset(&s->q, gen_events, 256U);
     s->t = 0U;
@@ -136,13 +137,13 @@ static void sched_reset(struct sched* s, const struct gen_cfg* cfg) {
     s->grid_low = cfg->wlow;
 }
 
-static bool taken(const struct sched* s, uint32_t cycle) { return gen_taken(&s->q, cycle); }
+GEN_PATH static bool taken(const struct sched* s, uint32_t cycle) { return gen_taken(&s->q, cycle); }
 
-static void put(struct sched* s, uint32_t cycle, uint32_t insn) { gen_put(&s->q, cycle, insn); }
+GEN_PATH static void put(struct sched* s, uint32_t cycle, uint32_t insn) { gen_put(&s->q, cycle, insn); }
 
 /** Whether a clock not laid yet puts an edge on `cycle`, if the clocks from s->t on are like the
  * last one. Where they are not, a clock that finds its cycle taken waits a cycle. */
-static bool on_grid(const struct sched* s, uint32_t cycle) {
+GEN_PATH static bool on_grid(const struct sched* s, uint32_t cycle) {
     if (cycle < s->t) {
         return false;
     }
@@ -151,7 +152,7 @@ static bool on_grid(const struct sched* s, uint32_t cycle) {
 }
 
 /** An instruction the next clock has to wait for: the first free cycle from `earliest`. */
-static uint32_t op(struct sched* s, uint32_t earliest, uint32_t insn) {
+GEN_PATH static uint32_t op(struct sched* s, uint32_t earliest, uint32_t insn) {
     uint32_t cycle = earliest;
     while (taken(s, cycle)) {
         cycle++;
@@ -165,7 +166,7 @@ static uint32_t op(struct sched* s, uint32_t earliest, uint32_t insn) {
 
 /** An instruction that must not hold up a clock: the first free cycle from `earliest` that no
  * clock still to come will want. */
-static uint32_t side(struct sched* s, uint32_t earliest, uint32_t insn) {
+GEN_PATH static uint32_t side(struct sched* s, uint32_t earliest, uint32_t insn) {
     uint32_t cycle = earliest;
     while (taken(s, cycle) || on_grid(s, cycle)) {
         cycle++;
@@ -176,7 +177,7 @@ static uint32_t side(struct sched* s, uint32_t earliest, uint32_t insn) {
 
 /** One clock, falling on `fall` at the first cycle from s->t where both of its edges fit.
  * Returns the cycle of its rising edge. */
-static uint32_t clock(struct sched* s, uint32_t fall, uint32_t period, uint32_t low) {
+GEN_PATH static uint32_t clock(struct sched* s, uint32_t fall, uint32_t period, uint32_t low) {
     uint32_t cycle = s->t;
     while (taken(s, cycle) || taken(s, cycle + low)) {
         cycle++;
@@ -192,17 +193,17 @@ static uint32_t clock(struct sched* s, uint32_t fall, uint32_t period, uint32_t 
 }
 
 /** A clock with the probe driving `bit`, a register holding SWDIO's mask or zero. */
-static uint32_t drive(struct sched* s, uint32_t bit) {
+GEN_PATH static uint32_t drive(struct sched* s, uint32_t bit) {
     return clock(s, t_str(bit, R_PORT, OFF_MPIN), s->cfg->wperiod, s->cfg->wlow);
 }
 
 /** A clock with the wire left as it is. */
-static uint32_t idle_clock(struct sched* s) {
+GEN_PATH static uint32_t idle_clock(struct sched* s) {
     return clock(s, t_str(R_ONE, R_PORT, OFF_CLR), s->cfg->period, s->cfg->low);
 }
 
 /** Bit `bit` of `rm` into SWDIO's position in `rd`, everything else clear. */
-static uint32_t extract(uint32_t rd, uint32_t rm, uint32_t bit) {
+GEN_PATH static uint32_t extract(uint32_t rd, uint32_t rm, uint32_t bit) {
     // A shift of zero has to be LSL: LSR with a zero amount encodes LSR #32.
     if (bit > SWDIO_PIN) {
         return t_and(rd, R_FOUR, rm, T_LSR, bit - SWDIO_PIN);
@@ -212,13 +213,13 @@ static uint32_t extract(uint32_t rd, uint32_t rm, uint32_t bit) {
 
 /** The cycles a load on `cycle` can be held with the edge at `end` already out: a held load
  * before that edge holds the edge back with it. */
-static uint32_t after_edge(const struct gen_cfg* c, uint32_t cycle, uint32_t end) {
+GEN_PATH static uint32_t after_edge(const struct gen_cfg* c, uint32_t cycle, uint32_t end) {
     return cycle > end ? c->stall : 0U;
 }
 
 /** The load that samples the bit launched by the rising edge at `launch`, whose window the rising
  * edge at `end` closes, into `reg`, no earlier than `not_before`. */
-static uint32_t sample(struct sched* s, uint32_t launch, uint32_t end, uint32_t reg, uint32_t not_before) {
+GEN_PATH static uint32_t sample(struct sched* s, uint32_t launch, uint32_t end, uint32_t reg, uint32_t not_before) {
     const struct gen_cfg* c = s->cfg;
     const uint32_t first = launch + c->latency;
     uint32_t best = 0U;
@@ -269,19 +270,19 @@ static uint32_t sample(struct sched* s, uint32_t launch, uint32_t end, uint32_t 
 }
 
 /** Lets go of SWDIO after the packet's last rising edge, before the next clock. */
-static void release(struct sched* s) {
+GEN_PATH static void release(struct sched* s) {
     const uint32_t at = op(s, s->last_rise + 1U, t_str(R_TXEN, R_PORT, OFF_CLR));
     op(s, at + 1U, t_str(R_FOUR, R_PORT, OFF_DIRCLR));
 }
 
 /** Takes SWDIO back, no earlier than `earliest`. Returns the cycle of the second store. */
-static uint32_t enable(struct sched* s, uint32_t earliest) {
+GEN_PATH static uint32_t enable(struct sched* s, uint32_t earliest) {
     const uint32_t at = op(s, earliest, t_str(R_FOUR, R_PORT, OFF_DIRSET));
     return op(s, at + 1U, t_str(R_TXEN, R_PORT, OFF_SET));
 }
 
 /** Start, APnDP, RnW, A2, A3, parity, stop, park. */
-static void packet(struct sched* s) {
+GEN_PATH static void packet(struct sched* s) {
     drive(s, R_FOUR);
     for (uint32_t k = 1U; k < 8U; k++) {
         uint32_t bit = R_FOUR;
@@ -298,7 +299,7 @@ static void packet(struct sched* s) {
 }
 
 /** The acknowledge bits, and for a read the data and parity: bit k into its place. */
-static uint32_t consume_insn(uint32_t k, uint32_t reg) {
+GEN_PATH static uint32_t consume_insn(uint32_t k, uint32_t reg) {
     if (k == 0U) {
         return t_mov(R_ACK, reg);
     }
@@ -342,7 +343,7 @@ struct sampling {
 /** Branches to LABEL_FAIL unless the acknowledge is OK. Every path clocks the turnaround after the
  * acknowledge, so the branch comes after the last of those clocks: a path that leaves here has
  * clocked all of them, and nothing a path does differently can come before one. */
-static void decide(struct sched* s, struct sampling* p, struct body* b) {
+GEN_PATH static void decide(struct sched* s, struct sampling* p, struct body* b) {
     // The cmp goes in the cycle before the branch: a delay loop between them would set the flags.
     uint32_t at = p->chain_ack + 2U > s->last_rise + 1U ? p->chain_ack + 2U : s->last_rise + 1U;
     while (taken(s, at - 1U) || taken(s, at)) {
@@ -358,7 +359,7 @@ static void decide(struct sched* s, struct sampling* p, struct body* b) {
     b->branch_rise = s->last_rise;
 }
 
-static void target_bits(struct sched* s, struct sampling* p, struct body* b, uint32_t from, uint32_t to,
+GEN_PATH static void target_bits(struct sched* s, struct sampling* p, struct body* b, uint32_t from, uint32_t to,
                         bool read) {
     const uint32_t decide_at = 2U + s->cfg->turnaround;
     for (uint32_t k = from; k < to; k++) {
@@ -384,7 +385,7 @@ static void target_bits(struct sched* s, struct sampling* p, struct body* b, uin
 
 /** Idle clocks after a transfer, with SWDIO low, then SWDIO high. `earliest` is after the last
  * wire event before them. Long runs are left to a loop after the schedule. */
-static void idle(struct sched* s, struct body* b, uint32_t earliest, bool out_high) {
+GEN_PATH static void idle(struct sched* s, struct body* b, uint32_t earliest, bool out_high) {
     const uint32_t n = s->cfg->idle;
     b->idle_loop = n > IDLE_INLINE;
     if (n == 0U) {
@@ -403,7 +404,7 @@ static void idle(struct sched* s, struct body* b, uint32_t earliest, bool out_hi
     op(s, s->last_rise + 1U, t_strb(R_ONE, R_GPIO, OFF_B_SWDIO));
 }
 
-static void schedule_read(struct sched* s, struct body* b) {
+GEN_PATH static void schedule_read(struct sched* s, struct body* b) {
     const struct gen_cfg* c = s->cfg;
     if (c->masked) {
         op(s, 0U, t_msr_primask(R_ONE));
@@ -430,14 +431,14 @@ struct fold {
     uint32_t ready;
 };
 
-static uint32_t fold_insn(uint32_t step) {
+GEN_PATH static uint32_t fold_insn(uint32_t step) {
     if (step == 0U) {
         return t_eor(R_T1, R_WORD, R_WORD, T_LSR, 16U);
     }
     return t_eor(R_T1, R_T1, R_T1, T_LSR, 16U >> step);
 }
 
-static void fold_fill(struct sched* s, struct fold* f, uint32_t from) {
+GEN_PATH static void fold_fill(struct sched* s, struct fold* f, uint32_t from) {
     for (uint32_t cycle = from > f->ready ? from : f->ready; (cycle < s->t) && (f->next < 5U); cycle++) {
         if (!taken(s, cycle)) {
             put(s, cycle, fold_insn(f->next++));
@@ -446,7 +447,7 @@ static void fold_fill(struct sched* s, struct fold* f, uint32_t from) {
     }
 }
 
-static void schedule_write(struct sched* s, struct body* b) {
+GEN_PATH static void schedule_write(struct sched* s, struct body* b) {
     const struct gen_cfg* c = s->cfg;
     if (c->masked) {
         op(s, 0U, t_msr_primask(R_ONE));
@@ -494,7 +495,7 @@ static void schedule_write(struct sched* s, struct body* b) {
 /** `n` clocks with the wire left as it is, `since` cycles after the last rising edge. Returns the
  * cycles from the last of them to the instruction after the loop. Not timing-critical: these
  * clocks only have to be no shorter than the period. */
-static uint32_t clock_loop(struct gen_emitter* e, const struct gen_cfg* c, uint32_t n, uint32_t since) {
+GEN_PATH static uint32_t clock_loop(struct gen_emitter* e, const struct gen_cfg* c, uint32_t n, uint32_t since) {
     const uint32_t high = c->period - c->low;
     if (since + 1U < high) {
         gen_delay(e, high - since - 1U); // and the counter's load is the last cycle of it
@@ -512,13 +513,13 @@ static uint32_t clock_loop(struct gen_emitter* e, const struct gen_cfg* c, uint3
     return gap + 3U;
 }
 
-static void emit_enable(struct gen_emitter* e) {
+GEN_PATH static void emit_enable(struct gen_emitter* e) {
     gen_emit(e, t_str(R_FOUR, R_PORT, OFF_DIRSET));
     gen_emit(e, t_str(R_TXEN, R_PORT, OFF_SET));
 }
 
 /** Returns the acknowledge in `ack`'s instruction and the count left. */
-static void emit_return(struct gen_emitter* e, uint32_t ack) {
+GEN_PATH static void emit_return(struct gen_emitter* e, uint32_t ack) {
     gen_emit(e, ack);
     gen_emit(e, t_mov(1U, R_COUNT));
     gen_emit(e, t_pop(0x8FF0U)); // r4-r11, pc
@@ -526,7 +527,7 @@ static void emit_return(struct gen_emitter* e, uint32_t ack) {
 
 /** After an acknowledge other than OK, `since` cycles after the last rising edge, with the
  * turnaround clocked: what ARM's SWD_Transfer clocks for WAIT, FAULT or a protocol error. */
-static void emit_fail(struct gen_emitter* e, const struct gen_cfg* c, bool read, uint32_t since) {
+GEN_PATH static void emit_fail(struct gen_emitter* e, const struct gen_cfg* c, bool read, uint32_t since) {
     gen_emit(e, t_cmp_imm(R_ACK, DAP_TRANSFER_WAIT));
     gen_emit_branch(e, T_COND_EQ, LABEL_WAIT_FAULT);
     gen_emit(e, t_cmp_imm(R_ACK, DAP_TRANSFER_FAULT));
@@ -563,13 +564,13 @@ static void emit_fail(struct gen_emitter* e, const struct gen_cfg* c, bool read,
 /** The target latencies, TIMING.md's A, for which every sample the last schedule placed reads
  * the bit it wants: a sample `after` cycles after its bit's launch and `before` cycles before the
  * next launch reads it for latencies from 1 - before to after. */
-static void latencies_served(const struct sched* s, int32_t* first, int32_t* last) {
+GEN_PATH static void latencies_served(const struct sched* s, int32_t* first, int32_t* last) {
     *first = 1 - s->before_next;
     *last = s->after_launch;
 }
 
 /** One function: entry, the transfer loop, and its exits. */
-static bool emit_function(struct gen_emitter* e, const struct gen_cfg* c, bool read) {
+GEN_PATH static bool emit_function(struct gen_emitter* e, const struct gen_cfg* c, bool read) {
     struct sched* s = &sched;
     struct body b = {0};
     sched_reset(s, c);
@@ -650,7 +651,7 @@ static bool emit_function(struct gen_emitter* e, const struct gen_cfg* c, bool r
 
 /** Both functions for `config` at a read period of `period` with a low phase of `low`, into
  * SRAMX, with where each starts, and the build into `info`. */
-static bool emit_both(const struct swd_gen_config* config, uint32_t period, uint32_t low, struct swd_gen_info* info,
+GEN_PATH static bool emit_both(const struct swd_gen_config* config, uint32_t period, uint32_t low, struct swd_gen_info* info,
                       uint32_t* read_at, uint32_t* write_at) {
     const struct gen_cfg c = {
         .period = period,
@@ -690,7 +691,7 @@ static bool emit_both(const struct swd_gen_config* config, uint32_t period, uint
 }
 
 /** The fewest cycles `latency` has from either end of the latencies `info` serves. */
-static int32_t served_margin(const struct swd_gen_info* info, uint32_t latency) {
+GEN_PATH static int32_t served_margin(const struct swd_gen_info* info, uint32_t latency) {
     const int32_t l = (int32_t)latency;
     const int32_t sides[] = {l - info->read_first, info->read_last - l, l - info->write_first, info->write_last - l};
     int32_t fewest = sides[0];
@@ -700,7 +701,7 @@ static int32_t served_margin(const struct swd_gen_info* info, uint32_t latency) 
     return fewest;
 }
 
-bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_gen_fn* write) {
+GEN_PATH __attribute__((noinline)) bool swd_gen_build(const struct swd_gen_config* config, swd_gen_fn* read, swd_gen_fn* write) {
     if ((config->period < SWD_GEN_PERIOD_MIN) || (config->period > SWD_GEN_PERIOD_MAX) || (config->latency == 0U) ||
         (config->latency > 64U) || (config->turnaround < 1U) || (config->turnaround > 4U) ||
         (config->idle_cycles > 255U)) {

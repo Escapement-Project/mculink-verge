@@ -22,7 +22,7 @@ Source: UM11126 rev 2.8 tables 4, 5 and 6.
 | 0 | 0x0000_0000 flash, 0x0300_0000 boot ROM | Both cores' C code (CPU 0 from 0x200, CPU 1 from 0x4_0000) |
 | 1 | 0x0400_0000 SRAMX, 32 KB | Generated code (SWD, JTAG), code lab arena at 0x0400_4000 |
 | 2 | 0x2000_0000 SRAM0, 64 KB | CPU 0's data, stack (top 4 KB, see [STACK.md](STACK.md)) and `.ramfunc` (`vcom_task` and the energy integration among them); the consoles' receive rings, send buffers and ring descriptors, and the energy ring, its reload descriptors and its integration state (`energy_integration`), which DMA0 reaches |
-| 3 | 0x2001_0000 SRAM1, 64 KB | CPU 1's full 16 KiB stack in the bottom quarter, followed by its `.ramfunc` (command processing around the generated code, and the sample probe's reads), `.data` and, in a product image, all of its `.bss` and the start of `.cold_bss` |
+| 3 | 0x2001_0000 SRAM1, 64 KB | CPU 1's full 16 KiB stack in the bottom quarter, followed by its `.ramfunc` (command processing around the generated code, and the sample probe's reads), the SWD generator, `.data` and, in a product image, all of its `.bss` and the start of `.cold_bss` |
 | 4 | 0x2002_0000 SRAM2, 64 KB | The rest of CPU 1's `.cold_bss` in a product image. In the ARM reference build, ARM's bit paths in `.ramfunc` and its `.bss`, which on GCC run on into SRAM3. tools/image.py refuses a product image whose RAM code or data, `.cold_bss` aside, reaches SRAM3 |
 | 5 | 0x2003_0000 SRAM3, 64 KB | `dap_stage` in the top 8 KB from 0x2003_E000: packet-sized commands and replies CPU 0 stages for CPU 1, every HID reply, and Verge Aux's request slot. Below it, nothing of a product image's CPU 1. `.cold_bss` (the JTAG generator's two saved builds, 32 KB, touched only on a wire or configuration switch) comes after every other `.bss` and may reach here. GCC's ARM reference build outgrows SRAM2 with `.ramfunc`, so some of ARM's bit paths run from here: a test build |
 | 6 | 0x2004_0000 SRAM4, 16 KB | Stream message storage in the lower 8 KB from 0x2004_0000; upper 8 KB unused |
@@ -43,6 +43,7 @@ contends with any other.
 | --- | --- | --- | --- |
 | CPU 1 | 1 | Generated code fetch | Every generated transfer |
 | CPU 1 | 3 | Shared generator event workspace, 1280 events with JTAG or 256 for SWD only | Builds run serially between timed windows; each schedule is consumed before reuse |
+| CPU 1 | 3 | The SWD generator's code (`src/gen.c`, `src/swd_gen.c`) | Each SWD build, between timed windows |
 | CPU 1 | 10 | Secure GPIO (`DBGIF_GPIO`): every SWDIO, SWCLK, TMS, TDI, TDO access | Inside every timed window |
 | CPU 1 | 3, 4, 5 | The `.ramfunc` bit paths of the ARM reference build: ARM's SWD, the JTAG and cJTAG blocks | Inside their timed windows |
 | CPU 1 | 5 | A staged command's request in `dap_stage`, and a staged bulk command's reply: the generated transfers load write data and store read data there | Inside timed windows |

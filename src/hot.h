@@ -57,6 +57,16 @@
 #define COMMAND_PATH
 #endif
 
+/** The SWD generator and the schedule both generators share (src/gen.c, src/swd_gen.c): branchy C
+ *  that runs when a configuration changes and in every connect-time latency search, where flash
+ *  wait states doubled the time of each build. In SRAM after every bit path, so it moves none of
+ *  them. tools/image.py checks everything it calls stays in SRAM, the compiler's memset aside. */
+#ifdef RAMFUNC_BIT_PATHS
+#define GEN_PATH __attribute__((section(".data_gen_path")))
+#else
+#define GEN_PATH
+#endif
+
 /** Zeroed data touched only off the command path, placed after the rest of CPU 1's .bss
  *  (src/core1.ld.in) so that its size cannot push the statics every command reads into SRAM3,
  *  beside the buffers CPU 0 writes (BUSES.md). tools/image.py checks a product image for it. */

@@ -1,5 +1,6 @@
 #include "gen.h"
 
+#include "hot.h"
 #include "thumb.h"
 
 uint32_t gen_owner = GEN_OWNER_NONE;
@@ -11,7 +12,7 @@ struct gen_event gen_events[256];
 struct gen_event gen_events[1280];
 #endif
 
-void gen_schedule_reset(struct gen_schedule* s, struct gen_event* ev, uint32_t cap) {
+GEN_PATH void gen_schedule_reset(struct gen_schedule* s, struct gen_event* ev, uint32_t cap) {
     s->ev = ev;
     s->cap = cap;
     s->n = 0U;
@@ -22,7 +23,7 @@ void gen_schedule_reset(struct gen_schedule* s, struct gen_event* ev, uint32_t c
  *  close to the order of their cycles and ask mostly about cycles near the last. */
 #define GEN_TAIL 4U
 
-static uint32_t lower_bound(const struct gen_schedule* s, uint32_t cycle) {
+GEN_PATH static uint32_t lower_bound(const struct gen_schedule* s, uint32_t cycle) {
     uint32_t hi = s->n;
     for (uint32_t k = 0U; (k < GEN_TAIL) && (hi != 0U); k++, hi--) {
         if (s->ev[hi - 1U].cycle < cycle) {
@@ -41,17 +42,17 @@ static uint32_t lower_bound(const struct gen_schedule* s, uint32_t cycle) {
     return lo;
 }
 
-bool gen_taken(const struct gen_schedule* s, uint32_t cycle) {
+GEN_PATH bool gen_taken(const struct gen_schedule* s, uint32_t cycle) {
     const uint32_t i = lower_bound(s, cycle);
     return (i < s->n) && (s->ev[i].cycle == cycle);
 }
 
-uint32_t gen_at(const struct gen_schedule* s, uint32_t cycle) {
+GEN_PATH uint32_t gen_at(const struct gen_schedule* s, uint32_t cycle) {
     const uint32_t i = lower_bound(s, cycle);
     return (i < s->n) && (s->ev[i].cycle == cycle) ? s->ev[i].insn : 0U;
 }
 
-void gen_put(struct gen_schedule* s, uint32_t cycle, uint32_t insn) {
+GEN_PATH void gen_put(struct gen_schedule* s, uint32_t cycle, uint32_t insn) {
     if (s->n == s->cap) {
         s->failed = true;
         return;
@@ -69,7 +70,7 @@ void gen_put(struct gen_schedule* s, uint32_t cycle, uint32_t insn) {
     s->n++;
 }
 
-void gen_emit(struct gen_emitter* e, uint32_t insn) {
+GEN_PATH void gen_emit(struct gen_emitter* e, uint32_t insn) {
     if (e->pos >= e->cap) {
         e->failed = true;
         return;
@@ -77,7 +78,7 @@ void gen_emit(struct gen_emitter* e, uint32_t insn) {
     e->code[e->pos++] = insn;
 }
 
-void gen_emit_branch(struct gen_emitter* e, uint32_t cond, uint32_t label) {
+GEN_PATH void gen_emit_branch(struct gen_emitter* e, uint32_t cond, uint32_t label) {
     if (e->nfix == GEN_FIXUPS) {
         e->failed = true;
         return;
@@ -86,9 +87,9 @@ void gen_emit_branch(struct gen_emitter* e, uint32_t cond, uint32_t label) {
     gen_emit(e, GEN_BRANCH(cond, label));
 }
 
-void gen_bind(struct gen_emitter* e, uint32_t label) { e->label[label] = e->pos; }
+GEN_PATH void gen_bind(struct gen_emitter* e, uint32_t label) { e->label[label] = e->pos; }
 
-void gen_resolve(struct gen_emitter* e) {
+GEN_PATH void gen_resolve(struct gen_emitter* e) {
     for (uint32_t i = 0U; i < e->nfix; i++) {
         const uint32_t at = e->fix[i];
         if (at >= e->pos) {
@@ -102,7 +103,7 @@ void gen_resolve(struct gen_emitter* e) {
     e->nfix = 0U;
 }
 
-void gen_load_const(struct gen_emitter* e, uint32_t rd, uint32_t value) {
+GEN_PATH void gen_load_const(struct gen_emitter* e, uint32_t rd, uint32_t value) {
     gen_emit(e, t_movw(rd, value & 0xFFFFU));
     if ((value >> 16) != 0U) {
         gen_emit(e, t_movt(rd, value >> 16));
@@ -111,7 +112,7 @@ void gen_load_const(struct gen_emitter* e, uint32_t rd, uint32_t value) {
 
 /* A counted loop of three cycles an iteration, and fillers for the rest. The loop's head is
  * word-aligned like everything here, which is what makes it three. */
-void gen_delay(struct gen_emitter* e, uint32_t cycles) {
+GEN_PATH void gen_delay(struct gen_emitter* e, uint32_t cycles) {
     if (cycles >= 6U) {
         uint32_t n = cycles / 3U;
         if (n > 0xFFFFU) {
@@ -128,7 +129,7 @@ void gen_delay(struct gen_emitter* e, uint32_t cycles) {
     }
 }
 
-uint32_t gen_emit_span(struct gen_emitter* e, const struct gen_schedule* s, uint32_t from, uint32_t to) {
+GEN_PATH uint32_t gen_emit_span(struct gen_emitter* e, const struct gen_schedule* s, uint32_t from, uint32_t to) {
     uint32_t now = from;
     for (uint32_t i = lower_bound(s, from); (i < s->n) && (s->ev[i].cycle < to); i++) {
         const struct gen_event* ev = &s->ev[i];
@@ -143,6 +144,6 @@ uint32_t gen_emit_span(struct gen_emitter* e, const struct gen_schedule* s, uint
     return now;
 }
 
-uint32_t gen_emit_schedule(struct gen_emitter* e, const struct gen_schedule* s) {
+GEN_PATH uint32_t gen_emit_schedule(struct gen_emitter* e, const struct gen_schedule* s) {
     return gen_emit_span(e, s, 0U, UINT32_MAX);
 }

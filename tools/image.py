@@ -25,6 +25,7 @@ checks that the two agree on everything they share.
 """
 
 import argparse
+import bisect
 import os
 import re
 import struct
@@ -1836,7 +1837,20 @@ BRANCH = re.compile(r"^\s*([0-9a-f]+):\s+(bl|blx|b(?:eq|ne|cs|cc|hs|lo|mi|pl|vs|
                     r"\s+([0-9a-f]+)(?=\s|$)(?: <(\S+)>)?")
 
 
-def check_sram_code(c: Checker, elf: str, what: str, names: tuple[str, ...], allow: tuple[str, ...] = ()) -> None:
+def text_symbols(elf: str) -> list[tuple[int, int, str]]:
+    """Every function with a size, as (address without the Thumb bit, size, name), by address."""
+    out = []
+    for line in subprocess.run(
+        ["arm-none-eabi-nm", "-S", elf], capture_output=True, text=True, check=True
+    ).stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 4 and parts[2] in "tTwW":
+            out.append((int(parts[0], 16) & ~1, int(parts[1], 16), parts[3]))
+    return sorted(out)
+
+
+def check_sram_code(c: Checker, elf: str, what: str, names: tuple[str, ...], allow: tuple[str, ...] = (),
+                    calls: bool = False) -> None:
     """Both cores wait for work from SRAM and run each command's own code from there: a core
     fetching from flash slows the other's command code (src/main.c), and CPU 1's wait polls a
     level instead of sleeping (src/core1_main.c). A dropped section attribute, or a call the
@@ -1844,13 +1858,23 @@ def check_sram_code(c: Checker, elf: str, what: str, names: tuple[str, ...], all
 
     `allow` names flash functions a branch may reach anyway, ones that run once rather than per
     command or per wait, matched without the suffix LTO adds to a local symbol's name. A call
-    through a register has no static target and is not checked here."""
+    through a register has no static target and is not checked here. With `calls`, every function
+    a branch reaches in SRAM is held to the same, so naming the entry covers what the compiler
+    chose to keep out of line below it."""
     sym = symbols_with_size(elf)
     # A veneer's target can be a symbol with no size, as the C library's assembly helpers are.
     every = symbols(elf)
+    functions = text_symbols(elf)
+    starts = [f[0] for f in functions]
     sram = range(0x2000_0000, 0x3000_0000)
     before = len(c.problems)
-    for name in names:
+    todo = list(names)
+    seen: set[str] = set()
+    while todo:
+        name = todo.pop(0)
+        if name in seen:
+            continue
+        seen.add(name)
         # A local function can carry the suffix LTO gives it.
         found = name if name in sym else next((k for k in sym if k.split(".")[0] == name), None)
         if not c.check(found is not None, f"{name} is not in the image ({what})"):
@@ -1874,10 +1898,16 @@ def check_sram_code(c: Checker, elf: str, what: str, names: tuple[str, ...], all
             callee = veneer.group(1) if veneer else (m.group(4) or "")
             if callee.split(".")[0] in allow:
                 continue
-            c.check(target is not None and target in sram,
-                    f"{name} branches out of SRAM at {m.group(1)}: {m.group(2)} {m.group(4) or m.group(3)}")
+            if not c.check(target is not None and target in sram,
+                           f"{name} branches out of SRAM at {m.group(1)}: {m.group(2)} {m.group(4) or m.group(3)}"):
+                continue
+            if calls and not (at & ~1) <= target < (at & ~1) + size:
+                i = bisect.bisect_right(starts, target) - 1
+                if i >= 0 and target < functions[i][0] + functions[i][1]:
+                    todo.append(functions[i][2])
     if len(c.problems) == before:
-        c.note(f"{what} from SRAM: {' and '.join(names)}, and every branch they take")
+        below = f", and the {len(seen) - len(names)} functions they call" if calls else ""
+        c.note(f"{what} from SRAM: {' and '.join(names)}{below}, and every branch they take")
 
 
 def check_core1_image(c: Checker, elf: str, core1: str, request_slots: int,
@@ -2501,6 +2531,11 @@ def main() -> int:
                     ("serve", "DAP_ExecuteCommandSized", "execute_one", "DAP_ProcessCommand", "transfer_block", "SWD_TransferBlock",
                      "SWD_TransferCommand", "JTAG_TransferCommand", "memcpy") + jtag_gen,
                     allow=("arm_command", "arm_DAP_ProcessCommand", "regenerate", "swd_sweep_connect", "jtag_sweep_connect"))
+    # The SWD generator, where it is built: every connect-time latency search runs it many times
+    # (src/hot.h, GEN_PATH). Allowed: what each compiler calls to zero a struct.
+    if any(name.split(".")[0] == "swd_gen_build" for name in symbols_with_size(args.core1)):
+        check_sram_code(c, args.core1, "CPU 1 generates SWD transfers", ("swd_gen_build",),
+                        allow=("memset", "__aeabi_memclr4"), calls=True)
     check_clocks(c, args.elf, slots)
     check_led(c, args.elf, slots)
     check_pro_leds(c, args.elf, slots)

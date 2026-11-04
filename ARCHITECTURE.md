@@ -75,7 +75,7 @@ capture, and the SPI and I2C bridges.
 | --- | --- | --- |
 | CPU 0's code | flash from `0x200`; its loop and everything a command passes through on CPU 0 in SRAM0 | |
 | CPU 0's data and stack, the energy capture's state and ring, the consoles' rings | SRAM0, the stack in its top 4 KiB | CPU 0; DMA for the rings; CPU 1 for the energy state while it owns it |
-| CPU 1's code | flash from `0x4_0000`; its command path in SRAM1 | |
+| CPU 1's code | flash from `0x4_0000`; its command path and the SWD generator in SRAM1 | |
 | CPU 1's stack, data and the rest of its RAM | SRAM1, from its 16 KiB of stack at the bottom, then SRAM2 | CPU 1; CPU 0 sets the abort flag here |
 | The generated wire code | SRAMX, `0x0400_0000` | CPU 1, at run time |
 | TinyUSB's buffers, Verge Aux's included | USB SRAM, its first 4 KiB from `0x4010_0000` | CPU 0, and the USB controller |
