@@ -223,6 +223,9 @@ static inline bool dap_packet_plan(const uint8_t* p, uint32_t length, uint32_t c
             in = 21U;
             out = 10U;
         }
+        if (p[1] == 4U) {
+            in = 6U;
+        }
         break;
 #endif
 #ifdef SWD_CODEGEN
