@@ -10,8 +10,10 @@
 #include "jtag_dp.h"
 #include "jtag_gen.h"
 
-/** IDCODE reads at each candidate, as SWD reads DPIDR. */
-#define SWEEP_READS 64U
+/** IDCODE reads at each candidate. They are most of a JTAG or cJTAG measurement, so a quarter of
+ *  the 64 DPIDR reads SWD makes (src/swd_sweep.c). A latency on a cycle boundary reads right only
+ *  some of the time, and the search keeps a build only when every read agrees. */
+#define SWEEP_READS 16U
 
 /** Cycles past the measured latency that cJTAG builds sample. The measurement finds the first
  *  cycle on which every IDCODE read agrees, which leaves transfers no margin: on the Pro's CC1312
