@@ -1,4 +1,5 @@
-/** CPU 0's clock bring-up. CPU 1 starts after this has run and changes no clock source. */
+/** CPU 0's clock bring-up. CPU 1 starts after this has run. It selects and enables the clocks of
+ *  the peripherals it runs, but changes neither the main clock nor FRO_HF. */
 #include "board_pins.h"
 
 #include "bsp/board_api.h"
