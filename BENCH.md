@@ -109,8 +109,7 @@ header orientation-free. `--mask` takes pins from the marker so a single one can
 ## What the emulator predicts, so you can check it
 
 KiB/s of wire time over a 64-word SWD block, on the generated transfers, timed by the m33 model.
-Regenerate with `uv run tools/cycles.py --engine --table --words 64`; without `--engine` the
-simpler cost model mistimes code run from SRAMX.
+Regenerate with `uv run tools/cycles.py --table --words 64`.
 
 | asked | SWD read | SWD write |
 | --- | --- | --- |
@@ -121,7 +120,7 @@ simpler cost model mistimes code run from SRAMX.
 | 50 MHz | 2723 | 3362 |
 
 Single-register transfers are a different command and move independently:
-`uv run tools/cycles.py --engine --wire swd --transfer --words 16` gives 634/642 at 10 MHz and
+`uv run tools/cycles.py --wire swd --transfer --words 16` gives 634/642 at 10 MHz and
 1493/1677 at 50.
 
 Wire time is not throughput: USB and the host add to every command (MEASUREMENTS.md, "The USB path

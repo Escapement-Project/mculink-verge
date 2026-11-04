@@ -245,10 +245,10 @@ One generator draws both JTAG and cJTAG; `src/jtag_gen.c`'s opening comment has 
 ## Tools
 
 - `tools/m33.py`: timing engine (`Engine`, `Params`); defaults are the fitted values.
-- `tools/cycles.py`: emulator. `--engine` uses m33; `--latency 7` adds `TimedSwdTarget`
-  (per-read `Read.early/late/margin`; `serve="wire"` returns what timing puts on the pin,
-  `"intended"` keeps the run going). Memory hook must cover plain memory only (an MMIO-covering
-  hook changes unicorn's behaviour on the GPIO block). The gate (`--check`) passes on both models.
+- `tools/cycles.py`: emulator. `--engine` uses m33, always on for a generated image;
+  `--latency 7` adds `TimedSwdTarget` (per-read `Read.early/late/margin`; `serve="wire"` returns
+  what timing puts on the pin, `"intended"` keeps the run going). Memory hook must cover plain
+  memory only (an MMIO-covering hook changes unicorn's behaviour on the GPIO block).
 - `tools/lab.py` + vendor 0x88 (`src/code_lab.c`, `-DCODE_LAB=ON`, build dir `build-lab/`):
   LAB_INFO/WRITE/READ/RUN; arenas 0 = 4 KB SRAM buffer, 1 = SRAMX. `HardwareLab` and
   `EmulatedLab` share an interface (write/run/arenas), so the same blob runs in both.

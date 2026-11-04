@@ -2,17 +2,15 @@
 # requires-python = ">=3.11"
 # dependencies = ["unicorn", "capstone"]
 # ///
-"""Count what one debug-port bit costs, by emulating the built image.
+"""Count what a debug-port transfer costs, by emulating the built image.
 
-The bench cannot answer this yet and a disassembly listing cannot either: the bit paths are
-unrolled, the delay loop length is computed at run time from the requested clock, and the compiler
-interleaves the two. So run the real image on an emulated Cortex-M33, drive it through the real
-DAP command layer, and count what actually executes between one clock edge and the next.
+Run the real image on an emulated Cortex-M33, drive it through the real DAP command layer, and
+count what executes between one clock edge and the next.
 
-What comes out is an instruction count per bit, broken down by class, and a cycle estimate from a
-cost model whose constants are command-line arguments. The counts are facts about the image. The
-cycles are a model, and the bench settles it: one measurement of the real clock period at two
-delay settings solves for the store and branch costs.
+What comes out is an instruction count per bit, broken down by class, and a cycle count. The
+counts are facts about the image. The cycles come from tools/m33.py, which models fetch and the bus
+and was fitted on hardware, for an image that generates its transfers, and for any image with
+--engine. Otherwise ARM's paths are priced by per-class constants given as arguments.
 """
 
 import argparse
@@ -1417,6 +1415,13 @@ def dap_setup(probe: "Machine") -> None:
     probe.command(bytes([0x04, 0, 100, 0, 0, 0]))  # DAP_TransferConfigure: no idle, 100 WAIT retries
 
 
+def generates_transfers(elf: str) -> bool:
+    """Whether the image generates its SWD paths, and runs them from SRAMX, which only the timing
+    engine prices correctly. Recognised by a variable: a function can be inlined out of the symbol
+    table, and clang did that to swd_gen_ready once its callers shrank to one."""
+    return "swd_gen_read" in symbols(elf)
+
+
 def build(elf: str, wire: str, read: bool, model: Model, record_stats: bool = True) -> Machine:
     """A machine with a target model attached, found from the wire rather than from symbols.
 
@@ -1456,7 +1461,10 @@ def measure(
     model: Model,
     explain: bool = False,
     record_stats: bool = True,
+    warm_up: bool = False,
 ) -> tuple[Counts, bytes, "Machine"]:
+    """A DAP_TransferBlock of `words`, timed. With `warm_up`, the one timed is the second: the first
+    after a clock change also builds a generated path's transfers."""
     probe = build(elf, wire, read, model, record_stats)
     # DAP_Setup only sets defaults that the commands below overwrite, and link-time optimisation
     # usually folds it into main, so run it when it still exists and skip it when it does not.
@@ -1476,6 +1484,11 @@ def measure(
     payload = bytes([ID_TRANSFER_BLOCK, 0]) + u16(words) + bytes([request])
     if not read:
         payload += u32(0xA5A5_5A5A) * words
+    if warm_up:
+        # Inside a window of its own, so a target that answers by time sees time pass.
+        probe.begin()
+        probe.command(payload)
+        probe.end()
 
     probe.explain = explain
     probe.begin()
@@ -1485,7 +1498,8 @@ def measure(
 
 
 def measure_transfer(
-    elf: str, wire: str, clock_hz: int, count: int, read: bool, model: Model, explain: bool = False
+    elf: str, wire: str, clock_hz: int, count: int, read: bool, model: Model, explain: bool = False,
+    warm_up: bool = False,
 ) -> tuple[Counts, bytes, "Machine"]:
     """The same measurement through DAP_Transfer instead of DAP_TransferBlock.
 
@@ -1510,12 +1524,27 @@ def measure_transfer(
         payload = bytes([ID_TRANSFER, 0, count]) + bytes([AP_DRW_READ]) * count
     else:
         payload = bytes([ID_TRANSFER, 0, count]) + (bytes([AP_DRW_WRITE]) + u32(0xA5A5_5A5A)) * count
+    if warm_up:
+        # Inside a window of its own, so a target that answers by time sees time pass.
+        probe.begin()
+        probe.command(payload)
+        probe.end()
 
     probe.explain = explain
     probe.begin()
     probe._window_start = 0
     response = probe.command(payload)
     return probe.end(), response, probe
+
+
+def transfer_failed(reply: bytes, count: int) -> str | None:
+    """Why a measured DAP_Transfer or DAP_TransferBlock did not do all it was asked, if it did not.
+    A failed one stops early and times as fast."""
+    if reply[:1] == bytes([ID_TRANSFER_BLOCK]):
+        done, status = reply[1] | reply[2] << 8, reply[3]
+    else:
+        done, status = reply[1], reply[2]
+    return None if done == count and status == 1 else f"{done} of {count} done, status 0x{status:02x}"
 
 
 def measure_bit_loop(elf: str, clock_hz: int, model: Model, bits: int = 248) -> Counts:
@@ -1853,10 +1882,10 @@ TABLE_CLOCKS = (1, 2, 3, 5, 8, 10, 12, 14, 16, 20, 25, 30, 40, 50)
 def table(elf: str, model: Model, cpu_hz: int, words: int) -> int:
     """What the wire does for each rate a host can ask for.
 
-    The clock delay is a whole number of loop iterations, so the rate goes up in steps and most
-    requests land on a step below them. Printing the whole range is the only way to see which
-    request is worth making: the steps matter far more than any remaining optimisation, and a
-    change that flattens one would otherwise show up as a small loss at a single clock.
+    A generated path's period is a whole number of core cycles, and ARM's a whole number of delay
+    loops, so the rate goes up in steps and most requests land on a step below them. Printing the
+    whole range shows which request is worth making, and a change that flattens a step would
+    otherwise show up as a small loss at a single clock.
     """
     wires = [("SWD", "swd"), ("JTAG", "jtag"), ("cJTAG", "cjtag")]
     print(f"| asked | {' | '.join(f'{n} {d}' for n, _ in wires for d in ('read', 'write'))} |")
@@ -1865,9 +1894,9 @@ def table(elf: str, model: Model, cpu_hz: int, words: int) -> int:
         cells = []
         for _, wire in wires:
             for read in (True, False):
-                counts, _, _ = measure(elf, wire, mhz * 1_000_000, words, read, model)
+                counts, reply, _ = measure(elf, wire, mhz * 1_000_000, words, read, model, warm_up=True)
                 seconds = model.total(counts) / cpu_hz
-                cells.append(f"{words * 4 / seconds / 1024:.0f}")
+                cells.append("failed" if transfer_failed(reply, words) else f"{words * 4 / seconds / 1024:.0f}")
         print(f"| {mhz} MHz | {' | '.join(cells)} |")
     return 0
 
@@ -1903,12 +1932,9 @@ def check(
 
     failures = []
 
-    # An image that generates its SWD paths runs them from SRAMX, which only the timing engine
-    # prices correctly. One built with ARM's paths alone samples on other cycles, so its traces are
-    # its own. Recognised by a variable: a function can be inlined out of the symbol table, and
-    # clang did that to swd_gen_ready once its callers shrank to one.
+    # One built with ARM's paths alone samples on other cycles, so its traces are its own.
     baseline_dir = BASELINE_DIR + "-armwire"
-    if "swd_gen_read" in symbols(elf):
+    if generates_transfers(elf):
         baseline_dir = BASELINE_DIR
         if not model.engine:
             model = replace(model, engine=True)
@@ -2131,7 +2157,8 @@ def main() -> int:
     ap.add_argument(
         "--engine",
         action="store_true",
-        help="time instructions with tools/m33.py, which models fetch and the bus, not per-class constants",
+        help="time instructions with tools/m33.py, which models fetch and the bus, not per-class"
+        " constants; always on for an image that generates its transfers",
     )
     ap.add_argument(
         "--latency",
@@ -2210,6 +2237,8 @@ def main() -> int:
         latency=args.latency,
     )
     cpu_hz = int(args.cpu * 1e6)
+    if not args.check and not model.engine and generates_transfers(args.elf):
+        model = replace(model, engine=True)
     if args.check:
         selected = None if args.wire is None else (args.wire,)
         print(f"{args.elf}, {args.wire or 'all wires'}")
@@ -2233,10 +2262,12 @@ def main() -> int:
         print(f"\n{mhz:g} MHz requested")
         for label, read in (("read", True), ("write", False)):
             drive = measure_transfer if args.transfer else measure
-            counts, _, probe = drive(
-                args.elf, wire, clock_hz, args.words, read, model, explain=args.explain
+            counts, reply, probe = drive(
+                args.elf, wire, clock_hz, args.words, read, model, explain=args.explain, warm_up=True
             )
             report(label, counts, model, clock_hz, cpu_hz, args.words)
+            if why := transfer_failed(reply, args.words):
+                print(f"    FAILED: {why}, so the figures above time a failure")
             if args.explain:
                 explain_gap(probe)
             if args.trace:

@@ -116,11 +116,11 @@ a modelled target. Hardware results are in `MEASUREMENTS.md`.
 ```
 ninja -C build check                      # the gate, against what was just built
 uv run tools/cycles.py --check            # the same thing by hand
-uv run tools/cycles.py --engine --clock 10 50  # throughput, wire period, where the time goes
+uv run tools/cycles.py --clock 10 50      # throughput, wire period, where the time goes
 uv run tools/cycles.py --explain          # name the code in the longest gap between edges
 uv run tools/equiv.py <ref.elf> <new.elf> # hold a rewrite to a reference build, case by case
 uv run tools/image.py               # the USB descriptors and the serial number
-uv run tools/cycles.py --engine --table  # SWD KiB/s for every rate a host can ask for
+uv run tools/cycles.py --table            # KiB/s on each wire for every rate a host can ask for
 uv run tools/window.py             # disassemble the gap that repeats once a word
 ```
 
