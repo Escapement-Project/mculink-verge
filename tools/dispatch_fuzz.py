@@ -139,6 +139,10 @@ def check_vendor_plans(c, elf, symbols, boards):
         probe = build(elf, "swd", True, Model())
         probe.sym.update({symbol: address for symbol, (address, _) in symbols.items()})
         setup(probe)
+        if "lab_sram" in probe.sym:
+            # The code lab's LAB_RUN calls whatever the host left in the arena, at offset 0 here:
+            # a `bx lr`, so it returns (src/code_lab.c).
+            probe.uc.mem_write(probe.sym["lab_sram"], b"\x70\x47")
         for command in range(0x80, 0xA0):
             for mode in VENDOR_MODES:
                 request = bytes([command, mode]) + bytes(length - 2)
