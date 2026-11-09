@@ -1,95 +1,21 @@
 # mculink-verge
 
-Open CMSIS-DAP firmware for the NXP MCU-Link and MCU-Link Pro. It supports SWD, JTAG and IEEE 1149.7
-cJTAG in OScan1, OScan2, OScan5 and OScan6 formats. Stock firmware does not support cJTAG.
+Open CMSIS-DAP firmware for NXP's MCU-Link and MCU-Link Pro debug probes, named Verge. It speaks
+SWD, JTAG and cJTAG (IEEE 1149.7) in OScan1, OScan2, OScan5 and OScan6, captures SWO and runs the
+probes' serial ports. On the Pro it adds GPIO, SPI and I2C bridges, a switched target supply and
+energy capture. It runs on the standalone boards, not on MCU-Links built into evaluation boards.
 
-It runs on the standalone boards, not on MCU-Links built into evaluation boards. Both provide SWO
-capture and one USB serial port. The Pro adds a second serial port, four GPIO pins, SPI and I2C
-bridges, switched target power and energy measurement.
-The [capability guide](CAPABILITIES.md) lists board conditions and the
-[host interface](HOST-INTERFACE.md) documents the supported vendor commands.
+[Verge's page](https://escapement-project.github.io/verge/) covers using it. Its docs live here and
+in verge, the tool that installs it:
 
-## Limits
+- [Wires and clocks](docs/wires.md): which hosts drive each wire, the clock you get for the one you
+  ask for, and how fast each wire runs beside NXP's firmware.
+- [Trace and serial ports](docs/trace-and-serial.md): SWO capture and the target's serial ports.
+- [Probes and jumpers](docs/probes.md): what each probe has, and what each jumper turns off.
+- [The Pro](docs/pro.md): the target supply, the DIO pins, the SPI and I2C bridges, and Verge Aux.
+- [Host interface](HOST-INTERFACE.md): the vendor commands, for tools that drive the probe.
 
-These figures were measured or reported on 2026-10-20 and 2026-10-21, on older builds than this
-source. The SWD rows show the build measured beside stock V3.172 on 2026-10-20, and mculink-bench's
-[notes for that date](https://github.com/Escapement-Project/mculink-bench/blob/master/results/throughput/2026-10-20.md)
-record the builds and methods.
-
-| Transport | Ours | Evidence | Ours depends on | NXP's stock V3.172 |
-| --- | --- | --- | --- | --- |
-| SWD writes | 50 MHz | Bench, 2026-10-20 | Nothing | 10.7 MHz |
-| SWD reads | 37.5 MHz | Bench, 2026-10-20 | The Pro's energy capture: 30 MHz while it runs (bench, 2026-10-29) | 9.6 MHz |
-| JTAG (reads and writes) | 30 MHz | Bench and firmware timing report | The target's TDO delay; the Pro's energy capture (emulator, 2026-10-29) | Not measured yet |
-| cJTAG (reads and writes) | 50 MHz per wire packet; per JTAG clock in Shift, 7.9 MHz in OScan1 and OScan2, 9.4 MHz in OScan5 and OScan6 | Firmware timing report; target-dependent | The target's TDO delay | Not supported |
-| Console (VCOM) | 19.2 Mbaud | Bench loopback | Nothing | 3 Mbaud or more; its limit not measured yet |
-| SWO | 30 Mbaud, UART encoding only | Bench capture | Nothing | Not measured yet |
-| USB | High speed, 512-byte packets, 3 commands held | Firmware report | The host's port: 64-byte packets on a full-speed one (bench, 2026-11-03) | 512-byte packets, 8 commands reported |
-
-The core runs at 150 MHz. Each wire period is a whole number of core cycles, so the firmware
-rounds a requested rate down to the next available step: 30 MHz is 5 cycles, 18.75 MHz is 8.
-A request above the maximum gets the maximum. A request below 9 Hz gets `DAP_ERROR`, and the clock
-stays as it was: its period would be more than 2^24 core cycles, longer than the generated paths
-run.
-
-- **SWD.** A write clock takes 3 core cycles and a read clock 4. At a requested 50 MHz, a transfer's
-  request and write data run at 50 MHz and its read data at 37.5 MHz. The target's reply delay does
-  not slow either. On the Pro, energy capture slows reads. While it runs, a read clock takes at
-  least 5 cycles (30 MHz), or 6 for some reply delays. The capture's DMA can delay the probe's
-  read of SWDIO by two cycles, and a 4-cycle clock leaves no room for that.
-- **JTAG.** The probe has to sample TDO after the target drives it, so a slow target
-  lengthens the clock. The probe measures that delay when a host connects. Up to 8 core cycles
-  (53 ns) the clock runs at 30 MHz, at 9 or 10 cycles at 25 MHz, and past that each cycle of delay
-  adds one to the clock: 18.75 MHz at 12, 12.5 at 16. A CC1312R1 measures 7 after a pin reset
-  and 11 after a system reset. On the Pro, energy capture can make these clocks up to two cycles
-  longer while it runs, because its DMA can delay the probe's read of TDO by two cycles. Scans run
-  at 25 MHz at 6 or 7 cycles of delay, 21.4 MHz at 8 and 18.75 MHz at 9 or 10.
-- **cJTAG.** The wire carries packets at up to 50 MHz, and three packets make one JTAG
-  clock. The probe samples TDO a cycle past the delay it measures, and each cycle adds one to the
-  frame. A CC1312R1 measures 8 in OScan1, so that frame takes 19 core cycles, or 7.9 MHz (the
-  generator's frame lengths, 2026-10-26). In OScan2, a clock outside Shift-DR and Shift-IR is a
-  single packet. Through probe-rs that reads a CC1312R1 4 to 7% faster than OScan1. In OScan5, a
-  clock in Shift-DR and Shift-IR is two packets, and the last one leaves with an escape. A CC1312R1
-  measures 7 there, and that frame takes 16 core cycles, or 9.4 MHz. dap.py reads a CC1312R1 27%
-  faster in OScan5 than in OScan1 at 12.5 MHz, 15% faster at 25 MHz and 6% faster at 50 MHz, where
-  USB starts to set the rate. OScan6 sends a clock outside Shift as one packet and a clock in Shift
-  as OScan5 does. On a CC1312R1 it reads level with OScan5 at 12.5 MHz and slower from 25 MHz, where
-  the target answers WAIT more often to the shorter frames. The host selects one of the formats both
-  the probe and the target offer, and `verge cjtag --formats` limits the probe's offer until it
-  restarts.
-- **Console.** Loopback passed at 19.2 Mbaud, including both Pro ports running together.
-  This is the UART clock's highest rate. Rates above 10 Mbaud exceed NXP's specification (below).
-- **Stock.** Its SWD figures are measured data-bit rates at requests of 25 MHz and above, where
-  they stop increasing. At a requested 10 MHz, reads run at 6.4 MHz. At requests of 25 MHz and
-  above it misreads some acknowledgements; queued commands fail at 50 MHz. Requests up to
-  20 MHz passed, with data rates of 9.1 MHz for reads and 9.4 MHz for writes.
-  Its console figure is the fastest tested with both Pro ports active.
-  Its USB figures are what `DAP_Info` reports; we did not measure how many commands it holds.
-- **SWO.** Captured over `DAP_SWO_Data` in UART (NRZ) encoding up to 30 Mbaud, which is 3 MB/s.
-  This is the UART clock's highest rate, and a faster request gets it. The
-  standalone MCU-Link captured 30 Mbaud with its console running at 19.2 Mbaud. The Pro
-  captured up to 24 Mbaud with both consoles at 19.2 Mbaud; no trace source on the bench sends
-  faster. There is no Manchester encoding and no streaming endpoint. The buffer
-  holds 7 KiB.
-
-### Past NXP's limits
-
-Some rates exceed NXP's specifications. They passed the tests below. The host asks for the rate,
-so whoever runs the probe decides whether to use them.
-
-| Feature | NXP's limit | Ours past it |
-| --- | --- | --- |
-| Console | The UART is specified to 10 Mbit/s (LPC55S6x data sheet, 7.26.3.4) | Above 10 Mbaud: 12, 16 and 19.2 Mbaud ran clean |
-| SWO | The same UART, to 10 Mbit/s | Above 10 Mbaud: 12, 16, 24 and 30 Mbaud ran clean |
-| SWO | The UART's clock divider is specified to 100 MHz (UM11126, 4.5.49) | Above 20.1 Mbaud, where nothing inside the divider's limit comes within 0.5% of the rate: 21.4, 24, 25 and 30 Mbaud ran clean with it at 107 to 150 MHz |
-
-SWD rates come from wire captures in mculink-bench's `results/wireclock/2026-10-21.md`. JTAG and
-cJTAG rates come from the firmware's timing report (vendor 0x8A, run in the emulator); JTAG at
-30 MHz was also measured on hardware (MEASUREMENTS.md, "cJTAG, from ARM's paths to every generated
-format"). Console loopbacks and SWO captures are
-recorded in MEASUREMENTS.md. Stock SWD captures are in mculink-stock-notes' `wire.md` and
-mculink-bench's `results/wireclock/2026-10-21.md`. Other stock figures are in MEASUREMENTS.md under
-"The console" and in mculink-bench's `results/throughput/2026-10-21-stock.json`.
+This README is for building, checking and releasing the firmware.
 
 ## Build
 
@@ -182,44 +108,14 @@ Address-pattern and word-count coverage were added after the implementation. The
 used two request values that left parity inputs fixed. It also sent two words in every block
 case, missing errors in counts derived from the response pointer.
 
-## Jumpers
-
-The function jumpers work as they do with NXP's firmware. Each one turns a function off. The probe
-reads them once when it starts, so fit or remove one with the probe unplugged.
-
-| function | plain MCU-Link | MCU-Link Pro | with the jumper fitted |
-| --- | --- | --- | --- |
-| VCOM | J4 | J14 | no target serial port. The Pro's second one, on J26, stays |
-| SWD | J5 | J13 | no CMSIS-DAP interface, so no debugger can use the probe. The Pro keeps Verge Aux |
-| USB-SIO | | J15 | disables the DIO, SPI and I2C bridges; the DIO pins on J19 stay inputs |
-
-A function that is off is left out of the USB configuration, not shown as an interface that does
-nothing. The interfaces after it are numbered down. CMSIS-DAP v2 is always interface 0 when it is
-there, so the probe selector printed by `probe-rs list` still works. A selector for the
-CMSIS-DAP v1 interface, such as `1fc9:0143-3:<serial>`, stops matching once the VCOM jumper
-moves that interface to 1.
-
-With the SWD jumper fitted the probe still restarts into its bootloader on a USB request, so
-it can still be updated.
-
-## The Pro
-
-[CAPABILITIES.md](CAPABILITIES.md) says what each of the Pro's features needs, and
-[HOST-INTERFACE.md](HOST-INTERFACE.md) has their commands.
-
-- **DIO pins:** four GPIO pins on J19. `verge dio` reads and drives them.
-- **SPI and I2C bridges:** vendor commands `0x91` and `0x92`.
-- **Target supply:** switched by vendor command `0x8F`. `verge power` controls it.
-- **Verge Aux:** a second vendor interface that carries the DIO, supply, energy and marker
-  commands, so a tool can use them while a debugger holds CMSIS-DAP.
-
 ## Releases
 
 `.github/workflows/release.yml` publishes a release when a tag starting with `v` is pushed. It
 attaches three files in the layout verge, the update tool, reads: the image as an S-record, its
 checksum, and a minisign signature whose trusted comment names the file and the tag. verge's
-README says what it checks. `LICENSE`, `THIRD-PARTY-NOTICES.md` and newlib's licence files go with
-them.
+[Updating and
+recovery](https://github.com/Escapement-Project/verge/blob/HEAD/docs/updating.md#what-a-release-carries)
+says what it checks. `LICENSE`, `THIRD-PARTY-NOTICES.md` and newlib's licence files go with them.
 
 Build and signing run in separate jobs, so the secret key never sits on a machine that ran code
 the build fetched:

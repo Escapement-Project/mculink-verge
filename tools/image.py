@@ -396,7 +396,7 @@ def swo_clock(fro: int, main: int, want: int) -> tuple[int, int, int, float]:
 def check_swo_baudrate(c: Checker, config: str, fro: int, main: int) -> None:
     """SWO_Baudrate clamps every request to SWO_UART_MAX_BAUDRATE and refuses a rate more than 3%
     from any it can make, so a maximum it cannot make fails every request at or above it. Which of
-    NXP's limits the maximum passes is a note: README.md's "Past NXP's limits" is where a user
+    NXP's limits the maximum passes is a note: docs/wires.md's "Past NXP's limits" is where a user
     reads it, and a change here belongs there too."""
     m = re.search(r"^#define\s+SWO_UART_MAX_BAUDRATE\s+(\d+)U?", open(config).read(), re.M)
     if not m:

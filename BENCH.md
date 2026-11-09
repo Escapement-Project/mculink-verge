@@ -2,9 +2,9 @@
 
 How the firmware is checked on real hardware: reading the target's supply, the hazards, the marker
 header, what each failure looks like, and what the emulator predicts. MEASUREMENTS.md has what the
-bench measured. Flash and recover units with verge (its README, "ISP mode"); mculink-stock-notes'
-`updating.md` has what the bootloader does with the ISP jumper and without it. BOARDS.md has both
-boards' pins.
+bench measured. Flash and recover units with verge (its docs/updating.md, "ISP mode");
+mculink-stock-notes' `updating.md` has what the bootloader does with the ISP jumper and without it.
+BOARDS.md has both boards' pins.
 
 ## Target sense, on the plain board's J6
 
@@ -112,12 +112,12 @@ KiB/s of wire time over a 64-word block, on the generated transfers, timed by th
 Regenerate with `uv run tools/cycles.py --table --words 64`.
 
 JTAG runs at the probe's default read latency, 10 cycles, which holds it to 25 MHz. A connection
-measures the target's latency, and a target that answers within 8 cycles runs at 30 MHz (README.md,
-"Limits").
+measures the target's latency, and a target that answers within 8 cycles runs at 30 MHz
+(docs/wires.md, "JTAG").
 
 cJTAG is shown in two formats. OScan1 has the longest frames on the wire and OScan6 the shortest.
 The modelled target never answers WAIT. A CC1312R1 answers WAIT more often to OScan6's shorter
-frames, and from 25 MHz it reads slower in OScan6 than in OScan5 (README.md, "Limits").
+frames, and from 25 MHz it reads slower in OScan6 than in OScan5 (docs/wires.md, "cJTAG").
 
 | asked | SWD read | SWD write | JTAG read | JTAG write | OScan1 read | OScan1 write | OScan6 read | OScan6 write |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -133,4 +133,4 @@ Single-register transfers are a different command and move independently:
 
 Wire time is not throughput: USB and the host add to every command (MEASUREMENTS.md, "The USB path
 at 50 MHz"), so treat the table as a ceiling. A request between two whole cycle counts gets the
-slower one (README.md, "Limits").
+slower one (docs/wires.md, "From the clock asked for to the clock on the wire").

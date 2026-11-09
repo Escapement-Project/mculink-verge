@@ -573,7 +573,7 @@ static void test_uart_clock(void) {
             assert(first_above == 0U);  // past the limit only from one rate up
         }
     }
-    // swo_uart_clock's comment and README.md's "Past NXP's limits" quote this.
+    // swo_uart_clock's comment and docs/wires.md's "Past NXP's limits" quote this.
     assert(first_above > 20000000U && first_above <= 20200000U);
     printf("    the divider passes its limit from %u Hz\n", first_above);
 }

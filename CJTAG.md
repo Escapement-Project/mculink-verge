@@ -247,7 +247,7 @@ than the adapter wants swallows the next command scans.
   scans, which sample late, did not. Fixed: JTAG latency default 10, and that bit sampled as late as the
   decision allows (at least latency + 4 on unmasked clocks). Cost: the JTAG clock floor was
   6 cycles (25 MHz), not 5, until the probe measured the latency at connect. A target that answers
-  within 8 cycles runs at 30 MHz again (README.md, "Limits").
+  within 8 cycles runs at 30 MHz again (docs/wires.md, "JTAG").
 - **probe-rs's JTAG reset on the CC13xx never worked**, on any build: `Icepick::new` for JTAG reset
   the TAPs but kept the chain state, which still held the DAP, so every ICEPick scan after the reset
   was 13 bits instead of 7. Fixed in icepick.rs by setting the ICEPick-only chain after the TAP

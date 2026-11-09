@@ -121,7 +121,7 @@ This information includes:
 /// Requests above it are clamped to it. 30 MHz is the fastest the UART makes: the 150 MHz main
 /// clock through the fractional divider undivided, and an oversampling ratio of 5 (src/swo_ring.h,
 /// swo_uart_clock).
-/// It is past NXP's limits for both the UART and the divider: README.md, "Past NXP's limits".
+/// It is past NXP's limits for both the UART and the divider: docs/wires.md, "Past NXP's limits".
 #define SWO_UART_MAX_BAUDRATE   30000000U       ///< SWO UART Maximum Baudrate in Hz.
 
 /// Indicate that Manchester Serial Wire Output (SWO) trace is available.

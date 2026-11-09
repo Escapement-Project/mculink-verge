@@ -30,9 +30,10 @@ pins and circuits, and what the firmware does with them.
 
 ## What runs on a Pro
 
-CAPABILITIES.md lists what the firmware does on a Pro and what each feature needs; the feature
-jumpers work as README.md "Jumpers" describes. SWD, JTAG and cJTAG reach the target on J7. The
-second serial port, on J26, is a second CDC interface and 3.3 V only: J26 has no level shifter.
+docs/pro.md says what the firmware does on a Pro and docs/probes.md what each feature needs; the
+feature jumpers work as docs/probes.md "Jumpers" describes. SWD, JTAG and cJTAG reach the target on
+J7. The second serial port, on J26, is a second CDC interface and 3.3 V only: J26 has no level
+shifter.
 
 - **The LEDs**, with the meanings UM11673 gives them where the function exists. LED1 is lit while
   USB is configured. The status, SWO and VCOM LEDs flicker with traffic. LED5 (FUNC) shows the wire
