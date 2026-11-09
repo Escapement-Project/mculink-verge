@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="vf" viewBox="0 0 720 311.5" width="720" height="311.5">
+<style>
+.vf{color:var(--ink,#11171d);font-family:var(--font-text,"Hanken Grotesk","Helvetica Neue",Arial,sans-serif)}
+.vf .vf-2{fill:var(--ink-2,#525f6a)}
+.vf .vf-rule{stroke:var(--rule,#738691)}
+.vf .vf-hair{stroke:var(--hair,#bccbd3)}
+.vf .vf-wire{stroke:var(--series-verge,#0f8a6c)}
+.vf .vf-wiref{fill:var(--series-verge,#0f8a6c)}
+.vf .vf-rulef{fill:var(--rule,#738691)}
+.vf .vf-surf{fill:var(--surface,#eef4f6)}
+.vf .vf-code{font-family:var(--font-code,"Martian Mono",ui-monospace,monospace)}
+.vf .vf-head{font-family:var(--font-display,"Saira","Hanken Grotesk","Helvetica Neue",Arial,sans-serif);font-stretch:var(--display-stretch,normal)}
+@media (prefers-color-scheme:dark){
+.vf{color:var(--ink,#e6ebee)}
+.vf .vf-2{fill:var(--ink-2,#aab5be)}
+.vf .vf-rule{stroke:var(--rule,#636e79)}
+.vf .vf-hair{stroke:var(--hair,#29333c)}
+.vf .vf-wire{stroke:var(--series-verge,#1aa384)}
+.vf .vf-wiref{fill:var(--series-verge,#1aa384)}
+.vf .vf-rulef{fill:var(--rule,#636e79)}
+.vf .vf-surf{fill:var(--surface,#151b21)}
+}
+</style>
+<path d="M76,52H172A4,4 0 0 1 176,56V157A4,4 0 0 1 172,161H76A4,4 0 0 1 72,157V56A4,4 0 0 1 76,52Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="124" y="87.05" font-size="13" fill="currentColor" font-weight="600" text-anchor="middle">ADC0</text>
+<text x="124" y="103.05" font-size="13" fill="currentColor" text-anchor="middle">the target&#x27;s</text>
+<text x="124" y="119.05" font-size="13" fill="currentColor" text-anchor="middle">voltage and</text>
+<text x="124" y="135.05" font-size="13" fill="currentColor" text-anchor="middle">current: a pair</text>
+<path d="M208,52H296A4,4 0 0 1 300,56V157A4,4 0 0 1 296,161H208A4,4 0 0 1 204,157V56A4,4 0 0 1 208,52Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="252" y="79.05" font-size="13" fill="currentColor" font-weight="600" text-anchor="middle">Ring</text>
+<text x="252" y="95.05" font-size="13" fill="currentColor" text-anchor="middle">in SRAM0, in</text>
+<text x="252" y="111.05" font-size="13" fill="currentColor" text-anchor="middle">segments of</text>
+<text x="252" y="127.05" font-size="13" fill="currentColor" text-anchor="middle">about 1 ms</text>
+<text x="252" y="143.05" font-size="13" fill="currentColor" text-anchor="middle">or longer</text>
+<path d="M330,52H512A4,4 0 0 1 516,56V157A4,4 0 0 1 512,161H330A4,4 0 0 1 326,157V56A4,4 0 0 1 330,52Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="421" y="71.05" font-size="13" fill="currentColor" font-weight="600" text-anchor="middle">CPU 0</text>
+<text x="421" y="87.05" font-size="13" fill="currentColor" text-anchor="middle">adds each segment to the</text>
+<text x="421" y="103.05" font-size="13" fill="currentColor" text-anchor="middle">energy total; writes the</text>
+<text x="421" y="119.05" font-size="13" fill="currentColor" text-anchor="middle">stream&#x27;s messages</text>
+<text x="421" y="135.05" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">its loop switches the range</text>
+<text x="421" y="151.05" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">back to low</text>
+<path d="M546,52H622A4,4 0 0 1 626,56V157A4,4 0 0 1 622,161H546A4,4 0 0 1 542,157V56A4,4 0 0 1 546,52Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="584" y="103.05" font-size="13" fill="currentColor" font-weight="600" text-anchor="middle">16 slots</text>
+<text x="584" y="119.05" font-size="13" fill="currentColor" text-anchor="middle">in SRAM4</text>
+<text x="0" y="102.5" font-size="14" fill="currentColor" font-weight="600">Target</text>
+<text x="0" y="119.5" font-size="14" fill="currentColor" font-weight="600">supply</text>
+<path d="M56,106.5L65,106.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M70,106.5L63,109.65L63,103.35Z" fill="currentColor"/>
+<path d="M178,106.5L197,106.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M202,106.5L195,109.65L195,103.35Z" fill="currentColor"/>
+<text x="190" y="99.5" font-size="11" fill="currentColor" text-anchor="middle" class="vf-code vf-2">DMA</text>
+<path d="M302,106.5L319,106.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M324,106.5L317,109.65L317,103.35Z" fill="currentColor"/>
+<path d="M518,106.5L535,106.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M540,106.5L533,109.65L533,103.35Z" fill="currentColor"/>
+<path d="M628,106.5L713,106.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M718,106.5L711,109.65L711,103.35Z" fill="currentColor"/>
+<text x="719" y="97.5" font-size="13" fill="currentColor" text-anchor="end">Verge Aux</text>
+<text x="719" y="126.5" font-size="13" fill="currentColor" text-anchor="end"><tspan class="vf-code" font-size="11.7">EP5 IN</tspan></text>
+<path d="M76,1.5H172A4,4 0 0 1 176,5.5V26.5A4,4 0 0 1 172,30.5H76A4,4 0 0 1 72,26.5V5.5A4,4 0 0 1 76,1.5Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="124" y="20.55" font-size="13" fill="currentColor" text-anchor="middle">CTimer 2</text>
+<path d="M124,29L124,45" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M124,50L120.85,43L127.15,43Z" fill="currentColor"/>
+<text x="132" y="44.5" font-size="12" fill="currentColor" class="vf-2">triggers each pair</text>
+<path d="M76,182.5H296A4,4 0 0 1 300,186.5V239.5A4,4 0 0 1 296,243.5H76A4,4 0 0 1 72,239.5V186.5A4,4 0 0 1 76,182.5Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="186" y="201.55" font-size="13" fill="currentColor" font-weight="600" text-anchor="middle">CPU 1</text>
+<text x="186" y="217.55" font-size="13" fill="currentColor" text-anchor="middle">starts, stops and reads a capture</text>
+<text x="186" y="233.55" font-size="13" fill="currentColor" text-anchor="middle">(<tspan class="vf-code" font-size="11.7">0x90</tspan>); calibrates</text>
+<path d="M124,180.5L124,168" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M124,163L127.15,170L120.85,170Z" fill="currentColor"/>
+<path d="M390,185H715A4,4 0 0 1 719,189V237A4,4 0 0 1 715,241H390A4,4 0 0 1 386,237V189A4,4 0 0 1 390,185Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="552.5" y="209.55" font-size="13" fill="currentColor" font-weight="600" text-anchor="middle">CTimer 4: the stream&#x27;s clock</text>
+<text x="552.5" y="225.55" font-size="13" fill="currentColor" text-anchor="middle">pairs, DIO edges and markers are stamped on it</text>
+<path d="M584,180.5L584,168" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M584,163L587.15,170L580.85,170Z" fill="currentColor"/>
+<text x="0" y="288.5" font-size="14" fill="currentColor" font-weight="600">The capture state</text>
+<path d="M154,263.5H309A4,4 0 0 1 313,267.5V305.5A4,4 0 0 1 309,309.5H154A4,4 0 0 1 150,305.5V267.5A4,4 0 0 1 154,263.5Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="160" y="282.5" font-size="14" fill="currentColor" font-weight="600">CPU 1</text>
+<text x="160" y="300.5" font-size="13" fill="currentColor" class="vf-2">while no capture runs</text>
+<path d="M317,286.5L344,286.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M349,286.5L342,289.65L342,283.35Z" fill="currentColor"/>
+<text x="333" y="279.5" font-size="12" fill="currentColor" text-anchor="middle" class="vf-2">start</text>
+<path d="M357,263.5H512A4,4 0 0 1 516,267.5V305.5A4,4 0 0 1 512,309.5H357A4,4 0 0 1 353,305.5V267.5A4,4 0 0 1 357,263.5Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="363" y="282.5" font-size="14" fill="currentColor" font-weight="600">CPU 0</text>
+<text x="363" y="300.5" font-size="13" fill="currentColor" class="vf-2">while one runs</text>
+<path d="M520,286.5L547,286.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M552,286.5L545,289.65L545,283.35Z" fill="currentColor"/>
+<text x="536" y="279.5" font-size="12" fill="currentColor" text-anchor="middle" class="vf-2">stop</text>
+<path d="M560,263.5H715A4,4 0 0 1 719,267.5V305.5A4,4 0 0 1 715,309.5H560A4,4 0 0 1 556,305.5V267.5A4,4 0 0 1 560,263.5Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="566" y="282.5" font-size="14" fill="currentColor" font-weight="600">CPU 1</text>
+<text x="566" y="300.5" font-size="13" fill="currentColor" class="vf-2">once it stops</text>
+</svg>

@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="vf" viewBox="0 0 720 686" width="720" height="686">
+<style>
+.vf{color:var(--ink,#11171d);font-family:var(--font-text,"Hanken Grotesk","Helvetica Neue",Arial,sans-serif)}
+.vf .vf-2{fill:var(--ink-2,#525f6a)}
+.vf .vf-rule{stroke:var(--rule,#738691)}
+.vf .vf-hair{stroke:var(--hair,#bccbd3)}
+.vf .vf-wire{stroke:var(--series-verge,#0f8a6c)}
+.vf .vf-wiref{fill:var(--series-verge,#0f8a6c)}
+.vf .vf-rulef{fill:var(--rule,#738691)}
+.vf .vf-surf{fill:var(--surface,#eef4f6)}
+.vf .vf-code{font-family:var(--font-code,"Martian Mono",ui-monospace,monospace)}
+.vf .vf-head{font-family:var(--font-display,"Saira","Hanken Grotesk","Helvetica Neue",Arial,sans-serif);font-stretch:var(--display-stretch,normal)}
+@media (prefers-color-scheme:dark){
+.vf{color:var(--ink,#e6ebee)}
+.vf .vf-2{fill:var(--ink-2,#aab5be)}
+.vf .vf-rule{stroke:var(--rule,#636e79)}
+.vf .vf-hair{stroke:var(--hair,#29333c)}
+.vf .vf-wire{stroke:var(--series-verge,#1aa384)}
+.vf .vf-wiref{fill:var(--series-verge,#1aa384)}
+.vf .vf-rulef{fill:var(--rule,#636e79)}
+.vf .vf-surf{fill:var(--surface,#151b21)}
+}
+</style>
+<text x="108" y="24" font-size="17" fill="currentColor" font-weight="500" class="vf-head">CPU 0</text>
+<text x="316" y="24" font-size="17" fill="currentColor" font-weight="500" class="vf-head">Both cores</text>
+<text x="524" y="24" font-size="17" fill="currentColor" font-weight="500" class="vf-head">CPU 1</text>
+<path d="M0,36H720" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule"/>
+<text x="0" y="63.5" font-size="14" fill="currentColor" font-weight="600">Flash</text>
+<text x="0" y="80.5" font-size="12" fill="currentColor" class="vf-code vf-2">0x0000_0000</text>
+<path d="M112,51H300A4,4 0 0 1 304,55V76A4,4 0 0 1 300,80H112A4,4 0 0 1 108,76V55A4,4 0 0 1 112,51Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="206" y="70.05" font-size="13" fill="currentColor" text-anchor="middle">CPU 0&#x27;s code, from <tspan class="vf-code" font-size="11.7">0x200</tspan></text>
+<path d="M528,43H715A4,4 0 0 1 719,47V84A4,4 0 0 1 715,88H528A4,4 0 0 1 524,84V47A4,4 0 0 1 528,43Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="621.5" y="62.05" font-size="13" fill="currentColor" text-anchor="middle">CPU 1&#x27;s code,</text>
+<text x="621.5" y="78.05" font-size="13" fill="currentColor" text-anchor="middle">from <tspan class="vf-code" font-size="11.7">0x4_0000</tspan></text>
+<path d="M0,95H720" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<text x="0" y="122.5" font-size="14" fill="currentColor" font-weight="600">SRAMX</text>
+<text x="0" y="139.5" font-size="12" fill="currentColor" class="vf-code vf-2">0x0400_0000</text>
+<path d="M528,102H715A4,4 0 0 1 719,106V143A4,4 0 0 1 715,147H528A4,4 0 0 1 524,143V106A4,4 0 0 1 528,102Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="621.5" y="121.05" font-size="13" fill="currentColor" text-anchor="middle">The generated wire code</text>
+<text x="621.5" y="137.05" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">written at run time</text>
+<path d="M0,154H720" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<text x="0" y="205.5" font-size="14" fill="currentColor" font-weight="600">SRAM0</text>
+<text x="0" y="222.5" font-size="12" fill="currentColor" class="vf-code vf-2">0x2000_0000</text>
+<path d="M112,161H300A4,4 0 0 1 304,165V250A4,4 0 0 1 300,254H112A4,4 0 0 1 108,250V165A4,4 0 0 1 112,161Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="206" y="180.05" font-size="13" fill="currentColor" text-anchor="middle">Data, and the stack in the top</text>
+<text x="206" y="196.05" font-size="13" fill="currentColor" text-anchor="middle">4 KiB; the loop, and the code</text>
+<text x="206" y="212.05" font-size="13" fill="currentColor" text-anchor="middle">a command passes through</text>
+<text x="206" y="228.05" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">The consoles&#x27; rings and the</text>
+<text x="206" y="244.05" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">energy ring, which DMA fills</text>
+<path d="M320,185H508A4,4 0 0 1 512,189V226A4,4 0 0 1 508,230H320A4,4 0 0 1 316,226V189A4,4 0 0 1 320,185Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="414" y="204.05" font-size="13" fill="currentColor" text-anchor="middle">Energy capture&#x27;s state, held</text>
+<text x="414" y="220.05" font-size="13" fill="currentColor" text-anchor="middle">by one core at a time</text>
+<path d="M0,261H720" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<text x="0" y="296.5" font-size="14" fill="currentColor" font-weight="600">SRAM1</text>
+<text x="0" y="313.5" font-size="12" fill="currentColor" class="vf-code vf-2">0x2001_0000</text>
+<path d="M320,276H508A4,4 0 0 1 512,280V317A4,4 0 0 1 508,321H320A4,4 0 0 1 316,317V280A4,4 0 0 1 320,276Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="414" y="295.05" font-size="13" fill="currentColor" text-anchor="middle">CPU 1&#x27;s abort flag, which</text>
+<text x="414" y="311.05" font-size="13" fill="currentColor" text-anchor="middle">CPU 0 sets</text>
+<path d="M528,268H715A4,4 0 0 1 719,272V325A4,4 0 0 1 715,329H528A4,4 0 0 1 524,325V272A4,4 0 0 1 528,268Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="621.5" y="287.05" font-size="13" fill="currentColor" text-anchor="middle">16 KiB of stack, then data;</text>
+<text x="621.5" y="303.05" font-size="13" fill="currentColor" text-anchor="middle">the command path, the SWD</text>
+<text x="621.5" y="319.05" font-size="13" fill="currentColor" text-anchor="middle">generator, the JTAG scans</text>
+<path d="M0,336H720" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<text x="0" y="355.5" font-size="14" fill="currentColor" font-weight="600">SRAM2</text>
+<text x="0" y="372.5" font-size="12" fill="currentColor" class="vf-code vf-2">0x2002_0000</text>
+<path d="M528,343H715A4,4 0 0 1 719,347V368A4,4 0 0 1 715,372H528A4,4 0 0 1 524,368V347A4,4 0 0 1 528,343Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="621.5" y="362.05" font-size="13" fill="currentColor" text-anchor="middle">The rest of CPU 1&#x27;s data</text>
+<path d="M0,379H720" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<text x="0" y="422.5" font-size="14" fill="currentColor" font-weight="600">SRAM3</text>
+<text x="0" y="439.5" font-size="12" fill="currentColor" class="vf-code vf-2">0x2003_0000</text>
+<path d="M320,386H508A4,4 0 0 1 512,390V459A4,4 0 0 1 508,463H320A4,4 0 0 1 316,459V390A4,4 0 0 1 320,386Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="414" y="405.05" font-size="13" fill="currentColor" text-anchor="middle"><tspan class="vf-code" font-size="11.7">dap_stage</tspan>, the top 8 KiB</text>
+<text x="414" y="421.05" font-size="13" fill="currentColor" text-anchor="middle">from <tspan class="vf-code" font-size="11.7">0x2003_E000</tspan>: staged</text>
+<text x="414" y="437.05" font-size="13" fill="currentColor" text-anchor="middle">commands and replies, HID</text>
+<text x="414" y="453.05" font-size="13" fill="currentColor" text-anchor="middle">replies, Verge Aux&#x27;s slot</text>
+<path d="M0,470H720" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<text x="0" y="513.5" font-size="14" fill="currentColor" font-weight="600">SRAM4</text>
+<text x="0" y="530.5" font-size="12" fill="currentColor" class="vf-code vf-2">0x2004_0000</text>
+<path d="M320,477H508A4,4 0 0 1 512,481V550A4,4 0 0 1 508,554H320A4,4 0 0 1 316,550V481A4,4 0 0 1 320,477Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="414" y="496.05" font-size="13" fill="currentColor" text-anchor="middle">Stream messages: 16 slots</text>
+<text x="414" y="512.05" font-size="13" fill="currentColor" text-anchor="middle">of 512 bytes</text>
+<text x="414" y="528.05" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">written by the core that</text>
+<text x="414" y="544.05" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">holds the capture state</text>
+<path d="M0,561H720" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<text x="0" y="620.5" font-size="14" fill="currentColor" font-weight="600">USB SRAM</text>
+<text x="0" y="637.5" font-size="12" fill="currentColor" class="vf-code vf-2">0x4010_0000</text>
+<path d="M112,576H300A4,4 0 0 1 304,580V665A4,4 0 0 1 300,669H112A4,4 0 0 1 108,665V580A4,4 0 0 1 112,576Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="206" y="595.05" font-size="13" fill="currentColor" text-anchor="middle">TinyUSB&#x27;s buffers, Verge</text>
+<text x="206" y="611.05" font-size="13" fill="currentColor" text-anchor="middle">Aux&#x27;s included, in the first</text>
+<text x="206" y="627.05" font-size="13" fill="currentColor" text-anchor="middle">4 KiB</text>
+<text x="206" y="643.05" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">written by CPU 0 and the</text>
+<text x="206" y="659.05" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">USB controller</text>
+<path d="M320,568H508A4,4 0 0 1 512,572V673A4,4 0 0 1 508,677H320A4,4 0 0 1 316,673V572A4,4 0 0 1 320,568Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair vf-surf"/>
+<text x="414" y="587.05" font-size="13" fill="currentColor" text-anchor="middle"><tspan class="vf-code" font-size="11.7">dap_shared</tspan>, from</text>
+<text x="414" y="603.05" font-size="13" fill="currentColor" text-anchor="middle"><tspan class="vf-code" font-size="11.7">0x4010_1000</tspan>: request and</text>
+<text x="414" y="619.05" font-size="13" fill="currentColor" text-anchor="middle">reply slots, queues, DMA&#x27;s</text>
+<text x="414" y="635.05" font-size="13" fill="currentColor" text-anchor="middle">channel table, the SWO ring</text>
+<text x="414" y="651.05" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">written by both cores, the</text>
+<text x="414" y="667.05" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">USB controller and DMA</text>
+<path d="M0,684H720" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+</svg>

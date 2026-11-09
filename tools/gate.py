@@ -52,6 +52,7 @@ HOST_CHECKS = (
     ("Unsigned byte decoding: sanitizers, both compilers", ["uv", "run", "tools/byte_io_test.py"]),
     ("DAP packet framing: sanitizers, both compilers", ["uv", "run", "tools/dap_packet_test.py"]),
     ("MS OS 2.0 descriptor sets: sanitizers, both compilers", ["uv", "run", "tools/ms_os_20_test.py"]),
+    ("ARCHITECTURE.md's figures as drawn, every label in its room", ["uv", "run", "tools/figures.py"]),
     ("CPU quota detection for container worker budgets", ["uv", "run", "tools/host_resources_test.py"]),
     ("Thumb-2 encoders against gas", ["uv", "run", "tools/thumb_test.py"]),
     ("memcpy at every length and offset", ["uv", "run", "tools/mem_test.py"]),

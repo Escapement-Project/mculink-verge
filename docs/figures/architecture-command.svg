@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="vf" viewBox="0 0 720 444" width="720" height="444">
+<style>
+.vf{color:var(--ink,#11171d);font-family:var(--font-text,"Hanken Grotesk","Helvetica Neue",Arial,sans-serif)}
+.vf .vf-2{fill:var(--ink-2,#525f6a)}
+.vf .vf-rule{stroke:var(--rule,#738691)}
+.vf .vf-hair{stroke:var(--hair,#bccbd3)}
+.vf .vf-wire{stroke:var(--series-verge,#0f8a6c)}
+.vf .vf-wiref{fill:var(--series-verge,#0f8a6c)}
+.vf .vf-rulef{fill:var(--rule,#738691)}
+.vf .vf-surf{fill:var(--surface,#eef4f6)}
+.vf .vf-code{font-family:var(--font-code,"Martian Mono",ui-monospace,monospace)}
+.vf .vf-head{font-family:var(--font-display,"Saira","Hanken Grotesk","Helvetica Neue",Arial,sans-serif);font-stretch:var(--display-stretch,normal)}
+@media (prefers-color-scheme:dark){
+.vf{color:var(--ink,#e6ebee)}
+.vf .vf-2{fill:var(--ink-2,#aab5be)}
+.vf .vf-rule{stroke:var(--rule,#636e79)}
+.vf .vf-hair{stroke:var(--hair,#29333c)}
+.vf .vf-wire{stroke:var(--series-verge,#1aa384)}
+.vf .vf-wiref{fill:var(--series-verge,#1aa384)}
+.vf .vf-rulef{fill:var(--rule,#636e79)}
+.vf .vf-surf{fill:var(--surface,#151b21)}
+}
+</style>
+<text x="34" y="22" font-size="14" fill="currentColor" font-weight="600" text-anchor="middle">Host</text>
+<text x="34" y="40" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">USB</text>
+<text x="190" y="22" font-size="14" fill="currentColor" font-weight="600" text-anchor="middle">CPU 0</text>
+<text x="360" y="22" font-size="14" fill="currentColor" font-weight="600" text-anchor="middle">Shared memory</text>
+<text x="360" y="40" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">USB SRAM, SRAM3</text>
+<text x="530" y="22" font-size="14" fill="currentColor" font-weight="600" text-anchor="middle">CPU 1</text>
+<text x="682" y="22" font-size="14" fill="currentColor" font-weight="600" text-anchor="middle">Target</text>
+<text x="682" y="40" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">The wire</text>
+<circle cx="190" cy="80" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<text x="190" y="84.5" font-size="13" fill="currentColor" font-weight="600" text-anchor="middle">1</text>
+<path d="M202,80L352,80" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M357,80L350,83.15L350,76.85Z" fill="currentColor"/>
+<text x="279.5" y="73" font-size="13" fill="currentColor" text-anchor="middle">arm a free request slot</text>
+<circle cx="190" cy="114" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<text x="190" y="118.5" font-size="13" fill="currentColor" font-weight="600" text-anchor="middle">2</text>
+<path d="M37,114L173,114" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M178,114L171,117.15L171,110.85Z" fill="currentColor"/>
+<text x="107.5" y="107" font-size="13" fill="currentColor" text-anchor="middle">command, <tspan class="vf-code" font-size="11.7">EP1 OUT</tspan></text>
+<path d="M193,148L522,148" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 3" class="vf-rule"/>
+<path d="M527,148L520,151.15L520,144.85Z" fill="currentColor" class="vf-rulef"/>
+<text x="360" y="141" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">an abort only sets CPU 1&#x27;s flag</text>
+<circle cx="190" cy="182" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<text x="190" y="186.5" font-size="13" fill="currentColor" font-weight="600" text-anchor="middle">3</text>
+<path d="M202,182L352,182" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M357,182L350,185.15L350,178.85Z" fill="currentColor"/>
+<text x="279.5" y="175" font-size="13" fill="currentColor" text-anchor="middle">copy it into <tspan class="vf-code" font-size="11.7">dap_stage</tspan></text>
+<path d="M193,216L522,216" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 3" class="vf-rule"/>
+<path d="M527,216L520,219.15L520,212.85Z" fill="currentColor" class="vf-rulef"/>
+<text x="360" y="209" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">mailbox</text>
+<circle cx="530" cy="250" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<text x="530" y="254.5" font-size="13" fill="currentColor" font-weight="600" text-anchor="middle">4</text>
+<path d="M363,250L513,250" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M518,250L511,253.15L511,246.85Z" fill="currentColor"/>
+<text x="440.5" y="243" font-size="13" fill="currentColor" text-anchor="middle">take the oldest command</text>
+<circle cx="530" cy="284" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<text x="530" y="288.5" font-size="13" fill="currentColor" font-weight="600" text-anchor="middle">5</text>
+<path d="M547,284L674,284" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
+<path d="M679,284L672,287.15L672,280.85Z" fill="currentColor" class="vf-wiref"/>
+<path d="M542,284L549,280.85L549,287.15Z" fill="currentColor" class="vf-wiref"/>
+<text x="610.5" y="277" font-size="13" fill="currentColor" text-anchor="middle">run it</text>
+<circle cx="530" cy="318" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<text x="530" y="322.5" font-size="13" fill="currentColor" font-weight="600" text-anchor="middle">6</text>
+<path d="M518,318L368,318" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M363,318L370,314.85L370,321.15Z" fill="currentColor"/>
+<text x="440.5" y="311" font-size="13" fill="currentColor" text-anchor="middle">publish the reply</text>
+<path d="M527,352L198,352" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 3" class="vf-rule"/>
+<path d="M193,352L200,348.85L200,355.15Z" fill="currentColor" class="vf-rulef"/>
+<text x="360" y="345" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">mailbox</text>
+<circle cx="190" cy="386" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<text x="190" y="390.5" font-size="13" fill="currentColor" font-weight="600" text-anchor="middle">7</text>
+<path d="M357,386L207,386" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M202,386L209,382.85L209,389.15Z" fill="currentColor"/>
+<text x="279.5" y="379" font-size="13" fill="currentColor" text-anchor="middle">copy the reply out</text>
+<path d="M187,420L42,420" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M37,420L44,416.85L44,423.15Z" fill="currentColor"/>
+<text x="112" y="413" font-size="13" fill="currentColor" text-anchor="middle">reply, <tspan class="vf-code" font-size="11.7">EP1 IN</tspan></text>
+<path d="M34,50V440" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<path d="M190,50V68" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<path d="M190,92V102" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<path d="M190,126V170" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<path d="M190,194V374" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<path d="M190,398V440" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<path d="M360,50V128" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<path d="M360,145V197" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<path d="M360,213V333" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<path d="M360,349V440" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<path d="M530,50V238" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<path d="M530,262V272" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<path d="M530,296V306" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<path d="M530,330V440" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<path d="M682,50V440" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+</svg>
