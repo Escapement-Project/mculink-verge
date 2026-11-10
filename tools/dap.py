@@ -619,7 +619,7 @@ def show_energy_calibration(probe: Probe) -> str:
 
 
 def cmd_energy(args) -> int:
-    """The Pro's energy capture through vendor 0x90 (HOST-INTERFACE.md).
+    """The Pro's energy capture through vendor 0x90 (docs/host-interface.md).
 
     `watch` starts a capture at `--rate`, prints the newest sample every `--every` seconds for
     `--seconds`, then the total, and stops. `--range high` holds the high range for that capture

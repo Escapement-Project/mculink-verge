@@ -1,5 +1,6 @@
-/* The energy converter's vectors (HOST-INTERFACE.md, "Converting a pair"), written by the firmware's
- * own converter for host converters to check themselves against: tools/energy_vectors.json.
+/* The energy converter's vectors (docs/host-interface.md, "Converting a pair"), written by the
+ * firmware's own converter for host converters to check themselves against:
+ * tools/energy_vectors.json.
  *
  * Each table gets explicit samples (every point, its neighbours, both ends) and a 64-bit FNV-1a over
  * the whole sweep: the sense current for every code on each range, and the millivolts and divider

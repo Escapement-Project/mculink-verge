@@ -1,6 +1,6 @@
-/** Verge Aux's energy stream (HOST-INTERFACE.md, "The energy stream"): the messages, the timeline
- *  that gives each pair its time, the DIO edges, and the ring CPU 0 sends from. Free of hardware,
- *  so tools/energy_stream_test.c runs it on the host.
+/** Verge Aux's energy stream (docs/host-interface.md, "The energy stream"): the messages, the
+ *  timeline that gives each pair its time, the DIO edges, and the ring CPU 0 sends from. Free of
+ *  hardware, so tools/energy_stream_test.c runs it on the host.
  *
  * The core that owns the capture state under the quiet handshake (src/energy_integration.h) writes
  * all of it, with four exceptions. CPU 1 records holds (`holds_written`) and a start's first
@@ -35,7 +35,8 @@
 #define ENERGY_STREAM_PAIR_LOW 1U
 #define ENERGY_STREAM_PAIR_UNDER_RANGE 2U
 #define ENERGY_STREAM_PAIRS_FIXED 16U
-/** Format 1's fields, then step 5's: weight, flags and the current before (HOST-INTERFACE.md). */
+/** Format 1's fields, then step 5's: weight, flags and the current before
+ *  (docs/host-interface.md). */
 #define ENERGY_STREAM_HEADER_BYTES 75U
 #define ENERGY_STREAM_ID_HEADER_BYTES (ENERGY_STREAM_HEADER_BYTES + ENERGY_IDENTITY_BYTES)
 #define ENERGY_STREAM_END_BYTES 6U
@@ -232,7 +233,7 @@ struct energy_stream {
 /** The singleton capture's payload queue. Independent stream objects cannot share it concurrently. */
 extern uint8_t energy_stream_slots[ENERGY_STREAM_SLOTS][ENERGY_STREAM_MESSAGE_MAX];
 
-/** What a stream's header carries besides its tables (HOST-INTERFACE.md, "Header: 0xa1"). */
+/** What a stream's header carries besides its tables (docs/host-interface.md, "Header: 0xa1"). */
 typedef struct {
     uint32_t rate_hz;
     uint8_t setting; // 1 for 350 mA, 2 for 50 mA, 0 unknown

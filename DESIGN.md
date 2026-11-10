@@ -66,9 +66,28 @@ the same three packets the same way, with TCK resting low between them.
 
 ## Vendor commands
 
-HOST-INTERFACE.md documents every vendor command. `DAP_ProcessCommand` returns what
-`DAP_ProcessVendorCommand` returns without inspecting it, so the rejection of an unknown id has to
-be written by the default case rather than left to the caller.
+The host interface, docs/host-interface.md, documents every vendor command a host can rely on.
+`DAP_ProcessCommand` returns what `DAP_ProcessVendorCommand` returns without inspecting it, so the
+rejection of an unknown id has to be written by the default case rather than left to the caller.
+
+The others serve Verge's own tools and its bench tests. They are not a stable host interface: their
+requests and replies can change between builds. `src/dap_vendor.c` has each one's bytes.
+
+Some exist only in some builds. `0x84` needs `MARKER`, which is on by default, and `0x88` needs
+`CODE_LAB`. `0x89` to `0x8B` and `0x8D` need the generators, so the `+armwire` reference build
+answers them as unknown. `0x93` needs `DAP_TIMING_DIAGNOSTICS`.
+
+| ID | Name | What it does |
+| --- | --- | --- |
+| `0x84` | J8 | Hands J8's four pins to the host, on the standalone MCU-Link |
+| `0x87` | Sample | Reads DPIDR with the SWDIO sample placed by the host; a measuring instrument |
+| `0x88` | Code lab | Runs code the host supplies from RAM. Built only with `-DCODE_LAB=ON` |
+| `0x89` | SWD generation | Reports the generated SWD paths, and sets or measures the read latency they are generated for |
+| `0x8A` | JTAG generation | The same for the generated JTAG and cJTAG paths. Its report is the firmware's timing report |
+| `0x8B` | JTAG pacing | Switches the generated JTAG transfers' learned idle clocks |
+| `0x8C` | Staging | Switches whether CPU 0 stages commands for CPU 1 |
+| `0x8D` | JTAG log | Reads back what each JTAG generation was for |
+| `0x93` | Timing | The command path's cycle counts. Built only with `DAP_TIMING_DIAGNOSTICS` |
 
 ## Architecture, and why
 

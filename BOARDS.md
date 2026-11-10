@@ -234,7 +234,7 @@ the probe's target supply can give.
   between its bursts, so it switches as before. A target that bursts in the band within 3 ms of
   each re-arm is held on the high range between its bursts.
 - **Holding the high range.** `0x90` mode 14 can hold the high range for a capture instead
-  (HOST-INTERFACE.md). The firmware drives U18's reset low from PIO0_29 as a GPIO output, as
+  (docs/host-interface.md). The firmware drives U18's reset low from PIO0_29 as a GPIO output, as
   calibration does, so the latch stays clear whatever the comparator says, and CPU 0 never
   re-arms. Nothing switches, so none of the above happens to the target. The cost is that small
   currents read unreliably (Accuracy limits).
@@ -291,11 +291,11 @@ With 5 ms it read it right.
   The sheet gives no tolerance for the amplifier's resistors. A range left with fewer than two
   points fails calibration, and the capture does not start. The 50 mA setting's low range has only
   R1, so it is the range a unit with too much gain would lose.
-- **The conversion.** Each range's points make a piecewise-linear table from ADC code to the
-  current through the sense resistor. From every sample the firmware then takes the divider's
-  current, the target-side voltage over 660 kΩ. Each calibration conversion is averaged 128 times,
-  whatever rate the capture runs at. A host can read each range's points back (HOST-INTERFACE.md,
-  `0x90` mode 4).
+- **The conversion.** Each range's points make a piecewise-linear table from ADC code to the current
+  through the sense resistor. From every sample the firmware then takes the divider's current, the
+  target-side voltage over 660 kΩ. Each calibration conversion is averaged 128 times, whatever rate
+  the capture runs at. A host can read each range's points back
+  (docs/host-interface.md, `0x90` mode 4).
 
 ### Accuracy limits
 
@@ -359,7 +359,9 @@ With 5 ms it read it right.
   With 7.5, the voltage read within 0.02% of 16 averages at 10,000 samples a second, at every
   averaging, when the two sides converted one after the other. A sample with N averages takes 27 +
   28 N cycles, measured; converting the two sides one after the other took 27 + 52 N. The firmware
-  uses the most averaging that finishes a sample before the next is due (HOST-INTERFACE.md).
+  uses the most averaging that finishes a sample before the next is due: 128 up to 3,323 samples a
+  second, 64 up to 6,596, 32 up to 13,001, 16 up to 25,263, 8 up to 47,808, 4 up to 86,330, and 2 up
+  to 100,000.
 - While the probe measures the target's read latency, it stops the conversions, and the energy
   total leaves that time out. It measures at a connection at fast clocks, again when a measurement
   contradicts itself, and when a host asks. With capture running, the measurement found later

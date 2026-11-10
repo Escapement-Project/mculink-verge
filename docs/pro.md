@@ -19,7 +19,7 @@ verge power off
 ```
 
 verge reports the state the firmware set, not a measured voltage. From a checkout of mculink-verge, `tools/dap.py target-power` switches it too, and [Host
-interface](../HOST-INTERFACE.md#pro-target-supply-0x8f) has the command, `0x8F`. After switching the
+interface](host-interface.md#pro-target-supply-0x8f) has the command, `0x8F`. After switching the
 supply on, give the regulator and the target's rail time to settle before you talk to the target.
 
 ## DIO pins
@@ -47,7 +47,7 @@ J15, fitted when the probe starts, turns the pins off and leaves them inputs.
 ## SPI and I2C bridges
 
 The Pro's USB-SIO functions are bridges a host runs through CMSIS-DAP vendor commands: SPI with
-`0x91`, I2C with `0x92` ([Host interface](../HOST-INTERFACE.md#pro-spi-0x91)). There is no separate
+`0x91`, I2C with `0x92` ([Host interface](host-interface.md#pro-spi-0x91)). There is no separate
 USB-SIO endpoint. J15, fitted when the probe starts, turns both off.
 
 - **SPI** runs on the DIO pins, so the probe refuses it, answering busy, while any DIO pin is an
@@ -73,7 +73,7 @@ Every Pro has it, whatever its jumpers. Both interfaces share one set of DIO pin
 and one energy capture. `verge power` and `verge energy` use Verge Aux wherever the probe has it, so
 they work beside a debugger, as the desktop app's supply, DIO and energy panels do. `verge dio`
 still goes through CMSIS-DAP, so it cannot run while a debugger holds the probe. [Host
-interface](../HOST-INTERFACE.md#the-auxiliary-interface-verge-aux) describes it for tool authors.
+interface](host-interface.md#the-auxiliary-interface-verge-aux) describes it for tool authors.
 
 ## Energy capture
 

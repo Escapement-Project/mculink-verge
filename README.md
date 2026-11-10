@@ -13,7 +13,7 @@ in verge, the tool that installs it:
 - [Trace and serial ports](docs/trace-and-serial.md): SWO capture and the target's serial ports.
 - [Probes and jumpers](docs/probes.md): what each probe has, and what each jumper turns off.
 - [The Pro](docs/pro.md): the target supply, the DIO pins, the SPI and I2C bridges, and Verge Aux.
-- [Host interface](HOST-INTERFACE.md): the vendor commands, for tools that drive the probe.
+- [Host interface](docs/host-interface.md): the vendor commands, for tools that drive the probe.
 
 This README is for building, checking and releasing the firmware.
 

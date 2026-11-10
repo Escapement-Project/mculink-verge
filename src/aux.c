@@ -136,7 +136,7 @@ __attribute__((section(".ramfunc"))) static bool stream_waits(void) {
 }
 
 /** 0x90 mode 6, 7, 10 or 13 into aux_in; false while it has to wait (stream_waits). Replies as
- *  HOST-INTERFACE.md "The energy stream" gives them. */
+ *  docs/host-interface.md "The energy stream" gives them. */
 __attribute__((section(".ramfunc"))) static bool stream_command(void) {
     if (stream_waits()) {
         return false;

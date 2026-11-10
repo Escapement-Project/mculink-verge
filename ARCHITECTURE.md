@@ -5,7 +5,8 @@ the target. This document says what each core runs, where its code and data live
 each USB interface takes to the code that serves it.
 
 BUSES.md says which bus port each access uses, and why the other core cannot move a wire edge.
-STACK.md covers the stacks. HOST-INTERFACE.md is the protocol a host sees, and BOARDS.md the pins.
+STACK.md covers the stacks. The host interface, docs/host-interface.md, is the protocol a host
+sees, and BOARDS.md the pins.
 
 ![The host's USB reaches CPU 0, which answers the host. CPU 1 drives the target. Between them are the mailbox each raises in the other and the memory both use: commands, replies, staged copies and stream messages. CPU 1 drives the target's SWD, JTAG and cJTAG wires, its DIO, SPI and I2C pins and its supply, and takes SWO in from it. CPU 0's consoles reach the target's serial lines.](docs/figures/architecture-blocks.svg)
 
@@ -114,7 +115,7 @@ The controller has endpoints 0 to 5. The two notification endpoints are numbers 
 declared the way stock declares them on the Pro, and never opened: the firmware sends no
 notification, and the boards wire no modem lines.
 
-Bulk endpoints are 512 bytes at high speed and 64 at full speed. HOST-INTERFACE.md covers the
+Bulk endpoints are 512 bytes at high speed and 64 at full speed. docs/host-interface.md covers the
 fall back to full speed and how a host finds each interface.
 
 ### Requests on endpoint 0
@@ -126,7 +127,7 @@ CPU 0 answers every control request.
   report on EP3 would.
 - Vendor request 2 returns the Microsoft OS 2.0 descriptor.
 - Vendor request `0x03` reboots the probe, into the firmware or the ROM bootloader
-  (HOST-INTERFACE.md, "Reboot").
+  (docs/host-interface.md, "Reboot").
 - Vendor requests `0x04` and `0x05` are diagnostics: `0x04` reads CPU 1's progress, fault record,
   queues or SWO registers for `tools/dap.py core1`, and `0x05` stops CPU 1 with an NMI that records
   where it was.

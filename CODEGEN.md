@@ -35,7 +35,7 @@ bench 2026-10-16 unless marked otherwise.
   while the latency is automatic; vendor `0x89` and `0x8A` set, pin or measure it.
 - A product image has no ARM path to fall back to. When generation fails, a transfer reports a
   protocol error with no transfer done, and `DAP_JTAG_Sequence`, `DAP_JTAG_IDCODE` and
-  `DAP_WriteABORT` answer `DAP_ERROR`, before the wire moves (HOST-INTERFACE.md).
+  `DAP_WriteABORT` answer `DAP_ERROR`, before the wire moves (docs/host-interface.md).
 - `tools/gen_host.py` builds the generators away from the firmware, under ASan and UBSan with gcc
   and clang and for QEMU's Cortex-M33, and requires every build to generate identical code.
 

@@ -9,7 +9,7 @@ Any CMSIS-DAP host drives SWD and JTAG, as it drives NXP's firmware.
 
 cJTAG takes a host that knows it. The host switches the target to a scan format, then tells the
 probe to frame that format, with vendor command `0x83` ([Host
-interface](../HOST-INTERFACE.md#cjtag-control-0x83)). It picks a format both the probe and the
+interface](host-interface.md#cjtag-control-0x83)). It picks a format both the probe and the
 target offer. `verge read --protocol cjtag` reads target memory over cJTAG today.
 
 ## From the clock asked for to the clock on the wire

@@ -1,4 +1,4 @@
-/** DIO edges for Verge Aux's energy stream (HOST-INTERFACE.md, "DIO edges: 0xa3"), on CPU 0.
+/** DIO edges for Verge Aux's energy stream (docs/host-interface.md, "DIO edges: 0xa3"), on CPU 0.
  *
  * Each DIO pin has a pin interrupt of its own, at CPU 0's only priority above the rest. The
  * interrupt stamps itself with the stream's clock, takes which pins rose and fell since it last ran
