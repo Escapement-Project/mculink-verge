@@ -1,8 +1,8 @@
 # Timing on this part
 
-These are the rules the generator for the bit paths places instructions by, and what
-the emulator now models. Every rule comes from a measurement on the bench. MEASUREMENTS.md has the
-measurements, under "The cost model times the bus".
+These are the rules the generator for the bit paths places instructions by, and what the emulator
+models. Every rule comes from a measurement on the bench. MEASUREMENTS.md has the measurements,
+under "The cost model times the bus".
 
 ## Where generated code runs
 
@@ -119,18 +119,24 @@ On this target a write needs nothing more than its SWDIO store kept off the cycl
 
 ## What the generator does with it
 
-The firmware now writes its SWD transfer code at runtime, for the clock the host asks for
-(`src/swd_gen.c`, the default build since 2026-10-20). Each clock period is a whole number of cycles
-from 3 up, and no period is ever shorter than the host asked for.
+The firmware writes its SWD transfer code at runtime, for the clock the host asks for
+(`src/swd_gen.c`). Each clock period is a whole number of cycles from 3 up, and no period is ever
+shorter than the host asked for.
 
 A clock the probe drives needs three instructions, so packets and write data run at up to 50 MHz.
 A clock the target drives needs four, so reads run at up to 37.5 MHz. Moving cycles between the
 low and the high phase does not change that count. The core issues one of these instructions a
 cycle and pairs none of them, which the bench measured.
 
-On the MSPM0L1306 every period from 3 to 40 cycles ran clean, and so did 2, 1 and 0.1 MHz. Through
-probe-rs, a 64 KB read took 1407 KiB/s at 50 MHz and 1312 KiB/s at 37.5 MHz. The previous firmware
-could not read this part above 10 MHz, and managed 577 KiB/s there, against 629 now.
+On the MSPM0L1306 every period from 3 to 40 cycles ran clean, and so did 2, 1 and 0.1 MHz. ARM's
+paths, which the `+armwire` reference build keeps, could not read this part above 10 MHz when they
+were measured on 2026-10-16 (MEASUREMENTS.md, "The transfers are generated at runtime").
+
+Through probe-rs, 4 KiB at a time, the Clang and GCC builds of `df11e14` read the MSPM0L1306 at
+2,008 and 2,035 KiB/s at a requested 50 MHz, on 2026-11-04. NXP's V3.174 read it right every time
+only up to 20 MHz, at 654 KiB/s there. mculink-bench's [measurements
+page](https://escapement-project.github.io/measurements/) has the comparison at every clock, and its
+`results/throughput/2026-11-04.md` the runs.
 
 The generated code changes the data bit and the falling edge in one store, to the masked port
 register. The data then has half a period before the rising edge and half a period after it.
@@ -149,7 +155,7 @@ register. The data then has half a period before the rising edge and half a peri
   cycles, so a new core clock needs a new measurement. Sweep the
   sample delay on DPIDR reads at a period of 8 or more: A is the shortest delay that reads
   correctly, and the window is P cycles wide from there. The bench found A = 7 at P = 8, 12 and 16.
-  The probe now does this itself for SWD (src/swd_sweep.c), with generated reads whose windows the
+  The probe does this itself for SWD (src/swd_sweep.c), with generated reads whose windows the
   generator reports. At P = 4 a sample can only go on every other cycle, so one period cannot tell
   A from A + 1; it reads at P = 5 to 7 as well.
 - **Remember the second turnaround.** After the acknowledge of a write, and after the parity of a
