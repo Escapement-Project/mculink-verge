@@ -104,9 +104,10 @@ measure how many commands its firmware holds.
 
 [Measurements](../MEASUREMENTS.md#where-the-limits-figures-come-from) says where each figure comes
 from, and [Trace and serial ports](trace-and-serial.md) how the console and SWO figures were
-reached. mculink-bench's [measurements page](https://escapement-project.github.io/measurements/)
-compares throughput through the same probe-rs workload, on the same target, with NXP's firmware and
-a SEGGER J-Link Ultra.
+reached. mculink-bench's
+[measurements page](https://escapement-project.github.io/verge/measurements/) compares throughput
+through the same probe-rs workload, on the same target, with NXP's firmware and a SEGGER J-Link
+Ultra.
 
 ### Past NXP's limits
 

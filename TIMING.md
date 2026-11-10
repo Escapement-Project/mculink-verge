@@ -135,8 +135,8 @@ were measured on 2026-10-16 (MEASUREMENTS.md, "The transfers are generated at ru
 Through probe-rs, 4 KiB at a time, the Clang and GCC builds of `df11e14` read the MSPM0L1306 at
 2,008 and 2,035 KiB/s at a requested 50 MHz, on 2026-11-04. NXP's V3.174 read it right every time
 only up to 20 MHz, at 654 KiB/s there. mculink-bench's [measurements
-page](https://escapement-project.github.io/measurements/) has the comparison at every clock, and its
-`results/throughput/2026-11-04.md` the runs.
+page](https://escapement-project.github.io/verge/measurements/) has the comparison at every clock,
+and its `results/throughput/2026-11-04.md` the runs.
 
 The generated code changes the data bit and the falling edge in one store, to the masked port
 register. The data then has half a period before the rising edge and half a period after it.
