@@ -84,9 +84,24 @@ struct energy_integration {
     /** Advanced by whichever core owns the capture. */
     uint32_t consumed_bytes;
     energy_sample_decoder_t decoder;
-    /** What the samples since the last segment say about re-arming the low range. */
+    /** What the samples since the last segment say about re-arming the low range: the last pair's
+     *  range, a high-range pair at or over the limit, and one at or over `band_from_na`. */
     bool on_high_range;
     bool rearm_blocked;
+    bool in_band;
+    /** The re-arm's backoff (src/energy_pairs.h). In the band, from half the limit up to it, a
+     *  target can reach the switch up on the low range alone, so that the range switches every few
+     *  milliseconds (BOARDS.md). There a re-arm waits for `hold_segments` segments in a row
+     *  under the limit. A low phase shorter than `short_low_pairs` after a re-arm from the band
+     *  doubles it, up to `hold_max_segments`, and one that lasts that long sets it back to 1. Set by
+     *  a start. */
+    uint32_t band_from_na;
+    uint32_t short_low_pairs;
+    uint32_t hold_max_segments;
+    uint32_t hold_segments;
+    uint32_t clean_segments; // segments in a row under the limit, from the band, since the last re-arm
+    uint32_t low_pairs;      // the low phase's pairs so far, up to short_low_pairs
+    bool rearmed_in_band;    // the last re-arm asked for came from the band
     /** The capture holds the high range: U18's reset is held, so the latch never switches
      *  (`0x90` mode 14). Set by a new capture's start, before CPU 0 takes the state. */
     bool high_range_only;

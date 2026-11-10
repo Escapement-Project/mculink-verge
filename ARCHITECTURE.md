@@ -235,7 +235,8 @@ Energy capture runs on the Pro, with HW_VER_5 fitted, and uses both cores.
 - **CPU 0 integrates it while it runs.** Its DMA interrupt takes each completed segment, adds it
   to the energy total and, while a stream runs, writes the pairs into stream messages. Its loop
   switches the current range back to low when a segment shows the current has fallen, timed
-  between samples where the rate leaves room. A capture can hold the high range instead (`0x90`
+  between samples where the rate leaves room. Where the low range keeps giving way, it waits
+  longer each time. A capture can hold the high range instead (`0x90`
   mode 14); then nothing switches.
 - **One core owns the state at a time.** CPU 1 owns it while no capture runs and for moments
   inside some commands; CPU 0 owns it while a capture runs. CONCURRENCY.md has the handover.

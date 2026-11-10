@@ -125,9 +125,93 @@ static void test_weighted_switches(void) {
     assert(energy_stand_in_na(1000U, 0U, 0U) == 1000U);
 }
 
+/** One segment of `pairs` high-range pairs at `code` (6000 nA a code), the first of them at
+ *  `first` instead; returns whether it asks for the low range back. */
+static bool high_segment(struct energy_integration* energy, energy_total_t* total, uint16_t first, uint16_t code,
+                         uint32_t pairs) {
+    for (uint32_t i = 0U; i < pairs; i++) {
+        feed_pair(energy, total, 36000U, (i == 0U) ? first : code, false);
+    }
+    return energy_segment_rearm(energy);
+}
+
+/** High-range segments at `code` until one asks for the low range back: how many that took, or 0
+ *  if none within 64. */
+static uint32_t segments_to_rearm(struct energy_integration* energy, energy_total_t* total, uint16_t code) {
+    for (uint32_t segments = 1U; segments <= 64U; segments++) {
+        if (high_segment(energy, total, code, code, 8U)) {
+            return segments;
+        }
+    }
+    return 0U;
+}
+
+/** A re-arm, a low phase of `low` pairs, and the switch up with its recharge spike over the limit
+ *  in the segment it ends; then segments_to_rearm. */
+static uint32_t hunt_cycle(struct energy_integration* energy, energy_total_t* total, uint32_t low, uint16_t code) {
+    for (uint32_t i = 0U; i < low; i++) {
+        feed_pair(energy, total, 35000U, 60000U, true);
+    }
+    return high_segment(energy, total, 400U, code, 8U) ? 0U : segments_to_rearm(energy, total, code);
+}
+
+/** The re-arm's backoff (src/energy_pairs.h), with the 350 mA setting's limit of 1.5 mA: 1.08 mA is
+ *  in the band, 0.3 mA under it. A low phase under three pairs after a re-arm from the band
+ *  doubles the hold, to at most 20 segments; one of three resets it; under the band, one segment
+ *  re-arms whatever the hold; a pair over the limit starts the count again. */
+static void test_backoff(void) {
+    static struct energy_integration energy;
+    energy.low_range = (energy_calibration_t){
+        .code = {0U, 65535U}, .current_na = {0U, 30U * 65535U}, .slope_na_per_code_q16 = {30U << 16U}, .count = 2U};
+    energy.high_range = (energy_calibration_t){
+        .code = {0U, 65535U}, .current_na = {0U, 6000U * 65535U}, .slope_na_per_code_q16 = {6000U << 16U}, .count = 2U};
+    energy.scale_q32 = 4194304U;
+    energy.full_scale_mv = 3300U;
+    energy.calibrated = true;
+    energy.rearm_below_na = 1500000U;
+    energy.band_from_na = 750000U;
+    energy.short_low_pairs = 3U;
+    energy.hold_max_segments = 20U;
+    energy.hold_segments = 1U; // as a start leaves it
+    energy_total_t total = {0};
+    uint16_t const band = 180U;  // 1.08 mA
+    uint16_t const under = 50U;  // 0.3 mA
+    uint16_t const over = 300U;  // 1.8 mA
+
+    // A capture that starts in the band re-arms after one segment, as before the backoff.
+    assert(high_segment(&energy, &total, band, band, 8U) && energy.rearmed_in_band);
+    // Hunting: each low phase of one pair doubles the hold, up to its most.
+    uint32_t const hunting[] = {2U, 4U, 8U, 16U, 20U, 20U};
+    for (uint32_t i = 0U; i < sizeof(hunting) / sizeof(hunting[0]); i++) {
+        assert(hunt_cycle(&energy, &total, 1U, band) == hunting[i]);
+    }
+    // Two pairs is still short; three holds, and the hold is 1 again at once.
+    assert(hunt_cycle(&energy, &total, 2U, band) == 20U);
+    assert(hunt_cycle(&energy, &total, 3U, band) == 1U && energy.hold_segments == 1U);
+    assert(hunt_cycle(&energy, &total, 1U, band) == 2U);
+    assert(hunt_cycle(&energy, &total, 1U, band) == 4U && energy.hold_segments == 4U);
+    // Under the band, one segment re-arms whatever the hold (doubled to 8 by this low phase). A
+    // short low phase after a re-arm from under the band doubles nothing.
+    assert(hunt_cycle(&energy, &total, 1U, under) == 1U && !energy.rearmed_in_band && energy.hold_segments == 8U);
+    assert(hunt_cycle(&energy, &total, 1U, under) == 1U && energy.hold_segments == 8U);
+    // Back in the band after that, the hold is still 8.
+    assert(hunt_cycle(&energy, &total, 1U, band) == 8U);
+    // A pair over the limit partway starts the count again.
+    assert(!high_segment(&energy, &total, band, band, 8U) && !high_segment(&energy, &total, band, band, 8U));
+    assert(!high_segment(&energy, &total, over, band, 8U) && energy.clean_segments == 0U);
+    assert(segments_to_rearm(&energy, &total, band) == 8U);
+    // So does a segment that ends on the low range; the switch up after its one pair, a re-arm from
+    // the band before it, doubles the hold.
+    assert(!high_segment(&energy, &total, band, band, 8U) && !high_segment(&energy, &total, band, band, 8U));
+    feed_pair(&energy, &total, 35000U, 60000U, true);
+    assert(!energy_segment_rearm(&energy) && energy.clean_segments == 0U);
+    assert(segments_to_rearm(&energy, &total, band) == 16U);
+}
+
 int main(void) {
     test_range_switches();
     test_weighted_switches();
+    test_backoff();
     energy_sample_decoder_t decoder = {0};
     for (uint32_t i = 0U; i < 4096U; i++) {
         assert(!energy_sample_feed(&decoder, 0U));

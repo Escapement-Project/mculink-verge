@@ -93,6 +93,8 @@ def machine(elf, symbols):
 INTEGRATION_FIELDS = ("high_range_only", "under_range_code", "low_range", "high_range", "scale_q32", "full_scale_mv", "rearm_below_na",
                       "segments_at_start",
                       "segment_words", "calibrated", "running", "consumed_bytes", "decoder", "on_high_range", "rearm_blocked",
+                      "in_band", "band_from_na", "short_low_pairs", "hold_max_segments", "hold_segments", "clean_segments",
+                      "low_pairs", "rearmed_in_band",
                       "previous_low", "held", "held_mv", "held_na", "held_weight_q16", "held_before_na",
                       "previous_known", "previous_na", "switch_weight_q16", "rearm_between_pairs", "trigger_ticks",
                       "rearm_from_ticks", "rearm_until_ticks", "descriptors", "ring", "setting",
@@ -707,7 +709,9 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         # The capture is under way on the high range, which every sample here reads.
         for field, value, size in (("running", 1, 1), ("calibrated", 1, 1), ("scale_q32", FIXTURE_SCALE, 8),
                                    ("segment_words", SEGMENT, 4), ("full_scale_mv", 3300, 4),
-                                   ("rearm_below_na", 1500000, 4), ("previous_low", 0, 1)):
+                                   ("rearm_below_na", 1500000, 4), ("band_from_na", 750000, 4),
+                                   ("short_low_pairs", 48, 4), ("hold_max_segments", 1750, 4),
+                                   ("hold_segments", 1, 4), ("previous_low", 0, 1)):
             energy.put(field, value, size)
         calibration = struct.pack("<4H7IB3x", 0, 65535, 0, 0, SHUNT_NA, SHUNT_NA, 0, 0, 0, 0, 0, 2)
         for name in ("low_range_calibration", "high_range_calibration"):
@@ -1198,17 +1202,18 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
 
     # A segment that stays on the high range under the 350 mA setting's 1.5 mA asks for the low
     # range back; one sample over, or a segment that ends on the low range, does not. The cases run
-    # in turn on one machine, so a segment over the limit must not hold back the next.
+    # in turn on one machine, so a segment over the limit must not hold back the next. 0.5 mA is
+    # under the backoff's band, so these re-arm after one segment whatever the low phases.
     samples = SEGMENT * 3 // 10
     probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
-    # 100 nA a code, so 10000 is 1 mA and 20000 is 2 mA.
+    # 100 nA a code, so 5000 is 0.5 mA and 20000 is 2 mA.
     probe.energy.write("high_range", struct.pack("<4H7IB3x", 0, 65535, 0, 0, 0, 6553500, 0, 0, 100 << 16, 0, 0, 2))
     for segment, (label, currents, ranges, expected) in enumerate((
-            ("one sample over", [10000] * (samples - 1) + [20000], [0] * samples, 0),
+            ("one sample over", [5000] * (samples - 1) + [20000], [0] * samples, 0),
             ("no pair, after one over", [], [], 0),
-            ("under the limit, after one over", [10000] * samples, [0] * samples, 1),
-            ("ends on the low range", [10000] * samples, [0] * (samples - 1) + [65535], 0),
-            ("under the limit again", [10000] * samples, [0] * samples, 1))):
+            ("under the limit, after one over", [5000] * samples, [0] * samples, 1),
+            ("ends on the low range", [5000] * samples, [0] * (samples - 1) + [65535], 0),
+            ("under the limit again", [5000] * samples, [0] * samples, 1))):
         put("energy_range_retry_pending", 0, 1)
         words = [word for current, state in zip(currents, ranges)
                  for word in (result(1, 32768), result(1, current), result(2, state))]
@@ -1230,12 +1235,12 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         c.check(probe.call("energy_capture_start", 1) == 1 and probe.energy.get("segment_words", 4) == size,
                 f"{rate} pairs/s: start or segment size for the re-arm check")
         probe.energy.write("high_range", struct.pack("<4H7IB3x", 0, 65535, 0, 0, 0, 6553500, 0, 0, 100 << 16, 0, 0, 2))
-        pairs = [(10000, False)] * 200
+        pairs = [(5000, False)] * 200
         straddle = next(i for i in range(len(pairs)) if (3 * i + 2) % size == 0)
         pairs[straddle] = (20000, False)
         ends_low = next(i for i in range(len(pairs))
                         if (3 * i + 2) % size == size - 1 and (3 * i + 2) // size > (3 * straddle + 2) // size)
-        pairs[ends_low] = (10000, True)
+        pairs[ends_low] = (5000, True)
         words = [word for current, low in pairs
                  for word in (result(1, 32768), result(1, current), result(2, 65535 if low else 0))]
         base = get("energy_segments")
@@ -1253,6 +1258,115 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
                 f"{size}-word segments: re-arm by segment {got}, against {want}")
         probe.uc.hook_del(hook)
     c.note("re-arm by segment at 16 and 64 words, pairs straddling segment ends")
+
+    # The re-arm's backoff (src/energy_pairs.h), closed round the image: once it asks for the low
+    # range back, the pairs after go low for a low phase, then high from a recharge pair over the
+    # limit. A model of the rule takes the same pairs, and has to ask at the same segment ends. The
+    # script: low phases of one pair at 1.08 mA, in the band (0.75 to 1.5 mA in the 350 mA setting),
+    # so the hold doubles; one as long as `short_low_pairs`, which sets it back to 1; 0.5 mA, under the
+    # band, which re-arms after one segment whatever the hold; back in the band. A start sets the
+    # constants for its rate; the most is cut to 20 segments here so the cap shows.
+    def backoff_model(short, most):
+        state = {"hold": 1, "clean": 0, "low": 0, "armed": False, "high": False, "blocked": False, "band": False}
+
+        def pair(current, low):
+            state["high"] = not low
+            if low:
+                if state["low"] < short:
+                    state["low"] += 1
+                    if state["low"] == short:
+                        state["hold"] = 1
+                return
+            state["blocked"] |= current >= 15000
+            state["band"] |= current >= 7500
+            if state["low"]:
+                if state["armed"] and state["low"] < short:
+                    state["hold"] = 2 * state["hold"] if state["hold"] <= most // 2 else most
+                state["armed"] = False
+                state["low"] = 0
+
+        def segment():
+            rearm = False
+            if not state["high"] or state["blocked"]:
+                state["clean"] = 0
+            elif not state["band"]:
+                state["clean"], state["armed"], rearm = 0, False, True
+            else:
+                state["clean"] += 1
+                if state["clean"] >= state["hold"]:
+                    state["clean"], state["armed"], rearm = 0, True, True
+            state["high"] = state["blocked"] = state["band"] = False
+            return rearm
+        return pair, segment
+
+    for rate, size in ((10, 16), (1000, 16), (FIXTURE_RATE, 64)):
+        probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+        local("requested_rate_hz", rate)
+        # What a capture before might have left.
+        for name, value, width in (("hold_segments", 7, 4), ("clean_segments", 3, 4), ("low_pairs", 2, 4),
+                                   ("rearmed_in_band", 1, 1), ("in_band", 1, 1)):
+            probe.energy.put(name, value, width)
+        c.check(probe.call("energy_capture_start", 1) == 1 and probe.energy.get("segment_words", 4) == size,
+                f"{rate} pairs/s: start or segment size for the backoff check")
+        short = max(2, (rate * 3 + 999) // 1000)
+        started = {name: probe.energy.get(name, 4) for name in
+                   ("band_from_na", "short_low_pairs", "hold_max_segments", "hold_segments", "clean_segments", "low_pairs")}
+        c.check(started == {"band_from_na": 750000, "short_low_pairs": short,
+                            "hold_max_segments": rate * 7 // size, "hold_segments": 1, "clean_segments": 0, "low_pairs": 0}
+                and probe.energy.get("rearmed_in_band", 1) == 0 and probe.energy.get("in_band", 1) == 0,
+                f"{rate} pairs/s: the backoff as a start leaves it, {started}")
+        probe.energy.put("hold_max_segments", 20, 4)
+        probe.energy.write("high_range", struct.pack("<4H7IB3x", 0, 65535, 0, 0, 0, 6553500, 0, 0, 100 << 16, 0, 0, 2))
+        model_pair, model_segment = backoff_model(short, 20)
+        script = [(1, 10800)] * 7 + [(short, 10800)] + [(1, 10800)] * 3 + [(1, 5000)] * 2 + [(1, 10800)] * 2
+        # The hold each cycle's re-arm waited out: doubling to the cap, set back by the long low phase,
+        # 16 kept through the stretch under the band (whose re-arms take one segment), then doubling.
+        expected = [1, 2, 4, 8, 16, 20, 20, 1, 2, 4, 8, 16, 16, 16, 20]
+        cycle, phase, left = 0, "high", 0
+        words, pairs_done = [], 0
+        base = get("energy_segments")
+        got, want, holds = [], [], []
+
+        def next_pair():
+            nonlocal phase, left
+            if phase == "low":
+                left -= 1
+                if left == 0:
+                    phase = "spike"
+                return 32768, True
+            if phase == "spike":
+                phase = "high"
+                return 20000, False
+            return script[cycle][1], False
+        index = 0
+        while cycle < len(script) and index < 400:
+            while len(words) < (index + 1) * size:
+                current, low = next_pair()
+                words += [result(1, 32768), result(1, current), result(2, 65535 if low else 0)]
+            for i in range(pairs_done, len(words) // 3):
+                if (3 * i + 2) // size > index:
+                    break
+                model_pair(words[3 * i + 1] & 0xFFFF, words[3 * i + 2] & 0xFFFF == 65535)
+                pairs_done = i + 1
+            put("energy_range_retry_pending", 0, 1)
+            feed(words[index * size:(index + 1) * size], index * size)
+            put("energy_segments", base + index)
+            probe.integrate()
+            got.append(get("energy_range_retry_pending", 1))
+            want.append(int(model_segment()))
+            if got[-1] and phase == "high":
+                # The re-arm lands between pairs: the next pair generated is the low range's.
+                holds.append(probe.energy.get("hold_segments", 4))
+                cycle += 1
+                if cycle < len(script):
+                    phase, left = "low", script[cycle][0]
+            index += 1
+        c.check(got == want and cycle == len(script),
+                f"{size}-word segments: backoff re-arms {got}, against the model's {want}, {cycle} cycles")
+        c.check(holds == expected, f"{size}-word segments: holds at each re-arm {holds}, against {expected}")
+        probe.uc.hook_del(hook)
+    c.note("re-arm backoff at 10, 1000 and 16000 pairs/s: a start's constants, doubling to the cap, a low phase that holds"
+           " resets it, under the band re-arms at once")
 
     # A pair that switched up takes the next pair's current less the previous pair's share, the
     # weight; one that switched down takes the next pair's, or keeps its own where re-arms land

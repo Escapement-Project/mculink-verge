@@ -40,6 +40,55 @@ static inline uint32_t energy_stand_in_na(uint32_t next_na, uint32_t before_na, 
     return (uint32_t)(((uint64_t)next_na * (65536U - weight_q16) + (uint64_t)before_na * weight_q16 + 32768U) >> 16U);
 }
 
+/** A pair's part in the re-arm's backoff (struct energy_integration): count the low phase, and at
+ *  a switch up, double the hold if the low range gave way within `short_low_pairs` of a re-arm from
+ *  the band. Only a start sets a low phase going without a re-arm, and it clears `rearmed_in_band`. */
+static inline void energy_track_low_phase(struct energy_integration* energy, bool low, uint32_t shunt_na) {
+    if (low) {
+        if (energy->low_pairs < energy->short_low_pairs) {
+            energy->low_pairs++;
+            if (energy->low_pairs == energy->short_low_pairs) {
+                energy->hold_segments = 1U;
+            }
+        }
+        return;
+    }
+    if (shunt_na >= energy->band_from_na) {
+        energy->in_band = true;
+    }
+    if (energy->low_pairs != 0U) {
+        if (energy->rearmed_in_band && (energy->low_pairs < energy->short_low_pairs)) {
+            energy->hold_segments = (energy->hold_segments <= energy->hold_max_segments / 2U)
+                                        ? 2U * energy->hold_segments
+                                        : energy->hold_max_segments;
+        }
+        energy->rearmed_in_band = false;
+        energy->low_pairs = 0U;
+    }
+}
+
+/** After each segment's pairs: whether to ask for the low range back. The segment has to end on
+ *  the high range with every high-range pair under the limit. Under the band one such segment is
+ *  enough; in it, `hold_segments` in a row. Clears the segment's record. */
+static inline bool energy_segment_rearm(struct energy_integration* energy) {
+    bool rearm = false;
+    if (!energy->on_high_range || energy->rearm_blocked) {
+        energy->clean_segments = 0U;
+    } else if (!energy->in_band) {
+        energy->clean_segments = 0U;
+        energy->rearmed_in_band = false;
+        rearm = true;
+    } else if (++energy->clean_segments >= energy->hold_segments) {
+        energy->clean_segments = 0U;
+        energy->rearmed_in_band = true;
+        rearm = true;
+    }
+    energy->on_high_range = false;
+    energy->rearm_blocked = false;
+    energy->in_band = false;
+    return rearm;
+}
+
 /** The pair `decoder` has just completed. */
 static inline void energy_consume_pair(struct energy_integration* energy, const energy_sample_decoder_t* decoder,
                                        energy_total_t* total) {
@@ -57,6 +106,7 @@ static inline void energy_consume_pair(struct energy_integration* energy, const 
     if (!low && (shunt_na >= energy->rearm_below_na)) {
         energy->rearm_blocked = true;
     }
+    energy_track_low_phase(energy, low, shunt_na);
     uint32_t const mv = energy_voltage_mv(decoder->last_voltage, energy->full_scale_mv);
     bool const switched = low != energy->previous_low;
     bool const before_known = energy->previous_known;

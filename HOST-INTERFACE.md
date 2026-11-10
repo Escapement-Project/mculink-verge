@@ -213,7 +213,9 @@ The two settings trade differently:
   7.6 nA in the 50 mA setting. But each switch disturbs the reading. For about a millisecond after
   a switch down, the reading dips while the target's decoupling settles to the low range's lower
   supply. And the energy total misses most of the recharge at a switch up (BOARDS.md, "Accuracy
-  limits").
+  limits"). A target can reach the switch up on the low range alone, again and again. The probe
+  then waits longer before each switch down, up to about a second, so it reads such a target mostly
+  on the high range (BOARDS.md, "Range switching").
 - **Holding the high range** disturbs nothing, so the reading follows the target's own current.
   But the high range reads small currents unreliably. The stream marks a high-range pair under
   range ("Pairs: `0xa0`") below about 0.36 mA in the 350 mA setting. Scaled to the 50 mA setting's

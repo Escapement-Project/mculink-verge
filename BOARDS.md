@@ -191,10 +191,12 @@ the probe's target supply can give.
   firmware looks at the samples taken on the high range. If every one read below Table 4's limit for
   its setting, it clocks the latch. The comparator still holds the latch's reset, so a current that
   has come back above the threshold keeps the high range. Between Table 4's limit and the
-  threshold, a current stays on whichever range it is on.
+  threshold, a current stays on whichever range it is on. Just under the limit, the firmware can
+  wait longer (the backoff, below).
 - **The re-arm's delay.** The firmware sizes the segments to about a millisecond of samples: the
-  most words that fit in 1 ms, as a power of two. The first whole segment under the limit re-arms
-  the low range, so it comes back within about 2 ms of the current falling at any rate from 2,286
+  most words that fit in 1 ms, as a power of two. Unless the backoff holds it, the first whole
+  segment under the limit re-arms the low range, so it comes back within about 2 ms of the current
+  falling at any rate from 2,286
   samples a second. Below that rate a segment is its floor of 16 words, about two and a third
   samples, and the low range comes back within five. Segments of 10 ms made the delay depend on the
   rate, from 7 to 15 ms at 20,000 samples a second to 1.5 to 3 ms at 100,000. A target asleep for
@@ -214,6 +216,23 @@ the probe's target supply can give.
   The current rises further on the low range before a switch up, as the decoupling feeds the
   target, until it reaches the threshold. The switch up then recharges the decoupling in a spike of
   a few microseconds. The energy total misses most of that spike (Accuracy limits).
+- **A target the low range cannot hold.** A target can reach the threshold on the low range
+  alone, again and again. A CC1312R1 LaunchPad that was also powered from its own USB took a
+  steady 1.05 mA from the probe on the high range. After each switch down its reading dipped to
+  0.23 mA, then rose past 1.05 mA to the threshold in 1.4 ms. The voltage channel showed the same
+  drop across the resistor, so the current was real. The firmware re-armed the low range a segment
+  after each switch up, and the range switched about 590 times a second. With the dips, the rises
+  and the recharges, the capture read 1.37 mA at 100,000 samples a second and 1.19 mA at 1,000.
+  The same board did not do it again, on the probe's supply alone or with its USB as well.
+- **The backoff.** Just under Table 4's limit, a re-arm waits for some number of segments in a row
+  under it, at first one. That band runs from half the limit up to it: 0.75 to 1.5 mA in the
+  350 mA setting and 0.2 to 0.4 mA in the 50 mA setting, where the drop is 37 to 90 mV. A low
+  phase shorter than 3 ms after a re-arm from the band doubles the number, up to about a second of
+  segments. A low phase of 3 ms sets it back to one. At the slowest rates a low phase of one sample
+  still counts as short. Under the band one segment is still enough, so a target that falls asleep
+  gets the low range back as before. The L1306's dio-marker stays on the low range for 5 to 7 ms
+  between its bursts, so it switches as before. A target that bursts in the band within 3 ms of
+  each re-arm is held on the high range between its bursts.
 - **Holding the high range.** `0x90` mode 14 can hold the high range for a capture instead
   (HOST-INTERFACE.md). The firmware drives U18's reset low from PIO0_29 as a GPIO output, as
   calibration does, so the latch stays clear whatever the comparator says, and CPU 0 never
@@ -292,7 +311,9 @@ With 5 ms it read it right.
   against 0.26 Ω nominal, so its full scale was 366, 133 and 205 mA. Each boot read its own
   resistance right; a current past that boot's full scale saturates.
 - The low range lowers the target's supply (the drop across the sense resistors), so a target
-  whose current follows its supply draws differently on the two ranges, and is read that way.
+  whose current follows its supply draws differently on the two ranges, and is read that way. A
+  target that reaches the switch up on the low range alone, again and again, is read mostly on the
+  high range once the backoff holds it there (Range switching).
 - The high range reads unreliably within 64 codes of the amplifier's output floor (Calibration,
   "The point with no load"), where calibration keeps no point. The stream marks a high-range pair
   there under range, in either range setting. In the 350 mA setting the mark starts at about

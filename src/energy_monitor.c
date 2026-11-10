@@ -432,6 +432,20 @@ static uint32_t segment_words(uint32_t rate_hz) {
     return words;
 }
 
+/** A low phase shorter than this, after a re-arm from the band, is the low range giving way
+ *  (struct energy_integration): 3 ms, and at least two pairs, so that a phase of one pair counts at
+ *  any rate. BOARDS.md ("Range switching") has the low phases it was set between. */
+static uint32_t short_low_pairs(uint32_t rate_hz) {
+    uint32_t const pairs = ((rate_hz * 3U) + 999U) / 1000U;
+    return pairs > 2U ? pairs : 2U;
+}
+
+/** The backoff's longest hold: about a second of segments. */
+static uint32_t hold_max_segments(uint32_t rate_hz, uint32_t words) {
+    uint32_t const segments = (rate_hz * ENERGY_WORDS_PER_PAIR) / words;
+    return segments > 1U ? segments : 1U;
+}
+
 static uint32_t ring_written(void) {
     uint32_t const mask = ENERGY_DMA_MASK;
     uint32_t const segment = integration()->segment_words;
@@ -671,6 +685,14 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     energy->calibrated = current_calibrated;
     energy->full_scale_mv = target_sense_full_scale_mv();
     energy->rearm_below_na = rearm_below_na();
+    energy->band_from_na = energy->rearm_below_na / 2U;
+    energy->short_low_pairs = short_low_pairs(actual_rate_hz);
+    energy->hold_max_segments = hold_max_segments(actual_rate_hz, energy->segment_words);
+    energy->hold_segments = 1U;
+    energy->clean_segments = 0U;
+    energy->low_pairs = 0U;
+    energy->rearmed_in_band = false;
+    energy->in_band = false;
     // Where calibration would not keep a point: a high-range reading there is unreliable.
     energy->under_range_code = current_calibrated ? (uint16_t)(high_floor_code + CALIBRATION_FLOOR_MARGIN) : 0U;
     energy->setting = (current_range == TARGET_SENSE_CURRENT_RANGE_350_MA) ? 1U

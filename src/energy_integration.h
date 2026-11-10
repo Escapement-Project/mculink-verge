@@ -116,8 +116,9 @@ static inline bool energy_consume_until(struct energy_integration* energy, uint3
 
 /** CPU 0's DMA interrupt, for each completed segment before it counts it, with the channel's INTA
  *  and INTB as it took and cleared them: integrates the segment, and asks for the low range back
- *  when every sample in it stayed on the high range under the setting's limit. A segment that
- *  completed no pair says nothing either way.
+ *  when every sample in it stayed on the high range under the setting's limit, after the backoff's
+ *  hold in the band (energy_segment_rearm). A segment that completed no pair re-arms nothing, and
+ *  the band's count starts again.
  *
  *  The flag taken has to be this segment's alone, and the next segment's still down once this one
  *  is integrated: that completion is DMA0 starting on this half again. Either fails the capture. */
@@ -132,12 +133,10 @@ static inline void energy_integrate(struct energy_integration* energy, bool took
     }
     if (!energy_capture_failed(energy)) {
         uint32_t const segment_bytes = (energy_ring_words(energy) / ENERGY_SEGMENTS) * sizeof(uint32_t);
-        if (energy_consume_until(energy, (counted + 1U) * segment_bytes) && energy->on_high_range &&
-            !energy->rearm_blocked) {
+        bool const consumed = energy_consume_until(energy, (counted + 1U) * segment_bytes);
+        if (energy_segment_rearm(energy) && consumed) {
             dap_shared.energy_range_retry_pending = 1U;
         }
-        energy->on_high_range = false;
-        energy->rearm_blocked = false;
         if ((*energy_segment_flag(counted + 1U) & ENERGY_DMA_MASK) != 0U) {
             dap_shared.energy_dma_error = 1U;
         }

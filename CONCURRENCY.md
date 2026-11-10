@@ -224,7 +224,7 @@ end a capture that runs.
 ### The range re-arm
 
 The DMA interrupt sets `energy_range_retry_pending` when a segment shows the current has fallen
-below the low range's limit. CPU 0's loop then clocks the range latch (P0_17), with every interrupt
+below the low range's limit, after the backoff's hold just under it (`src/energy_pairs.h`). CPU 0's loop then clocks the range latch (P0_17), with every interrupt
 off from its last timing check to the edge, reading CTimer 2 to find a gap between pairs. CPU 1
 clears `energy_range_retry_enabled` and the pending flag before it pauses a capture, and a start
 that switches automatically sets enabled again. A re-arm already past its check of enabled can still
