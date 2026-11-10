@@ -5,6 +5,20 @@ paths it ran on. A product image generates its transfers at runtime (README.md, 
 on ARM's paths describe what the `+armwire` reference build still runs. BENCH.md has the bench
 itself, and mculink-bench the comparisons with stock.
 
+## Where the Limits figures come from
+
+The "Limits" table in docs/wires.md gives the fastest each transport runs. A change that moves one
+of its figures updates this list in the same commit.
+
+- **SWD:** wire captures, in mculink-bench's `results/wireclock/2026-10-21.md`.
+- **JTAG and cJTAG:** the firmware's timing report (vendor `0x8A`, run in the emulator). JTAG at 30
+  MHz was also measured on hardware: "cJTAG, from ARM's paths to every generated format", below.
+- **The console and SWO:** the loopbacks and captures in "The console" and "SWO capture", below.
+- **NXP's SWD figures:** wire captures, in mculink-stock-notes' `wire.md` and mculink-bench's
+  `results/wireclock/2026-10-21.md`.
+- **NXP's other figures:** "The console", below, and mculink-bench's
+  `results/throughput/2026-10-21-stock.json`.
+
 ## cJTAG, from ARM's paths to every generated format
 
 Measured 2026-10-16 to 2026-10-22 on a CC1312R1 LaunchPad, first on ARM's paths and then on the

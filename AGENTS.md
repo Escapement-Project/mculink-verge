@@ -33,8 +33,9 @@ images, one with `DAP_TIMING_DIAGNOSTICS` and one with `CODE_LAB`, get `tools/im
 
 **Keep the "Limits" table in docs/wires.md current.** It is the record of the fastest each transport
 runs, ours beside stock's. A change that moves one of ours, faster or slower, updates the table in
-the same commit, with how the new figure was measured. Stock's entries marked "not measured yet" are
-filled when a bench run measures them; none is filled from a guess.
+the same commit, and says where the new figure comes from in MEASUREMENTS.md's "Where the Limits
+figures come from". Stock's entries marked "not measured yet" are filled when a bench run measures
+them; none is filled from a guess.
 
 **Keep BUSES.md current.** It maps every master's accesses to the AHB matrix ports and says which
 ports each timed window uses. A new peripheral access, DMA channel or buffer in another SRAM bank

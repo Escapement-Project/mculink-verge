@@ -63,16 +63,19 @@ The other formats send fewer packets for some clocks:
 - **OScan2** sends a clock outside Shift-DR and Shift-IR as a single packet. Through probe-rs that
   reads a CC1312R1 4 to 7% faster than OScan1.
 - **OScan5** sends a clock in Shift-DR and Shift-IR as two packets, the last of them leaving with an
-  escape. A CC1312R1 measures 7 there, and its frame takes 16 core cycles: 9.4 MHz. `tools/dap.py`, a host in mculink-verge that drives the probe directly, reads a CC1312R1 27% faster in OScan5
-  than in OScan1 at 12.5 MHz, 15% faster at 25 MHz and 6% faster at 50 MHz, where USB starts to set
-  the rate.
+  escape. A CC1312R1 measures 7 there, and its frame takes 16 core cycles: 9.4 MHz. `tools/dap.py`,
+  a host in mculink-verge that drives the probe directly, reads a CC1312R1 27% faster in OScan5 than
+  in OScan1 at 12.5 MHz, 15% faster at 25 MHz and 6% faster at 50 MHz, where USB starts to set the
+  rate.
 - **OScan6** sends a clock outside Shift as one packet, and a clock in Shift as OScan5 does. On a
   CC1312R1 it reads level with OScan5 at 12.5 MHz, and slower from 25 MHz, where the target answers
   WAIT more often to the shorter frames.
 
 The host picks one of the formats both the probe and the target offer. `verge cjtag --formats`
-limits the formats the probe offers, until it restarts; `--oscan1-only` offers OScan1 only, which is
-the easiest to read on an analyser. [cJTAG](../CJTAG.md) has the wire in detail.
+limits the formats the probe offers, until it restarts. It takes names or SCNFMT numbers:
+`--formats oscan1,oscan5` or `9,13`. OScan1 stays offered whatever the list says. `--oscan1-only`
+offers OScan1 only, which is the easiest to read on an analyser, and `--all` offers every format
+again. [cJTAG](../CJTAG.md) has the wire in detail.
 
 ## Limits
 
@@ -99,29 +102,20 @@ with data rates of 9.1 MHz for reads and 9.4 MHz for writes. NXP's console figur
 tested with both Pro ports running. NXP's USB figures are what `DAP_Info` reports; we did not
 measure how many commands its firmware holds.
 
-[Trace and serial ports](trace-and-serial.md) says how the console and SWO figures were reached.
-mculink-bench's [measurements page](https://escapement-project.github.io/measurements/) compares
-throughput through the same probe-rs workload, on the same target, with NXP's firmware and a SEGGER
-J-Link Ultra.
+[Measurements](../MEASUREMENTS.md#where-the-limits-figures-come-from) says where each figure comes
+from, and [Trace and serial ports](trace-and-serial.md) how the console and SWO figures were
+reached. mculink-bench's [measurements page](https://escapement-project.github.io/measurements/)
+compares throughput through the same probe-rs workload, on the same target, with NXP's firmware and
+a SEGGER J-Link Ultra.
 
 ### Past NXP's limits
 
-Some of these rates are past NXP's specifications. They passed the tests below. The host asks for
-the rate, so whoever runs the probe decides whether to use them.
+Some of these rates are past NXP's specifications. They passed the tests in [Trace and serial
+ports](trace-and-serial.md). The host asks for the rate, so whoever runs the probe decides whether
+to use them.
 
 | Feature | NXP's limit | Verge past it |
 | --- | --- | --- |
 | Console | The UART is specified to 10 Mbit/s (LPC55S6x data sheet, 7.26.3.4) | Above 10 Mbaud: 12, 16 and 19.2 Mbaud ran clean |
 | SWO | The same UART, to 10 Mbit/s | Above 10 Mbaud: 12, 16, 24 and 30 Mbaud ran clean |
 | SWO | The UART's clock divider is specified to 100 MHz (UM11126, 4.5.49) | Above 20.1 Mbaud, where nothing inside the divider's limit comes within 0.5% of the rate: 21.4, 24, 25 and 30 Mbaud ran clean with it at 107 to 150 MHz |
-
-### Where the figures come from
-
-SWD rates come from wire captures in mculink-bench's `results/wireclock/2026-10-21.md`. JTAG and
-cJTAG rates come from the firmware's timing report (vendor `0x8A`, run in the emulator); JTAG at 30
-MHz was also measured on hardware ([Measurements](../MEASUREMENTS.md), "cJTAG, from ARM's paths to
-every generated format"). Console loopbacks and SWO captures are recorded in
-[Measurements](../MEASUREMENTS.md). NXP's SWD captures are in mculink-stock-notes' `wire.md` and
-mculink-bench's `results/wireclock/2026-10-21.md`. NXP's other figures are in
-[Measurements](../MEASUREMENTS.md), under "The console", and in mculink-bench's
-`results/throughput/2026-10-21-stock.json`.
