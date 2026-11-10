@@ -918,6 +918,21 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     c.note("ADC calibration pair at 128x averaging " +
            ("passed" if "target_sense_convert_pair_for_calibration" in symbols else "not run: entry inlined"))
 
+    # Vendor 0x86 on a Pro whose capture failed earlier: the resume after the read refuses that
+    # capture, which 0x90 reports as result 7, and the read still answers with its result.
+    if "target_sense_convert" in symbols:
+        probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+        probe.energy.put("running", 0, 1)
+        local("requested_rate_hz", 1000)
+        put("energy_dma_error", 1, 1)
+        value = probe.call("target_sense_convert", 3, 0, SCRATCH)
+        c.check(value == 0 and bytes(probe.uc.mem_read(SCRATCH, 2)) == b"\x45\x23",
+                f"a target sense read after a capture fault returned {value}")
+        c.check(get("energy_dma_error", 1) == 1, "a target sense read cleared the capture's fault")
+        probe.uc.hook_del(hook)
+    c.note("target sense after a capture fault " +
+           ("passed" if "target_sense_convert" in symbols else "not run: entry inlined"))
+
     if c.check("current_calibrate" in symbols and "energy_monitor_calibrate" in symbols,
                "calibration entries missing"):
         # The ADC model answers every on-demand conversion with 0x2345, which CURR_RANGE_SET reads

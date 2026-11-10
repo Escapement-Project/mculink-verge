@@ -8,6 +8,7 @@
 
 #include "board_pins.h"
 #include "core_clock.h"
+#include "dap_shared.h"
 #include "energy_monitor.h"
 
 /** DBGIF_VREF: half of the debug connector's pin 1, buffered. J6 through R22/R23 on the plain
@@ -191,6 +192,9 @@ void target_sense_configure_monitor(uint32_t rate_hz) {
 
 static target_sense_status_t target_sense_convert_sample(uint8_t channel, bool side_b, uint16_t* code,
                                                           lpadc_hardware_average_mode_t average_mode) {
+    // A capture that failed before this read stays failed, and resume refuses it: 0x90 reports
+    // that as result 7. Only a resume that fails now fails the read.
+    bool const failed_before = dap_shared.energy_dma_error != 0U;
     if (!energy_monitor_pause()) {
         return TARGET_SENSE_NO_RESULT;
     }
@@ -222,7 +226,7 @@ static target_sense_status_t target_sense_convert_sample(uint8_t channel, bool s
         if (LPADC_GetConvResult(ADC0, &result, 0U)) {
             *code = result.convValue;
             status = TARGET_SENSE_OK;
-            return energy_monitor_resume() ? status : TARGET_SENSE_NO_RESULT;
+            return (energy_monitor_resume() || failed_before) ? status : TARGET_SENSE_NO_RESULT;
         }
     }
     (void)energy_monitor_resume();
