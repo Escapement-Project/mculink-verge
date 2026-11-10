@@ -175,11 +175,14 @@ class Fig:
             attrs.append(f'class="{cls}"')
         self.parts.append(f"<path {' '.join(attrs)}/>")
 
-    def rect(self, x, y, w, h, r=4, tone=None, width=1.5, fill=None):
-        d = (f"M{num(x + r)},{num(y)}H{num(x + w - r)}A{num(r)},{num(r)} 0 0 1 {num(x + w)},{num(y + r)}"
-             f"V{num(y + h - r)}A{num(r)},{num(r)} 0 0 1 {num(x + w - r)},{num(y + h)}H{num(x + r)}"
-             f"A{num(r)},{num(r)} 0 0 1 {num(x)},{num(y + h - r)}V{num(y + r)}A{num(r)},{num(r)} 0 0 1 {num(x + r)},{num(y)}Z")
-        self.path(d, tone=tone, width=width, fill=fill)
+    def rect(self, x, y, w, h, r=4, tone=None, width=1.5, fill=None, dash=None):
+        if r:
+            d = (f"M{num(x + r)},{num(y)}H{num(x + w - r)}A{num(r)},{num(r)} 0 0 1 {num(x + w)},{num(y + r)}"
+                 f"V{num(y + h - r)}A{num(r)},{num(r)} 0 0 1 {num(x + w - r)},{num(y + h)}H{num(x + r)}"
+                 f"A{num(r)},{num(r)} 0 0 1 {num(x)},{num(y + h - r)}V{num(y + r)}A{num(r)},{num(r)} 0 0 1 {num(x + r)},{num(y)}Z")
+        else:
+            d = f"M{num(x)},{num(y)}H{num(x + w)}V{num(y + h)}H{num(x)}Z"
+        self.path(d, tone=tone, width=width, fill=fill, dash=dash)
 
     def head(self, x, y, angle, tone=None, size=7):
         """A filled arrowhead with its tip at (x, y), pointing along `angle` (degrees, 0 = right)."""
@@ -190,7 +193,7 @@ class Fig:
         cls = {"wire": ' class="vf-wiref"', "rule": ' class="vf-rulef"'}.get(tone, "")
         self.parts.append(f'<path d="{d}" fill="currentColor"{cls}/>')
 
-    def arrow(self, pts, tone=None, dash=None, start=False, end=True):
+    def arrow(self, pts, tone=None, dash=None, start=False, end=True, width=1.5):
         """A line through `pts`, with arrowheads where asked. The line stops short of a head."""
         def trim(p, q, by):
             dx, dy = q[0] - p[0], q[1] - p[1]
@@ -201,23 +204,33 @@ class Fig:
             line[-1] = trim(pts[-2], pts[-1], 5)
         if start:
             line[0] = trim(pts[1], pts[0], 5)
-        self.path("M" + "L".join(f"{num(x)},{num(y)}" for x, y in line), tone=tone, dash=dash)
+        self.path("M" + "L".join(f"{num(x)},{num(y)}" for x, y in line), tone=tone, dash=dash, width=width)
         for p, q, on in ((pts[-2], pts[-1], end), (pts[1], pts[0], start)):
             if on:
                 self.head(*q, math.degrees(math.atan2(q[1] - p[1], q[0] - p[0])), tone=tone)
 
-    def node(self, x, y, w, lines, size=13, pad=7, lead=16, h=None):
-        """A box of centred lines, each a string or a (text, kind, tone), centred on y. It is as
-        tall as its lines unless `h` says more. Returns its top and bottom."""
-        rows = [(s, "text", None) if isinstance(s, str) else s for s in lines]
-        h = max(h or 0, len(rows) * lead + 2 * pad - (lead - size) + 2)
-        top = y - h / 2
-        self.rect(x, top, w, h, fill="surface", tone="hair", width=1)
-        first = y - (len(rows) - 1) * lead / 2 + size * 0.35
-        for i, (s, kind, tone) in enumerate(rows):
-            self.text(x + w / 2, first + i * lead, s, size=size, kind=kind, tone=tone, anchor="middle",
-                      room=w - 2 * pad)
-        return top, top + h
+    def trace(self, x0, x1, y):
+        """The wire as the Verge page draws it: a stretch of square wave, in Verge's colour."""
+        steps = [0, 14, 34, 44, 74, 84, 96, 120]
+        d, low = f"M{num(x0)},{num(y + 4)}", True
+        for a, b in zip(steps, steps[1:]):
+            d += f"H{num(x0 + (x1 - x0) * b / 120)}"
+            if b != 120:
+                low = not low
+                d += f"V{num(y + 4 if low else y - 4)}"
+        self.path(d, tone="wire")
+
+    def bracket(self, x, y0, y1, toward):
+        """A thin bracket from y0 to y1 at x, its ends turned toward the bar (+1 right, -1 left)."""
+        self.path(f"M{num(x + 5 * toward)},{num(y0 + 1)}H{num(x)}V{num(y1 - 1)}H{num(x + 5 * toward)}",
+                  tone="rule", width=1)
+
+    def lines(self, x, y, rows, size=14, lead=18, anchor="start", room=None):
+        """Lines of text from the baseline y down; each a string or a (text, kind, tone)."""
+        for i, row in enumerate(rows):
+            s, kind, tone = (row, "text", None) if isinstance(row, str) else row
+            self.text(x, y + i * lead, s, size=size if tone != "2" else size - 1, kind=kind, tone=tone,
+                      anchor=anchor, room=room)
 
     def heading(self, x, y, title, job, room, anchor="start"):
         self.text(x, y, title, size=17, kind="head", anchor=anchor, room=room)
@@ -227,12 +240,15 @@ class Fig:
     def mailbox(self, x0, x1, y):
         """Each core raises the other's mailbox: a dashed arrow both ways, as the Verge page dashes it."""
         self.arrow([(x0, y), (x1, y)], tone="rule", dash="4 3", start=True)
-        self.text((x0 + x1) / 2, y - 8, "mailbox", size=12, kind="code", tone="2", anchor="middle", room=x1 - x0)
+        self.text((x0 + x1) / 2, y - 8, "mailbox", size=13, tone="2", anchor="middle", room=x1 - x0)
 
     def svg(self, height) -> str:
         body = "\n".join(self.parts)
         return (f'<svg xmlns="http://www.w3.org/2000/svg" class="vf" viewBox="0 0 {W} {num(height)}" '
                 f'width="{W}" height="{num(height)}">\n<style>\n{STYLE}\n</style>\n{body}\n</svg>\n')
+
+
+NOTE = "2"
 
 
 # ---------------------------------------------------------------- the blocks
@@ -252,7 +268,7 @@ def core_rows(f: Fig, x, y, w, title, job, rows, pitch=28, right=False):
 def blocks():
     f = Fig("architecture-blocks")
     top, chip_x = 8, 64
-    tw = 136
+    tw = 150
     tx = W - 1 - tw
     chip_w = tx - 20 - chip_x
     pad, col, mid_w = 18, 154, 120
@@ -282,15 +298,21 @@ def blocks():
     f.text(0, c0[0] - 2, "Host", size=15, kind="strong", room=chip_x - 12)
     f.text(0, c0[0] + 16, "USB", size=14, tone="2", room=chip_x - 12)
     f.arrow([(40, c0[0]), (c0x - 4, c0[0])], start=True)
-    # The target: a second package, its pins level with the lines that reach them.
-    pins = [(c1[1], "SWD, JTAG, cJTAG", "wire"), (c1[2], "SWO", None), (c1[3], "DIO, SPI, I2C", None),
-            (c1[4], "Supply", None)]
+    # The target: a second package, its pins level with the lines that reach them. The wire is drawn
+    # as the Verge page's trace, from just past its row's words; SWO comes in from the target.
     f.rect(tx, top, tw, chip_h, tone="rule")
     f.heading(tx + 12, y0, "Target", "Under debug", tw - 16)
-    for yy, name, tone in pins:
-        f.text(tx + 12, yy + 5, name, size=13, room=tw - 16)
-        f.arrow([(c1x + col + 4, yy), (tx - 2, yy)], tone=tone)
-    f.text(tx + 12, serial_y + 5, "Serial", size=13, room=tw - 16)
+    ends = (c1x + col + 4, tx - 2)
+    wire_from = c1x + col - 14
+    if width("text", "Generated wire code", 14) > wire_from - 6 - c1x:
+        f.misfits.append(f"{f.name}: 'Generated wire code' runs into the wire's trace")
+    f.trace(wire_from, ends[1], c1[1])
+    f.arrow([(ends[1], c1[2]), (ends[0], c1[2])])
+    f.arrow([(ends[0], c1[3]), (ends[1], c1[3])], start=True)
+    f.arrow([(ends[0], c1[4]), (ends[1], c1[4])])
+    for yy, name in ((c1[1], "SWD, JTAG, cJTAG"), (c1[2], "SWO"), (c1[3], "DIO, SPI, I2C"), (c1[4], "Supply"),
+                     (serial_y, "Serial")):
+        f.text(tx + 12, yy + 5, name, size=14, room=tw - 16)
     # The consoles' line leaves their row from below, then runs under the shared memory and CPU 1's
     # list to the target's serial lines.
     drop = c0x + 60
@@ -303,52 +325,63 @@ def blocks():
 def command():
     f = Fig("architecture-command")
     lanes = [("Host", "USB"), ("CPU 0", None), ("Shared memory", "USB SRAM, SRAM3"), ("CPU 1", None),
-             ("Target", "The wire")]
-    xs = [34, 190, 360, 530, 682]
+             ("Target", "Under debug")]
+    xs = [30, 182, 356, 538, 666]
     for (name, sub), x in zip(lanes, xs):
-        f.text(x, 22, name, size=14, kind="strong", anchor="middle", room=150)
+        f.text(x, 22, name, size=17, kind="head", anchor="middle", room=160)
         if sub:
-            f.text(x, 40, sub, size=13, tone="2", anchor="middle", room=150)
+            f.text(x, 42, sub, size=14, tone="2", anchor="middle", room=160)
     HOST, C0, MEM, C1, TGT = range(5)
-    # The list's step number, if the arrow starts one; from, to; the label; tone; both ways.
-    steps = [
-        (1, C0, MEM, "arm a free request slot", None, False),
-        (2, HOST, C0, "command, `EP1 OUT`", None, False),
-        (None, C0, C1, "an abort only sets CPU 1's flag", "rule", False),
-        (3, C0, MEM, "copy it into `dap_stage`", None, False),
-        (None, C0, C1, "mailbox", "rule", False),
-        (4, MEM, C1, "take the oldest command", None, False),
-        (5, C1, TGT, "run it", "wire", True),
-        (6, C1, MEM, "publish the reply", None, False),
-        (None, C1, C0, "mailbox", "rule", False),
-        (7, MEM, C0, "copy the reply out", None, False),
-        (None, C0, HOST, "reply, `EP1 IN`", None, False),
-    ]
-    actor = {1: C0, 2: C0, 3: C0, 4: C1, 5: C1, 6: C1, 7: C0}
-    y0, pitch = 80, 34
+    y0, pitch = 86, 36
     breaks = {i: [] for i in range(5)}
-    for n, (badge, a, b, label, tone, both) in enumerate(steps):
-        y = y0 + n * pitch
-        on = actor.get(badge)
-        if badge:
-            breaks[on].append((y - 12, y + 12))
-            f.parts.append(f'<circle cx="{xs[on]}" cy="{num(y)}" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/>')
-            f.text(xs[on], y + 4.5, str(badge), size=13, kind="strong", anchor="middle")
+
+    def badge(n, lane, y):
+        breaks[lane].append((y - 12, y + 12))
+        f.parts.append(f'<circle cx="{xs[lane]}" cy="{num(y)}" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/>')
+        f.text(xs[lane], y + 5, str(n), size=14, kind="strong", anchor="middle")
+
+    def leg(a, b, y, label, tone=None, dash=None, both=False, from_badge=False, to_badge=False):
+        """One arrow between two lanes, its label centred above it; lifelines it crosses break
+        around the label."""
         d = 1 if xs[b] > xs[a] else -1
-        x0 = xs[a] + d * (12 if badge and a == on else 3)
-        x1 = xs[b] - d * (12 if badge and b == on else 3)
-        f.arrow([(x0, y), (x1, y)], tone=tone, dash="4 3" if tone == "rule" else None, start=both)
-        mailbox = label == "mailbox"
-        size = 12 if mailbox else 13
-        f.text((x0 + x1) / 2, y - 7, label, size=size, kind="code" if mailbox else "text",
-               tone="2" if tone == "rule" else None, anchor="middle", room=abs(x1 - x0) - 4)
-        # A label sits centred over its arrow: break each lifeline the arrow crosses around it.
+        x0 = xs[a] + d * (12 if from_badge else 3)
+        x1 = xs[b] - d * (12 if to_badge else 3)
+        f.arrow([(x0, y), (x1, y)], tone=tone, dash=dash, start=both)
+        f.text((x0 + x1) / 2, y - 7, label, size=14, tone="2" if tone == "rule" else None, anchor="middle",
+               room=abs(x1 - x0) - 4)
         for i, x in enumerate(xs):
             if min(x0, x1) < x < max(x0, x1):
-                breaks[i].append((y - 7 - size, y - 3))
-    bottom = y0 + (len(steps) - 1) * pitch + 20
+                breaks[i].append((y - 21, y - 3))
+
+    y = [y0 + i * pitch for i in range(10)]
+    badge(1, C0, y[0])
+    leg(C0, MEM, y[0], "arm a free request slot", from_badge=True)
+    # The command lands in the slot step 1 armed; CPU 0 handles it on the way.
+    badge(2, C0, y[1])
+    leg(HOST, C0, y[1], "command, EP1 OUT", to_badge=True)
+    leg(C0, MEM, y[1], "into that slot", from_badge=True)
+    # An abort branches off at step 2 and goes no further.
+    bx = xs[C0] + 7
+    f.arrow([(bx, y[1] + 8), (bx, y[2]), (xs[C1] - 3, y[2])], tone="rule", dash="4 3")
+    f.text((bx + xs[C1]) / 2, y[2] - 7, "an abort sets CPU 1's flag, and stops there", size=14, tone="2",
+           anchor="middle", room=xs[C1] - bx - 8)
+    breaks[MEM].append((y[2] - 21, y[2] - 3))
+    badge(3, C0, y[3])
+    leg(C0, MEM, y[3], "copy it into `dap_stage`", from_badge=True)
+    leg(C0, C1, y[4], "mailbox", tone="rule", dash="4 3")
+    badge(4, C1, y[5])
+    leg(MEM, C1, y[5], "take the oldest command", to_badge=True)
+    badge(5, C1, y[6])
+    leg(C1, TGT, y[6], "run it", tone="wire", both=True, from_badge=True)
+    badge(6, C1, y[7])
+    leg(C1, MEM, y[7], "publish the reply", from_badge=True)
+    leg(C1, C0, y[8], "mailbox", tone="rule", dash="4 3")
+    badge(7, C0, y[9])
+    leg(MEM, C0, y[9], "copy the reply out", to_badge=True)
+    leg(C0, HOST, y[9], "reply, EP1 IN", from_badge=True)
+    bottom = y[-1] + 20
     for i, x in enumerate(xs):
-        t = 50
+        t = 54
         for a, b in sorted(breaks[i]):
             if a > t:
                 f.path(f"M{x},{num(t)}V{num(a)}", tone="hair", width=1)
@@ -359,115 +392,201 @@ def command():
 
 # ---------------------------------------------------------------- memory
 
-NOTE = "2"
-
-
 def memory():
+    """A memory map: one bar of the banks, high addresses at the top, each region named with its
+    base address on its lower edge. CPU 0's contents hang off the bar's left, CPU 1's off its right.
+    What both link scripts place at one address is a shaded band inside the bar; what a core reaches
+    through a pointer in dap_shared sits between dashed rules."""
     f = Fig("architecture-memory")
-    cols = [("CPU 0", 108, 196), ("Both cores", 316, 196), ("CPU 1", 524, 195)]
-    for name, x, w in cols:
-        f.text(x, 24, name, size=17, kind="head", room=w)
-    f.path(f"M0,36H{W}", tone="rule", width=1)
-    rows = [
-        ("Flash", "0x0000_0000", {
-            0: ["CPU 0's code, from `0x200`"],
-            2: ["CPU 1's code,", "from `0x4_0000`"]}),
-        ("SRAMX", "0x0400_0000", {
-            2: ["The generated wire code", ("written at run time", "text", NOTE)]}),
-        ("SRAM0", "0x2000_0000", {
-            0: ["Data, and the stack in the top", "4 KiB; the loop, and the code", "a command passes through",
-                ("The consoles' rings and the", "text", NOTE), ("energy ring, which DMA fills", "text", NOTE)],
-            1: ["Energy capture's state, held", "by one core at a time"]}),
-        ("SRAM1", "0x2001_0000", {
-            1: ["CPU 1's abort flag, which", "CPU 0 sets"],
-            2: ["16 KiB of stack, then data;", "the command path, the SWD", "generator, the JTAG scans"]}),
-        ("SRAM2", "0x2002_0000", {
-            2: ["The rest of CPU 1's data"]}),
-        ("SRAM3", "0x2003_0000", {
-            1: ["`dap_stage`, the top 8 KiB", "from `0x2003_E000`: staged", "commands and replies, HID",
-                "replies, Verge Aux's slot"]}),
-        ("SRAM4", "0x2004_0000", {
-            1: ["Stream messages: 16 slots", "of 512 bytes", ("written by the core that", "text", NOTE),
-                ("holds the capture state", "text", NOTE)]}),
-        ("USB SRAM", "0x4010_0000", {
-            0: ["TinyUSB's buffers, Verge", "Aux's included, in the first", "4 KiB",
-                ("written by CPU 0 and the", "text", NOTE), ("USB controller", "text", NOTE)],
-            1: ["`dap_shared`, from", "`0x4010_1000`: request and", "reply slots, queues, DMA's",
-                "channel table, the SWO ring", ("written by both cores, the", "text", NOTE),
-                ("USB controller and DMA", "text", NOTE)]}),
+    bar_x, bar_w = 236, 250
+    left, right = bar_x - 16, bar_x + bar_w + 16
+    f.heading(left - 6, 22, "CPU 0", None, left, anchor="end")
+    f.heading(right + 6, 22, "CPU 1", None, W - right - 6)
+    LEAD, PAD = 18, 8
+
+    # Each region top to bottom: (id, inside lines, base line (name, address), band, min height).
+    # A band is "shared" (placed by both link scripts) or "pointer" (reached through dap_shared).
+    blocks_ = [
+        [("dap_shared", ["Request and reply slots, queues,", "DMA's channel table, the SWO ring",
+                         ("written by both cores, the USB", "text", NOTE), ("controller and DMA", "text", NOTE)],
+          ("`dap_shared`", "0x4010_1000"), "shared", 0),
+         ("usb", [], ("USB SRAM", "0x4010_0000"), None, 60)],
+        [("sram4_free", [], None, None, 12),
+         ("slots", ["Stream messages:", "16 slots of 512 bytes", ("written by the core that owns the", "text", NOTE),
+                    ("capture state", "text", NOTE)], ("SRAM4", "0x2004_0000"), "shared", 0),
+         ("stage", ["Staged commands and replies,", "HID replies, Verge Aux's slot", ("written by both cores", "text", NOTE)],
+          ("`dap_stage`", "0x2003_E000"), "shared", 0),
+         ("sram3", [], ("SRAM3", "0x2003_0000"), None, 34),
+         ("abort", [], ("The abort flag, which CPU 0 sets", None), "pointer", 0),
+         ("sram2", [], ("SRAM2", "0x2002_0000"), None, 48),
+         ("sram1_code", [], (None, "0x2001_4000"), None, 48),
+         ("sram1_stack", [], ("SRAM1", "0x2001_0000"), None, 34),
+         ("sram0_stack", [], None, None, 26),
+         ("energy", [], ("Energy capture's state", None), "pointer", 0),
+         ("sram0", [], ("SRAM0", "0x2000_0000"), None, 74)],
+        [("sramx", [], ("SRAMX", "0x0400_0000"), None, 44)],
+        [("flash1", [], (None, "0x4_0000"), None, 34),
+         ("flash0", [], ("Flash", "0x0000_0000"), None, 34)],
     ]
-    y = 36
-    for name, address, cells in rows:
-        h = max(len(lines) for lines in cells.values()) * 16 + 2 * 7 - 3 + 2 + 14
-        mid = y + h / 2
-        f.text(0, mid - 2, name, size=14, kind="strong", room=100)
-        f.text(0, mid + 15, address, size=12, kind="code", tone="2", room=100)
-        for c, lines in cells.items():
-            _, x, w = cols[c]
-            f.node(x, mid, w, lines)
-        y += h
-        f.path(f"M0,{num(y)}H{W}", tone="hair", width=1)
-    return f, y + 2
+    y = 44
+    at = {}
+    for block in blocks_:
+        block_top = y
+        for i, (rid, inside, base, band, min_h) in enumerate(block):
+            h = max(min_h, PAD + len(inside) * LEAD + (LEAD + 4 if base else 0))
+            top, bottom = y, y + h
+            at[rid] = (top, bottom)
+            if band == "shared":
+                f.rect(bar_x, top, bar_w, h, r=0, fill="surface", tone="rule", width=1)
+            elif band == "pointer":
+                for yy in (top, bottom):
+                    f.path(f"M{bar_x},{num(yy)}H{bar_x + bar_w}", tone="rule", width=1, dash="4 3")
+            elif i:
+                above = block[i - 1][3]
+                if not above:
+                    f.path(f"M{bar_x},{num(top)}H{bar_x + bar_w}", tone="hair", width=1)
+            f.lines(bar_x + 10, top + PAD + 13, inside, room=bar_w - 20)
+            if base:
+                name, address = base
+                yb = bottom - 8
+                if name:
+                    kind = "strong" if not name.startswith("`") and address else "text"
+                    f.text(bar_x + 10, yb, name, size=14, kind=kind, room=bar_w - 20 - (104 if address else 0))
+                if address:
+                    f.text(bar_x + bar_w - 10, yb, address, size=13, kind="code", tone=NOTE, anchor="end",
+                           room=104)
+            y = bottom
+        f.rect(bar_x, block_top, bar_w, y - block_top, r=0, tone="rule")
+        y += 16
+    bar_bottom = y - 16
+
+    def note(side, first, last, rows, dashed_to=None):
+        """Words for a range of regions, off the bar's `side`, behind a bracket."""
+        t, b = at[first][0], at[last][1]
+        if side == "left":
+            f.bracket(left + 6, t, b, +1)
+            x, anchor, room = left - 6, "end", left - 6
+        else:
+            f.bracket(right - 6, t, b, -1)
+            x, anchor, room = right + 6, "start", W - right - 6
+        if dashed_to:
+            dt = at[dashed_to][0]
+            bx = left + 6 if side == "left" else right - 6
+            f.path(f"M{num(bx)},{num(t)}V{num(dt + 1)}", tone="rule", width=1, dash="2 3")
+        n = len(rows)
+        first_base = (t + b) / 2 - (n - 1) * 17 / 2 + 5
+        f.lines(x, first_base, rows, size=14, lead=17, anchor=anchor, room=room)
+
+    note("left", "usb", "usb", ["TinyUSB's buffers,", "Verge Aux's included", ("the USB controller writes them too", "text", NOTE)])
+    note("left", "sram0_stack", "sram0_stack", ["The stack, in the top 4 KiB"])
+    note("left", "energy", "sram0", ["Data, the loop and the code a", "command passes through", ("the consoles' rings and the energy", "text", NOTE),
+                                     ("ring, which DMA fills", "text", NOTE)])
+    note("left", "flash0", "flash0", ["Code, from `0x200`"])
+    note("right", "abort", "sram1_code", ["From `0x2001_4000`, the", "command path, the SWD", "generator and the JTAG",
+                                          "generator's scans, then data,", "running on into SRAM2",
+                                          ("how far depends on the compiler;", "text", NOTE),
+                                          ("rarely used data may reach SRAM3", "text", NOTE)], dashed_to="sram3")
+    note("right", "sram1_stack", "sram1_stack", ["16 KiB of stack"])
+    note("right", "sramx", "sramx", ["The generated wire code,", ("written at run time", "text", NOTE)])
+    note("right", "flash1", "flash1", ["Code, from `0x4_0000`"])
+    # What the shading and the dashes mean.
+    ky = bar_bottom + 30
+    f.rect(bar_x, ky - 11, 22, 14, r=0, fill="surface", tone="rule", width=1)
+    f.text(bar_x + 30, ky, "placed at one address by both link scripts", size=13, tone=NOTE, room=W - bar_x - 30)
+    for yy in (ky + 11, ky + 25):
+        f.path(f"M{bar_x},{num(yy)}h22", tone="rule", width=1, dash="4 3")
+    f.text(bar_x + 30, ky + 23, "reached through a pointer in `dap_shared`", size=13, tone=NOTE, room=W - bar_x - 30)
+    return f, ky + 32
 
 
 # ---------------------------------------------------------------- energy capture
 
 def energy():
+    """Energy capture as a signal chain: what moves the pairs labels the arrows, and the state's
+    owner is a strip along time."""
     f = Fig("architecture-energy")
-    adc, ring, cpu0, slots = (72, 104), (204, 96), (326, 190), (542, 84)
-    boxes = [
-        (adc, [("ADC0", "strong", None), "the target's", "voltage and", "current: a pair"]),
-        (ring, [("Ring", "strong", None), "in SRAM0, in", "segments of", "about 1 ms", "or longer"]),
-        (cpu0, [("CPU 0", "strong", None), "adds each segment to the", "energy total; writes the",
-                "stream's messages", ("its loop switches the range", "text", NOTE), ("back to low", "text", NOTE)]),
-        (slots, [("16 slots", "strong", None), "in SRAM4"]),
-    ]
-    h = max(len(lines) for _, lines in boxes) * 16 + 2 * 7 - 3 + 2
-    y = 52 + h / 2
-    for (x, w), lines in boxes:
-        f.node(x, y, w, lines, h=h)
-    f.text(0, y - 4, "Target", size=14, kind="strong", room=56)
-    f.text(0, y + 13, "supply", size=14, kind="strong", room=56)
-    f.arrow([(56, y), (adc[0] - 2, y)])
-    f.arrow([(adc[0] + adc[1] + 2, y), (ring[0] - 2, y)])
-    f.text((adc[0] + adc[1] + ring[0]) / 2, y - 7, "DMA", size=11, kind="code", tone="2", anchor="middle",
-           room=ring[0] - adc[0] - adc[1] - 4)
-    f.arrow([(ring[0] + ring[1] + 2, y), (cpu0[0] - 2, y)])
-    f.arrow([(cpu0[0] + cpu0[1] + 2, y), (slots[0] - 2, y)])
-    out = slots[0] + slots[1]
-    f.arrow([(out + 2, y), (W - 2, y)])
-    f.text(W - 1, y - 9, "Verge Aux", size=13, anchor="end", room=W - out - 6)
-    f.text(W - 1, y + 20, "`EP5 IN`", size=13, anchor="end", room=W - out - 6)
-    # The timer that paces the ADC.
-    ax = adc[0] + adc[1] / 2
-    f.node(adc[0], 16, adc[1], ["CTimer 2"], h=26)
-    f.arrow([(ax, 29), (ax, y - h / 2 - 2)])
-    f.text(ax + 8, (29 + y - h / 2) / 2 + 4, "triggers each pair", size=12, tone="2", room=cpu0[0] - ax - 8)
-    # Control below the ADC, the stream's clock below the slots.
-    cy = y + h / 2 + 52
-    ct, cb = f.node(adc[0], cy, ring[0] + ring[1] - adc[0],
-                    [("CPU 1", "strong", None), "starts, stops and reads a capture", "(`0x90`); calibrates"], h=56)
-    f.arrow([(ax, ct - 2), (ax, y + h / 2 + 2)])
-    sx = cpu0[0] + 60
-    f.node(sx, cy, W - 1 - sx, [("CTimer 4: the stream's clock", "strong", None),
-                                "pairs, DIO edges and markers are stamped on it"], h=56)
-    f.arrow([(slots[0] + slots[1] / 2, ct - 2), (slots[0] + slots[1] / 2, y + h / 2 + 2)])
-    # Which core holds the capture state.
-    sy = cb + 40
-    f.text(0, sy + 5, "The capture state", size=14, kind="strong", room=140)
-    spans = [("CPU 1", "while no capture runs"), ("CPU 0", "while one runs"), ("CPU 1", "once it stops")]
-    x0, gap = 150, 40
-    seg = (W - 1 - x0 - 2 * gap) / 3
-    for i, (who, when) in enumerate(spans):
-        x = x0 + i * (seg + gap)
-        f.rect(x, sy - 20, seg, 46, fill="surface", tone="hair", width=1)
-        f.text(x + 10, sy - 1, who, size=14, kind="strong", room=seg - 20)
-        f.text(x + 10, sy + 17, when, size=13, tone=NOTE, room=seg - 20)
-        if i < 2:
-            f.arrow([(x + seg + 4, sy + 3), (x + seg + gap - 4, sy + 3)])
-            f.text(x + seg + gap / 2, sy - 4, ("start", "stop")[i], size=12, tone=NOTE, anchor="middle",
-                   room=gap)
-    return f, sy + 28
+    y = 132                               # the chain's line
+    adc_x, ring_c, slots_x, out_x = 124, 270, 548, W - 1
+    # Control down the left: CPU 1 starts the timer that paces the ADC.
+    f.text(adc_x, 20, "CPU 1", size=14, kind="strong", anchor="middle")
+    f.text(adc_x + 30, 20, "starts, stops and reads a capture (`0x90`), and calibrates", size=13, tone=NOTE,
+           room=W - adc_x - 30)
+    f.arrow([(adc_x, 28), (adc_x, 50)])
+    f.text(adc_x, 68, "CTimer 2", size=14, kind="strong", anchor="middle")
+    f.arrow([(adc_x, 76), (adc_x, y - 22)])
+    f.text(adc_x + 8, 100, "triggers each pair", size=13, tone=NOTE, room=ring_c - adc_x - 40)
+    # The chain.
+    f.text(0, y - 3, "Target", size=14, kind="strong", room=60)
+    f.text(0, y + 14, "supply", size=14, kind="strong", room=60)
+    f.arrow([(60, y), (adc_x - 26, y)])
+    f.text(adc_x, y + 5, "ADC0", size=14, kind="strong", anchor="middle")
+    f.lines(adc_x, y + 28, [("voltage and", "text", NOTE), ("current, a pair", "text", NOTE)],
+            anchor="middle", room=104)
+    f.arrow([(adc_x + 26, y), (ring_c - 24, y)])
+    f.text((adc_x + ring_c) / 2, y - 7, "DMA", size=14, anchor="middle", room=ring_c - adc_x - 60)
+    # The ring: a circle with an arrowhead running round it.
+    r = 16
+    f.parts.append(f'<path d="M{num(ring_c + r)},{num(y)}A{r},{r} 0 1 1 {num(ring_c)},{num(y - r)}" fill="none" '
+                   f'stroke="currentColor" stroke-width="1.5"/>')
+    f.head(ring_c + 4.5, y - r, 0)
+    f.text(ring_c, y + 34, "Ring, in SRAM0", size=14, kind="strong", anchor="middle", room=120)
+    f.lines(ring_c, y + 52, [("segments of about", "text", NOTE), ("1 ms or longer", "text", NOTE)],
+            anchor="middle", room=120)
+    # CPU 0 moves each segment on, the heavier arrow.
+    f.arrow([(ring_c + r + 6, y), (slots_x - 8, y)], width=2.5)
+    f.text((ring_c + slots_x) / 2, y - 9, "CPU 0", size=14, kind="strong", anchor="middle")
+    f.lines((ring_c + slots_x) / 2 + 14, y + 22, [("adds each segment to", "text", NOTE),
+                                                  ("the energy total; while", "text", NOTE),
+                                                  ("a stream runs, writes the", "text", NOTE),
+                                                  ("pairs into stream messages", "text", NOTE)],
+            anchor="middle", room=180)
+    # The slots: sixteen cells, two rows of eight.
+    cell, gap_ = 9, 2
+    for i in range(16):
+        cx = slots_x + (i % 8) * (cell + gap_)
+        cy = y - cell - 1 + (i // 8) * (cell + gap_)
+        f.rect(cx, cy, cell, cell, r=0, tone="rule", width=1)
+    slots_w = 8 * cell + 7 * gap_
+    f.text(slots_x + slots_w / 2, y + 34, "16 slots", size=14, kind="strong", anchor="middle")
+    f.text(slots_x + slots_w / 2, y + 52, "in SRAM4", size=13, tone=NOTE, anchor="middle")
+    f.arrow([(slots_x + slots_w + 8, y), (out_x, y)])
+    f.text(out_x, y - 9, "Verge Aux", size=14, anchor="end", room=out_x - slots_x - slots_w - 12)
+    f.text(out_x, y + 18, "EP5 IN", size=14, anchor="end", room=out_x - slots_x - slots_w - 12)
+    # The range: CPU 0's loop switches it back to low, a loop back to the input.
+    fy = y + 124
+    fx0 = (ring_c + slots_x) / 2 + 10
+    fx1 = 68
+    f.arrow([(fx0, y + 98), (fx0, fy), (fx1, fy), (fx1, y + 5)], tone="rule", dash="4 3")
+    f.text((fx0 + fx1) / 2, fy - 7, "its loop switches the current range back to low", size=13, tone=NOTE,
+           anchor="middle", room=fx0 - fx1 - 10)
+    # Who owns the capture state, along time; what is stamped on CTimer 4 while a capture runs.
+    ty = fy + 66
+    ax0, ax1 = 0, W - 1
+    start_x, stop_x = 190, 560
+    f.arrow([(ax0, ty), (ax1, ty)])
+    f.text(ax1, ty + 20, "time", size=13, tone=NOTE, anchor="end")
+    for x, word in ((start_x, "start"), (stop_x, "stop")):
+        f.path(f"M{x},{ty - 9}V{ty + 9}", width=1.5)
+        f.text(x, ty + 24, word, size=13, tone=NOTE, anchor="middle")
+    f.text(start_x / 2, ty - 26, "CPU 1 owns the state", size=14, anchor="middle", room=start_x - 12)
+    f.text((start_x + stop_x) / 2, ty - 26, "CPU 0 owns it", size=14, anchor="middle")
+    f.text((stop_x + ax1) / 2, ty - 26, "CPU 1 owns it", size=14, anchor="middle")
+    # Pairs as ticks, a DIO edge as a step, a marker as a flag, all on the stream's clock.
+    for x in range(start_x + 14, stop_x - 6, 12):
+        if x in (start_x + 110, start_x + 230):
+            continue
+        f.path(f"M{x},{ty - 6}V{ty}", tone="rule", width=1)
+    ex = start_x + 110
+    f.path(f"M{ex - 6},{ty - 2}H{ex}V{ty - 12}H{ex + 6}", width=1.5)
+    f.text(ex, ty + 24, "DIO edge", size=12, tone=NOTE, anchor="middle")
+    mx = start_x + 230
+    f.path(f"M{mx},{ty}V{ty - 16}", width=1.5)
+    f.parts.append(f'<path d="M{mx},{ty - 16}l9,3.5l-9,3.5Z" fill="currentColor"/>')
+    f.text(mx, ty + 24, "marker", size=12, tone=NOTE, anchor="middle")
+    f.text(start_x + 50, ty + 24, "pairs", size=12, tone=NOTE, anchor="middle")
+    f.text((start_x + stop_x) / 2, ty + 46, "stamped on CTimer 4, the stream's clock", size=13, tone=NOTE,
+           anchor="middle")
+    return f, ty + 54
 
 
 FIGURES = [blocks, command, memory, energy]

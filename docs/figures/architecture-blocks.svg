@@ -31,55 +31,55 @@
 <text x="82" y="163" font-size="14" fill="currentColor">LEDs, reboots</text>
 <path d="M82,172H236" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
 <text x="82" y="191" font-size="14" fill="currentColor">The serial consoles</text>
-<text x="391" y="54" font-size="17" fill="currentColor" font-weight="500" class="vf-head">CPU 1</text>
-<text x="391" y="74" font-size="14" fill="currentColor" class="vf-2">Drives the target</text>
-<path d="M391,88H545" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
-<text x="391" y="107" font-size="14" fill="currentColor">CMSIS-DAP commands</text>
-<path d="M391,116H545" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
-<text x="391" y="135" font-size="14" fill="currentColor">Generated wire code</text>
-<path d="M391,144H545" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
-<text x="391" y="163" font-size="14" fill="currentColor">SWO capture</text>
-<path d="M391,172H545" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
-<text x="391" y="191" font-size="14" fill="currentColor">DIO, SPI and I2C</text>
-<path d="M391,200H545" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
-<text x="391" y="219" font-size="14" fill="currentColor">Supply, energy capture</text>
-<path d="M262.5,53.25L364.5,53.25" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 3" class="vf-rule"/>
-<path d="M369.5,53.25L362.5,56.4L362.5,50.1Z" fill="currentColor" class="vf-rulef"/>
-<path d="M257.5,53.25L264.5,50.1L264.5,56.4Z" fill="currentColor" class="vf-rulef"/>
-<text x="313.5" y="45.25" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">mailbox</text>
-<text x="313.5" y="74" font-size="14" fill="currentColor" text-anchor="middle" class="vf-2">Shared memory</text>
-<path d="M253.5,88H373.5" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
-<text x="313.5" y="107" font-size="14" fill="currentColor" text-anchor="middle">Commands</text>
-<path d="M253.5,116H373.5" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
-<text x="313.5" y="135" font-size="14" fill="currentColor" text-anchor="middle">Replies</text>
-<path d="M253.5,144H373.5" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
-<text x="313.5" y="163" font-size="14" fill="currentColor" text-anchor="middle">Staged copies</text>
-<path d="M253.5,172H373.5" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
-<text x="313.5" y="191" font-size="14" fill="currentColor" text-anchor="middle">Stream messages</text>
-<path d="M68,8H559A4,4 0 0 1 563,12V266A4,4 0 0 1 559,270H68A4,4 0 0 1 64,266V12A4,4 0 0 1 68,8Z" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-rule"/>
+<text x="377" y="54" font-size="17" fill="currentColor" font-weight="500" class="vf-head">CPU 1</text>
+<text x="377" y="74" font-size="14" fill="currentColor" class="vf-2">Drives the target</text>
+<path d="M377,88H531" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<text x="377" y="107" font-size="14" fill="currentColor">CMSIS-DAP commands</text>
+<path d="M377,116H531" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<text x="377" y="135" font-size="14" fill="currentColor">Generated wire code</text>
+<path d="M377,144H531" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<text x="377" y="163" font-size="14" fill="currentColor">SWO capture</text>
+<path d="M377,172H531" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<text x="377" y="191" font-size="14" fill="currentColor">DIO, SPI and I2C</text>
+<path d="M377,200H531" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<text x="377" y="219" font-size="14" fill="currentColor">Supply, energy capture</text>
+<path d="M255.5,53.25L357.5,53.25" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 3" class="vf-rule"/>
+<path d="M362.5,53.25L355.5,56.4L355.5,50.1Z" fill="currentColor" class="vf-rulef"/>
+<path d="M250.5,53.25L257.5,50.1L257.5,56.4Z" fill="currentColor" class="vf-rulef"/>
+<text x="306.5" y="45.25" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">mailbox</text>
+<text x="306.5" y="74" font-size="14" fill="currentColor" text-anchor="middle" class="vf-2">Shared memory</text>
+<path d="M246.5,88H366.5" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<text x="306.5" y="107" font-size="14" fill="currentColor" text-anchor="middle">Commands</text>
+<path d="M246.5,116H366.5" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<text x="306.5" y="135" font-size="14" fill="currentColor" text-anchor="middle">Replies</text>
+<path d="M246.5,144H366.5" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<text x="306.5" y="163" font-size="14" fill="currentColor" text-anchor="middle">Staged copies</text>
+<path d="M246.5,172H366.5" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
+<text x="306.5" y="191" font-size="14" fill="currentColor" text-anchor="middle">Stream messages</text>
+<path d="M68,8H545A4,4 0 0 1 549,12V266A4,4 0 0 1 545,270H68A4,4 0 0 1 64,266V12A4,4 0 0 1 68,8Z" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-rule"/>
 <text x="82" y="26" font-size="12" fill="currentColor" class="vf-code vf-2">LPC55S69</text>
 <text x="0" y="100" font-size="15" fill="currentColor" font-weight="600">Host</text>
 <text x="0" y="118" font-size="14" fill="currentColor" class="vf-2">USB</text>
 <path d="M45,102L73,102" fill="none" stroke="currentColor" stroke-width="1.5"/>
 <path d="M78,102L71,105.15L71,98.85Z" fill="currentColor"/>
 <path d="M40,102L47,98.85L47,105.15Z" fill="currentColor"/>
-<path d="M587,8H715A4,4 0 0 1 719,12V266A4,4 0 0 1 715,270H587A4,4 0 0 1 583,266V12A4,4 0 0 1 587,8Z" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-rule"/>
-<text x="595" y="54" font-size="17" fill="currentColor" font-weight="500" class="vf-head">Target</text>
-<text x="595" y="74" font-size="14" fill="currentColor" class="vf-2">Under debug</text>
-<text x="595" y="135" font-size="13" fill="currentColor">SWD, JTAG, cJTAG</text>
-<path d="M549,130L576,130" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
-<path d="M581,130L574,133.15L574,126.85Z" fill="currentColor" class="vf-wiref"/>
-<text x="595" y="163" font-size="13" fill="currentColor">SWO</text>
-<path d="M549,158L576,158" fill="none" stroke="currentColor" stroke-width="1.5"/>
-<path d="M581,158L574,161.15L574,154.85Z" fill="currentColor"/>
-<text x="595" y="191" font-size="13" fill="currentColor">DIO, SPI, I2C</text>
-<path d="M549,186L576,186" fill="none" stroke="currentColor" stroke-width="1.5"/>
-<path d="M581,186L574,189.15L574,182.85Z" fill="currentColor"/>
-<text x="595" y="219" font-size="13" fill="currentColor">Supply</text>
-<path d="M549,214L576,214" fill="none" stroke="currentColor" stroke-width="1.5"/>
-<path d="M581,214L574,217.15L574,210.85Z" fill="currentColor"/>
-<text x="595" y="253" font-size="13" fill="currentColor">Serial</text>
-<path d="M142,203L142,248L576,248" fill="none" stroke="currentColor" stroke-width="1.5"/>
-<path d="M581,248L574,251.15L574,244.85Z" fill="currentColor"/>
+<path d="M573,8H715A4,4 0 0 1 719,12V266A4,4 0 0 1 715,270H573A4,4 0 0 1 569,266V12A4,4 0 0 1 573,8Z" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-rule"/>
+<text x="581" y="54" font-size="17" fill="currentColor" font-weight="500" class="vf-head">Target</text>
+<text x="581" y="74" font-size="14" fill="currentColor" class="vf-2">Under debug</text>
+<path d="M517,134H522.83V126H531.17V134H535.33V126H547.83V134H552V126H557V134H567" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
+<path d="M567,158L540,158" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M535,158L542,154.85L542,161.15Z" fill="currentColor"/>
+<path d="M540,186L562,186" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M567,186L560,189.15L560,182.85Z" fill="currentColor"/>
+<path d="M535,186L542,182.85L542,189.15Z" fill="currentColor"/>
+<path d="M535,214L562,214" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M567,214L560,217.15L560,210.85Z" fill="currentColor"/>
+<text x="581" y="135" font-size="14" fill="currentColor">SWD, JTAG, cJTAG</text>
+<text x="581" y="163" font-size="14" fill="currentColor">SWO</text>
+<text x="581" y="191" font-size="14" fill="currentColor">DIO, SPI, I2C</text>
+<text x="581" y="219" font-size="14" fill="currentColor">Supply</text>
+<text x="581" y="253" font-size="14" fill="currentColor">Serial</text>
+<path d="M142,203L142,248L562,248" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<path d="M567,248L560,251.15L560,244.85Z" fill="currentColor"/>
 <path d="M142,198L145.15,205L138.85,205Z" fill="currentColor"/>
 </svg>

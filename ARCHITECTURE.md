@@ -7,7 +7,7 @@ each USB interface takes to the code that serves it.
 BUSES.md says which bus port each access uses, and why the other core cannot move a wire edge.
 STACK.md covers the stacks. HOST-INTERFACE.md is the protocol a host sees, and BOARDS.md the pins.
 
-![The host's USB reaches CPU 0, which answers the host. CPU 1 drives the target. The two cores share memory and raise each other's mailbox. CPU 1's work leads to the target's wires, SWO, DIO, SPI and I2C pins and supply. CPU 0's consoles lead to the target's serial lines.](docs/figures/architecture-blocks.svg)
+![The host's USB reaches CPU 0, which answers the host. CPU 1 drives the target. Between them are the mailbox each raises in the other and the memory both use: commands, replies, staged copies and stream messages. CPU 1 drives the target's SWD, JTAG and cJTAG wires, its DIO, SPI and I2C pins and its supply, and takes SWO in from it. CPU 0's consoles reach the target's serial lines.](docs/figures/architecture-blocks.svg)
 
 ## The two cores
 
@@ -73,7 +73,7 @@ capture, and the SPI and I2C bridges.
 
 ## Memory
 
-![Where each core's code and data live, and what writes them. Flash holds CPU 0's code from 0x200 and CPU 1's from 0x4_0000. SRAMX holds the generated wire code, which CPU 1 writes at run time. SRAM0 holds CPU 0's data, its stack in the top 4 KiB, its loop and the code a command passes through, the consoles' rings and the energy ring, which DMA fills, and energy capture's state, held by one core at a time. SRAM1 holds CPU 1's 16 KiB of stack, then its data, its command path, the SWD generator and the JTAG scans, and the abort flag CPU 0 sets. SRAM2 holds the rest of CPU 1's data. SRAM3's top 8 KiB, from 0x2003_E000, hold dap_stage: staged commands and replies, the HID replies and Verge Aux's slot, written by both cores. SRAM4 holds the stream messages, 16 slots of 512 bytes, written by the core that holds the capture state. USB SRAM holds TinyUSB's buffers, Verge Aux's included, in its first 4 KiB, written by CPU 0 and the USB controller, and dap_shared from 0x4010_1000: the request and reply slots, queues, DMA's channel table and the SWO ring, written by both cores, the USB controller and DMA.](docs/figures/architecture-memory.svg)
+![A memory map, high addresses at the top. USB SRAM, from 0x4010_0000, holds TinyUSB's buffers, Verge Aux's included, which CPU 0 and the USB controller write, and from 0x4010_1000 dap_shared: the request and reply slots, queues, DMA's channel table and the SWO ring, written by both cores, the USB controller and DMA. SRAM4, from 0x2004_0000, holds the stream messages, 16 slots of 512 bytes, written by the core that owns the capture state. SRAM3's top 8 KiB, from 0x2003_E000, hold dap_stage: staged commands and replies, the HID replies and Verge Aux's slot, written by both cores. SRAM1 starts with CPU 1's 16 KiB of stack. From 0x2001_4000 come CPU 1's command path, the SWD generator and the JTAG generator's scans, then its data, running on into SRAM2. How far depends on the compiler, and rarely used data may reach SRAM3. CPU 1's data holds the abort flag CPU 0 sets. SRAM0 holds CPU 0's stack in its top 4 KiB, then its data, its loop and the code a command passes through, the consoles' rings and the energy ring, which DMA fills, and energy capture's state. SRAMX holds the generated wire code, written at run time. Flash holds CPU 0's code from 0x200 and CPU 1's from 0x4_0000. Both link scripts place dap_shared, dap_stage and the stream messages at one address. CPU 0 reaches the abort flag, and CPU 1 the energy state, through a pointer in dap_shared.](docs/figures/architecture-memory.svg)
 
 Nothing passes between the images by symbol. Each defines `dap_shared` in a section that both
 link scripts place at the same address, and `tools/image.py` checks that both images agree on
@@ -135,7 +135,7 @@ CPU 0 answers every control request.
 
 A CMSIS-DAP v2 command goes like this:
 
-![The steps below as a sequence between the host, CPU 0, the shared memory, CPU 1 and the target.](docs/figures/architecture-command.svg)
+![The steps below as a sequence between the host, CPU 0, the shared memory, CPU 1 and the target. An abort branches off at step 2: it only sets CPU 1's flag.](docs/figures/architecture-command.svg)
 
 1. CPU 0 arms EP1 OUT into a free request slot in `dap_shared`. There are three. With none free, it
    leaves the endpoint unarmed, and the controller answers the host's next packet with NAK. A
@@ -224,7 +224,7 @@ GPIO for JTAG.
 
 Energy capture runs on the Pro, with HW_VER_5 fitted, and uses both cores.
 
-![CTimer 2 paces the ADC, which reads the target's voltage and current as pairs. DMA moves them into a ring in SRAM0. CPU 0 integrates them and writes the stream's messages into SRAM4, from which they leave on Verge Aux. CPU 1 starts, stops and reads a capture. Pairs, DIO edges and markers are stamped on CTimer 4, the stream's clock. CPU 1 holds the capture state while no capture runs, and CPU 0 while one does.](docs/figures/architecture-energy.svg)
+![CPU 1 starts, stops and reads a capture (0x90), and calibrates. CTimer 2 triggers each pair: ADC0 reads the target's voltage and current together. DMA moves the pairs into a ring in SRAM0, in segments of about 1 ms or longer. CPU 0 adds each segment to the energy total and, while a stream runs, writes the pairs into stream messages, 16 slots in SRAM4, which leave on Verge Aux's EP5 IN. CPU 0's loop switches the current range back to low. CPU 1 owns the capture state until a start, CPU 0 while the capture runs, and CPU 1 again after the stop. Pairs, DIO edges and markers are stamped on CTimer 4, the stream's clock.](docs/figures/architecture-energy.svg)
 
 - **CPU 1 controls it.** `0x90` starts, stops and reads a capture, from either interface. CPU 1
   calibrates at boot, and again at a start when the last calibration failed or the current range
