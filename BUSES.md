@@ -22,8 +22,8 @@ Source: UM11126 rev 2.8 tables 4, 5 and 6.
 | 0 | 0x0000_0000 flash, 0x0300_0000 boot ROM | Both cores' C code (CPU 0 from 0x200, CPU 1 from 0x4_0000) |
 | 1 | 0x0400_0000 SRAMX, 32 KB | Generated code (SWD, JTAG), code lab arena at 0x0400_4000 |
 | 2 | 0x2000_0000 SRAM0, 64 KB | CPU 0's data, stack (top 4 KB, see [STACK.md](STACK.md)) and `.ramfunc` (`vcom_task` and the energy integration among them); the consoles' receive rings, send buffers and ring descriptors, and the energy ring, its reload descriptors and its integration state (`energy_integration`), which DMA0 reaches |
-| 3 | 0x2001_0000 SRAM1, 64 KB | CPU 1's full 16 KiB stack in the bottom quarter, followed by its `.ramfunc` (command processing around the generated code, and the sample probe's reads), the SWD generator and the JTAG generator's scans, `.data` and, in a product image, all of its `.bss` and the start of `.cold_bss` |
-| 4 | 0x2002_0000 SRAM2, 64 KB | The rest of CPU 1's `.cold_bss` in a product image. In the ARM reference build, ARM's bit paths in `.ramfunc` and its `.bss`, which on GCC run on into SRAM3. tools/image.py refuses a product image whose RAM code or data, `.cold_bss` aside, reaches SRAM3 |
+| 3 | 0x2001_0000 SRAM1, 64 KB | CPU 1's full 16 KiB stack in the bottom quarter. From 0x2001_4000, in this order: its `.ramfunc` (command processing around the generated code, and the sample probe's reads), the SWD generator and the JTAG generator's scans, `.data`, `.bss` and `.cold_bss`. They run on into SRAM2 |
+| 4 | 0x2002_0000 SRAM2, 64 KB | Where CPU 1's RAM code and data run on from SRAM1. How far into the list above the boundary falls depends on the compiler: GCC's product image crosses it at the end of `.data`, clang's inside the JTAG generator. In both, `.bss`, with `request_copy`, `response_copy` and the abort byte CPU 0 sets, is here. tools/image.py refuses a product image whose RAM code or data, `.cold_bss` aside, reaches SRAM3. In the ARM reference build, ARM's bit paths in `.ramfunc` and its `.bss`, which on GCC run on into SRAM3 |
 | 5 | 0x2003_0000 SRAM3, 64 KB | `dap_stage` in the top 8 KB from 0x2003_E000: packet-sized commands and replies CPU 0 stages for CPU 1, every HID reply, and Verge Aux's request slot. Below it, nothing of a product image's CPU 1. `.cold_bss` (the JTAG generator's two saved builds, 32 KB, touched only on a wire or configuration switch) comes after every other `.bss` and may reach here. GCC's ARM reference build outgrows SRAM2 with `.ramfunc`, so some of ARM's bit paths run from here: a test build |
 | 6 | 0x2004_0000 SRAM4, 16 KB | Stream message storage in the lower 8 KB from 0x2004_0000; upper 8 KB unused |
 | 7 | 0x4000_0000 APB bridge 0 **and** 0x4002_0000 APB bridge 1 | Every APB peripheral, both bridges on one port (below) |
@@ -42,12 +42,12 @@ contends with any other.
 | Master | Port | What | When |
 | --- | --- | --- | --- |
 | CPU 1 | 1 | Generated code fetch | Every generated transfer |
-| CPU 1 | 3 | Shared generator event workspace, 1280 events with JTAG or 256 for SWD only | Builds run serially between timed windows; each schedule is consumed before reuse |
-| CPU 1 | 3 | The SWD generator and the JTAG generator's scans (`src/gen.c`, `src/swd_gen.c`, `src/jtag_gen.c`) | Each build, between timed windows |
+| CPU 1 | 3, 4 | Shared generator event workspace, 1280 events with JTAG or 256 for SWD only | Builds run serially between timed windows; each schedule is consumed before reuse |
+| CPU 1 | 3, 4 | The SWD generator and the JTAG generator's scans (`src/gen.c`, `src/swd_gen.c`, `src/jtag_gen.c`) | Each build, between timed windows |
 | CPU 1 | 10 | Secure GPIO (`DBGIF_GPIO`): every SWDIO, SWCLK, TMS, TDI, TDO access | Inside every timed window |
 | CPU 1 | 3, 4, 5 | The `.ramfunc` bit paths of the ARM reference build: ARM's SWD, the JTAG and cJTAG blocks | Inside their timed windows |
 | CPU 1 | 5 | A staged command's request in `dap_stage`, and a staged bulk command's reply: the generated transfers load write data and store read data there | Inside timed windows |
-| CPU 1 | 3 | Its own `request_copy` and `response_copy`: an unstaged command's request and reply, and every HID command's reply. The generated transfers load write data and store read data there | Inside timed windows |
+| CPU 1 | 4 | Its own `request_copy` and `response_copy`: an unstaged command's request and reply, and every HID command's reply. The generated transfers load write data and store read data there | Inside timed windows |
 | CPU 1 | 5 | Each HID reply's report, from `response_copy` into `dap_stage` | Between timed windows |
 | CPU 1 | 5 | Verge Aux's slot in `dap_stage`: its state before each command, and an aux request and its reply | Between commands |
 | CPU 1 | 7 | CTimer 4's counter, the energy stream's clock: read at each start, resume, hold and release, and to stamp each marker | Energy commands and `0x94`, and around a read-latency measurement, outside its window |

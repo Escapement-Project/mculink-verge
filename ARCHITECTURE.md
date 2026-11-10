@@ -77,9 +77,9 @@ capture, and the SPI and I2C bridges.
 
 Nothing passes between the images by symbol. Each defines `dap_shared` in a section that both
 link scripts place at the same address, and `tools/image.py` checks that both images agree on
-every member's offset. `dap_stage` and the stream slots are placed the same way. CPU 1 reaches the
-energy state in SRAM0 through a pointer CPU 0 puts in `dap_shared`, the one shared object no link
-script places.
+every member's offset. `dap_stage` and the stream slots are placed the same way. Two shared objects
+are placed by no link script. CPU 1 reaches the energy state in SRAM0 through a pointer CPU 0 puts
+in `dap_shared`. CPU 0 reaches CPU 1's abort flag through a pointer CPU 1 puts there.
 
 `dap_shared` is in USB SRAM because the USB controller reaches no other memory, and the command and
 reply slots are what it reads and writes. USB SRAM is Device memory to both cores, where an
