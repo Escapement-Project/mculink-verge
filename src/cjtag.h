@@ -1,7 +1,10 @@
 /** IEEE 1149.7 (cJTAG) support, OScan1, OScan2, OScan5 and OScan6 formats.
  *
- * Enabled by a vendor command, because a probe cannot tell from the wire whether a target
- * speaks JTAG or cJTAG. The host drives the target's activation, then turns framing on.
+ * The interface is ARM's proposed DAP_JTAG_Format and DAP_JTAG_Escape (CMSIS-DAP#8, revision 0.1)
+ * with Verge's extensions, at vendor IDs until ARM assigns them. The host selects a format, connects
+ * with DAP_Connect(2), and drives the target's activation itself: escapes, and raw TMSC bits through
+ * DAP_SWJ_Sequence, which with a format selected changes TMSC only while TCKC is low. A probe cannot
+ * tell from the wire whether a target speaks JTAG or cJTAG, so nothing here guesses.
  */
 #ifndef CJTAG_H
 #define CJTAG_H
@@ -18,14 +21,40 @@
 #define CJTAG_FORMATS \
     ((1UL << CJTAG_OSCAN1) | (1UL << CJTAG_OSCAN2) | (1UL << CJTAG_OSCAN5) | (1UL << CJTAG_OSCAN6))
 
-/** The formats offered a host, in vendor 0x82 and to ID_VENDOR_CJTAG_CONTROL mode 3: CJTAG_FORMATS
- * until cJTAG_Offer limits them, which lasts until the probe restarts. */
-uint32_t cJTAG_Offered(void);
-/** Offers the formats in `mask` that this probe frames, and OScan1 whatever the mask says, so that
- * a person can keep a host to OScan1 while looking at the wire. A format already framed stays. */
-void cJTAG_Offer(uint32_t mask);
+/** DAP_JTAG_Format's values: 0 conventional JTAG, n for OScan n, which is SCNFMT 8 + n; bit n of
+ * this is format n taken. A host finds them by trying each while disconnected. */
+#define CJTAG_SELECT_JTAG 0U
+#define CJTAG_SELECTABLE ((1UL << 1) | (1UL << 2) | (1UL << 5) | (1UL << 6))
 
-/** TAP controller states, in the numbering ID_VENDOR_CJTAG_CONTROL mode 3 takes them. */
+/** DAP_JTAG_Format: select the encoder for DAP_Connect(2), conventional JTAG or an OScan format.
+ * Connected over JTAG, it takes effect at once: into an OScan format TCKC goes low and TDI is let go,
+ * and framing starts from Run-Test/Idle; back to conventional TDI is driven again, after OScan2's or
+ * OScan6's trailing frame. A change from one OScan format to another sends nothing, since the host's
+ * STFMT and check packet have already moved the target. Not connected, it waits for the next
+ * DAP_Connect(2). False, and nothing changed, for a value not offered. */
+bool cJTAG_Select(uint32_t value);
+/** DAP_Disconnect: framing stops, as cJTAG_Deactivate stops it, and the selection goes back to
+ * conventional JTAG, where it starts at power-up, so a host that connects next is never framed
+ * unless it asked. */
+void cJTAG_Disconnect(void);
+/** The selection: 0, or n for OScan n. */
+uint32_t cJTAG_Selected(void);
+/** DAP_Connect(2) with an OScan format selected: cJTAG's pins (PORT_CJTAG_SETUP), then framing from
+ * Run-Test/Idle. The caller has stopped any framing before. */
+void cJTAG_Connect(void);
+
+/** DAP_JTAG_Escape: one TCKC period with `edges` TMSC transitions while TCKC is high. TMSC goes to
+ * `level` a quarter period after the last fall and a quarter period before the rise; an odd count
+ * leaves it at the other level. The rise, each edge and the fall come one TCKC period, capped at
+ * 50 us, after the one before (1149.7 10.4.2), then a quarter period's wait, since the target counts
+ * the period as a bit. Entered and left with TCKC low; framing is untouched. */
+void cJTAG_Escape(uint32_t edges, uint32_t level);
+/** DAP_SWJ_Sequence with an OScan format selected: `count` raw TCKC periods, TMSC from `bits` least
+ * significant bit first, each change a quarter period after the fall before, then a quarter period
+ * after the last fall. Moves no tracked state: the target takes these as raw packets. */
+void cJTAG_Clock(uint32_t count, const uint8_t* bits);
+
+/** TAP controller states, in 1149.1's order. */
 enum cjtag_tap {
     CJTAG_TAP_RESET,
     CJTAG_TAP_IDLE,
@@ -46,7 +75,8 @@ enum cjtag_tap {
     CJTAG_TAP_STATES
 };
 
-/** Whether the TAP is being driven over cJTAG rather than JTAG. */
+/** Whether the TAP is being driven over cJTAG rather than JTAG: an OScan format selected and the
+ * probe connected over JTAG. */
 bool cJTAG_Active(void);
 
 /** The scan format cJTAG frames take, CJTAG_OSCAN1, _OSCAN2, _OSCAN5 or _OSCAN6. */
@@ -56,8 +86,8 @@ uint32_t cJTAG_Format(void);
  * follows the TAP from the TMS it sends. Every frame in those formats has to go through
  * cJTAG_TapClock, or the next frame takes the wrong shape and the target loses the frame
  * boundaries. A clock the probe does not
- * frame -- DAP_SWJ_Sequence, DAP_SWD_Sequence, DAP_SWJ_Pins, DAP_Connect -- moves the target's
- * TAP and not this one, so a host that sends one owes ID_VENDOR_CJTAG_CONTROL mode 3 again. */
+ * frame -- DAP_SWD_Sequence, DAP_SWJ_Pins, raw DAP_SWJ_Sequence -- moves the target's TAP and not
+ * this one, so a host that sends one restates Run-Test/Idle with DAP_JTAG_Format again. */
 uint32_t cJTAG_Tap(void);
 /** Moves the tracked TAP by one clock with TMS `tms`, returning whether that clock was in a Shift
  * state, which decides that frame's shape in OScan2, OScan5 and OScan6. */
@@ -77,13 +107,12 @@ bool cJTAG_TapShift(void);
  */
 bool cJTAG_Enter(uint32_t format, uint32_t tap);
 
-/** Return to JTAG.
+/** Stop framing: DAP_JTAG_Format 0, and any DAP_Connect or DAP_Disconnect. Nothing when not framing.
  *
- * The target stays in its cJTAG format; this only stops the probe framing for it. Getting the
- * target back is a power-on reset, so this exists for the host to undo its own mode switch, not to
- * undo the target's. In OScan2 and OScan6 one more frame goes out first, where it cannot move the TAP: the
- * last frame outside Shift advances the target's TAP only at the next TCKC period (1149.7
- * 25.6.2), so without it a host's walk into Test-Logic-Reset stops one state short.
+ * The target stays in its cJTAG format; this only stops the probe framing for it. In OScan2 and
+ * OScan6 one more frame goes out first, where it cannot move the TAP: the last frame outside Shift
+ * advances the target's TAP only at the next TCKC period (1149.7 25.6.2), so without it a host's walk
+ * into Test-Logic-Reset stops one state short.
  */
 void cJTAG_Deactivate(void);
 

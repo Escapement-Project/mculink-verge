@@ -178,12 +178,6 @@ static inline bool dap_packet_plan(const uint8_t* p, uint32_t length, uint32_t c
     case 0x82:
         out = 18U + sizeof(FIRMWARE_VERSION) - 1U;
         break;
-    case 0x83:
-        if (length < 2U) {
-            return false;
-        }
-        in = p[1] == 3U ? 4U : p[1] == 4U ? 6U : 2U;
-        break;
 #ifdef MARKER_PINS
     case 0x84:
         in = 3U;
@@ -295,6 +289,12 @@ static inline bool dap_packet_plan(const uint8_t* p, uint32_t length, uint32_t c
         }
         in = PRO_I2C_REQUEST_FIXED + dap_packet_u16(p + 6U);
         out = PRO_BUS_RESPONSE_FIXED + dap_packet_u16(p + 8U);
+        break;
+    case 0x95:
+        in = 2U;
+        break;
+    case 0x96:
+        in = 3U;
         break;
     case 0x94:
         if (length < 6U) {

@@ -322,7 +322,8 @@ DAP_COMMANDS = {
     0x1E: b"\x00\x01",  # SWO_ExtendedStatus
     0x7F: b"\x01\x00\xf0",  # ExecuteCommands, one Info
     0x82: b"",  # our CJTAG_INFO
-    0x83: b"\x00",  # our CJTAG_CONTROL, off
+    0x95: b"\x00",  # our DAP_JTAG_Format, conventional JTAG
+    0x96: b"\x02\x01",  # our DAP_JTAG_Escape, refused with no JTAG connection
     0x84: b"\x00\x00",  # our J8, taking no pins, which hands all four back to the marker
     # Our TARGET, reading the supply. The emulator's ADC never finishes calibrating, so this takes
     # the timeout path and answers DAP_ERROR: what is checked is that it answers at all, which is
@@ -1004,6 +1005,63 @@ def check_stacks(c: Checker, elf0: str, elf1: str) -> None:
                " CPU1's fault handler restarts its stack")
 
 
+def check_cjtag_commands(c: "Checks", probe: "Machine") -> None:
+    """DAP_JTAG_Format (vendor 0x95) and DAP_JTAG_Escape (0x96) without a target: Format's values, its
+    selection waiting for DAP_Connect(2) and dropped by DAP_Disconnect, framing on at once on a JTAG
+    connection and off with 0, Escape only on a JTAG connection, of 2 edges or more from level 0 or 1,
+    raw DAP_SWJ_Sequence while framing. Framing on or off is what vendor 0x82's flag bit 1 reports."""
+    def framing() -> bool:
+        reply = probe.command(bytes([0x82]))
+        return bool(reply[7] & 0x02)
+
+    ok = {0x95: bytes([0x95, 0]), 0x96: bytes([0x96, 0])}
+    err = {0x95: bytes([0x95, 0xFF]), 0x96: bytes([0x96, 0xFF])}
+    # Escapes pace from the clock delay DAP_Setup or DAP_SWJ_Clock sets, and link-time optimisation
+    # folds DAP_Setup into main.
+    probe.command(bytes([0x11]) + (1_000_000).to_bytes(4, "little"))
+    checks: list[tuple[str, bool]] = []
+
+    def answer(name: str, request: bytes, want: bytes) -> None:
+        got = probe.command(request)
+        checks.append((f"{name} answered {got.hex()}, wanted {want.hex()}", got == want))
+
+    answer("Escape with nothing connected", bytes([0x96, 10, 1]), err[0x96])
+    for value in (3, 4, 7, 8, 9, 0xFF):
+        answer(f"Format {value}", bytes([0x95, value]), err[0x95])
+    answer("Format 1, waiting", bytes([0x95, 1]), ok[0x95])
+    checks.append(("framing on before any connection", not framing()))
+    answer("DAP_Connect(2) with OScan1 selected", bytes([0x02, 2]), bytes([0x02, 2]))
+    checks.append(("no framing after DAP_Connect(2) with OScan1 selected", framing()))
+    answer("raw DAP_SWJ_Sequence while framing", bytes([0x12, 8, 0xA5]), bytes([0x12, 0]))
+    answer("Escape of 0 edges", bytes([0x96, 0, 1]), err[0x96])
+    answer("Escape of 1 edge", bytes([0x96, 1, 1]), err[0x96])
+    answer("Escape from level 2", bytes([0x96, 10, 2]), err[0x96])
+    answer("Escape of 10 edges while framing", bytes([0x96, 10, 1]), ok[0x96])
+    checks.append(("framing stopped by an escape", framing()))
+    answer("Format 0 while connected", bytes([0x95, 0]), ok[0x95])
+    checks.append(("framing still on after Format 0", not framing()))
+    answer("Escape of 7 edges in conventional JTAG", bytes([0x96, 7, 0]), ok[0x96])
+    answer("Format 2 while connected", bytes([0x95, 2]), ok[0x95])
+    checks.append(("no framing after Format 2 while connected", framing()))
+    answer("Format 6, from OScan2", bytes([0x95, 6]), ok[0x95])
+    answer("DAP_Disconnect", bytes([0x03]), bytes([0x03, 0]))
+    checks.append(("framing on after DAP_Disconnect", not framing()))
+    answer("DAP_Connect(2) after DAP_Disconnect", bytes([0x02, 2]), bytes([0x02, 2]))
+    checks.append(("framing after DAP_Disconnect dropped the selection", not framing()))
+    answer("Format 6, then DAP_Connect(1)", bytes([0x95, 6]), ok[0x95])
+    answer("DAP_Connect(1) with OScan6 selected", bytes([0x02, 1]), bytes([0x02, 1]))
+    checks.append(("framing on over SWD", not framing()))
+    answer("Escape over SWD", bytes([0x96, 10, 1]), err[0x96])
+    answer("DAP_Connect(2) with OScan6 still selected", bytes([0x02, 2]), bytes([0x02, 2]))
+    checks.append(("the selection lost across a connection over SWD", framing()))
+    answer("Format 0", bytes([0x95, 0]), ok[0x95])
+    probe.command(bytes([0x03]))
+    for text, passed in checks:
+        c.check(passed, f"cJTAG commands: {text}")
+    c.note("cJTAG commands: DAP_JTAG_Format's values, its selection across connections, DAP_JTAG_Escape's "
+           "refusals, raw DAP_SWJ_Sequence while framing")
+
+
 def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
     """A host has to be able to recognise this firmware and tell two builds of it apart.
 
@@ -1023,36 +1081,22 @@ def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
     build = reply[9 : 9 + length].decode("ascii", "replace")
     if magic != b"CJTAG":
         c.problems.append(f"vendor 0x82 magic is {magic!r}, wanted b'CJTAG'")
-    if version != 6:
-        c.problems.append(f"vendor 0x82 format version is {version}, wanted 6")
-    # The plain board, then the scan formats it frames: OScan1, 2, 5 and 6 (SCNFMT 9, 10, 13, 14).
-    formats = ((1 << 9) | (1 << 10) | (1 << 13) | (1 << 14)).to_bytes(4, "little")
-    if reply[9 + length : 18 + length] != bytes([0]) + formats + bytes(4):
-        c.problems.append(
-            f"vendor 0x82 ends {reply[9 + length :].hex()!r}, wanted the plain board's 00 {formats.hex()} 00000000"
-        )
-    if not flags & 0x01:
-        c.problems.append(f"vendor 0x82 flags {flags:#04x} do not claim OScan1, which is the point")
+    if version != 7:
+        c.problems.append(f"vendor 0x82 format version is {version}, wanted 7")
+    # The plain board, format 4 to 6's formats cleared, then the extended capabilities. A host finds
+    # the cJTAG formats by trying them with DAP_JTAG_Format.
+    tail = reply[9 + length :]
+    want = bytes([0]) + bytes(4) + bytes(4)
+    if tail != want:
+        c.problems.append(f"vendor 0x82 ends {tail.hex()!r}, wanted the plain board's {want.hex()}")
+    # Bits 0 and 4 are what hosts that know only vendor 0x83 frame by.
+    if flags & 0x11:
+        c.problems.append(f"vendor 0x82 flags {flags:#04x} claim the old cJTAG control")
     if flags & 0x02:
-        c.problems.append("vendor 0x82 says OScan1 is active before anything turned it on")
+        c.problems.append("vendor 0x82 says framing is on before anything turned it on")
     if not build:
         c.problems.append("vendor 0x82 carries no build string, so two builds look identical")
-
-    # 0x83 mode 4 limits the scan formats offered: OScan1 alone, then every one again. A limited
-    # format is refused by mode 3, and 0x82 reports the limit.
-    def offered() -> bytes:
-        reply = probe.command(bytes([0x82]))
-        return reply[10 + reply[8] : 14 + reply[8]]
-    limit = probe.command(bytes([0x83, 4]) + (1 << 9).to_bytes(4, "little"))
-    refused = probe.command(bytes([0x83, 3, 10, 1]))
-    limited = offered()
-    probe.command(bytes([0x83, 4]) + bytes([0xFF] * 4))
-    restored = offered()
-    probe.command(bytes([0x83, 0]))
-    if limit[:2] != bytes([0x83, 0]) or refused[:2] != bytes([0x83, 0xFF]):
-        c.problems.append(f"vendor 0x83 mode 4 answered {limit.hex()}, then mode 3 OScan2 {refused.hex()}")
-    if limited != (1 << 9).to_bytes(4, "little") or restored != formats:
-        c.problems.append(f"vendor 0x82 offered {limited.hex()} limited and {restored.hex()} restored")
+    check_cjtag_commands(c, probe)
 
     # DAP_Info 0x09, the product firmware version. ARM leaves it a stub returning nothing.
     info = probe.command(bytes([0x00, 0x09]))
@@ -1470,8 +1514,8 @@ def check_board(c: Checker, elf: str, request_slots: int) -> None:
         flags, length = reply[7], reply[8]
         reported = reply[9 + length] if len(reply) > 9 + length else None
         j8 = probe.command(bytes([0x84, 0x0F, 0x0F]))
-        enter = probe.command(bytes([0x83, 2]))
-        probe.command(bytes([0x83, 0]))
+        enter = probe.command(bytes([0x95, 1]))
+        probe.command(bytes([0x95, 0]))
         driven = int.from_bytes(probe.uc.mem_read(j8_dir, 4), "little") | int.from_bytes(
             probe.uc.mem_read(j8_set, 4), "little"
         )
@@ -1479,12 +1523,12 @@ def check_board(c: Checker, elf: str, request_slots: int) -> None:
         two_pin = board != 2
         if reported != board:
             c.problems.append(f"{name} board: vendor 0x82 reports board {reported}, wanted {board}")
-        if bool(flags & 0x11) != two_pin:
-            c.problems.append(f"{name} board: vendor 0x82 flags {flags:#04x} get cJTAG wrong")
+        if flags & 0x11:
+            c.problems.append(f"{name} board: vendor 0x82 flags {flags:#04x} claim the old cJTAG control")
         if (j8[1] == 0) != plain:
             c.problems.append(f"{name} board: vendor 0x84 answered {j8.hex()}")
         if (enter[1] == 0) != two_pin:
-            c.problems.append(f"{name} board: vendor 0x83 mode 2 answered {enter.hex()}")
+            c.problems.append(f"{name} board: vendor 0x95 OScan1 answered {enter.hex()}")
         if bool(driven & 0x0F) != plain:
             c.problems.append(f"{name} board: J8's pins were {'not ' if plain else ''}driven ({driven:#x})")
     c.note("board: CPU 1 reports each board as CPU 0 read it; J8 on the plain one only, cJTAG on the plain one and the Pro, "
@@ -2322,6 +2366,9 @@ def check_led_inputs(c: Checker, core1: str, request_slots: int) -> None:
     connected = probe.sym["dap_shared"] + fields["led_connected"]
     wire = probe.sym["dap_shared"] + fields["led_wire"]
     probe.call("board_debug_pins_init")
+    # OScan2's trailing frame paces from the clock delay DAP_Setup or DAP_SWJ_Clock sets, and
+    # link-time optimisation folds DAP_Setup into main.
+    probe.command(bytes([0x11]) + (1_000_000).to_bytes(4, "little"))
     probe.command(bytes([ID_DAP_HOST_STATUS, 0, 1]))
     on = probe.uc.mem_read(connected, 1)[0]
     probe.command(bytes([ID_DAP_HOST_STATUS, 0, 0]))
@@ -2329,13 +2376,17 @@ def check_led_inputs(c: Checker, core1: str, request_slots: int) -> None:
     c.check((on, off) == (1, 0), f"DAP_HostStatus connected/disconnected left led_connected {on}/{off}")
 
     steps = (("DAP_Connect SWD", bytes([0x02, 1]), LED_WIRE_SWD), ("DAP_Connect JTAG", bytes([0x02, 2]), LED_WIRE_JTAG),
-             ("vendor 0x83 mode 2", bytes([0x83, 2]), LED_WIRE_CJTAG), ("vendor 0x83 mode 0", bytes([0x83, 0]), LED_WIRE_JTAG),
-             ("DAP_Disconnect", bytes([0x03]), LED_WIRE_NONE))
+             ("vendor 0x95 OScan1", bytes([0x95, 1]), LED_WIRE_CJTAG), ("vendor 0x95 JTAG", bytes([0x95, 0]), LED_WIRE_JTAG),
+             ("vendor 0x95 OScan2, then DAP_Disconnect", bytes([0x95, 2]), LED_WIRE_CJTAG),
+             ("DAP_Disconnect", bytes([0x03]), LED_WIRE_NONE),
+             ("vendor 0x95 OScan2 while disconnected", bytes([0x95, 2]), LED_WIRE_NONE),
+             ("DAP_Connect JTAG with OScan2 selected", bytes([0x02, 2]), LED_WIRE_CJTAG),
+             ("vendor 0x95 JTAG again", bytes([0x95, 0]), LED_WIRE_JTAG))
     for name, request, want in steps:
         probe.command(request)
         got = probe.uc.mem_read(wire, 1)[0]
         c.check(got == want, f"{name} left led_wire {got}, wanted {want}")
-    c.note("LED inputs: DAP_HostStatus sets led_connected, and DAP_Connect, DAP_Disconnect and vendor 0x83 set "
+    c.note("LED inputs: DAP_HostStatus sets led_connected, and DAP_Connect, DAP_Disconnect and vendor 0x95 set "
            "led_wire, in dap_shared")
 
 

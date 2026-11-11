@@ -123,9 +123,11 @@ frames. So probe-rs can attach without nRESET.
 ## Switching to OScan2, OScan5 and OScan6
 
 ARM's paths frame each format through a TAP-tracked copy of `JTAG_DP.c`, which only the `+armwire`
-reference build has. In every build, `cJTAG_FrameTap` sends one trailing frame when vendor `0x83`
-mode 0 leaves OScan2 or OScan6. CODEGEN.md has the generated paths' frames, and MEASUREMENTS.md the
-rates and wire decodes.
+reference build has. In every build, `cJTAG_FrameTap` sends one trailing frame when framing leaves
+OScan2 or OScan6: vendor `0x95` format 0, `DAP_Connect` or `DAP_Disconnect`. Vendor `0x95` selects
+the format ([Host interface](docs/host-interface.md#cjtag-0x95-and-0x96)); the dated notes below
+used vendor `0x83`, which it replaced. CODEGEN.md has the generated paths' frames, and
+MEASUREMENTS.md the rates and wire decodes.
 
 - The probe frames OScan2 through a fourth copy of ARM's JTAG_DP.c (`cjtag2_*`,
   `src/cjtag_jtag_dp_tracked.c`, paced only, not flattened: +10 KB). `cJTAG_Frame2` follows the TAP

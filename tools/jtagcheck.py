@@ -207,15 +207,124 @@ def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire
     }
 
 
+ID_JTAG_FORMAT, ID_JTAG_ESCAPE = 0x95, 0x96
+RAW_BITS = [1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0, 0, 1, 0]
+# CJTAG_ESCAPE_GAP_MAX (src/cjtag.c): 50 us in delay-loop passes of three cycles.
+ESCAPE_CAP_US = 50
+
+
+def swj_sequence(bits: list[int]) -> bytes:
+    data = bytearray((len(bits) + 7) // 8)
+    for i, b in enumerate(bits):
+        data[i // 8] |= b << (i % 8)
+    return bytes([cy.ID_SWJ_SEQUENCE, len(bits)]) + bytes(data)
+
+
+def run_raw(elf: str, hz: int, cpu_hz: int) -> dict:
+    """Raw output with an OScan format selected, as the cJTAG profile's timing rules ask: raw
+    DAP_SWJ_Sequence sends one TCKC period a bit, its TMSC changes only while TCKC is low and a
+    quarter period after the fall before; DAP_JTAG_Escape makes exactly its edges while TCKC is high,
+    each, and the fall, at least a period (capped at 50 us) after the one before, and no more than
+    the cap where the period is longer; every command leaves TCKC low."""
+    model = cy.Model(engine=True)
+    probe = cy.Machine(elf, cy.Target([]), restart_at=set(), model=model, record_trace=False, record_stats=False)
+    if "DAP_Setup" in probe.sym:
+        probe.call("DAP_Setup")
+    probe.command(bytes([cy.ID_CONNECT, 2]))
+    probe.command(bytes([cy.ID_SWJ_CLOCK]) + cy.u32(hz))
+    probe.command(bytes([ID_JTAG_FORMAT, 1]))
+    period = max(-(-cpu_hz // hz), 3)
+    quarter = -(-period // 4)
+    cap = cpu_hz * ESCAPE_CAP_US // 1_000_000
+    gap = min(period, cap)
+    problems: list[str] = []
+    events: list[tuple[int, int, str]] = []
+    probe.pin_events = events
+    probe.begin()
+    # Each escape from the level the one before did not leave, so every one moves TMSC first.
+    steps = [("sequence", swj_sequence(RAW_BITS), RAW_BITS), ("escape 6", bytes([ID_JTAG_ESCAPE, 6, 1]), (6, 1)),
+             ("escape 7", bytes([ID_JTAG_ESCAPE, 7, 0]), (7, 0)), ("escape 10", bytes([ID_JTAG_ESCAPE, 10, 0]), (10, 0)),
+             ("sequence after escapes", swj_sequence([0, 1, 1, 0]), [0, 1, 1, 0])]
+    spans = []
+    for name, request, what in steps:
+        start = len(events)
+        reply = probe.command(request)
+        if reply[:2] != bytes([request[0], 0]):
+            problems.append(f"{name} answered {reply[:2].hex()}")
+        spans.append((name, what, start, len(events)))
+    probe.end()
+
+    # The level each event leaves, and the last fall before it, over the whole stream: the quarter
+    # period holds across commands too.
+    tck, wire, last_fall = 0, "1", None
+    before: list[tuple[int, str, int | None]] = []
+    for cycle, t, w in events:
+        before.append((tck, wire, last_fall))
+        if w != wire and w != "z" and t == 0 and last_fall is not None and cycle - last_fall < quarter:
+            problems.append(f"TMSC to {w} at {cycle}, {cycle - last_fall} cycles after a fall, under a quarter "
+                            f"period ({quarter})")
+        if tck == 1 and t == 0:
+            last_fall = cycle
+        tck, wire = t, w
+    for name, what, start, end in spans:
+        span = events[start:end]
+        if not span:
+            problems.append(f"{name} moved nothing")
+            continue
+        if span[-1][1] != 0:
+            problems.append(f"{name} left TCKC high")
+        rises = [i for i, (c, t, w) in enumerate(span) if t == 1 and (before[start + i][0] == 0)]
+        if name.startswith("sequence"):
+            if len(rises) != len(what):
+                problems.append(f"{name}: {len(rises)} TCKC periods for {len(what)} bits")
+            sent = [int(span[i][2]) for i in rises]
+            if sent != what[: len(sent)]:
+                problems.append(f"{name}: TMSC at the rises {sent}, sent {what}")
+            gaps = [span[b][0] - span[a][0] for a, b in zip(rises, rises[1:])]
+            if gaps and min(gaps) < period:
+                problems.append(f"{name}: rise to rise {min(gaps)} cycles, period {period}")
+            high = [c for i, (c, t, w) in enumerate(span) if t == 1 and before[start + i][1] != w]
+            if high:
+                problems.append(f"{name}: TMSC moved with TCKC high at {high[0]}")
+            continue
+        edges, level = what
+        if len(rises) != 1:
+            problems.append(f"{name}: {len(rises)} TCKC rises, wanted 1")
+            continue
+        rise = rises[0]
+        fall = next((i for i in range(rise + 1, len(span)) if span[i][1] == 0), None)
+        if fall is None:
+            problems.append(f"{name}: no fall")
+            continue
+        moves = [span[i][0] for i in range(rise + 1, fall) if span[i][2] != "z"]
+        if len(moves) != edges:
+            problems.append(f"{name}: {len(moves)} TMSC edges with TCKC high, wanted {edges}")
+        marks = [span[rise][0], *moves, span[fall][0]]
+        spacing = [b - a for a, b in zip(marks, marks[1:])]
+        if min(spacing) < gap:
+            problems.append(f"{name}: edges {min(spacing)} cycles apart, at least {gap} wanted")
+        if period > cap and max(spacing) > cap + 16:
+            problems.append(f"{name}: edges {max(spacing)} cycles apart, past the {cap}-cycle cap")
+        level_before = before[start + rise][1]
+        level_after = span[fall][2]
+        if level_before != str(level):
+            problems.append(f"{name}: TMSC {level_before} at the rise, asked {level}")
+        if level_after != str(level ^ (edges & 1)):
+            problems.append(f"{name}: TMSC {level_after} after {edges} edges from {level}")
+    return {"period": period, "frame": 0, "margin": None, "problems": problems}
+
+
 def run_point(args: tuple[str, int, int, int, int, str, int]) -> dict:
+    if args[5] == "raw":
+        return run_raw(args[0], args[1], args[3])
     return run(*args)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("elf", nargs="*", default=["build-gen/mculink_cjtag_core1.elf"], help="CPU 1 image(s)")
-    ap.add_argument("--wire", nargs="+", choices=["cjtag", "cjtag2", "cjtag5", "cjtag6", "jtag"],
-                    default=["cjtag"])
+    ap.add_argument("--wire", nargs="+", choices=["cjtag", "cjtag2", "cjtag5", "cjtag6", "jtag", "raw"],
+                    default=["cjtag"], help="raw: DAP_SWJ_Sequence and DAP_JTAG_Escape with OScan1 selected")
     ap.add_argument("--mhz", type=float, nargs="*")
     ap.add_argument("--latency", type=int, default=8, help="cycles from the TDO packet's fall to valid TDO")
     ap.add_argument("--gen-latency", type=int, default=0, help="the latency to generate for, with vendor 0x8A; 0 leaves the image's")
@@ -228,12 +337,14 @@ def main() -> int:
         ap.error("--jobs must be at least 1")
     cpu_hz = args.cpu * 1_000_000
     mhz = args.mhz or [-(-cpu_hz // p) / 1e6 for p in list(range(3, 41)) + [75, 150, 1500]]
+    # An escape's cap only acts where a period passes 50 us.
+    raw_mhz = [m for m in mhz] + ([] if args.mhz else [0.01])
 
     points = [
         (elf, int(m * 1e6 + 0.5), args.latency, cpu_hz, args.gen_latency, wire, args.stall)
         for elf in args.elf
         for wire in args.wire
-        for m in mhz
+        for m in (raw_mhz if wire == "raw" else mhz)
     ]
     if args.jobs == 1 or len(points) == 1:
         results = list(map(run_point, points))

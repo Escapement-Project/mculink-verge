@@ -37,8 +37,6 @@
 
 /// Identifies this firmware and says what it can do. Read-only, so a host may send it blindly.
 #define ID_VENDOR_CJTAG_INFO ID_DAP_Vendor2
-/// Turns OScan1 framing on and off.
-#define ID_VENDOR_CJTAG_CONTROL ID_DAP_Vendor3
 /// Hands J8's four pins to the host, so a pad can be identified and a trigger can be placed.
 #define ID_VENDOR_J8 ID_DAP_Vendor4
 /// Reads the target's supply and J6 pin 9's detect line. See TARGET_* below.
@@ -71,18 +69,22 @@
 /// Marks a moment in Verge Aux's energy stream, stamped as the command runs
 /// (docs/host-interface.md, "Markers: 0x94").
 #define ID_VENDOR_MARK ID_DAP_Vendor20
+/// DAP_JTAG_Format and DAP_JTAG_Escape as proposed for CMSIS-DAP (0x24 and 0x25 there), until ARM
+/// assigns them: `ID Format` and `ID EdgeCount Level`, each answered `ID Status` (src/cjtag.h).
+#define ID_VENDOR_JTAG_FORMAT ID_DAP_Vendor21
+#define ID_VENDOR_JTAG_ESCAPE ID_DAP_Vendor22
 
 /** Answered by ID_VENDOR_CJTAG_INFO, so a host can recognise this firmware rather than assume it.
  *
  * The reply, after the echoed command id:
  *
  *     [0..4]  "CJTAG"                 magic
- *     [5]     format version          this layout is 6
+ *     [5]     format version          this layout is 7
  *     [6]     capability flags        CJTAG_CAP_*
  *     [7]     build string length n
  *     [8..]   build string, n bytes, not terminated
  *     [8+n]   board                   BOARD_KIND_* (board_pins.h); format 3 on
- *     [9+n]   scan formats, u32 LE    bit n: SCNFMT n offered (cJTAG_Offered); format 4 on
+ *     [9+n]   0, u32                  format 4 to 6: the scan formats; see below
  *     [13+n]  extended capabilities   u32 LE; bit 0: energy capture; bit 2: accumulated energy;
  *                                     bits 3–4: SPI and I2C; bit 5: calibrated energy fields;
  *                                     bit 6: DIO on Verge Aux; bit 7: markers; bit 8: capture
@@ -100,27 +102,28 @@
  * after the build string too.
  *
  * Version 1 had no flags and no build string, and existed only in images that were never flashed.
+ *
+ * Format 7 replaced vendor 0x83 with ID_VENDOR_JTAG_FORMAT and ID_VENDOR_JTAG_ESCAPE, and format 7
+ * is how a host knows the two are there; it finds the formats by trying them. Hosts that
+ * know only 0x83 take cJTAG from flag bits 0 and 4 and the formats at [9+n], and none checks the
+ * version, so format 7 clears all three: such a host sees no cJTAG and never sends 0x83.
  */
 #define CJTAG_INFO_MAGIC "CJTAG"
-#define CJTAG_INFO_VERSION 6U
-/// The id, the magic, the version, the flags, the length, the board, scan formats and extended
+#define CJTAG_INFO_VERSION 7U
+/// The id, the magic, the version, the flags, the length, the board, the old formats and extended
 /// capabilities, around the build string. A v1 HID report holds 64 bytes.
 #define CJTAG_INFO_FIXED 18U
 static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID_REPORT_SIZE,
                "the build string pushes vendor 0x82's last fields out of a HID report");
 
-/// cJTAG in OScan1 is implemented. Cleared on an on-board MCU-Link, where nobody has framed
-/// OScan1 through the buffers yet.
-#define CJTAG_CAP_OSCAN1 (1U << 0)
-/// cJTAG framing is on right now, in whichever format: ID_VENDOR_CJTAG_CONTROL's state.
+// Bit 0, OScan1 implemented, and bit 4, vendor 0x83 mode 2 taken, are clear from format 7: see
+// above. Reuse neither.
+/// cJTAG framing is on right now, in whichever format.
 #define CJTAG_CAP_OSCAN1_ACTIVE (1U << 1)
 /// ID_VENDOR_TARGET is implemented.
 #define CJTAG_CAP_TARGET_SENSE (1U << 2)
 /// The SWD paths are generated at run time, and ID_VENDOR_SWD_GEN is implemented.
 #define CJTAG_CAP_SWD_CODEGEN (1U << 3)
-/// ID_VENDOR_CJTAG_CONTROL takes mode 2: framing on, with the activation left to the host.
-/// Cleared with CJTAG_CAP_OSCAN1; it is the one bit probe-rs checks before running cJTAG.
-#define CJTAG_CAP_OSCAN1_ENTER (1U << 4)
 /// cJTAG frames are generated at run time, and ID_VENDOR_JTAG_GEN is implemented.
 #define CJTAG_CAP_JTAG_CODEGEN (1U << 5)
 /// ID_VENDOR_DIO acts: a Pro whose J15 (USB-SIO off) was not fitted when the probe started. The
@@ -323,8 +326,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         memcpy(out, CJTAG_INFO_MAGIC, sizeof(CJTAG_INFO_MAGIC) - 1U);
         out += sizeof(CJTAG_INFO_MAGIC) - 1U;
         *out++ = (uint8_t)CJTAG_INFO_VERSION;
-        const uint32_t two_pin = (board_kind != BOARD_KIND_ON_BOARD) ? (CJTAG_CAP_OSCAN1 | CJTAG_CAP_OSCAN1_ENTER) : 0U;
-        *out++ = (uint8_t)(two_pin | CJTAG_CAP_TARGET_SENSE | CJTAG_CAPS_BUILT |
+        *out++ = (uint8_t)(CJTAG_CAP_TARGET_SENSE | CJTAG_CAPS_BUILT |
                            (cJTAG_Active() ? CJTAG_CAP_OSCAN1_ACTIVE : 0U) | (dio_available() ? CJTAG_CAP_DIO : 0U) |
                            (target_power_available() ? CJTAG_CAP_TARGET_POWER : 0U));
         // The same string DAP_Info's product firmware version reports, so a host that knows
@@ -333,9 +335,9 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         memcpy(out, FIRMWARE_VERSION, sizeof(FIRMWARE_VERSION) - 1U);
         out += sizeof(FIRMWARE_VERSION) - 1U;
         *out++ = board_kind;
-        const uint32_t formats = (board_kind != BOARD_KIND_ON_BOARD) ? cJTAG_Offered() : 0U;
+        // Format 4 to 6's scan formats, which an older host would take as a reason to frame.
         for (uint32_t i = 0U; i < 4U; i++) {
-            *out++ = (uint8_t)(formats >> (8U * i));
+            *out++ = 0U;
         }
         uint32_t const extended = (dap_shared.energy_available
                                        ? CJTAG_EXT_CAP_ENERGY | CJTAG_EXT_CAP_ENERGY_CALIBRATED |
@@ -350,37 +352,27 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         return (1U << 16) | (uint32_t)(out - response);
     }
 
-    case ID_VENDOR_CJTAG_CONTROL: {
-        // 0 returns to JTAG framing, and 2 frames OScan1 after an activation the host drove
-        // itself. 1 is not a mode: the probe drives no activation of its own. 3 takes two more bytes, a scan format (SCNFMT) and the TAP state it starts in
-        // (enum cjtag_tap), and frames that: the host has switched the target's format itself.
-        // Mode 3 is a mode of its own rather than a byte after mode 2 because a vendor command
-        // carries no length: an optional byte would be read from whatever command came next. 4
-        // takes a u32 mask of the formats to offer from now until the probe restarts
-        // (cJTAG_Offer), and frames nothing.
-        const uint32_t mode = request[1];
-        const uint32_t consumed = mode == 3U ? 4U : mode == 4U ? 6U : 2U;
-        response[1] = DAP_OK;
-        if ((mode != 0U) && (board_kind == BOARD_KIND_ON_BOARD)) {
-            response[1] = DAP_ERROR;
-        } else if (mode == 0U) {
-            cJTAG_Deactivate();
-        } else if (mode == 2U) {
-            (void)cJTAG_Enter(CJTAG_OSCAN1, CJTAG_TAP_IDLE);
-        } else if (mode == 4U) {
-            cJTAG_Offer((uint32_t)request[2] | ((uint32_t)request[3] << 8) | ((uint32_t)request[4] << 16) |
-                        ((uint32_t)request[5] << 24));
-        } else if ((mode != 3U) || !cJTAG_Enter(request[2], request[3])) {
-            response[1] = DAP_ERROR;
-        }
+    case ID_VENDOR_JTAG_FORMAT:
+        response[1] = ((board_kind != BOARD_KIND_ON_BOARD) && cJTAG_Select(request[1])) ? DAP_OK : DAP_ERROR;
 #ifdef JTAG_CODEGEN
         // The wire changed: generate for it now rather than in the next command.
-        if (DAP_Data.debug_port == DAP_PORT_JTAG) {
+        if ((response[1] == DAP_OK) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {
             (void)jtag_gen_ready(jtag_gen_wire());
         }
 #endif
-        return (consumed << 16) | 2U; // the id, the mode and its operands in; the id and a status out
-    }
+        return (2U << 16) | 2U;
+
+    case ID_VENDOR_JTAG_ESCAPE:
+        // Two or more edges from level 0 or 1, on a JTAG connection in any format: the host picks the
+        // context.
+        if ((board_kind == BOARD_KIND_ON_BOARD) || (DAP_Data.debug_port != DAP_PORT_JTAG) || (request[1] < 2U) ||
+            (request[2] > 1U)) {
+            response[1] = DAP_ERROR;
+        } else {
+            cJTAG_Escape(request[1], request[2]);
+            response[1] = DAP_OK;
+        }
+        return (3U << 16) | 2U;
 
 #ifdef MARKER_PINS
     case ID_VENDOR_J8: {

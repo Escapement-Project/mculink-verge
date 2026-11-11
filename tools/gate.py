@@ -68,7 +68,7 @@ IMAGES = [(toolchain, codegen) for toolchain in ("gcc", "clang") for codegen in 
 # Built as gcc's default image with one option on, and image-checked only.
 VARIANTS = (("timing", ("-DDAP_TIMING_DIAGNOSTICS=ON", "-DCODE_LAB=OFF")),
             ("lab", ("-DCODE_LAB=ON", "-DDAP_TIMING_DIAGNOSTICS=OFF")))
-TIMED_WIRES = ("cjtag", "cjtag2", "cjtag5", "cjtag6", "jtag")
+TIMED_WIRES = ("cjtag", "cjtag2", "cjtag5", "cjtag6", "jtag", "raw")
 
 
 def name(toolchain: str, codegen: bool) -> str:

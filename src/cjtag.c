@@ -7,19 +7,17 @@
 #include "hot.h"
 
 static bool active;
+static uint8_t selected = CJTAG_SELECT_JTAG; // DAP_JTAG_Format's value
 static uint8_t format = CJTAG_OSCAN1;
 static uint8_t tap = CJTAG_TAP_IDLE;
 static bool last_shift;  // the frame before the last one clocked was in a Shift state
 static bool entered;     // the last frame clocked was a Shift state's first
-static uint32_t offered = CJTAG_FORMATS;
 
 bool cJTAG_Active(void) { return active; }
 
 uint32_t cJTAG_Format(void) { return format; }
 
-uint32_t cJTAG_Offered(void) { return offered; }
-
-void cJTAG_Offer(uint32_t mask) { offered = (mask & CJTAG_FORMATS) | (1UL << CJTAG_OSCAN1); }
+uint32_t cJTAG_Selected(void) { return selected; }
 
 COMMAND_PATH uint32_t cJTAG_Tap(void) { return tap; }
 
@@ -69,7 +67,7 @@ COMMAND_PATH bool cJTAG_TapEntered(void) { return entered; }
     __NOP()
 
 bool cJTAG_Enter(uint32_t scan_format, uint32_t tap_state) {
-    if ((scan_format >= 32U) || ((offered & (1UL << scan_format)) == 0U) || (tap_state >= CJTAG_TAP_STATES)) {
+    if ((scan_format >= 32U) || ((CJTAG_FORMATS & (1UL << scan_format)) == 0U) || (tap_state >= CJTAG_TAP_STATES)) {
         return false;
     }
     PIN_SWCLK_TCK_CLR();
@@ -80,6 +78,39 @@ bool cJTAG_Enter(uint32_t scan_format, uint32_t tap_state) {
     last_shift = cJTAG_TapShift();
     active = true;
     return true;
+}
+
+bool cJTAG_Select(uint32_t value) {
+    if ((value != CJTAG_SELECT_JTAG) && ((value >= 8U) || ((CJTAG_SELECTABLE & (1UL << value)) == 0U))) {
+        return false;
+    }
+    if (DAP_Data.debug_port == DAP_PORT_JTAG) {
+        if (value == CJTAG_SELECT_JTAG) {
+            const bool was = active;
+            cJTAG_Deactivate();
+            if (was) {
+                PORT_CJTAG_TO_JTAG();
+            }
+        } else {
+            if (!active) {
+                PORT_CJTAG_FROM_JTAG();
+            }
+            (void)cJTAG_Enter(8U + value, CJTAG_TAP_IDLE);
+        }
+    }
+    selected = (uint8_t)value;
+    return true;
+}
+
+void cJTAG_Disconnect(void) {
+    cJTAG_Deactivate();
+    selected = CJTAG_SELECT_JTAG;
+}
+
+void cJTAG_Connect(void) {
+    PORT_CJTAG_SETUP();
+    DAP_Data.debug_port = DAP_PORT_JTAG;
+    (void)cJTAG_Enter(8U + selected, CJTAG_TAP_IDLE);
 }
 
 void cJTAG_Deactivate(void) {
@@ -251,4 +282,44 @@ uint32_t cJTAG_FrameTap(uint32_t tms, uint32_t tdi) {
     PIN_SWCLK_TCK_CLR();
     PIN_SWDIO_OUT_ENABLE();
     return tdo;
+}
+
+/** The longest an escape waits between its edges: 1149.7 10.4.2 asks for the target's shortest TCKC
+ * period, and a TAP.7 in power-control mode 0 or 1 powers down once TCKC has been high for 1 ms
+ * (18.10), which an escape of up to 18 edges then stays under at any clock. */
+#define CJTAG_ESCAPE_GAP_MAX (((CPU_CLOCK / 1000000U) * 50U / DELAY_SLOW_CYCLES) + 1U) // the last pass runs short
+
+/* Paced C, as cJTAG_FrameTap is: every constraint below is a least time, which ARM's delay loop only
+ * lengthens, and tools/jtagcheck.py holds both compilers to them at every clock. Each waits a quarter
+ * period before its first store too, since the fall before may be one the target samples. */
+
+void cJTAG_Escape(uint32_t edges, uint32_t tms) {
+    // At least a whole period, but no more than the cap. A half period is up to three passes of
+    // ARM's loop a clock delay and two more cycles (Set_Clock_Delay), and the loop's last pass is a
+    // cycle short: two passes a clock delay came one to five cycles short with clang.
+    const uint32_t period = (2U * DAP_Data.clock_delay) + 2U;
+    const uint32_t gap = period < CJTAG_ESCAPE_GAP_MAX ? period : CJTAG_ESCAPE_GAP_MAX;
+    // Conventional JTAG rests TCK high: an escape starts from TCKC low all the same.
+    PIN_SWCLK_TCK_CLR();
+    uint32_t level = tms & 1U;
+    CJTAG_QUARTER();
+    PIN_SWDIO_OUT(level);
+    PIN_SWDIO_OUT_ENABLE();
+    CJTAG_QUARTER();
+    PIN_SWCLK_TCK_SET();
+    for (uint32_t i = 0U; i < edges; i++) {
+        PIN_DELAY_SLOW(gap);
+        level ^= 1U;
+        PIN_SWDIO_OUT(level);
+    }
+    PIN_DELAY_SLOW(gap);
+    PIN_SWCLK_TCK_CLR();
+    CJTAG_QUARTER();
+}
+
+void cJTAG_Clock(uint32_t count, const uint8_t* bits) {
+    for (uint32_t i = 0U; i < count; i++) {
+        CJTAG_SAMPLED_PACKET((uint32_t)(bits[i / 8U] >> (i % 8U)) & 1U, CJTAG_QUARTER(), CJTAG_DELAY());
+    }
+    CJTAG_QUARTER();
 }

@@ -53,7 +53,8 @@ DAP_SWO_CONTROL = 0x1A
 DAP_SWO_STATUS = 0x1B
 DAP_SWO_DATA = 0x1C
 SWO_ACTIVE, SWO_STREAM_ERROR, SWO_OVERRUN = 0x01, 0x40, 0x80
-DAP_VENDOR_CJTAG_CONTROL = 0x83
+DAP_VENDOR_JTAG_FORMAT = 0x95  # DAP_JTAG_Format as proposed for CMSIS-DAP
+DAP_VENDOR_JTAG_ESCAPE = 0x96  # DAP_JTAG_Escape
 DAP_VENDOR_J8 = 0x84
 USB_REBOOT_REQUEST = 0x03
 USB_CORE1_STATUS_REQUEST = 0x04  # DAP_SHARED_CORE1_STATUS_REQUEST
@@ -1374,7 +1375,7 @@ def cmd_jgen(args) -> int:
 
 JLOG_COMMANDS = {0x02: "Connect", 0x03: "Disconnect", 0x04: "TransferConfigure", 0x05: "Transfer",
                  0x06: "TransferBlock", 0x11: "SWJ_Clock", 0x12: "SWJ_Sequence", 0x14: "JTAG_Sequence",
-                 0x15: "JTAG_Configure", 0x83: "cJTAG control", 0x8A: "JTAG gen", 0x8B: "JTAG pacing"}
+                 0x15: "JTAG_Configure", 0x95: "JTAG format", 0x96: "JTAG escape", 0x8A: "JTAG gen", 0x8B: "JTAG pacing"}
 JLOG_CHANGED = ("first", "owner", "wire", "period", "latency", "chain", "idle", "transfers")
 CORE_HZ = 150e6
 
@@ -1652,7 +1653,7 @@ TI_OSCAN1 = [
 ]
 
 
-# TAP states in the numbering vendor 0x83 mode 3 takes (src/cjtag.h), and IEEE 1149.1's next state
+# TAP states in IEEE 1149.1's order (src/cjtag.h), and IEEE 1149.1's next state
 # for TMS 0 and TMS 1.
 TAP_STATES = ["tlr", "rti", "seldr", "capdr", "shdr", "ex1dr", "paudr", "ex2dr", "upddr",
               "selir", "capir", "shir", "ex1ir", "pauir", "ex2ir", "updir"]
@@ -1672,11 +1673,13 @@ def tap_walk(state: str, tms: str) -> str:
 
 
 def frame_oscan1(probe: Probe, scan_format: int = OSCAN1, tap: str = "rti") -> None:
-    """Vendor 0x83 mode 2 for OScan1, mode 3 for another format with the TAP state it starts in. A
-    probe that refuses it leaves the wire unframed, and every read after the activation comes back
-    as noise rather than an error."""
-    request = [DAP_VENDOR_CJTAG_CONTROL, 2] if scan_format == OSCAN1 else [
-        DAP_VENDOR_CJTAG_CONTROL, 3, scan_format, TAP_STATES.index(tap)]
+    """DAP_JTAG_Format (vendor 0x95) for SCNFMT `scan_format`, value SCNFMT - 8, which on a JTAG
+    connection starts framing at once. OScan2, 5 and 6 start tracking the TAP in Run-Test/Idle, so a
+    host leaves it there first. A probe that refuses it leaves the wire unframed, and every read after
+    the activation comes back as noise rather than an error."""
+    if scan_format != OSCAN1 and tap != "rti":
+        raise RuntimeError(f"format {scan_format} starts framing in Run-Test/Idle, not {tap}")
+    request = [DAP_VENDOR_JTAG_FORMAT, scan_format - 8]
     reply = probe.command(bytes(request))
     if reply[1] != 0:
         raise RuntimeError(f"the probe refused framing format {scan_format} (vendor {bytes(request).hex()} answered {reply.hex()})")
@@ -1920,8 +1923,8 @@ def cmd_cjtag(args) -> int:
         program.escape(args.escape_b).clock("0" * args.idle + CJTAG_SELECT_OSCAN1 + args.raw + "0" * args.pad)
         replay_pins(probe, program.writes)
         print(f"  synthetic activation: {len(program.writes)} pin writes")
-        reply = probe.command(bytes([DAP_VENDOR_CJTAG_CONTROL, 2]))
-        print(f"  vendor 0x83 02 (frame as OScan1, no activation) -> status {reply[1]}")
+        reply = probe.command(bytes([DAP_VENDOR_JTAG_FORMAT, 1]))
+        print(f"  vendor 0x95 01 (frame as OScan1, no activation) -> status {reply[1]}")
     elif args.replay:
         windows = [tuple(float(x) for x in w.split(":")) for w in args.window] or [(args.start, args.until)]
         writes = capture_pin_writes(args.replay, args.tmsc, args.tckc, windows)
@@ -1929,8 +1932,8 @@ def cmd_cjtag(args) -> int:
         writes += [(0, 0), (1, 0), (0, 1)] * args.pad
         replay_pins(probe, writes)
         print(f"  replayed {len(writes)} pin writes from {args.replay}")
-        reply = probe.command(bytes([DAP_VENDOR_CJTAG_CONTROL, 2]))
-        print(f"  vendor 0x83 02 (frame as OScan1, no activation) -> status {reply[1]}")
+        reply = probe.command(bytes([DAP_VENDOR_JTAG_FORMAT, 1]))
+        print(f"  vendor 0x95 01 (frame as OScan1, no activation) -> status {reply[1]}")
     ones = (1 << 64) - 1 if args.tdi else 0
     if args.pre_tms:
         # One sequence per run of equal TMS, carrying that run's TDI bits; with framing on, every
@@ -1980,7 +1983,7 @@ def cmd_cjtag(args) -> int:
         probe.jtag_sequence([(args.tlr_after, 1, False, 0)])
         print(f"  {args.tlr_after} framed TMS-high clocks: Test-Logic-Reset")
     if not args.keep:
-        probe.command(bytes([DAP_VENDOR_CJTAG_CONTROL, 0]))
+        probe.command(bytes([DAP_VENDOR_JTAG_FORMAT, 0]))
     probe.release()
     return 0
 

@@ -830,6 +830,9 @@ class Machine:
         self.timed = timed
         self.record_trace = record_trace
         self.record_stats = record_stats
+        # When a list, every GPIO store that moves TCK or the wire appends (cycle, TCK, wire), wire
+        # as _driven() gives it: raw output's rules are checked over these (tools/jtagcheck.py).
+        self.pin_events: list[tuple[int, int, str]] | None = None
         self.model = model or Model()
         # When set, issue and bus cycles come from tools/m33.py instead of the per-class model.
         if engine is None and self.model.engine:
@@ -1070,6 +1073,8 @@ class Machine:
         after_clock = (self.level >> PIN_TCK) & 1
         after_wire = self._driven()
         after_tdi = (self.level >> PIN_TDI) & 1
+        if self.pin_events is not None and (after_clock != before_clock or after_wire != before_wire):
+            self.pin_events.append((self.cycle, after_clock, after_wire))
 
         # The SWD target tracks the wire whether or not anything is being counted. Keying it on the
         # measurement meant a run that never called begin() got a target that never acknowledged,
@@ -1386,20 +1391,16 @@ def u16(v: int) -> bytes:
     return v.to_bytes(2, "little")
 
 
-# The cJTAG wires: OScan1, which the probe frames from vendor 0x83 mode 2, and OScan2, 5 and 6,
-# which it frames from mode 3. Either way the TAP starts in Run-Test/Idle, as a host leaves it after
-# driving the activation itself.
+# The cJTAG wires, OScan1, 2, 5 and 6, which the probe frames once DAP_JTAG_Format (vendor 0x95)
+# selects one on a JTAG connection. The TAP starts in Run-Test/Idle, as a host leaves it after driving
+# the activation itself.
 TWO_PIN = ("cjtag", "cjtag2", "cjtag5", "cjtag6")
+JTAG_FORMAT = {"cjtag": 1, "cjtag2": 2, "cjtag5": 5, "cjtag6": 6}
 
 
 def cjtag_enter(wire: str) -> bytes:
-    if wire == "cjtag2":
-        return bytes([ID_CJTAG_CONTROL, 3, 10, 1])
-    if wire == "cjtag5":
-        return bytes([ID_CJTAG_CONTROL, 3, 13, 1])
-    if wire == "cjtag6":
-        return bytes([ID_CJTAG_CONTROL, 3, 14, 1])
-    return bytes([ID_CJTAG_CONTROL, 2])
+    """DAP_JTAG_Format for `wire`, which on a JTAG connection starts framing at once."""
+    return bytes([ID_JTAG_FORMAT, JTAG_FORMAT[wire]])
 
 
 def u32(v: int) -> bytes:
@@ -1410,7 +1411,7 @@ def u32(v: int) -> bytes:
 ID_CONNECT, ID_TRANSFER_CONFIG, ID_TRANSFER, ID_TRANSFER_BLOCK = 0x02, 0x04, 0x05, 0x06
 ID_SWJ_CLOCK, ID_SWJ_SEQUENCE, ID_SWD_CONFIGURE = 0x11, 0x12, 0x13
 ID_JTAG_SEQUENCE, ID_JTAG_CONFIGURE, ID_SWD_SEQUENCE = 0x14, 0x15, 0x1D
-ID_CJTAG_CONTROL = 0x83
+ID_JTAG_FORMAT, ID_JTAG_ESCAPE = 0x95, 0x96
 
 AP_DRW_READ, AP_DRW_WRITE = 0x0F, 0x0D
 

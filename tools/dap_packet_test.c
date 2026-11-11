@@ -40,8 +40,8 @@ int main(void) {
     } fixed[] = {
         {0x00, 2, 4},   {0x01, 3, 2}, {0x02, 2, 2}, {0x03, 1, 2}, {0x04, 6, 2},  {0x08, 6, 2}, {0x09, 3, 2},
         {0x0a, 1, 3},   {0x10, 7, 2}, {0x11, 5, 2}, {0x13, 2, 2}, {0x15, 2, 2},  {0x16, 2, 6}, {0x17, 2, 2},
-        {0x18, 2, 2},   {0x19, 5, 5}, {0x1a, 2, 2}, {0x1b, 1, 6}, {0x82, 1, 22}, {0x85, 1, 1}, {0x86, 3, 7},
-        {0x87, 10, 17}, {0x8c, 2, 3}, {0x8e, 4, 9}, {0x8f, 2, 3},
+        {0x18, 2, 2},   {0x19, 5, 5}, {0x1a, 2, 2}, {0x1b, 1, 6}, {0x82, 1, 22}, {0x83, 1, 1}, {0x85, 1, 1}, {0x86, 3, 7},
+        {0x87, 10, 17}, {0x8c, 2, 3}, {0x8e, 4, 9}, {0x8f, 2, 3}, {0x95, 2, 2}, {0x96, 3, 2},
     };
     for (uint32_t i = 0; i < sizeof(fixed) / sizeof(fixed[0]); i++) {
         uint8_t bytes[10] = {fixed[i].id};
@@ -90,7 +90,6 @@ int main(void) {
         prefixes((uint8_t[]){0x14, 1, 0x88, 0x55}, 4U, capacity);
         prefixes((uint8_t[]){0x12, 9, 0x55, 0x55}, 4U, capacity);
         prefixes((uint8_t[]){0x05, 0, 3, 2, 0x12, 0, 0, 0, 0, 0x20, 0, 0, 0, 0}, 14U, capacity);
-        prefixes((uint8_t[]){0x83, 4, 1, 0, 0, 0}, 6U, capacity);
         prefixes((uint8_t[]){0x90, 0, 0xe8, 3, 0, 0}, 6U, capacity);
         prefixes((uint8_t[]){0x91, 0, 0x80, 0x96, 0x98, 0, 1, 0, 0x80}, 9U, capacity);
         prefixes((uint8_t[]){0x92, 0, 0x80, 0x96, 0x98, 0, 1, 0, 1, 0, 0x80}, 11U, capacity);

@@ -421,6 +421,46 @@ __STATIC_INLINE void PORT_SWD_SETUP (void) {
   DBGIF_TDI_GPIO->DIRCLR[DBGIF_TDI_PORT] = (1U << DBGIF_TDI_PIN);
 }
 
+/** Setup cJTAG I/O pins: DAP_Connect port 2 with an OScan format selected by DAP_JTAG_Format. TCKC on
+SWCLK/TCK, TMSC on SWDIO/TMS, and nRESET. TCKC goes low before TMSC is driven high, so the target sees
+no TMSC edge while TCKC is high, which it would count as an escape edge. TDI and TDO are left
+undriven: cJTAG does not use them.
+*/
+__STATIC_INLINE void PORT_CJTAG_SETUP (void) {
+
+  // TCKC, low
+  DBGIF_TCK_SWCLK_GPIO->CLR[DBGIF_TCK_SWCLK_PORT]    = (1U << DBGIF_TCK_SWCLK_PIN);
+  DBGIF_TCK_SWCLK_GPIO->DIRSET[DBGIF_TCK_SWCLK_PORT] = (1U << DBGIF_TCK_SWCLK_PIN);
+
+  // TMSC, high
+  DBGIF_TMS_SWDIO_GPIO->SET[DBGIF_TMS_SWDIO_PORT]           = (1U << DBGIF_TMS_SWDIO_PIN);
+  DBGIF_TMS_SWDIO_GPIO->DIRSET[DBGIF_TMS_SWDIO_PORT]        = (1U << DBGIF_TMS_SWDIO_PIN);
+  DBGIF_TMS_SWDIO_TXEN_GPIO->SET[DBGIF_TMS_SWDIO_TXEN_PORT] = (1U << DBGIF_TMS_SWDIO_TXEN_PIN);
+
+  // nRESET
+  DBGIF_RESET_GPIO->SET[DBGIF_RESET_PORT]           = (1U << DBGIF_RESET_PIN);
+  DBGIF_RESET_GPIO->DIRSET[DBGIF_RESET_PORT]        = (1U << DBGIF_RESET_PIN);
+  DBGIF_RESET_TXEN_GPIO->SET[DBGIF_RESET_TXEN_PORT] = (1U << DBGIF_RESET_TXEN_PIN);
+
+  // TDI and TDO
+  DBGIF_TDI_GPIO->DIRCLR[DBGIF_TDI_PORT] = (1U << DBGIF_TDI_PIN);
+  DBGIF_TDO_SWO_GPIO->DIRCLR[PIN_SWO_TDO_PORT] = (1U << PIN_SWO_TDO_PIN);
+}
+
+/** A JTAG connection changing to an OScan format: TCKC low, TDI let go. TMSC is already driven, and
+nRESET stays as the host left it. */
+__STATIC_INLINE void PORT_CJTAG_FROM_JTAG (void) {
+  DBGIF_TCK_SWCLK_GPIO->CLR[DBGIF_TCK_SWCLK_PORT] = (1U << DBGIF_TCK_SWCLK_PIN);
+  DBGIF_TDI_GPIO->DIRCLR[DBGIF_TDI_PORT] = (1U << DBGIF_TDI_PIN);
+}
+
+/** An OScan connection changing back to conventional JTAG: TDI driven high again, as PORT_JTAG_SETUP
+leaves it. TCK stays low, so no clock goes out; ARM's JTAG clocks start with a fall either way. */
+__STATIC_INLINE void PORT_CJTAG_TO_JTAG (void) {
+  DBGIF_TDI_GPIO->SET[DBGIF_TDI_PORT]    = (1U << DBGIF_TDI_PIN);
+  DBGIF_TDI_GPIO->DIRSET[DBGIF_TDI_PORT] = (1U << DBGIF_TDI_PIN);
+}
+
 /** Disable JTAG/SWD I/O Pins.
 Disables the DAP Hardware I/O pins which configures:
  - TCK/SWCLK, TMS/SWDIO, TDI, TDO, nTRST, nRESET to High-Z mode.

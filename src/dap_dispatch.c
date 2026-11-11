@@ -51,8 +51,9 @@ extern uint32_t arm_DAP_ProcessCommand(const uint8_t* request, uint8_t* response
 /** ARM's processing, for every command not routed here. Out of line and in flash: inlined into
  *  the SRAM dispatch below it would take all of DAP.c into SRAM with it.
  *
- * The wire changes only here, in DAP_Connect, DAP_Disconnect and vendor 0x83 (ID_VENDOR_CJTAG_CONTROL),
- * so this is where the FUNC LED learns it. */
+ * The wire changes only here, in DAP_Connect, DAP_Disconnect and vendor 0x95 (DAP_JTAG_Format), so
+ * this is where the FUNC LED learns it. DAP_Connect(2) with an OScan format selected is Verge's: ARM's
+ * handler would drive TDI and leave TCK high. */
 __attribute__((noinline)) static uint32_t arm_command(const uint8_t* request, uint8_t* response) {
 #ifdef SWD_CODEGEN
     swd_sweep_watch(request);
@@ -60,8 +61,26 @@ __attribute__((noinline)) static uint32_t arm_command(const uint8_t* request, ui
 #ifdef JTAG_CODEGEN
     jtag_sweep_watch(request);
 #endif
-    uint32_t const result = arm_DAP_ProcessCommand(request, response);
-    if ((*request == ID_DAP_Connect) || (*request == ID_DAP_Disconnect) || (*request == ID_DAP_Vendor3)) {
+    const bool connect = *request == ID_DAP_Connect;
+    // The pins are about to be set up again or let go: stop framing first, with OScan2's and
+    // OScan6's trailing frame while the pins are still cJTAG's. A disconnect also drops the
+    // selection, so the next host is framed only if it asks.
+    if (connect) {
+        cJTAG_Deactivate();
+    } else if (*request == ID_DAP_Disconnect) {
+        cJTAG_Disconnect();
+    }
+    const uint32_t port = (connect && (request[1] == DAP_PORT_AUTODETECT)) ? DAP_DEFAULT_PORT : request[1];
+    uint32_t result;
+    if (connect && (port == DAP_PORT_JTAG) && (cJTAG_Selected() != CJTAG_SELECT_JTAG)) {
+        cJTAG_Connect();
+        response[0] = ID_DAP_Connect;
+        response[1] = DAP_PORT_JTAG;
+        result = (2U << 16) | 2U;
+    } else {
+        result = arm_DAP_ProcessCommand(request, response);
+    }
+    if (connect || (*request == ID_DAP_Disconnect) || (*request == ID_DAP_Vendor21)) {
         if (DAP_Data.debug_port == DAP_PORT_SWD) {
             led_wire(LED_WIRE_SWD);
         } else if (DAP_Data.debug_port == DAP_PORT_JTAG) {
@@ -162,6 +181,15 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
         return refuse(request, response);
     }
 #endif
+    if ((*request == ID_DAP_SWJ_Sequence) && cJTAG_Active()) {
+        // Raw output in an OScan format: one TCKC period a bit, as ARM's, but TMSC moves only while
+        // TCKC is low, where ARM's moves it with SWCLK still high: on two pins that is an escape edge.
+        const uint32_t count = request[1] != 0U ? request[1] : 256U;
+        cJTAG_Clock(count, request + 2);
+        response[0] = *request;
+        response[1] = DAP_OK;
+        return ((2U + ((count + 7U) / 8U)) << 16) | 2U;
+    }
     if ((*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_SWD)) {
 #ifdef SWD_CODEGEN
         if (swd_sweep_pending()) {
