@@ -133,12 +133,61 @@ void cJTAG_Deactivate(void) {
  * is made once per transfer rather than once per frame -- putting the branch inside the frame
  * costs a cycle in the paced copy, which is enough to take a 10 MHz request over the line.
  */
+#ifdef CJTAG_ZERO_HOLD
+/** Lab only (CMake CJTAG_ZERO_HOLD, version "+zero-hold-lab"): the fall that ends the nTDI packet
+ * and the TMS packet's level go out in one store through the masked port, so a target sampling on
+ * the falling edge gets no hold at all. It measures whether the quarter period is needed; a real
+ * build never moves TMSC in the store of a TCKC edge. */
+__attribute__((noinline)) static void cjtag_fall_with(uint32_t level) {
+    const uint32_t mask = DBGIF_TCK_SWCLK_GPIO->MASK[DBGIF_TCK_SWCLK_PORT];
+    DBGIF_TCK_SWCLK_GPIO->MASK[DBGIF_TCK_SWCLK_PORT] =
+        ~((1U << DBGIF_TCK_SWCLK_PIN) | (1U << DBGIF_TMS_SWDIO_PIN));
+    DBGIF_TCK_SWCLK_GPIO->MPIN[DBGIF_TCK_SWCLK_PORT] = (level & 1U) << DBGIF_TMS_SWDIO_PIN;
+    DBGIF_TCK_SWCLK_GPIO->MASK[DBGIF_TCK_SWCLK_PORT] = mask;
+}
+static_assert(DBGIF_TMS_SWDIO_PORT == DBGIF_TCK_SWCLK_PORT, "one masked store moves TCKC and TMSC together");
+#define CJTAG_NTDI_THEN_TMS(ntdi, tms, quarter, delay) \
+    PIN_SWDIO_OUT(ntdi);                               \
+    delay;                                             \
+    PIN_SWCLK_TCK_SET();                               \
+    delay;                                             \
+    cjtag_fall_with(tms);                              \
+    delay;                                             \
+    PIN_SWCLK_TCK_SET();                               \
+    delay;                                             \
+    PIN_SWCLK_TCK_CLR()
+#elif defined(CJTAG_ZERO_SETUP)
+/** Lab only (CMake CJTAG_ZERO_SETUP, version "+zero-setup-lab"), the mirror of CJTAG_ZERO_HOLD: the
+ * TMS packet's level and the rise that clocks it go out in one store through the masked port, so a
+ * target sampling on the rising edge gets no setup, and one sampling on the falling edge a whole high
+ * phase. It tells the two sampling edges apart on a target that cannot report SREDGE. */
+__attribute__((noinline)) static void cjtag_rise_with(uint32_t level) {
+    const uint32_t mask = DBGIF_TCK_SWCLK_GPIO->MASK[DBGIF_TCK_SWCLK_PORT];
+    DBGIF_TCK_SWCLK_GPIO->MASK[DBGIF_TCK_SWCLK_PORT] =
+        ~((1U << DBGIF_TCK_SWCLK_PIN) | (1U << DBGIF_TMS_SWDIO_PIN));
+    DBGIF_TCK_SWCLK_GPIO->MPIN[DBGIF_TCK_SWCLK_PORT] =
+        (1U << DBGIF_TCK_SWCLK_PIN) | ((level & 1U) << DBGIF_TMS_SWDIO_PIN);
+    DBGIF_TCK_SWCLK_GPIO->MASK[DBGIF_TCK_SWCLK_PORT] = mask;
+}
+static_assert(DBGIF_TMS_SWDIO_PORT == DBGIF_TCK_SWCLK_PORT, "one masked store moves TCKC and TMSC together");
+#define CJTAG_NTDI_THEN_TMS(ntdi, tms, quarter, delay) \
+    CJTAG_PACKET(ntdi, delay);                         \
+    quarter;                                           \
+    quarter;                                           \
+    cjtag_rise_with(tms);                              \
+    delay;                                             \
+    PIN_SWCLK_TCK_CLR()
+#else
+#define CJTAG_NTDI_THEN_TMS(ntdi, tms, quarter, delay) \
+    CJTAG_PACKET(ntdi, delay);                         \
+    CJTAG_SAMPLED_PACKET(tms, quarter, delay)
+#endif
+
 #define CJTAG_FRAME_FUNCTION(speed, delay, quarter)           \
     uint32_t cJTAG_Frame##speed(uint32_t tms, uint32_t tdi) { \
         uint32_t tdo;                                         \
                                                               \
-        CJTAG_PACKET(tdi ^ 1U, delay);                        \
-        CJTAG_SAMPLED_PACKET(tms, quarter, delay);            \
+        CJTAG_NTDI_THEN_TMS(tdi ^ 1U, tms, quarter, delay);   \
                                                               \
         PIN_SWDIO_OUT_DISABLE();                              \
         delay;                                                \
