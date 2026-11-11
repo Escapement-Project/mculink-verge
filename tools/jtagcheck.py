@@ -209,8 +209,6 @@ def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire
 
 ID_JTAG_FORMAT, ID_JTAG_ESCAPE = 0x95, 0x96
 RAW_BITS = [1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0, 0, 1, 0]
-# CJTAG_ESCAPE_GAP_MAX (src/cjtag.c): 50 us in delay-loop passes of three cycles.
-ESCAPE_CAP_US = 50
 
 
 def swj_sequence(bits: list[int]) -> bytes:
@@ -224,8 +222,8 @@ def run_raw(elf: str, hz: int, cpu_hz: int) -> dict:
     """Raw output with an OScan format selected, as the cJTAG profile's timing rules ask: raw
     DAP_SWJ_Sequence sends one TCKC period a bit, its TMSC changes only while TCKC is low and a
     quarter period after the fall before; DAP_JTAG_Escape makes exactly its edges while TCKC is high,
-    each, and the fall, at least a period (capped at 50 us) after the one before, and no more than
-    the cap where the period is longer; every command leaves TCKC low."""
+    each, and the fall, at least a period after the one before, at any clock; every command leaves
+    TCKC low."""
     model = cy.Model(engine=True)
     probe = cy.Machine(elf, cy.Target([]), restart_at=set(), model=model, record_trace=False, record_stats=False)
     if "DAP_Setup" in probe.sym:
@@ -235,8 +233,7 @@ def run_raw(elf: str, hz: int, cpu_hz: int) -> dict:
     probe.command(bytes([ID_JTAG_FORMAT, 1]))
     period = max(-(-cpu_hz // hz), 3)
     quarter = -(-period // 4)
-    cap = cpu_hz * ESCAPE_CAP_US // 1_000_000
-    gap = min(period, cap)
+    gap = period
     problems: list[str] = []
     events: list[tuple[int, int, str]] = []
     probe.pin_events = events
@@ -303,8 +300,6 @@ def run_raw(elf: str, hz: int, cpu_hz: int) -> dict:
         spacing = [b - a for a, b in zip(marks, marks[1:])]
         if min(spacing) < gap:
             problems.append(f"{name}: edges {min(spacing)} cycles apart, at least {gap} wanted")
-        if period > cap and max(spacing) > cap + 16:
-            problems.append(f"{name}: edges {max(spacing)} cycles apart, past the {cap}-cycle cap")
         level_before = before[start + rise][1]
         level_after = span[fall][2]
         if level_before != str(level):
@@ -337,7 +332,7 @@ def main() -> int:
         ap.error("--jobs must be at least 1")
     cpu_hz = args.cpu * 1_000_000
     mhz = args.mhz or [-(-cpu_hz // p) / 1e6 for p in list(range(3, 41)) + [75, 150, 1500]]
-    # An escape's cap only acts where a period passes 50 us.
+    # The slowest clock a host is likely to ask for, where an escape's gaps are longest.
     raw_mhz = [m for m in mhz] + ([] if args.mhz else [0.01])
 
     points = [

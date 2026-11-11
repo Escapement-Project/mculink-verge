@@ -353,7 +353,11 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
     }
 
     case ID_VENDOR_JTAG_FORMAT:
-        response[1] = ((board_kind != BOARD_KIND_ON_BOARD) && cJTAG_Select(request[1])) ? DAP_OK : DAP_ERROR;
+        // An on-board MCU-Link has no cJTAG, but takes 0 as every probe that reports the commands does.
+        response[1] =
+            (((board_kind != BOARD_KIND_ON_BOARD) || (request[1] == CJTAG_SELECT_JTAG)) && cJTAG_Select(request[1]))
+                ? DAP_OK
+                : DAP_ERROR;
 #ifdef JTAG_CODEGEN
         // The wire changed: generate for it now rather than in the next command.
         if ((response[1] == DAP_OK) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {

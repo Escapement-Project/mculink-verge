@@ -123,8 +123,8 @@ frames. So probe-rs can attach without nRESET.
 ## Switching to OScan2, OScan5 and OScan6
 
 ARM's paths frame each format through a TAP-tracked copy of `JTAG_DP.c`, which only the `+armwire`
-reference build has. In every build, `cJTAG_FrameTap` sends one trailing frame when framing leaves
-OScan2 or OScan6: vendor `0x95` format 0, `DAP_Connect` or `DAP_Disconnect`. Vendor `0x95` selects
+reference build has. Framing sends no clocks of its own: before leaving OScan2 or OScan6 the host
+clocks the trailing frame that finishes the target's last move. Vendor `0x95` selects
 the format ([Host interface](docs/host-interface.md#cjtag-0x95-and-0x96)); the dated notes below
 used vendor `0x83`, which it replaced. CODEGEN.md has the generated paths' frames, and
 MEASUREMENTS.md the rates and wire decodes.
@@ -163,7 +163,7 @@ MEASUREMENTS.md the rates and wire decodes.
   it with the EOT escape for TMS 1, and in the first Shift frame after one outside it a PAD packet
   between nTDI and TDO (rule 25.4.2 g, Figure 25-12), driven at nTDI's level so that it moves
   nothing. The tracker says which frame that is (`cJTAG_TapEntered`). Its frames outside Shift carry
-  no TDO, so detach sends OScan2's trailing frame. `JTAG_GEN_OSCAN6` (4) was refused by the
+  no TDO, so leaving it takes OScan2's trailing frame, which the host sends. `JTAG_GEN_OSCAN6` (4) was refused by the
   generator at first; generated since (CODEGEN.md). dap.py `--format 14`: ECL then 5 raw clocks (a
   one-bit SP and the CP).
 - Emulator: both target models take `cjtag6`; the timed one passes ARM's path at 1 to 25 MHz and

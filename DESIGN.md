@@ -17,7 +17,10 @@ ARM's reference SWD bit path moves SWDIO while SWCLK is high:
 
 `SW_CLOCK_CYCLE` leaves the clock high, and `SW_WRITE_BIT` changes data before pulling it low.
 Harmless for SWD, where the target samples on the rising edge. On a 1149.7 wire **a TMSC transition
-while TCKC is high is an escape edge by definition**, so this emits one on every bit change.
+while TCKC is high is an escape edge** (10.4.2 e), so this emits one on every bit change. One edge in
+a TCKC-high interval is still data, since an escape takes two or more (Table 10-9). But the same order
+leaves a target that samples on the falling edge almost no setup, and SWCLK rests high between
+commands.
 
 Measured, TMSC transitions while TCKC is high, per clock:
 

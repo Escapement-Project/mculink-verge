@@ -26,28 +26,31 @@
 #define CJTAG_SELECT_JTAG 0U
 #define CJTAG_SELECTABLE ((1UL << 1) | (1UL << 2) | (1UL << 5) | (1UL << 6))
 
-/** DAP_JTAG_Format: select the encoder for DAP_Connect(2), conventional JTAG or an OScan format.
+/** DAP_JTAG_Format: select the encoder, conventional JTAG or an OScan format. It sends no clocks.
  * Connected over JTAG, it takes effect at once: into an OScan format TCKC goes low and TDI is let go,
- * and framing starts from Run-Test/Idle; back to conventional TDI is driven again, after OScan2's or
- * OScan6's trailing frame. A change from one OScan format to another sends nothing, since the host's
- * STFMT and check packet have already moved the target. Not connected, it waits for the next
- * DAP_Connect(2). False, and nothing changed, for a value not offered. */
+ * and framing starts from Run-Test/Idle; back to conventional TDI is driven again. In OScan2 and
+ * OScan6 the target's last move waits for one more frame, which is the host's to send first, since
+ * the host knows the TAP state (1149.7 25.6.2). A change from one OScan format to another sends
+ * nothing either: the host's STFMT and check packet have already moved the target. Not connected, or
+ * connected over SWD, it waits for the next DAP_Connect. False, and nothing changed, for a value not
+ * offered. */
 bool cJTAG_Select(uint32_t value);
 /** DAP_Disconnect: framing stops, as cJTAG_Deactivate stops it, and the selection goes back to
- * conventional JTAG, where it starts at power-up, so a host that connects next is never framed
- * unless it asked. */
+ * conventional JTAG, where it starts at power-up. */
 void cJTAG_Disconnect(void);
-/** The selection: 0, or n for OScan n. */
-uint32_t cJTAG_Selected(void);
-/** DAP_Connect(2) with an OScan format selected: cJTAG's pins (PORT_CJTAG_SETUP), then framing from
+/** Every DAP_Connect the probe accepts uses up the selection: this returns it, 0 or n for OScan n,
+ * and leaves conventional JTAG for the next connection. So a host that connects without asking is
+ * never framed, even after a session that ended without DAP_Disconnect. */
+uint32_t cJTAG_Take(void);
+/** DAP_Connect(2) with OScan `value` taken: cJTAG's pins (PORT_CJTAG_SETUP), then framing from
  * Run-Test/Idle. The caller has stopped any framing before. */
-void cJTAG_Connect(void);
+void cJTAG_Connect(uint32_t value);
 
 /** DAP_JTAG_Escape: one TCKC period with `edges` TMSC transitions while TCKC is high. TMSC goes to
  * `level` a quarter period after the last fall and a quarter period before the rise; an odd count
- * leaves it at the other level. The rise, each edge and the fall come one TCKC period, capped at
- * 50 us, after the one before (1149.7 10.4.2), then a quarter period's wait, since the target counts
- * the period as a bit. Entered and left with TCKC low; framing is untouched. */
+ * leaves it at the other level. The rise, each edge and the fall come one TCKC period after the one
+ * before (1149.7 10.4.2 b), at whatever clock the host set, then a quarter period's wait, since the
+ * target counts the period as a bit. Entered and left with TCKC low; framing is untouched. */
 void cJTAG_Escape(uint32_t edges, uint32_t level);
 /** DAP_SWJ_Sequence with an OScan format selected: `count` raw TCKC periods, TMSC from `bits` least
  * significant bit first, each change a quarter period after the fall before, then a quarter period
@@ -107,12 +110,12 @@ bool cJTAG_TapShift(void);
  */
 bool cJTAG_Enter(uint32_t format, uint32_t tap);
 
-/** Stop framing: DAP_JTAG_Format 0, and any DAP_Connect or DAP_Disconnect. Nothing when not framing.
+/** Stop framing: DAP_JTAG_Format 0, and any DAP_Connect the probe accepts or DAP_Disconnect. It sends
+ * no clocks.
  *
  * The target stays in its cJTAG format; this only stops the probe framing for it. In OScan2 and
- * OScan6 one more frame goes out first, where it cannot move the TAP: the last frame outside Shift
- * advances the target's TAP only at the next TCKC period (1149.7 25.6.2), so without it a host's walk
- * into Test-Logic-Reset stops one state short.
+ * OScan6 the last frame outside Shift advances the target's TAP only at the next TCKC period (1149.7
+ * 25.6.2), so a host that wants that move finished clocks one more frame first.
  */
 void cJTAG_Deactivate(void);
 

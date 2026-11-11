@@ -17,7 +17,11 @@ bool cJTAG_Active(void) { return active; }
 
 uint32_t cJTAG_Format(void) { return format; }
 
-uint32_t cJTAG_Selected(void) { return selected; }
+uint32_t cJTAG_Take(void) {
+    const uint32_t value = selected;
+    selected = CJTAG_SELECT_JTAG;
+    return value;
+}
 
 COMMAND_PATH uint32_t cJTAG_Tap(void) { return tap; }
 
@@ -84,21 +88,23 @@ bool cJTAG_Select(uint32_t value) {
     if ((value != CJTAG_SELECT_JTAG) && ((value >= 8U) || ((CJTAG_SELECTABLE & (1UL << value)) == 0U))) {
         return false;
     }
-    if (DAP_Data.debug_port == DAP_PORT_JTAG) {
-        if (value == CJTAG_SELECT_JTAG) {
-            const bool was = active;
-            cJTAG_Deactivate();
-            if (was) {
-                PORT_CJTAG_TO_JTAG();
-            }
-        } else {
-            if (!active) {
-                PORT_CJTAG_FROM_JTAG();
-            }
-            (void)cJTAG_Enter(8U + value, CJTAG_TAP_IDLE);
-        }
+    if (DAP_Data.debug_port != DAP_PORT_JTAG) {
+        selected = (uint8_t)value;
+        return true;
     }
-    selected = (uint8_t)value;
+    // On a JTAG connection it takes effect at once, and leaves nothing for the next DAP_Connect.
+    if (value == CJTAG_SELECT_JTAG) {
+        if (active) {
+            cJTAG_Deactivate();
+            PORT_CJTAG_TO_JTAG();
+        }
+    } else {
+        if (!active) {
+            PORT_CJTAG_FROM_JTAG();
+        }
+        (void)cJTAG_Enter(8U + value, CJTAG_TAP_IDLE);
+    }
+    selected = CJTAG_SELECT_JTAG;
     return true;
 }
 
@@ -107,24 +113,13 @@ void cJTAG_Disconnect(void) {
     selected = CJTAG_SELECT_JTAG;
 }
 
-void cJTAG_Connect(void) {
+void cJTAG_Connect(uint32_t value) {
     PORT_CJTAG_SETUP();
     DAP_Data.debug_port = DAP_PORT_JTAG;
-    (void)cJTAG_Enter(8U + selected, CJTAG_TAP_IDLE);
+    (void)cJTAG_Enter(8U + value, CJTAG_TAP_IDLE);
 }
 
-void cJTAG_Deactivate(void) {
-    // After DAP_Disconnect the pins are the target's again, and a frame would take them back.
-    // OScan5's frames all carry TDO, so its TAP has advanced by the end of each.
-    if (active && ((format == CJTAG_OSCAN2) || (format == CJTAG_OSCAN6)) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {
-        if (tap == CJTAG_TAP_RESET) {
-            (void)cJTAG_FrameTap(1U, 1U);
-        } else if (tap == CJTAG_TAP_IDLE) {
-            (void)cJTAG_FrameTap(0U, 1U);
-        }
-    }
-    active = false;
-}
+void cJTAG_Deactivate(void) { active = false; }
 
 /** Drive one TMSC packet: set the level while the clock is low, then clock it in.
  *
@@ -284,21 +279,16 @@ uint32_t cJTAG_FrameTap(uint32_t tms, uint32_t tdi) {
     return tdo;
 }
 
-/** The longest an escape waits between its edges: 1149.7 10.4.2 asks for the target's shortest TCKC
- * period, and a TAP.7 in power-control mode 0 or 1 powers down once TCKC has been high for 1 ms
- * (18.10), which an escape of up to 18 edges then stays under at any clock. */
-#define CJTAG_ESCAPE_GAP_MAX (((CPU_CLOCK / 1000000U) * 50U / DELAY_SLOW_CYCLES) + 1U) // the last pass runs short
-
 /* Paced C, as cJTAG_FrameTap is: every constraint below is a least time, which ARM's delay loop only
  * lengthens, and tools/jtagcheck.py holds both compilers to them at every clock. Each waits a quarter
  * period before its first store too, since the fall before may be one the target samples. */
 
 void cJTAG_Escape(uint32_t edges, uint32_t tms) {
-    // At least a whole period, but no more than the cap. A half period is up to three passes of
+    // At least a whole period of the clock the host set, however long: the count and the clock are
+    // the host's, and with them how long TCKC stays high. A half period is up to three passes of
     // ARM's loop a clock delay and two more cycles (Set_Clock_Delay), and the loop's last pass is a
     // cycle short: two passes a clock delay came one to five cycles short with clang.
-    const uint32_t period = (2U * DAP_Data.clock_delay) + 2U;
-    const uint32_t gap = period < CJTAG_ESCAPE_GAP_MAX ? period : CJTAG_ESCAPE_GAP_MAX;
+    const uint32_t gap = (2U * DAP_Data.clock_delay) + 2U;
     // Conventional JTAG rests TCK high: an escape starts from TCKC low all the same.
     PIN_SWCLK_TCK_CLR();
     uint32_t level = tms & 1U;

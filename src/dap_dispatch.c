@@ -62,18 +62,21 @@ __attribute__((noinline)) static uint32_t arm_command(const uint8_t* request, ui
     jtag_sweep_watch(request);
 #endif
     const bool connect = *request == ID_DAP_Connect;
-    // The pins are about to be set up again or let go: stop framing first, with OScan2's and
-    // OScan6's trailing frame while the pins are still cJTAG's. A disconnect also drops the
-    // selection, so the next host is framed only if it asks.
-    if (connect) {
+    const uint32_t port = (connect && (request[1] == DAP_PORT_AUTODETECT)) ? DAP_DEFAULT_PORT : request[1];
+    // Arm's DAP_Connect refuses any other port and changes nothing, so cJTAG's state stays too.
+    const bool connecting = connect && ((port == DAP_PORT_SWD) || (port == DAP_PORT_JTAG));
+    // The pins are about to be set up again or let go: stop framing first. A connection uses up the
+    // selection, and a disconnect drops it, so the next host is framed only if it asks.
+    uint32_t selection = CJTAG_SELECT_JTAG;
+    if (connecting) {
         cJTAG_Deactivate();
+        selection = cJTAG_Take();
     } else if (*request == ID_DAP_Disconnect) {
         cJTAG_Disconnect();
     }
-    const uint32_t port = (connect && (request[1] == DAP_PORT_AUTODETECT)) ? DAP_DEFAULT_PORT : request[1];
     uint32_t result;
-    if (connect && (port == DAP_PORT_JTAG) && (cJTAG_Selected() != CJTAG_SELECT_JTAG)) {
-        cJTAG_Connect();
+    if (connecting && (port == DAP_PORT_JTAG) && (selection != CJTAG_SELECT_JTAG)) {
+        cJTAG_Connect(selection);
         response[0] = ID_DAP_Connect;
         response[1] = DAP_PORT_JTAG;
         result = (2U << 16) | 2U;

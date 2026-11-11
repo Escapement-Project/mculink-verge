@@ -20,12 +20,10 @@ Code that predates the rule and breaks it, which is the work list:
   likewise the ARM reference build's alone.
 - The sequence commands `DAP_SWJ_Sequence` and `DAP_SWD_Sequence`, which every build runs on ARM's
   C. `DAP_JTAG_Sequence` runs on the generated scans.
-- `cJTAG_FrameTap` (`src/cjtag.c`), C paced by `DAP_Data.clock_delay`: the trailing OScan2 or
-  OScan6 frame sent on leaving those formats (vendor 0x95 format 0, `DAP_Connect`, `DAP_Disconnect`),
-  in every build.
-- `cJTAG_Escape` and `cJTAG_Clock` (`src/cjtag.c`), the same pacing: vendor 0x96's escapes and raw
-  `DAP_SWJ_Sequence` with an OScan format selected, in every build (user, 2026-11-11). Every
-  constraint on them is a least time; `tools/jtagcheck.py --wire raw` holds both compilers to them.
+- `cJTAG_Escape` and `cJTAG_Clock` (`src/cjtag.c`), C paced by `DAP_Data.clock_delay`: vendor
+  0x96's escapes and raw `DAP_SWJ_Sequence` with an OScan format selected, in every build (user,
+  2026-11-11). Every constraint on them is a least time; `tools/jtagcheck.py --wire raw` holds both
+  compilers to them.
 
 **Gate on both compilers.** `uv run tools/gate.py` before committing firmware or tool changes. It
 runs the host checks, then builds gcc and clang, each in the default configuration and as the ARM
