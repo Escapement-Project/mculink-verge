@@ -478,12 +478,18 @@ class TimedCjtagTarget:
     It also records what hardware punishes and the order-only model cannot see: a probe still
     driving `release_by` cycles into a TDO packet, a TMSC move while TCKC is high or in the same
     store as a TCKC edge, a packet the probe should drive but has let go, and any entry into
-    Test-Logic-Reset, which drops a CC13xx out of OScan1.
+    Test-Logic-Reset, which drops a CC13xx out of OScan1. With `quarter`, also a TMSC move fewer
+    than `quarter` cycles after the fall that ends a packet the probe drove: a target that samples
+    on the falling edge, as a TAP.7 does until STC1 says otherwise (1149.7 23.4.1.4.4), needs the
+    hold (the design's D13). After a TDO packet's fall the target samples nothing, so no wait.
     """
 
     def __init__(self, tap: "RecordingTap", latency: int = 8, hold: int = 7, release_by: int = 3,
-                 oscan2: bool = False, oscan5: bool = False, escape_gap: int = 0, oscan6: bool = False):
+                 oscan2: bool = False, oscan5: bool = False, escape_gap: int = 0, oscan6: bool = False,
+                 quarter: int = 0):
         self.tap = tap
+        self.quarter = quarter
+        self.sampled_fall: int | None = None  # the last fall that ended a packet the probe drove
         self.latency, self.hold, self.release_by = latency, hold, release_by
         self.oscan2 = oscan2 or oscan6  # one TMS packet outside Shift
         self.oscan5, self.escape_gap = oscan5 or oscan6, escape_gap  # two packets in it
@@ -521,6 +527,9 @@ class TimedCjtagTarget:
             self.problems.append(f"TMSC moved to {driven} at {cycle} with TCKC high: an escape edge")
         elif with_edge:
             self.problems.append(f"TMSC moved to {driven} at {cycle} in the store of a TCKC edge")
+        elif driven != "z" and self.sampled_fall is not None and cycle - self.sampled_fall < self.quarter:
+            self.problems.append(f"TMSC moved to {driven} at {cycle}, {cycle - self.sampled_fall} cycles after "
+                                 f"a sampled fall, under a quarter period ({self.quarter})")
         if driven == "z":
             self.driving, self.released_at = False, cycle
         else:
@@ -554,6 +563,9 @@ class TimedCjtagTarget:
             self.problems.append(f"frame {self.frames} entered Test-Logic-Reset, which drops OScan1")
 
     def fall(self, cycle: int) -> None:
+        # Which falls end a packet the probe drove: nTDI, TMS, OScan6's PAD, OScan2's single TMS
+        # packet, all but the TDO packet. Decided before the state below moves on.
+        self.sampled_fall = None if (self.packet == 2 and not self.single) else cycle
         if self.single:
             # OScan2's one-packet frame is over; the next packet starts a frame.
             self.single = False

@@ -57,6 +57,16 @@ COMMAND_PATH bool cJTAG_TapEntered(void) { return entered; }
 
 /** One half-period of whatever clock the host asked for. */
 #define CJTAG_DELAY() PIN_DELAY_SLOW(DAP_Data.clock_delay)
+/** At least a quarter of it, never none: ARM's loop counts 0 as 2^32. The wait between a fall the
+ * target samples a packet on and the next TMSC store, since a TAP.7 samples on the falling edge
+ * until STC1 says otherwise (1149.7 23.4.1.4.4). After a TDO packet's fall nothing waits. Half the
+ * clock delay comes short: Set_Clock_Delay takes the port write out of the half period, and ARM's
+ * loop runs a cycle short on its last pass, so at 10 MHz it gave 2 cycles where a quarter is 4. */
+#define CJTAG_QUARTER() PIN_DELAY_SLOW((DAP_Data.clock_delay + 3U) / 2U)
+/** The same for the delay-free frame, which runs as fast as its stores. */
+#define CJTAG_QUARTER_FAST() \
+    __NOP();                 \
+    __NOP()
 
 bool cJTAG_Enter(uint32_t scan_format, uint32_t tap_state) {
     if ((scan_format >= 32U) || ((offered & (1UL << scan_format)) == 0U) || (tap_state >= CJTAG_TAP_STATES)) {
@@ -96,6 +106,16 @@ void cJTAG_Deactivate(void) {
     delay;                         \
     PIN_SWCLK_TCK_CLR()
 
+/** The same after a packet the target samples: the level moves a quarter period after that fall,
+ * and the low phase is two of them. */
+#define CJTAG_SAMPLED_PACKET(level, quarter, delay) \
+    quarter;                                        \
+    PIN_SWDIO_OUT(level);                           \
+    quarter;                                        \
+    PIN_SWCLK_TCK_SET();                            \
+    delay;                                          \
+    PIN_SWCLK_TCK_CLR()
+
 /** One OScan1 frame: the three TMSC packets that carry one JTAG clock.
  *
  * Packet 1 carries the inverse of TDI, which is what the format specifies. Packet 2 carries TMS.
@@ -113,12 +133,12 @@ void cJTAG_Deactivate(void) {
  * is made once per transfer rather than once per frame -- putting the branch inside the frame
  * costs a cycle in the paced copy, which is enough to take a 10 MHz request over the line.
  */
-#define CJTAG_FRAME_FUNCTION(speed, delay)                    \
+#define CJTAG_FRAME_FUNCTION(speed, delay, quarter)           \
     uint32_t cJTAG_Frame##speed(uint32_t tms, uint32_t tdi) { \
         uint32_t tdo;                                         \
                                                               \
         CJTAG_PACKET(tdi ^ 1U, delay);                        \
-        CJTAG_PACKET(tms, delay);                             \
+        CJTAG_SAMPLED_PACKET(tms, quarter, delay);            \
                                                               \
         PIN_SWDIO_OUT_DISABLE();                              \
         delay;                                                \
@@ -131,15 +151,18 @@ void cJTAG_Deactivate(void) {
         return tdo;                                           \
     }
 
-CJTAG_FRAME_FUNCTION(Slow, CJTAG_DELAY())
-CJTAG_FRAME_FUNCTION(Fast, PIN_DELAY_FAST())
+CJTAG_FRAME_FUNCTION(Slow, CJTAG_DELAY(), CJTAG_QUARTER())
+CJTAG_FRAME_FUNCTION(Fast, PIN_DELAY_FAST(), CJTAG_QUARTER_FAST())
 
 uint32_t cJTAG_FrameTap(uint32_t tms, uint32_t tdi) {
     const bool shift = cJTAG_TapClock(tms);
     if (((format == CJTAG_OSCAN2) || (format == CJTAG_OSCAN6)) && !shift) {
-        CJTAG_PACKET(tms, CJTAG_DELAY());
+        CJTAG_SAMPLED_PACKET(tms, CJTAG_QUARTER(), CJTAG_DELAY());
         return 1U;
     }
+    // The last frame may have been OScan2's single TMS packet, which the target sampled on its
+    // fall; this paced copy waits whatever came before.
+    CJTAG_QUARTER();
     if (((format == CJTAG_OSCAN5) || (format == CJTAG_OSCAN6)) && shift) {
         PIN_SWDIO_OUT(tdi ^ 1U);
         CJTAG_DELAY();
@@ -168,7 +191,7 @@ uint32_t cJTAG_FrameTap(uint32_t tms, uint32_t tdi) {
         }
     } else {
         CJTAG_PACKET(tdi ^ 1U, CJTAG_DELAY());
-        CJTAG_PACKET(tms, CJTAG_DELAY());
+        CJTAG_SAMPLED_PACKET(tms, CJTAG_QUARTER(), CJTAG_DELAY());
     }
 
     PIN_SWDIO_OUT_DISABLE();

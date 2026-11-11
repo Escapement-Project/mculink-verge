@@ -124,7 +124,8 @@ def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire
     # An escape edge a host's clock period after the last: the standard asks for the target's
     # shortest TCKC period, which a host running at that clock or slower meets.
     target = (cy.TimedCjtagTarget(tap, latency=latency, oscan2=wire == "cjtag2", oscan5=wire == "cjtag5",
-                                  oscan6=wire == "cjtag6", escape_gap=-(-cpu_hz // hz)) if two_pin
+                                  oscan6=wire == "cjtag6", escape_gap=-(-cpu_hz // hz),
+                                  quarter=-(-max(-(-cpu_hz // hz), 3) // 4)) if two_pin
               else cy.TimedJtagTarget(tap, latency=latency))
     probe.target = target
 

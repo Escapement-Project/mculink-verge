@@ -137,6 +137,12 @@ static struct gen_schedule layout;
 
 static uint32_t later(uint32_t a, uint32_t b) { return a > b ? a : b; }
 
+/** The cycles a TMSC store waits after a fall the target samples on: a quarter of the packet's
+ * period, rounded up. A TAP.7 samples on the falling edge until STC1 says otherwise (1149.7
+ * 23.4.1.4.4), and a store right after the fall would leave it a cycle of hold. After a TDO
+ * packet's fall the target samples nothing, so nothing waits there. */
+static uint32_t quarter(uint32_t period) { return (period + 3U) / 4U; }
+
 static void put(uint32_t cycle, enum slot slot) { gen_put(&layout, cycle, (uint32_t)slot); }
 
 /** `slot` on the first free cycle from `earliest`, below `before`. */
@@ -277,8 +283,9 @@ GEN_PATH static bool layout_two_pin(struct block* b, uint32_t period, uint32_t l
     if (shape_middle(shape)) {
         const uint32_t f1 = f2;
         put(f1, S_FALL);
-        put(f1 + 1U, S_TMS);
-        rose = later(f1 + later(low, 2U), r1 + p);
+        const uint32_t tms = f1 + quarter(p);
+        put(tms, S_TMS);
+        rose = later(later(f1 + later(low, 2U), tms + 1U), r1 + p);
         put(rose, S_RISE);
         f2 = later(rose + high, f1 + p);
     }
@@ -485,7 +492,8 @@ GEN_PATH static bool emit_scan(struct gen_emitter* e, const struct block* b, boo
 GEN_PATH static bool emit_tms(struct gen_emitter* e, uint32_t period) {
     const uint32_t low = period == 3U ? 2U : period / 2U;
     const uint32_t high = period - low;
-    const uint32_t rise = later(2U, low);
+    const uint32_t q = quarter(period);
+    const uint32_t rise = later(later(2U, low), q + 1U);
     const uint32_t cycles = later(rise + high, period);
     gen_emit(e, t_push(0x4FF0U)); // r4-r11, lr
     gen_load_const(e, R_GPIO, (uint32_t)DBGIF_GPIO);
@@ -501,8 +509,9 @@ GEN_PATH static bool emit_tms(struct gen_emitter* e, uint32_t period) {
     const uint32_t first = e->pos;
     for (uint32_t k = 0U; k < BLOCKS; k++) {
         gen_emit(e, t_str(R_ONE, R_PORT, OFF_CLR));
+        gen_delay(e, q - 1U);
         gen_emit(e, t_strb(R_TMS, R_GPIO, OFF_B_TMS));
-        gen_delay(e, rise - 2U);
+        gen_delay(e, rise - q - 1U);
         gen_emit(e, t_str(R_ONE, R_PORT, OFF_SET));
         gen_delay(e, cycles - rise - 1U);
         if ((k == 0U) && !e->failed) {
@@ -514,6 +523,9 @@ GEN_PATH static bool emit_tms(struct gen_emitter* e, uint32_t period) {
     }
     patch_const(e, entry_at, R_ENTRY, JTAG_GEN_BASE + 4U * first + 1U);
     gen_emit(e, t_str(R_ONE, R_PORT, OFF_CLR));
+    // The target samples the last packet on this fall, and whatever the caller clocks next may
+    // start with a store.
+    gen_delay(e, q);
     gen_load_const(e, R_TDI, 0xFFFFFFFFU);
     gen_emit(e, t_pop(0x8FF0U)); // r4-r11, pc
     gen_resolve(e);
@@ -856,7 +868,8 @@ static void cx_shaped(struct xfer* x, uint32_t ntdi, uint32_t tms, bool decide, 
     if (decide) {
         x_decide(x);
     }
-    const uint32_t d1 = x_free(x, later(s + 3U, x->ready), false);
+    // s is the fall that ends the last frame: after OScan2's TMS packet the target samples there.
+    const uint32_t d1 = x_free(x, later(s + (x->released ? 3U : later(3U, quarter(p))), x->ready), false);
     gen_put(&x->q, d1, t_strb(ntdi, X_GPIO, OFF_B_TMS));
     const uint32_t r1 = x_free(x, later(s + later(4U, x->low), d1 + 1U), false);
     gen_put(&x->q, r1, t_str(X_ONE, X_PORT, OFF_SET));
@@ -876,7 +889,7 @@ static void cx_shaped(struct xfer* x, uint32_t ntdi, uint32_t tms, bool decide, 
     if (shape_middle(shape)) {
         const uint32_t f1 = x_free(x, f2, false);
         gen_put(&x->q, f1, t_str(X_ONE, X_PORT, OFF_CLR));
-        stored = x_free(x, f1 + 1U, false);
+        stored = x_free(x, f1 + quarter(p), false);
         gen_put(&x->q, stored, t_strb(tms, X_GPIO, OFF_B_TMS));
         if (tms == ntdi) {
             read_ntdi = stored; // OScan6's PAD, sent from nTDI's register
@@ -961,7 +974,7 @@ static void cx_tms_frame(struct xfer* x, uint32_t tms) {
     if (x->pend) {
         x_take(x, s - 1U);
     }
-    const uint32_t d = x_free(x, later(s + 1U + take, x->ready), false);
+    const uint32_t d = x_free(x, later(take != 0U ? s + 3U : s + quarter(x->p), x->ready), false);
     gen_put(&x->q, d, t_strb(tms, X_GPIO, OFF_B_TMS));
     const uint32_t r = x_free(x, later(s + x->low, d + 1U), false);
     gen_put(&x->q, r, t_str(X_ONE, X_PORT, OFF_SET));
@@ -1054,8 +1067,10 @@ static void slow_frame(struct gen_emitter* e, const struct xfer* x, uint32_t ntd
     gen_emit(e, t_str(X_ONE, X_PORT, OFF_SET));
     gen_delay(e, x->high - 1U);
     gen_emit(e, t_str(X_ONE, X_PORT, OFF_CLR));
+    const uint32_t q = quarter(x->p);
+    gen_delay(e, q - 1U);
     gen_emit(e, t_strb(tms, X_GPIO, OFF_B_TMS));
-    gen_delay(e, later(x->low, 2U) - 2U);
+    gen_delay(e, later(later(x->low, 2U), q + 1U) - q - 1U);
     gen_emit(e, t_str(X_ONE, X_PORT, OFF_SET));
     gen_delay(e, x->high - 1U);
     if (!x->masked) {
@@ -1101,11 +1116,14 @@ static void slow_eot_frame(struct gen_emitter* e, const struct xfer* x, uint32_t
 /** OScan2's frame outside Shift, which samples nothing: the take-back, harmless where the wire is
  * already driven, then one TMS packet. */
 static void slow_tms_frame(struct gen_emitter* e, const struct xfer* x, uint32_t tms) {
+    // After another TMS packet the target samples on this fall.
+    const uint32_t store = later(3U, quarter(x->p));
     gen_emit(e, t_str(X_ONE, X_PORT, OFF_CLR));
     gen_emit(e, t_str(X_PIN, X_PORT, OFF_DIRSET));
     gen_emit(e, t_str(X_TXEN, X_PORT, OFF_SET));
+    gen_delay(e, store - 3U);
     gen_emit(e, t_strb(tms, X_GPIO, OFF_B_TMS));
-    gen_delay(e, later(x->low, 4U) - 4U);
+    gen_delay(e, later(later(x->low, 4U), store + 1U) - store - 1U);
     gen_emit(e, t_str(X_ONE, X_PORT, OFF_SET));
     gen_delay(e, later(x->p, x->high) - 1U);
 }
@@ -1325,6 +1343,11 @@ static bool emit_xfer(struct gen_emitter* e, const struct xfer_cfg* c, bool read
         slow_tail(e);
     }
     const uint32_t exit = e->pos;
+    if (c->oscan2) {
+        // Both paths end in Run-Test/Idle on a TMS packet, which the target samples on the fall
+        // slow_tail made, and whatever the caller clocks next may start with a store.
+        gen_delay(e, quarter(x->p));
+    }
     // ARM leaves TDI high after a transfer, on the pin itself with JTAG.
     if (!c->two_pin) {
         gen_emit(e, t_strb(X_ONE, X_GPIO, (uint32_t)offsetof(GPIO_Type, B[0][TDI_PIN])));
