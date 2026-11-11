@@ -1040,13 +1040,20 @@ def check_cjtag_commands(c: "Checks", probe: "Machine") -> None:
     refusals = (err[0x95], err[0x96], bytes([0x02, 0]))
 
     def answer(name: str, request: bytes, want: bytes) -> None:
+        """A refusal also has to leave every pin alone: no write that moves TCKC or TMSC on the way,
+        and port 0's levels and directions as they were."""
+        refusal = want in refusals
         before = (probe.level, probe.dir)
+        if refusal:
+            probe.pin_events = []
         got = probe.command(request)
+        events, probe.pin_events = probe.pin_events, None
         checks.append((f"{name} answered {got.hex()}, wanted {want.hex()}", got == want))
-        if want in refusals:
+        if refusal:
             after = (probe.level, probe.dir)
             checks.append((f"{name}, refused, moved pins: level {before[0]:#x} to {after[0]:#x}, direction "
-                           f"{before[1]:#x} to {after[1]:#x}", after == before))
+                           f"{before[1]:#x} to {after[1]:#x}, {len(events)} TCKC or TMSC changes on the way",
+                           after == before and not events))
 
     def tdi() -> str:
         """TDI as the probe leaves it: driven high, driven low or let go."""
@@ -1076,6 +1083,8 @@ def check_cjtag_commands(c: "Checks", probe: "Machine") -> None:
     clock = (probe.level >> PIN_TCK) & 1
     checks.append((f"TDI {tdi()} and TCKC at {clock} after Format 1, wanted TDI let go and TCKC low",
                    tdi() == "let go" and clock == 0))
+    answer("Format 3 while framing", bytes([0x95, 3]), err[0x95])
+    checks.append(("framing stopped by a refused Format", framing()))
     answer("raw DAP_SWJ_Sequence while framing", bytes([0x12, 8, 0xA5]), bytes([0x12, 0]))
     answer("Escape of 0 edges", bytes([0x96, 0, 1]), err[0x96])
     answer("Escape of 1 edge", bytes([0x96, 1, 1]), err[0x96])
@@ -1582,6 +1591,7 @@ def check_board(c: Checker, elf: str, request_slots: int) -> None:
         flags, length = reply[7], reply[8]
         reported = reply[9 + length] if len(reply) > 9 + length else None
         j8 = probe.command(bytes([0x84, 0x0F, 0x0F]))
+        unconnected = probe.command(bytes([0x95, 0]))
         probe.command(bytes([0x02, 2]))
         enter = probe.command(bytes([0x95, 1]))
         leave = probe.command(bytes([0x95, 0]))
@@ -1599,6 +1609,8 @@ def check_board(c: Checker, elf: str, request_slots: int) -> None:
             c.problems.append(f"{name} board: vendor 0x84 answered {j8.hex()}")
         if (enter[1] == 0) != two_pin:
             c.problems.append(f"{name} board: vendor 0x95 OScan1 answered {enter.hex()}")
+        if unconnected[1] == 0:
+            c.problems.append(f"{name} board: vendor 0x95 0 with no JTAG connection answered {unconnected.hex()}")
         if leave[1] != 0:
             c.problems.append(f"{name} board: vendor 0x95 0, which every board takes on a JTAG connection, "
                               f"answered {leave.hex()}")
