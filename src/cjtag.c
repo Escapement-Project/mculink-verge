@@ -7,7 +7,6 @@
 #include "hot.h"
 
 static bool active;
-static uint8_t selected = CJTAG_SELECT_JTAG; // DAP_JTAG_Format's value
 static uint8_t format = CJTAG_OSCAN1;
 static uint8_t tap = CJTAG_TAP_IDLE;
 static bool last_shift;  // the frame before the last one clocked was in a Shift state
@@ -16,12 +15,6 @@ static bool entered;     // the last frame clocked was a Shift state's first
 bool cJTAG_Active(void) { return active; }
 
 uint32_t cJTAG_Format(void) { return format; }
-
-uint32_t cJTAG_Take(void) {
-    const uint32_t value = selected;
-    selected = CJTAG_SELECT_JTAG;
-    return value;
-}
 
 COMMAND_PATH uint32_t cJTAG_Tap(void) { return tap; }
 
@@ -88,11 +81,10 @@ bool cJTAG_Select(uint32_t value) {
     if ((value != CJTAG_SELECT_JTAG) && ((value >= 8U) || ((CJTAG_SELECTABLE & (1UL << value)) == 0U))) {
         return false;
     }
+    // Only a live JTAG connection has a format: each one starts conventional.
     if (DAP_Data.debug_port != DAP_PORT_JTAG) {
-        selected = (uint8_t)value;
-        return true;
+        return false;
     }
-    // On a JTAG connection it takes effect at once, and leaves nothing for the next DAP_Connect.
     if (value == CJTAG_SELECT_JTAG) {
         if (active) {
             cJTAG_Deactivate();
@@ -104,19 +96,7 @@ bool cJTAG_Select(uint32_t value) {
         }
         (void)cJTAG_Enter(8U + value, CJTAG_TAP_IDLE);
     }
-    selected = CJTAG_SELECT_JTAG;
     return true;
-}
-
-void cJTAG_Disconnect(void) {
-    cJTAG_Deactivate();
-    selected = CJTAG_SELECT_JTAG;
-}
-
-void cJTAG_Connect(uint32_t value) {
-    PORT_CJTAG_SETUP();
-    DAP_Data.debug_port = DAP_PORT_JTAG;
-    (void)cJTAG_Enter(8U + value, CJTAG_TAP_IDLE);
 }
 
 void cJTAG_Deactivate(void) { active = false; }

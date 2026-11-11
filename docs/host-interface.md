@@ -116,8 +116,11 @@ The capability flags, byte 6:
 - **Bit 6:** the Pro's DIO pins, `0x8E`.
 - **Bit 7:** the Pro's target supply, `0x8F`.
 
-An on-board MCU-Link has no cJTAG: `0x95` and `0x96` refuse every request there. The Pro's J15 jumper, fitted as the probe boots, turns off USB-SIO: the Pro's DIO pins and
-its SPI and I2C bridges. Bit 6 is clear then.
+An on-board MCU-Link has no cJTAG. There `0x95` takes only 0, conventional JTAG, and `0x96`
+refuses every request.
+
+The Pro's J15 jumper, fitted as the probe boots, turns off USB-SIO: the Pro's DIO pins and its SPI
+and I2C bridges. Bit 6 is clear then.
 
 The extended capabilities:
 
@@ -155,31 +158,37 @@ Send `[0x95, format]`. The reply is `[0x95, status]`.
 | 0 | Conventional JTAG |
 | 1, 2, 5, 6 | OScan1, OScan2, OScan5, OScan6: 1149.7's SCNFMT 9, 10, 13 and 14 |
 
-Any other value answers `DAP_ERROR` and changes nothing. So does every value but 0 on an on-board
-MCU-Link, which has no cJTAG. A host finds which formats the probe has by trying the one it wants while disconnected, where the
-command moves no pin: OScan2, 5 and 6 then 0 fit in one `DAP_ExecuteCommands`.
+Any other value answers `DAP_ERROR` and changes nothing. So does any value without a JTAG
+connection, and every value but 0 on an on-board MCU-Link, which has no cJTAG. A host finds which
+formats the probe has by trying them on a JTAG connection, before it activates the target:
+`DAP_Connect(2)`, then OScan1, 2, 5 and 6, then 0, fit in one `DAP_ExecuteCommands`.
 
-- **Not connected, or connected over SWD,** the selection waits for the next `DAP_Connect`. With an
-  OScan format selected, `DAP_Connect(2)` sets up the pins for cJTAG and sends nothing. TCKC goes
-  low before TMSC is driven high, so the target sees no TMSC edge while TCKC is high. TDI and TDO
-  stay undriven.
-- **Every `DAP_Connect` the probe accepts uses up the selection.** `DAP_Connect(2)` frames that
-  connection in it, and any other port drops it. So a host sends `0x95` before each connection it
-  wants framed. A host that connects without asking is never framed, even after a session that
-  ended without `DAP_Disconnect`. A `DAP_Connect` the probe refuses changes nothing.
-- **Connected over JTAG,** the selection takes effect at once, and leaves nothing for the next
-  `DAP_Connect`. Into an OScan format, TCKC goes low and TDI is let go. Back to 0, TDI is driven
-  high again.
+- **The format belongs to the JTAG connection.** `0x95` changes the format of the live
+  `DAP_Connect(2)` connection, at once. Every connection the probe accepts starts in conventional
+  JTAG, and `DAP_Disconnect` ends the format with the connection. So nothing one session selects
+  outlives its connection: the next host's `DAP_Connect` starts conventional. A `DAP_Connect` the
+  probe refuses changes nothing.
+- **A host connects, then selects.** `DAP_Connect(2)` sets up the pins for conventional JTAG, as
+  Arm's does: TCK, TMS and TDI driven high. After a session that left TCKC low, TCKC rises, and
+  then TMSC may rise once while TCKC is high. One edge is not an escape. In one
+  `DAP_ExecuteCommands`, such as `[0x7F, 2, 0x02, 2, 0x95, 2]` for OScan2, the pins stay that way
+  only until the probe runs the second command. Sent apart, they leave TCKC high for at least a USB
+  round trip, and after 1 ms of that a TAP.7 in power-control mode 0 may power down (18.10).
+- **Into an OScan format,** TCKC goes low and TDI is let go. So `DAP_Connect(2)` and `0x95` make
+  one TCKC period between them, and a target sampling TMSC on the falling edge reads 1 in it. Back
+  to 0, TDI is driven high again.
 - **From one OScan format to another,** nothing is sent. The host has already switched the target,
   with STFMT and its check packet.
-- **`0x95` sends no clocks,** and neither do `DAP_Connect` and `DAP_Disconnect`. In OScan2 and
-  OScan6 the last frame outside Shift moves the target's TAP only in the next bit period (1149.7
-  25.6.2). So a host that wants that move finished sends one more frame before it stops framing:
-  TMS 0 in Run-Test/Idle, or 1 in Test-Logic-Reset.
+- **`0x95`, `DAP_Connect` and `DAP_Disconnect` send no TCKC period of their own.** TCKC can still
+  rise once. `DAP_Connect` sets the clock pin high, as Arm's does.
+  After `DAP_Disconnect` TCKC rests on the target's pull-up. In OScan2 and OScan6 the last frame
+  outside Shift moves the target's TAP at the next TCKC rise, whatever drives it (1149.7 25.6.1).
+  So before it stops framing, a host sends one more frame, and the move lands on a rise it chose:
+  TMS 0 in Run-Test/Idle, Pause-DR or Pause-IR, or TMS 1 in Test-Logic-Reset. That frame's own move
+  keeps the TAP where it is, so whichever rise completes it changes nothing.
 - **OScan2, 5 and 6** frame each JTAG clock by the state of the target's TAP, so the probe follows it
-  from Run-Test/Idle, starting at the selection or at `DAP_Connect(2)`. Select them with the TAP in
-  Run-Test/Idle. Sending the same value again restates it.
-- **`DAP_Disconnect` sets the selection back to 0,** where it starts at power-up.
+  from Run-Test/Idle, starting at the selection. Select them with the TAP in Run-Test/Idle. Sending
+  the same value again restates it.
 
 With an OScan format selected on a JTAG connection, `DAP_JTAG_Sequence`, `DAP_JTAG_IDCODE`,
 `DAP_Transfer`, `DAP_TransferBlock` and `DAP_WriteABORT` go out as frames. `DAP_SWJ_Sequence` sends
@@ -207,9 +216,11 @@ whenever the clock is within the target's rating. The host picks the count and t
 them how long TCKC stays high: `edges` + 1 periods. At 10 kHz a 10-edge escape takes 1.1 ms, past the
 1 ms after which a TAP.7 in power-control mode 0 may power down (18.10). 1149.7 reads 4 or 5 edges as
 a deselection, 6 or 7 as a selection and 8 or more as a reset. The target counts the escape's period
-as a bit, so the probe waits a quarter period after its fall.
+as a bit, so the probe waits a quarter period after its fall. Until the escape ends the probe
+answers no other CMSIS-DAP or Verge Aux request. A 255-edge escape takes 28 s at 9 Hz, the slowest
+clock the generated builds take, and longer still on the `+armwire` reference build.
 
-It needs a JTAG connection, in any format, and leaves the selection and framing as they were. With
+It needs a JTAG connection, in any format, and leaves the format and framing as they were. With
 no JTAG connection, 0 or 1 edges, or a `level` above 1, it answers `DAP_ERROR`.
 
 ## Target sense: `0x86`

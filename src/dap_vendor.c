@@ -360,7 +360,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
                 : DAP_ERROR;
 #ifdef JTAG_CODEGEN
         // The wire changed: generate for it now rather than in the next command.
-        if ((response[1] == DAP_OK) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {
+        if (response[1] == DAP_OK) {
             (void)jtag_gen_ready(jtag_gen_wire());
         }
 #endif

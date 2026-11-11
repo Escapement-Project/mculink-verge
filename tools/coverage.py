@@ -84,7 +84,6 @@ def power_up_and_halt(probe: dap.Probe, index: int) -> None:
 
 
 def attach_swd(probe: dap.Probe) -> int:
-    probe.command(bytes([dap.DAP_VENDOR_JTAG_FORMAT, 0]))
     if probe.connect(1) != 1:
         raise RuntimeError("DAP_Connect refused SWD")
     probe.swj_clock(1_000_000)
@@ -101,7 +100,6 @@ def attach_swd(probe: dap.Probe) -> int:
 
 def attach_icepick(probe: dap.Probe, two_pin: bool, scan_format: int = dap.OSCAN1) -> int:
     """nRESET, the wire's bring-up as probe-rs does it, then the ICEPick routed to the Cortex-M DAP."""
-    probe.command(bytes([dap.DAP_VENDOR_JTAG_FORMAT, 0]))
     probe.connect(2)
     probe.swj_clock(1_000_000)
     probe.command(bytes([dap.DAP_SWJ_PINS, 0x00, 0x80]) + bytes(4))
@@ -152,10 +150,10 @@ def attach_icepick(probe: dap.Probe, two_pin: bool, scan_format: int = dap.OSCAN
 
 def finish(probe: dap.Probe) -> None:
     """End as probe-rs's power_down does: framed TMS-high clocks to Test-Logic-Reset, which takes a
-    cJTAG target out of OScan1, then framing off. A later JTAG attach needs that."""
+    cJTAG target out of OScan1, then framing off."""
     if probe.wire != "swd":
         probe.jtag_sequence([(8, 1, False, 0xFF)])
-    probe.command(bytes([dap.DAP_VENDOR_JTAG_FORMAT, 0]))
+        probe.command(bytes([dap.DAP_VENDOR_JTAG_FORMAT, 0]))
 
 
 def exec_offsets(probe: dap.Probe, index: int, words: int, limit: int, base: int, stride: int) -> int:

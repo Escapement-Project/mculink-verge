@@ -37,6 +37,8 @@ sys.path.insert(0, __file__.rsplit("/", 1)[0])
 
 from cycles import (  # noqa: E402
     ORDINARY_GPIO,
+    PIN_TCK,
+    PIN_TDI,
     REG_B0,
     RETURN_MAGIC,
     SCRATCH,
@@ -322,7 +324,7 @@ DAP_COMMANDS = {
     0x1E: b"\x00\x01",  # SWO_ExtendedStatus
     0x7F: b"\x01\x00\xf0",  # ExecuteCommands, one Info
     0x82: b"",  # our CJTAG_INFO
-    0x95: b"\x00",  # our DAP_JTAG_Format, conventional JTAG
+    0x95: b"\x00",  # our DAP_JTAG_Format, conventional JTAG, refused with no JTAG connection
     0x96: b"\x02\x01",  # our DAP_JTAG_Escape, refused with no JTAG connection
     0x84: b"\x00\x00",  # our J8, taking no pins, which hands all four back to the marker
     # Our TARGET, reading the supply. The emulator's ADC never finishes calibrating, so this takes
@@ -1006,19 +1008,21 @@ def check_stacks(c: Checker, elf0: str, elf1: str) -> None:
 
 
 def check_cjtag_commands(c: "Checks", probe: "Machine") -> None:
-    """DAP_JTAG_Format (vendor 0x95) and DAP_JTAG_Escape (0x96) without a target: Format's values, its
-    selection waiting for a DAP_Connect, which uses it up, and dropped by DAP_Disconnect; a refused
-    DAP_Connect changing nothing; framing on at once on a JTAG connection and off with 0, with no
-    clocks from Format, DAP_Connect or DAP_Disconnect in OScan2 or OScan6; Escape only on a JTAG
-    connection, of 2 edges or more from level 0 or 1; raw DAP_SWJ_Sequence while framing. Framing on
-    or off is what vendor 0x82's flag bit 1 reports."""
+    """DAP_JTAG_Format (vendor 0x95) and DAP_JTAG_Escape (0x96) without a target: Format only on a
+    JTAG connection, which it changes at once, and of the values offered; into an OScan format TCKC
+    low and TDI let go, back to 0 TDI driven high; every connection the probe accepts starting
+    conventional, DAP_Disconnect ending framing; a refused command moving no pin and changing
+    nothing; no TCKC period from Format, DAP_Connect or DAP_Disconnect on leaving OScan2 or OScan6,
+    whichever idle state framed clocks left the TAP in; Escape only on a JTAG connection, of 2
+    edges or more from level 0 or 1; raw DAP_SWJ_Sequence while framing. Framing on or off is what
+    vendor 0x82's flag bit 1 reports."""
     def framing() -> bool:
         reply = probe.command(bytes([0x82]))
         return bool(reply[7] & 0x02)
 
     def quiet(name: str, request: bytes) -> None:
         """`request` sends no TCKC period: the trailing frame in OScan2 and OScan6 is the host's. Arm's
-        pin set-up may still raise TCK or let the pins go."""
+        pin set-up may still raise TCKC once, or let the pins go."""
         probe.pin_events = []
         probe.command(request)
         events, probe.pin_events = probe.pin_events, None
@@ -1033,60 +1037,97 @@ def check_cjtag_commands(c: "Checks", probe: "Machine") -> None:
     probe.command(bytes([0x11]) + (1_000_000).to_bytes(4, "little"))
     checks: list[tuple[str, bool]] = []
 
+    refusals = (err[0x95], err[0x96], bytes([0x02, 0]))
+
     def answer(name: str, request: bytes, want: bytes) -> None:
+        before = (probe.level, probe.dir)
         got = probe.command(request)
         checks.append((f"{name} answered {got.hex()}, wanted {want.hex()}", got == want))
+        if want in refusals:
+            after = (probe.level, probe.dir)
+            checks.append((f"{name}, refused, moved pins: level {before[0]:#x} to {after[0]:#x}, direction "
+                           f"{before[1]:#x} to {after[1]:#x}", after == before))
 
+    def tdi() -> str:
+        """TDI as the probe leaves it: driven high, driven low or let go."""
+        if not (probe.dir >> PIN_TDI) & 1:
+            return "let go"
+        return "high" if (probe.level >> PIN_TDI) & 1 else "low"
+
+    # Only a live JTAG connection has a format: nothing sent before one may frame it.
     answer("Escape with nothing connected", bytes([0x96, 10, 1]), err[0x96])
+    for value in (0, 1, 2, 5, 6):
+        answer(f"Format {value} while disconnected", bytes([0x95, value]), err[0x95])
+    answer("DAP_Connect(1)", bytes([0x02, 1]), bytes([0x02, 1]))
+    for value in (0, 1, 2):
+        answer(f"Format {value} over SWD", bytes([0x95, value]), err[0x95])
+    answer("Escape over SWD", bytes([0x96, 10, 1]), err[0x96])
+    answer("DAP_Connect(2) after Formats refused", bytes([0x02, 2]), bytes([0x02, 2]))
+    checks.append(("framing after DAP_Connect(2), which starts conventional", not framing()))
+    answer("Format 0 on a conventional JTAG connection", bytes([0x95, 0]), ok[0x95])
+    checks.append((f"framing, or TDI {tdi()}, after Format 0 on a conventional JTAG connection",
+                   not framing() and tdi() == "high"))
+
     for value in (3, 4, 7, 8, 9, 0xFF):
         answer(f"Format {value}", bytes([0x95, value]), err[0x95])
-    answer("Format 1, waiting", bytes([0x95, 1]), ok[0x95])
-    checks.append(("framing on before any connection", not framing()))
-    answer("DAP_Connect(2) with OScan1 selected", bytes([0x02, 2]), bytes([0x02, 2]))
-    checks.append(("no framing after DAP_Connect(2) with OScan1 selected", framing()))
+    checks.append(("framing after a refused Format", not framing()))
+    answer("Format 1", bytes([0x95, 1]), ok[0x95])
+    checks.append(("no framing after Format 1", framing()))
+    clock = (probe.level >> PIN_TCK) & 1
+    checks.append((f"TDI {tdi()} and TCKC at {clock} after Format 1, wanted TDI let go and TCKC low",
+                   tdi() == "let go" and clock == 0))
     answer("raw DAP_SWJ_Sequence while framing", bytes([0x12, 8, 0xA5]), bytes([0x12, 0]))
     answer("Escape of 0 edges", bytes([0x96, 0, 1]), err[0x96])
     answer("Escape of 1 edge", bytes([0x96, 1, 1]), err[0x96])
     answer("Escape from level 2", bytes([0x96, 10, 2]), err[0x96])
     answer("Escape of 10 edges while framing", bytes([0x96, 10, 1]), ok[0x96])
     checks.append(("framing stopped by an escape", framing()))
-    answer("Format 0 while connected", bytes([0x95, 0]), ok[0x95])
+    answer("Format 0", bytes([0x95, 0]), ok[0x95])
     checks.append(("framing still on after Format 0", not framing()))
+    checks.append((f"TDI {tdi()} after Format 0 from OScan1, wanted high", tdi() == "high"))
     answer("Escape of 7 edges in conventional JTAG", bytes([0x96, 7, 0]), ok[0x96])
-    answer("Format 2 while connected", bytes([0x95, 2]), ok[0x95])
-    checks.append(("no framing after Format 2 while connected", framing()))
-    quiet("Format 0 from OScan2", bytes([0x95, 0]))
-    answer("Format 2 again while connected", bytes([0x95, 2]), ok[0x95])
+    answer("Format 2", bytes([0x95, 2]), ok[0x95])
     answer("DAP_Connect(3), which DAP_Connect refuses", bytes([0x02, 3]), bytes([0x02, 0]))
     checks.append(("framing stopped by a refused DAP_Connect", framing()))
     answer("Format 6, from OScan2", bytes([0x95, 6]), ok[0x95])
-    quiet("DAP_Connect(2) from OScan6", bytes([0x02, 2]))
-    checks.append(("framing after DAP_Connect(2), which a Format while connected leaves nothing for",
-                   not framing()))
-    answer("Format 6 while connected", bytes([0x95, 6]), ok[0x95])
-    quiet("DAP_Disconnect from OScan6", bytes([0x03]))
+    checks.append(("no framing after Format 6 from OScan2", framing()))
+    answer("DAP_Connect(2) while framing", bytes([0x02, 2]), bytes([0x02, 2]))
+    checks.append(("framing after a DAP_Connect(2) while framing, which starts conventional", not framing()))
+    answer("Format 6", bytes([0x95, 6]), ok[0x95])
+    answer("DAP_Disconnect while framing", bytes([0x03]), bytes([0x03, 0]))
     checks.append(("framing on after DAP_Disconnect", not framing()))
+    answer("Format 6 after DAP_Disconnect", bytes([0x95, 6]), err[0x95])
     answer("DAP_Connect(2) after DAP_Disconnect", bytes([0x02, 2]), bytes([0x02, 2]))
-    checks.append(("framing after DAP_Disconnect dropped the selection", not framing()))
-    answer("Format 6, then DAP_Connect(1)", bytes([0x95, 6]), ok[0x95])
-    answer("DAP_Connect(1) with OScan6 selected", bytes([0x02, 1]), bytes([0x02, 1]))
+    checks.append(("framing after DAP_Disconnect and DAP_Connect(2)", not framing()))
+    answer("Format 2, then DAP_Connect(1)", bytes([0x95, 2]), ok[0x95])
+    answer("DAP_Connect(1) while framing", bytes([0x02, 1]), bytes([0x02, 1]))
     checks.append(("framing on over SWD", not framing()))
-    answer("Escape over SWD", bytes([0x96, 10, 1]), err[0x96])
-    answer("DAP_Connect(2) after DAP_Connect(1) took the selection", bytes([0x02, 2]), bytes([0x02, 2]))
-    checks.append(("framing after a connection over SWD used up the selection", not framing()))
-    probe.command(bytes([0x03]))
-    answer("Format 1 while disconnected", bytes([0x95, 1]), ok[0x95])
-    answer("DAP_Connect(2) with OScan1 selected, again", bytes([0x02, 2]), bytes([0x02, 2]))
-    checks.append(("no framing after DAP_Connect(2) with OScan1 selected, again", framing()))
-    answer("DAP_Connect(2) with nothing selected", bytes([0x02, 2]), bytes([0x02, 2]))
-    checks.append(("framing after DAP_Connect(2) used up the selection", not framing()))
-    answer("Format 0", bytes([0x95, 0]), ok[0x95])
+    answer("DAP_Connect(2) after a connection over SWD", bytes([0x02, 2]), bytes([0x02, 2]))
+    checks.append(("framing after DAP_Connect(1) and DAP_Connect(2)", not framing()))
+    answer("Format 5, then DAP_Connect(0)", bytes([0x95, 5]), ok[0x95])
+    answer("DAP_Connect(0), the default port", bytes([0x02, 0]), bytes([0x02, 1]))
+    checks.append(("framing after DAP_Connect(0)", not framing()))
+    answer("DAP_Connect(2) after DAP_Connect(0)", bytes([0x02, 2]), bytes([0x02, 2]))
+
+    # Leaving OScan2 or OScan6 sends no TCKC period from any state a host idles the TAP in after
+    # framed clocks: Run-Test/Idle, Test-Logic-Reset, and Pause-DR, which loops on TMS 0 too.
+    idle = (("Run-Test/Idle", (0,)), ("Test-Logic-Reset", (1, 1, 1)), ("Pause-DR", (1, 0, 1, 0)))
+    leaving = (("Format 0", bytes([0x95, 0])), ("DAP_Connect(2)", bytes([0x02, 2])), ("DAP_Disconnect", bytes([0x03])))
+    for value in (2, 6):
+        for state, tms in idle:
+            walk = bytes([0x14, len(tms)]) + b"".join(bytes([0x41 if bit else 0x01, 0x01]) for bit in tms)
+            for name, request in leaving:
+                probe.command(bytes([0x02, 2]))
+                answer(f"Format {value} before {name}", bytes([0x95, value]), ok[0x95])
+                answer(f"framed TMS {tms} in OScan{value}", walk, bytes([0x14, 0]))
+                quiet(f"{name} from OScan{value} in {state}", request)
     probe.command(bytes([0x03]))
     for text, passed in checks:
         c.check(passed, f"cJTAG commands: {text}")
-    c.note("cJTAG commands: DAP_JTAG_Format's values, its selection used up by DAP_Connect, no clocks on "
-           "leaving OScan2 or OScan6, a refused DAP_Connect, DAP_JTAG_Escape's refusals, raw DAP_SWJ_Sequence "
-           "while framing")
+    c.note("cJTAG commands: DAP_JTAG_Format only on a JTAG connection and of the values offered, each "
+           "connection starting conventional, a refused DAP_Connect changing nothing, no TCKC period on "
+           "leaving OScan2 or OScan6 from Run-Test/Idle, Test-Logic-Reset or Pause-DR, DAP_JTAG_Escape's "
+           "refusals, raw DAP_SWJ_Sequence while framing")
 
 
 def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
@@ -1541,8 +1582,10 @@ def check_board(c: Checker, elf: str, request_slots: int) -> None:
         flags, length = reply[7], reply[8]
         reported = reply[9 + length] if len(reply) > 9 + length else None
         j8 = probe.command(bytes([0x84, 0x0F, 0x0F]))
+        probe.command(bytes([0x02, 2]))
         enter = probe.command(bytes([0x95, 1]))
-        probe.command(bytes([0x95, 0]))
+        leave = probe.command(bytes([0x95, 0]))
+        probe.command(bytes([0x03]))
         driven = int.from_bytes(probe.uc.mem_read(j8_dir, 4), "little") | int.from_bytes(
             probe.uc.mem_read(j8_set, 4), "little"
         )
@@ -1556,6 +1599,9 @@ def check_board(c: Checker, elf: str, request_slots: int) -> None:
             c.problems.append(f"{name} board: vendor 0x84 answered {j8.hex()}")
         if (enter[1] == 0) != two_pin:
             c.problems.append(f"{name} board: vendor 0x95 OScan1 answered {enter.hex()}")
+        if leave[1] != 0:
+            c.problems.append(f"{name} board: vendor 0x95 0, which every board takes on a JTAG connection, "
+                              f"answered {leave.hex()}")
         if bool(driven & 0x0F) != plain:
             c.problems.append(f"{name} board: J8's pins were {'not ' if plain else ''}driven ({driven:#x})")
     c.note("board: CPU 1 reports each board as CPU 0 read it; J8 on the plain one only, cJTAG on the plain one and the Pro, "
@@ -2393,9 +2439,6 @@ def check_led_inputs(c: Checker, core1: str, request_slots: int) -> None:
     connected = probe.sym["dap_shared"] + fields["led_connected"]
     wire = probe.sym["dap_shared"] + fields["led_wire"]
     probe.call("board_debug_pins_init")
-    # OScan2's trailing frame paces from the clock delay DAP_Setup or DAP_SWJ_Clock sets, and
-    # link-time optimisation folds DAP_Setup into main.
-    probe.command(bytes([0x11]) + (1_000_000).to_bytes(4, "little"))
     probe.command(bytes([ID_DAP_HOST_STATUS, 0, 1]))
     on = probe.uc.mem_read(connected, 1)[0]
     probe.command(bytes([ID_DAP_HOST_STATUS, 0, 0]))
@@ -2407,8 +2450,9 @@ def check_led_inputs(c: Checker, core1: str, request_slots: int) -> None:
              ("vendor 0x95 OScan2, then DAP_Disconnect", bytes([0x95, 2]), LED_WIRE_CJTAG),
              ("DAP_Disconnect", bytes([0x03]), LED_WIRE_NONE),
              ("vendor 0x95 OScan2 while disconnected", bytes([0x95, 2]), LED_WIRE_NONE),
-             ("DAP_Connect JTAG with OScan2 selected", bytes([0x02, 2]), LED_WIRE_CJTAG),
-             ("vendor 0x95 JTAG again", bytes([0x95, 0]), LED_WIRE_JTAG))
+             ("DAP_Connect JTAG after that", bytes([0x02, 2]), LED_WIRE_JTAG),
+             ("vendor 0x95 OScan2 again", bytes([0x95, 2]), LED_WIRE_CJTAG),
+             ("DAP_Connect JTAG while framing", bytes([0x02, 2]), LED_WIRE_JTAG))
     for name, request, want in steps:
         probe.command(request)
         got = probe.uc.mem_read(wire, 1)[0]

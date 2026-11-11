@@ -220,10 +220,10 @@ def swj_sequence(bits: list[int]) -> bytes:
 
 def run_raw(elf: str, hz: int, cpu_hz: int) -> dict:
     """Raw output with an OScan format selected, as the cJTAG profile's timing rules ask: raw
-    DAP_SWJ_Sequence sends one TCKC period a bit, its TMSC changes only while TCKC is low and a
-    quarter period after the fall before; DAP_JTAG_Escape makes exactly its edges while TCKC is high,
-    each, and the fall, at least a period after the one before, at any clock; every command leaves
-    TCKC low."""
+    DAP_SWJ_Sequence sends one TCKC period a bit, its TMSC changes only while TCKC is low, a quarter
+    period after the fall before and a quarter before the rise; DAP_JTAG_Escape makes exactly its
+    edges while TCKC is high, each, and the fall, at least a period after the one before, at any clock
+    and any count up to 255; every command leaves TCKC low."""
     model = cy.Model(engine=True)
     probe = cy.Machine(elf, cy.Target([]), restart_at=set(), model=model, record_trace=False, record_stats=False)
     if "DAP_Setup" in probe.sym:
@@ -241,7 +241,8 @@ def run_raw(elf: str, hz: int, cpu_hz: int) -> dict:
     # Each escape from the level the one before did not leave, so every one moves TMSC first.
     steps = [("sequence", swj_sequence(RAW_BITS), RAW_BITS), ("escape 6", bytes([ID_JTAG_ESCAPE, 6, 1]), (6, 1)),
              ("escape 7", bytes([ID_JTAG_ESCAPE, 7, 0]), (7, 0)), ("escape 10", bytes([ID_JTAG_ESCAPE, 10, 0]), (10, 0)),
-             ("sequence after escapes", swj_sequence([0, 1, 1, 0]), [0, 1, 1, 0])]
+             ("escape 255", bytes([ID_JTAG_ESCAPE, 255, 1]), (255, 1)),
+             ("sequence after escapes", swj_sequence([1, 1, 0, 1]), [1, 1, 0, 1])]
     spans = []
     for name, request, what in steps:
         start = len(events)
@@ -252,13 +253,18 @@ def run_raw(elf: str, hz: int, cpu_hz: int) -> dict:
     probe.end()
 
     # The level each event leaves, and the last fall before it, over the whole stream: the quarter
-    # period holds across commands too.
-    tck, wire, last_fall = 0, "1", None
+    # period holds across commands too, after each fall and before each rise.
+    tck, wire, last_fall, last_move = 0, "1", None, None
     before: list[tuple[int, str, int | None]] = []
     for cycle, t, w in events:
         before.append((tck, wire, last_fall))
-        if w != wire and w != "z" and t == 0 and last_fall is not None and cycle - last_fall < quarter:
-            problems.append(f"TMSC to {w} at {cycle}, {cycle - last_fall} cycles after a fall, under a quarter "
+        if w != wire and w != "z" and t == 0:
+            if last_fall is not None and cycle - last_fall < quarter:
+                problems.append(f"TMSC to {w} at {cycle}, {cycle - last_fall} cycles after a fall, under a "
+                                f"quarter period ({quarter})")
+            last_move = cycle
+        if tck == 0 and t == 1 and last_move is not None and cycle - last_move < quarter:
+            problems.append(f"TCKC rose at {cycle}, {cycle - last_move} cycles after TMSC moved, under a quarter "
                             f"period ({quarter})")
         if tck == 1 and t == 0:
             last_fall = cycle

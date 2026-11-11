@@ -7,10 +7,10 @@ OScan6. NXP's firmware has no cJTAG.
 
 Any CMSIS-DAP host drives SWD and JTAG, as it drives NXP's firmware.
 
-cJTAG takes a host that knows it. The host activates the target and switches it to a scan format,
-then selects the same format on the probe with vendor command `0x95` ([Host
-interface](host-interface.md#cjtag-0x95-and-0x96)). It picks a format both the probe and the
-target offer. `verge read --protocol cjtag` reads target memory over cJTAG today.
+cJTAG takes a host that knows it. The host connects over JTAG and selects OScan1 on the probe with
+vendor command `0x95` ([Host interface](host-interface.md#cjtag-0x95-and-0x96)). Then it activates
+the target, switches it to a scan format, and selects the same format on the probe. It picks a format
+both the probe and the target offer. `verge read --protocol cjtag` reads target memory over cJTAG today.
 
 ## From the clock asked for to the clock on the wire
 
