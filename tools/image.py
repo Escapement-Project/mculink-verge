@@ -837,7 +837,7 @@ def check_energy_control(c: Checker, elf0: str, elf1: str, slots: int) -> None:
 
 
 def check_console_recovery(c: Checker, elf: str, slots: int) -> None:
-    from vcom_checks import check_dma, check_line, check_ring_flags
+    from vcom_checks import VCOM_BYTES, check_dma, check_line, check_ring_flags
 
     offsets = shared_offsets(slots, "dma_table", "swo_segments", "swo_lost", small_enums=short_enums(elf))
     check_dma(c, elf, symbols_with_size(elf), offsets)
@@ -2572,6 +2572,8 @@ def check_clocks(c: Checker, elf: str, request_slots: int) -> None:
     and src/vcom.c keeps what it read for each console. On the plain board that is VCOM alone; on
     the Pro VCOM2 too, Flexcomm 1.
     """
+    from vcom_checks import VCOM_BYTES
+
     offsets = shared_offsets(request_slots, "board", "dma_table", small_enums=short_enums(elf))
     board = offsets["board"]
     for name, kind, consoles in (("plain", 0, 1), ("Pro", 1, 2)):
@@ -2594,7 +2596,7 @@ def check_clocks(c: Checker, elf: str, request_slots: int) -> None:
         if not c.check(count == consoles, f"{name} board: {count} consoles started, wanted {consoles}"):
             continue
         # SWO's Flexcomm is CPU 1's and attaches to the same FRO_HF_DIV, so this is its check too.
-        clocks = [int.from_bytes(probe.uc.mem_read(probe.sym["vcom"] + 8 * i + 4, 4), "little") for i in range(count)]
+        clocks = [int.from_bytes(probe.uc.mem_read(probe.sym["vcom"] + VCOM_BYTES * i + 4, 4), "little") for i in range(count)]
         for i, clock in enumerate(clocks):
             c.check(
                 clock == 96_000_000,

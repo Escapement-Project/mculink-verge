@@ -21,6 +21,7 @@
 
 #include "board/peripherals.h"
 #include "board_straps.h"
+#include "core_clock.h"
 #include "dap_shared.h"
 #include "dma0.h"
 #include "dma_ring.h"
@@ -34,6 +35,9 @@
 typedef struct {
     USART_Type* usart;
     clock_attach_id_t clock;
+    /** For a rate FRO_HF_DIV cannot make within 3%, and off while the source changes. */
+    clock_attach_id_t main_clock;
+    clock_attach_id_t no_clock;
     clock_div_name_t fractional_divider;
     uint32_t flexcomm;
     uint32_t port;
@@ -45,6 +49,8 @@ typedef struct {
 static const vcom_uart_t vcom_uart = {
     .usart = USART0,
     .clock = kFRO_HF_DIV_to_FLEXCOMM0,
+    .main_clock = kMAIN_CLK_to_FLEXCOMM0,
+    .no_clock = kNONE_to_FLEXCOMM0,
     .fractional_divider = kCLOCK_DivFlexFrg0,
     .flexcomm = 0U,
     .port = 0U,
@@ -55,6 +61,8 @@ static const vcom_uart_t vcom_uart = {
 static const vcom_uart_t vcom2_uart = {
     .usart = USART1,
     .clock = kFRO_HF_DIV_to_FLEXCOMM1,
+    .main_clock = kMAIN_CLK_to_FLEXCOMM1,
+    .no_clock = kNONE_to_FLEXCOMM1,
     .fractional_divider = kCLOCK_DivFlexFrg1,
     .flexcomm = 1U,
     .port = 1U,
@@ -77,8 +85,8 @@ static const vcom_uart_t vcom2_uart = {
 
 #define VCOM_DEFAULT_BAUD 115200U
 
-/** A receive ring of four segments. At 19.2 Mbaud, the fastest the UART makes, a reader can fall
- *  1.6 ms behind before it loses the oldest bytes. */
+/** A receive ring of four segments. At 30 Mbaud, the fastest the UART makes, from the main clock, a
+ *  reader can fall 1 ms behind before it loses the oldest bytes. */
 #define VCOM_RX_SEGMENTS 4U
 #define VCOM_RX_RING_BYTES (VCOM_RX_SEGMENTS * DMA_RING_SEGMENT_BYTES)
 static_assert(VCOM_RX_SEGMENTS >= 3U, "dma_ring_resync needs three segments");
@@ -99,10 +107,15 @@ static_assert((VCOM_RX_SEGMENTS % 2U) == 0U, "each descriptor raises the same fl
     (DMA_CHANNEL_XFERCFG_CFGVALID_MASK | DMA_CHANNEL_XFERCFG_SETINTA_MASK | DMA_CHANNEL_XFERCFG_WIDTH(0U) | \
      DMA_CHANNEL_XFERCFG_SRCINC(1U) | DMA_CHANNEL_XFERCFG_DSTINC(0U) | DMA_CHANNEL_XFERCFG_XFERCOUNT((count) - 1U))
 
+/** A console's clock: FRO_HF_DIV, or the main clock for a rate FRO_HF_DIV cannot make. */
+enum vcom_source { VCOM_FRO_HF_DIV, VCOM_MAIN_CLOCK, VCOM_SOURCES };
+
 /** The consoles that exist, by CDC instance: in SRAM, since CPU 0's wait reads them. */
 static struct {
     USART_Type* usart;
-    uint32_t clock_hz;
+    uint32_t clock_hz;  // the source it runs from now
+    uint32_t source_hz[VCOM_SOURCES];
+    vcom_uart_t const* uart;
 } vcom[CFG_TUD_CDC];
 static uint32_t vcom_count;
 
@@ -118,6 +131,7 @@ static struct {
     volatile bool busy;           // a send is running; vcom_dma_done clears it
     volatile bool failed;
     bool recode;
+    uint8_t source;
     uint32_t cfg;
     uint32_t osr;
     uint32_t brg;
@@ -141,6 +155,14 @@ static bool vcom_configure(uint32_t instance) {
     }
     // Keep the FIFOs and RX ring intact across the format change.
     uart->CFG &= ~USART_CFG_ENABLE_MASK;
+    uint32_t const source_hz = vcom[instance].source_hz[vcom_tx[instance].source];
+    if (source_hz != vcom[instance].clock_hz) {
+        // Only the main clock's own selectors are glitch-free: the source changes with no clock in.
+        vcom_uart_t const* const pins = vcom[instance].uart;
+        CLOCK_AttachClk(pins->no_clock);
+        CLOCK_AttachClk((vcom_tx[instance].source == VCOM_MAIN_CLOCK) ? pins->main_clock : pins->clock);
+        vcom[instance].clock_hz = source_hz;
+    }
     uart->OSR = vcom_tx[instance].osr;
     uart->BRG = vcom_tx[instance].brg;
     uart->CFG = vcom_tx[instance].cfg | USART_CFG_ENABLE_MASK;
@@ -240,7 +262,12 @@ static void vcom_start(const vcom_uart_t* uart) {
     uart->usart->FIFOCFG |= USART_FIFOCFG_DMARX_MASK | USART_FIFOCFG_DMATX_MASK;
     uint32_t const instance = vcom_count++;
     vcom[instance].usart = uart->usart;
+    vcom[instance].uart = uart;
     vcom[instance].clock_hz = CLOCK_GetFlexCommClkFreq(uart->flexcomm);
+    vcom[instance].source_hz[VCOM_FRO_HF_DIV] = vcom[instance].clock_hz;
+    // MAIN_CLK is the core's clock (src/core_clock.h), past the 100 MHz NXP rates a Flexcomm for:
+    // README's "Past NXP's limits".
+    vcom[instance].source_hz[VCOM_MAIN_CLOCK] = CORE_CLOCK_HZ;
     vcom_rx[instance].channel = VCOM_DMA_RX_CHANNEL(uart->flexcomm);
     vcom_tx[instance].channel = VCOM_DMA_TX_CHANNEL(uart->flexcomm);
     tx_start(instance);
@@ -266,19 +293,38 @@ __attribute__((noinline)) void vcom_init(void) {
  *  signals. */
 void BOARD_InitBootPeripherals(void) {}
 
-/** Unsupported settings leave the last accepted coding intact. TinyUSB still reports the host's
- *  requested coding through GET_LINE_CODING. */
+/** The source and divisors that make `coding` within 3%: FRO_HF_DIV where it can, the main clock
+ *  where only it can. False for a coding neither makes. */
+static bool vcom_choose(uint32_t itf, cdc_line_coding_t const* coding, uint32_t* source, uint32_t* osr,
+                        uint32_t* brg) {
+    for (uint32_t s = 0U; s < VCOM_SOURCES; s++) {
+        if (vcom_line_divisors(vcom[itf].source_hz[s], coding->bit_rate, coding->stop_bits, coding->parity,
+                               coding->data_bits, osr, brg)) {
+            *source = s;
+            return true;
+        }
+    }
+    return false;
+}
+
+/** SET_LINE_CODING stalls for a coding the console cannot make, so the host's call fails and the
+ *  last coding it can read back stays the one in use. */
+bool tud_cdc_line_coding_request_cb(uint8_t itf, cdc_line_coding_t const* coding) {
+    uint32_t source, osr, brg;
+    return (itf < vcom_count) && vcom_choose(itf, coding, &source, &osr, &brg);
+}
+
 void tud_cdc_line_coding_cb(uint8_t itf, cdc_line_coding_t const* coding) {
     if (itf < vcom_count) {
-        uint32_t osr, brg;
-        if (!vcom_line_divisors(vcom[itf].clock_hz, coding->bit_rate, coding->stop_bits,
-                                coding->parity, coding->data_bits, &osr, &brg)) {
+        uint32_t source, osr, brg;
+        if (!vcom_choose(itf, coding, &source, &osr, &brg)) {
             return;
         }
         uint32_t const parity = coding->parity == 1U ? kUSART_ParityOdd :
                                 coding->parity == 2U ? kUSART_ParityEven : kUSART_ParityDisabled;
         vcom_tx[itf].cfg = USART_CFG_PARITYSEL(parity) | USART_CFG_STOPLEN(coding->stop_bits == 2U) |
                           USART_CFG_DATALEN(coding->data_bits == 8U);
+        vcom_tx[itf].source = (uint8_t)source;
         vcom_tx[itf].osr = osr;
         vcom_tx[itf].brg = brg;
         vcom_tx[itf].recode = true;

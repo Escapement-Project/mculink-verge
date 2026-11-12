@@ -131,6 +131,13 @@ def check_dma(c, elf, symbols, offsets):
     c.note("console ERRINT/INTA recovery, idle ownership, next transfers, second-console isolation and renumbering")
 
 
+# A console's entry in src/vcom.c's `vcom`: the UART, its clock now, the two sources, its pins.
+VCOM_BYTES = 20
+# SYSCON's clock selectors (fsl_clock.c CLOCK_AttachClk) and Flexcomm 0's index among them.
+SYSCON_CLKSEL = 0x40000260
+FLEXCOMM_CLKSEL0 = 20
+
+
 def check_line(c, elf, symbols):
     for physical in ((0,), (1,), (0, 1)):
         for instance, port in enumerate(physical):
@@ -138,7 +145,10 @@ def check_line(c, elf, symbols):
             dma = Dma(probe)
             probe.uc.mem_write(probe.sym["vcom_count"], u32(len(physical)))
             for i, p in enumerate(physical):
-                probe.uc.mem_write(probe.sym["vcom"] + 8 * i, struct.pack("<2I", 0x40086000 + p * 4096, 96000000))
+                # The UART, the clock it runs from, FRO_HF_DIV and the main clock, and its pins.
+                pins = probe.sym["vcom2_uart" if p else "vcom_uart"]
+                probe.uc.mem_write(probe.sym["vcom"] + VCOM_BYTES * i,
+                                   struct.pack("<5I", 0x40086000 + p * 4096, 96000000, 96000000, 150000000, pins))
                 probe.uc.mem_write(probe.sym["vcom_rx"] + 16 * i, struct.pack("<3IB3x", 4 + p * 2, 77, 0, 0))
                 probe.uc.mem_write(probe.sym["vcom_tx"] + 20 * i, u32(5 + p * 2) + bytes(16))
                 probe.uc.mem_write(0x40086000 + p * 4096 + 8, u32(8))  # TXIDLE
@@ -158,6 +168,11 @@ def check_line(c, elf, symbols):
                 probe.uc.mem_write(SCRATCH, struct.pack("<IBBB", baud, stop, parity, bits))
                 probe.call("tud_cdc_line_coding_cb", instance, SCRATCH)
 
+            def accepted(baud, stop=0, parity=0, bits=8):
+                """Whether SET_LINE_CODING's data stage takes the coding or stalls."""
+                probe.uc.mem_write(SCRATCH, struct.pack("<IBBB", baud, stop, parity, bits))
+                return probe.call("tud_cdc_line_coding_request_cb", instance, SCRATCH) & 0xFF != 0
+
             def task():
                 probe.call("vcom_task")
                 c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC, "line coding blocked the console task")
@@ -170,7 +185,14 @@ def check_line(c, elf, symbols):
             probe.uc.mem_write(uart + 0x28, u32(15))
             probe.uc.mem_write(uart + 0xe00, u32(0x30003))  # FIFO/DMA configuration sentinel
             initial = bytes(probe.uc.mem_read(uart, 4096))
-            for args in ((0,), (1,), (30000000,), (0xffffffff,), (115200, 1), (115200, 0, 3), (115200, 0, 0, 6)):
+            # SET_LINE_CODING stalls what neither clock makes within 3%, and takes the rest: 10 Mbaud
+            # and 30 Mbaud only from the main clock.
+            for args, wanted in (((115200,), True), ((19200000,), True), ((10000000,), True), ((30000000,), True),
+                                 ((0,), False), ((1,), False), ((31000000,), False), ((0xffffffff,), False),
+                                 ((115200, 1), False), ((115200, 0, 3), False), ((115200, 0, 0, 6), False)):
+                c.check(accepted(*args) == wanted, f"console {instance}: SET_LINE_CODING {args} "
+                                                   f"{'stalled' if wanted else 'taken'}")
+            for args in ((0,), (1,), (31000000,), (0xffffffff,), (115200, 1), (115200, 0, 3), (115200, 0, 0, 6)):
                 request(*args)
                 task()
                 c.check(bytes(probe.uc.mem_read(uart, 4096)) == initial, "rejected line coding changed UART registers")
@@ -200,8 +222,25 @@ def check_line(c, elf, symbols):
             task()
             c.check(word(uart) == 5 and word(uart + 0x20) == 51 and word(uart + 0x28) == 15,
                     "console could not return to its original coding")
+            # 10 Mbaud runs from the main clock, 150 MHz / 15, and 115200 from FRO_HF_DIV again.
+            selector = SYSCON_CLKSEL + 4 * (FLEXCOMM_CLKSEL0 + port)
+            probe.uc.mem_write(selector, u32(7))
+            request(10000000)
+            task()
+            chosen = word(selector)
+            clock = word(probe.sym["vcom"] + VCOM_BYTES * instance + 4)
+            c.check(word(uart + 0x20) == 0 and word(uart + 0x28) == 14 and chosen == 0 and clock == 150000000,
+                    f"console {instance}: 10 Mbaud took BRG {word(uart + 0x20)}, OSR {word(uart + 0x28)},"
+                    f" selector {chosen}, {clock} Hz; wanted the main clock / 15")
+            request(115200)
+            task()
+            chosen = word(selector)
+            clock = word(probe.sym["vcom"] + VCOM_BYTES * instance + 4)
+            c.check(word(uart + 0x20) == 51 and word(uart + 0x28) == 15 and chosen == 3 and clock == 96000000,
+                    f"console {instance}: back to 115200 took selector {chosen}, {clock} Hz; wanted FRO_HF_DIV")
             probe.uc.hook_del(hook)
-    c.note("console line validation, TX drain, RX DMA quiescence, FIFO/ring preservation and renumbering")
+    c.note("console line validation, SET_LINE_CODING stalled for what neither clock makes, the main clock for"
+           " rates FRO_HF_DIV cannot make, TX drain, RX DMA quiescence, FIFO/ring preservation and renumbering")
 
 
 INTA, INTB, ENABLESET, ENABLECLR, INTENCLR, ABORT = 0x58, 0x60, 0x20, 0x28, 0x50, 0x78
