@@ -370,8 +370,8 @@ The probe adds up every calibrated pair itself, whether or not a host reads them
   zero. The pair count includes pairs with no current.
 - Time without pairs adds nothing. The probe pauses a capture for a moment while it reads the
   target's supply. It holds its conversions while it measures a target's read latency, how long
-  after a clock edge the target's data arrives: when a debugger connects at a fast clock, again when
-  a measurement contradicts itself, and when a host asks for a measurement
+  after a clock edge the target's data arrives: when a debugger connects at a fast clock or changes
+  to one, again when a measurement contradicts itself, and when a host asks for a measurement
   ([Design](../DESIGN.md#vendor-commands)).
 - A stop or a pause counts every complete pair the probe has converted. A part pair is dropped.
 - The probe's own pauses do not restart the sequence numbers.
@@ -798,9 +798,9 @@ its pairs are evenly spaced.
 
 The probe pauses the capture for a moment when it reads the target's supply voltage, and the next
 message sets flag bit 0. It holds its conversions while it measures a read latency, as when a
-debugger connects at a fast clock, and the next message sets bit 1. Either way, the message's time
-shows how long the gap was. Only a pause ends a run of pairs for step 5 of [Converting a
-pair](#converting-a-pair).
+debugger connects at a fast clock or changes to one, and the next message sets bit 1. Either way,
+the message's time shows how long the gap was. Only a pause ends a run of pairs for step 5 of
+[Converting a pair](#converting-a-pair).
 
 A pair read on the high range is under range when its current code is less than 64 codes above the
 high range's no-load reading at the last calibration. Calibration keeps no point there, and the

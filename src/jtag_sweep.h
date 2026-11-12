@@ -22,11 +22,12 @@ extern struct jtag_sweep_result jtag_sweep_last;
 /** Whether the probe measures the latency on its own. A host that sets a latency clears it. */
 extern bool jtag_sweep_automatic;
 
-/** Watches for DAP_JTAG_Configure. Every command ARM's code serves passes through here first. */
+/** Watches for DAP_JTAG_Configure, and DAP_SWJ_Clock for a new clock. Every command ARM's code
+ * serves passes through here first. */
 void jtag_sweep_watch(const uint8_t* request);
 
-/** A DAP_JTAG_Configure since the host's last DAP_Transfer or the last measurement. Read on every
- * DAP_Transfer, from SRAM. */
+/** A DAP_JTAG_Configure or a new clock since the host's last DAP_Transfer or the last measurement.
+ * Read on every DAP_Transfer, from SRAM. */
 extern bool jtag_sweep_configured;
 
 /** Says whether a DAP_Transfer on the JTAG port has to go to jtag_sweep_connect first. A host

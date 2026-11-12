@@ -35,8 +35,11 @@ struct known {
 };
 
 struct swd_connect swd_sweep_line;
+bool swd_sweep_reclocked;
 static struct known known[KNOWN_TARGETS];
 static uint32_t known_count;
+/** The clock the host last asked for, to tell a change from the same one again. */
+static uint32_t asked_hz;
 
 static uint32_t sweep_words[SWEEP_READS];
 
@@ -83,6 +86,14 @@ void swd_sweep_watch(const uint8_t* request) {
         swd_connect_sequence(&swd_sweep_line, request + 2, count);
     } else if (*request == ID_DAP_Connect) {
         known_count = 0U;
+    } else if (*request == ID_DAP_SWJ_Clock) {
+        // A clock with less margin than the last one can need the latency the last one did not.
+        const uint32_t hz = (uint32_t)request[1] | ((uint32_t)request[2] << 8) | ((uint32_t)request[3] << 16) |
+                            ((uint32_t)request[4] << 24);
+        if (hz != asked_hz) {
+            asked_hz = hz;
+            swd_sweep_reclocked = true;
+        }
     }
 }
 
@@ -159,26 +170,45 @@ static uint32_t run_transfer(const uint8_t* request, uint8_t* response) {
     return (1U << 16) + 1U + SWD_TransferCommand(request + 1, response + 1);
 }
 
-/** Out of line and in flash: inlined, it would take the measurement into SRAM with it. */
-__attribute__((noinline)) uint32_t swd_sweep_connect(const uint8_t* request, uint8_t* response) {
-    swd_sweep_line.reset = false;
-    // [1] the DAP index, [2] the transfer count, [3] the first transfer's request. With nothing
-    // generated the transfer refuses, which must not read as a misread DPIDR worth a line reset.
-    if (!swd_sweep_automatic || (request[2] == 0U) || ((request[3] & ~DAP_TRANSFER_TIMESTAMP) != DPIDR_READ) ||
-        !swd_gen_ready()) {
-        return run_transfer(request, response);
-    }
-    bool measured = false;
+/** The latency for the target the last line reset selected, at the clock in use: what it measured
+ *  for that target since the host's DAP_Connect, or a measurement where the generated reads leave
+ *  too little margin. True if it measured. */
+static bool settle_latency(void) {
     const struct known* target = known_target();
     if (target != nullptr) {
         if (target->latency != swd_gen_latency) {
             swd_gen_latency = target->latency;
             swd_gen_changed();
         }
-    } else if (unsure_latency()) {
-        measure_target();
-        measured = true;
+        return false;
     }
+    if (unsure_latency()) {
+        measure_target();
+        return true;
+    }
+    return false;
+}
+
+/** Out of line and in flash: inlined, it would take the measurement into SRAM with it. */
+__attribute__((noinline)) uint32_t swd_sweep_connect(const uint8_t* request, uint8_t* response) {
+    bool const reset = swd_sweep_line.reset;
+    bool const reclocked = swd_sweep_reclocked;
+    swd_sweep_line.reset = false;
+    swd_sweep_reclocked = false;
+    // [1] the DAP index, [2] the transfer count, [3] the first transfer's request. With nothing
+    // generated the transfer refuses, which must not read as a misread DPIDR worth a line reset.
+    if (!swd_sweep_automatic || (request[2] == 0U) || !swd_gen_ready()) {
+        return run_transfer(request, response);
+    }
+    // A new clock with no line reset, or no DPIDR read after one: the measurement's own DPIDR reads
+    // change nothing on the target, but without the host's DPIDR read there is no failure to rescue.
+    if (!reset || ((request[3] & ~DAP_TRANSFER_TIMESTAMP) != DPIDR_READ)) {
+        if (reclocked) {
+            (void)settle_latency();
+        }
+        return run_transfer(request, response);
+    }
+    bool const measured = settle_latency();
     const uint32_t length = run_transfer(request, response);
     // [1] the transfers that completed: none, so the DPIDR read did not answer right.
     if (measured || (response[1] != 0U)) {
@@ -200,6 +230,8 @@ __attribute__((noinline)) uint32_t swd_sweep_connect(const uint8_t* request, uin
 
 void swd_sweep(void) {
     const uint32_t start = DWT->CYCCNT;
+    // Measured at the clock in use, whoever asked.
+    swd_sweep_reclocked = false;
     struct sweep_context context = {.config = swd_gen_inputs()};
     context.config.data_phase = 1U;
     // The hold below keeps DMA0 off the port.

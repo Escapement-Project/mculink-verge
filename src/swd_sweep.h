@@ -21,15 +21,19 @@ extern struct swd_sweep_result swd_sweep_last;
 /** Whether the probe measures the latency on its own. A host that sets a latency clears it. */
 extern bool swd_sweep_automatic;
 
-/** Watches DAP_SWJ_Sequence for a line reset, and forgets what it measured at DAP_Connect. Every
- * command ARM's code serves passes through here first. */
+/** Watches DAP_SWJ_Sequence for a line reset and DAP_SWJ_Clock for a new clock, and forgets what it
+ * measured at DAP_Connect. Every command ARM's code serves passes through here first. */
 void swd_sweep_watch(const uint8_t* request);
 
 /** What the host's DAP_SWJ_Sequence bits have done. Read on every DAP_Transfer, from SRAM. */
 extern struct swd_connect swd_sweep_line;
 
-/** Says whether a DAP_Transfer has to go to swd_sweep_connect first: the first since a line reset. */
-static inline bool swd_sweep_pending(void) { return swd_sweep_line.reset; }
+/** A DAP_SWJ_Clock that changed the clock since the last DAP_Transfer. */
+extern bool swd_sweep_reclocked;
+
+/** Says whether a DAP_Transfer has to go to swd_sweep_connect first: the first since a line reset,
+ * or since the host changed the clock. */
+static inline bool swd_sweep_pending(void) { return swd_sweep_line.reset || swd_sweep_reclocked; }
 
 /** The first DAP_Transfer after a line reset, run here in place of the usual route; returns what
  * DAP_ProcessCommand does. If it starts with a DPIDR read, which is how a host connects, and the

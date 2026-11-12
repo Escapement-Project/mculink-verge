@@ -56,11 +56,23 @@ static void try_latency(uint32_t period, uint32_t latency, struct latency_try* o
     out->word = word;
 }
 
+/** The clock the host last asked for, to tell a change from the same one again. */
+static uint32_t asked_hz;
+
 void jtag_sweep_watch(const uint8_t* request) {
     if (*request == ID_DAP_JTAG_Configure) {
         jtag_sweep_configured = true;
     } else if (*request == ID_DAP_Connect) {
         jtag_sweep_configured = false;
+    } else if (*request == ID_DAP_SWJ_Clock) {
+        // A clock with less margin than the last one can need the latency the last one did not, so
+        // the next transfer settles it as the first after DAP_JTAG_Configure does.
+        const uint32_t hz = (uint32_t)request[1] | ((uint32_t)request[2] << 8) | ((uint32_t)request[3] << 16) |
+                            ((uint32_t)request[4] << 24);
+        if (hz != asked_hz) {
+            asked_hz = hz;
+            jtag_sweep_configured = true;
+        }
     }
 }
 

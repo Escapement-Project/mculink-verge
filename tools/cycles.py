@@ -1738,6 +1738,34 @@ def connect_rescued(elf: str, model: Model, latency: int, hz: int) -> list[str]:
     return []
 
 
+def clock_raise_measures(elf: str, model: Model, latency: int, slow_hz: int, fast_hz: int) -> list[str]:
+    """A host that connects slowly, where the default latency reads a target right and nothing is
+    measured, then raises the clock with no line reset: its next transfer has to measure
+    first and read right, and asking for the same clock again measures nothing more."""
+    probe = timed_dpidr_target(elf, model, latency, slow_hz)
+    tag = f"connecting at {slow_hz / 1e6:g} MHz, then {fast_hz / 1e6:g} MHz, to latency {latency}"
+    probe.begin()
+    probe.command(bytes([ID_SWJ_SEQUENCE, 54]) + bytes([0xFF] * 6 + [0x07]))  # 51 high, 3 low
+    reply = probe.command(bytes([ID_TRANSFER, 0, 1, 0x02]))
+    probe.end()
+    state = probe.command(bytes([ID_VENDOR_SWD_GEN, 0, 0]))
+    if reply[1:3] != bytes([1, 1]) or int.from_bytes(state[42:46], "little") != 0:
+        return [f"{tag}: the slow connection answered {reply[1:7].hex()} after "
+                f"{int.from_bytes(state[42:46], 'little')} measurements"]
+    for asked in (1, 2):
+        probe.command(bytes([ID_SWJ_CLOCK]) + u32(fast_hz))
+        probe.begin()
+        reply = probe.command(bytes([ID_TRANSFER, 0, 1, 0x02]))
+        probe.end()
+        state = probe.command(bytes([ID_VENDOR_SWD_GEN, 0, 0]))
+        measurements = int.from_bytes(state[42:46], "little")
+        if reply[1:3] != bytes([1, 1]) or int.from_bytes(reply[3:7], "little") != DPIDR_MSPM0L1306:
+            return [f"{tag}, asked {asked}: the read answered {reply[1:7].hex()}"]
+        if state[2] != latency or measurements != 1:
+            return [f"{tag}, asked {asked}: latency {state[2]} after {measurements} measurements"]
+    return []
+
+
 def measure_latency(elf: str, model: Model, latency: int, hz: int) -> list[str]:
     """Vendor 0x89's measurement against a target that answers `latency` cycles after each edge."""
     word = DPIDR_MSPM0L1306
@@ -1835,6 +1863,33 @@ def jtag_connect(elf: str, model: Model, wire: str, latency: int, hz: int, rescu
         return [f"{tag}: the first DAP_Transfer answered {reply.hex()}"]
     if in_use != latency_in_use(wire, latency) or measurements != 1 or rescues != (1 if rescued else 0):
         return [f"{tag}: latency {in_use} after {measurements} measurements, {rescues} rescues"]
+    return jtag_read_right(probe, tag)
+
+
+def jtag_clock_raise(elf: str, model: Model, wire: str, latency: int, slow_hz: int, fast_hz: int) -> list[str]:
+    """The same over JTAG or cJTAG: configured and read slowly, then the clock raised with no
+    DAP_JTAG_Configure. The next transfer measures first, and reads right."""
+    probe = timed_idcode_target(elf, model, wire, latency, slow_hz)
+    tag = f"{wire} at {slow_hz / 1e6:g} MHz, then {fast_hz / 1e6:g} MHz, to latency {latency}"
+    probe.command(bytes([ID_JTAG_CONFIGURE, 1, 4]))
+    probe.begin()
+    reply = probe.command(bytes([ID_TRANSFER, 0, 2, AP_DRW_READ, AP_DRW_READ]))
+    probe.end()
+    state = probe.command(bytes([ID_VENDOR_JTAG_GEN, 0, 0, 0]))
+    before = int.from_bytes(state[44:48], "little")
+    if reply != bytes([ID_TRANSFER, 2, 1]) + u32(JTAG_WORD) * 2:
+        return [f"{tag}: the slow transfer answered {reply.hex()}"]
+    probe.command(bytes([ID_SWJ_CLOCK]) + u32(fast_hz))
+    probe.begin()
+    reply = probe.command(bytes([ID_TRANSFER, 0, 2, AP_DRW_READ, AP_DRW_READ]))
+    probe.end()
+    state = probe.command(bytes([ID_VENDOR_JTAG_GEN, 0, 0, 0]))
+    measurements = int.from_bytes(state[44:48], "little")
+    in_use = state[2] if wire in TWO_PIN else state[3]
+    if reply != bytes([ID_TRANSFER, 2, 1]) + u32(JTAG_WORD) * 2:
+        return [f"{tag}: the fast transfer answered {reply.hex()}"]
+    if in_use != latency_in_use(wire, latency) or measurements != before + 1:
+        return [f"{tag}: latency {in_use} after {measurements - before} measurements at the new clock"]
     return jtag_read_right(probe, tag)
 
 
@@ -2042,6 +2097,7 @@ def check(
             failures += measure_latency(elf, model, latency, hz)
         failures += connect_measures(elf, model, 11, 37_500_000)
         failures += connect_rescued(elf, model, 12, 25_000_000)
+        failures += clock_raise_measures(elf, model, 11, 1_000_000, 37_500_000)
     # The same with IDCODE reads, with JTAG, OScan1, and OScan5 and OScan6 in Shift.
     if "jtag_sweep_last" in symbols(elf):
         if "jtag" in wires:
@@ -2049,6 +2105,7 @@ def check(
                 failures += jtag_measure_latency(elf, model, "jtag", latency, hz)
             failures += jtag_connect(elf, model, "jtag", 13, 30_000_000, rescued=False)
             failures += jtag_connect(elf, model, "jtag", 16, 10_000_000, rescued=True)
+            failures += jtag_clock_raise(elf, model, "jtag", 13, 1_000_000, 30_000_000)
         for wire in ("cjtag", "cjtag5", "cjtag6"):
             if wire in wires:
                 failures += jtag_measure_latency(elf, model, wire, 10, 50_000_000)

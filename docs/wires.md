@@ -35,7 +35,7 @@ cycles, and a 4-cycle clock leaves no room for that.
 ## JTAG
 
 The probe has to sample TDO after the target drives it, so a slow target lengthens the clock. The
-probe measures that delay when a host connects:
+probe measures that delay when a host connects, and again when the host changes the clock:
 
 | the target's TDO delay, in core cycles | the clock |
 | --- | --- |
