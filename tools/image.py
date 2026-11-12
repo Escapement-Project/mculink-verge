@@ -1589,6 +1589,10 @@ def check_board(c: Checker, elf: str, request_slots: int) -> None:
             c.check(isp == (1, 1) and iocon[1] == iocon[0],
                     f"{name} board: the target's ISP pin is not released: P0_14 level {isp[0]}, output {isp[1]}, "
                     f"IOCON {iocon[1]:#x} against P0_13's {iocon[0]:#x}")
+        # IOCON MODE, bits 5:4: 1 pull-down, 2 pull-up. A pin the firmware releases still drives the
+        # Pro's connector through a fixed-direction buffer, so its pull is the level the target sees.
+        modes = [(int.from_bytes(probe.uc.mem_read(IOCON + 4 * pin, 4), "little") >> 4) & 3 for pin in (0, 1)]
+        c.check(modes == [1, 2], f"{name} board: released TCK and TDI pulled {modes}, wanted TCK down (1) and TDI up (2)")
         reply = probe.command(bytes([0x82]))
         flags, length = reply[7], reply[8]
         reported = reply[9 + length] if len(reply) > 9 + length else None

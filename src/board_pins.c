@@ -28,11 +28,10 @@ __attribute__((noinline)) void board_timestamp_init(void) {
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 }
 
-/** Digital, no pull, standard slew: what every pin here wants.
+/** Digital, no pull, standard slew: what every pin here but TCK and TDI wants.
  *
- * The buffers on this board give the drive strength, so nothing here needs a pull resistor. The
- * two TXEN pins are the exception that matters: they must come up low, because a buffer enabled
- * before the firmware knows the port state would drive the target's wire.
+ * The buffers on this board give the drive strength. The two TXEN pins must come up low, because a
+ * buffer enabled before the firmware knows the port state would drive the target's wire.
  */
 #define PIN_MODE (IOCON_MODE_INACT | IOCON_DIGITAL_EN)
 
@@ -70,6 +69,11 @@ __attribute__((noinline)) void board_debug_pins_init(void) {
     for (size_t i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) {
         IOCON_PinMuxSet(IOCON, DBGIF_PORT, pins[i], DEBUG_PIN_MODE);
     }
+    // On the Pro one buffer with a fixed direction drives TCK and TDI onto the connector from these
+    // pins (BOARDS.md), so a pin the firmware releases still sets what the target sees. The pulls
+    // give it a level: TCK low, so no clock reaches the target, and TDI high.
+    IOCON_PinMuxSet(IOCON, DBGIF_PORT, DBGIF_TCK_SWCLK_PIN, IOCON_FUNC10 | IOCON_MODE_PULLDOWN | IOCON_DIGITAL_EN);
+    IOCON_PinMuxSet(IOCON, DBGIF_PORT, DBGIF_TDI_PIN, IOCON_FUNC10 | IOCON_MODE_PULLUP | IOCON_DIGITAL_EN);
     // PIO0_13 is one of the two I2C pins, and its IOCON word has an EGP bit that the others lack:
     // clear, the pin is an open-drain I2C cell that cannot drive high. RESET_TXEN would then never
     // turn the reset buffer round, and nRESET would never reach the target.

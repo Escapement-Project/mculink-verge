@@ -174,10 +174,12 @@ formats the probe has by trying them on a JTAG connection, before it activates t
   `DAP_ExecuteCommands`, such as `[0x7F, 2, 0x02, 2, 0x95, 2]` for OScan2, the pins stay that way
   only until the probe runs the second command. Sent apart, they leave TCKC high for at least a USB
   round trip, and after 1 ms of that a TAP.7 in power-control mode 0 may power down (18.10).
-- **Into an OScan format,** TCKC goes low and TDI is let go. After a session that left TCKC low,
-  `DAP_Connect(2)` and `0x95` make one TCKC period between them. On a fresh connection TCKC already
-  rests high on the target's pull-up, and the target sees only the fall. Either way, a target
-  sampling TMSC on the falling edge reads 1 there. Back to 0, TDI is driven high again.
+- **Into an OScan format,** TCKC goes low and TDI is let go, to the probe's pull-up. After a
+  session that left TCKC low, `DAP_Connect(2)` and `0x95` make one TCKC period between them. So
+  does a fresh connection on the Pro: its buffer drives TCK and TDI onto the connector even while
+  the probe has let them go, and TCK's pull-down holds TCKC low there. Elsewhere a fresh connection's
+  TCKC may rest high on the target's pull-up, and the target then sees only the fall. Either way, a
+  target sampling TMSC on the falling edge reads 1 there. Back to 0, TDI is driven high again.
 - **From one OScan format to another,** nothing is sent. The host has already switched the target,
   with STFMT and its check packet.
 - **`0x95`, `DAP_Connect` and `DAP_Disconnect` send no TCKC period of their own.** TCKC can still
