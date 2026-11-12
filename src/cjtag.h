@@ -1,10 +1,10 @@
 /** IEEE 1149.7 (cJTAG) support, OScan1, OScan2, OScan5 and OScan6 formats.
  *
  * The interface is ARM's proposed DAP_JTAG_Format and DAP_JTAG_Escape (CMSIS-DAP#8, revision 0.1)
- * with Verge's extensions, at vendor IDs until ARM assigns them. The host connects with
- * DAP_Connect(2), selects a format on that connection, and drives the target's activation itself:
- * escapes, and raw TMSC bits through DAP_SWJ_Sequence, which with a format selected changes TMSC only
- * while TCKC is low. A probe cannot tell from the wire whether a target speaks JTAG or cJTAG, so
+ * with Verge's extensions, at vendor IDs until ARM assigns them. The host selects a format and
+ * connects with DAP_Connect(2), one DAP_ExecuteCommands for both, and drives the target's activation
+ * itself: escapes, and raw TMSC bits through DAP_SWJ_Sequence, which with a format selected changes
+ * TMSC only while TCKC is low. A probe cannot tell from the wire whether a target speaks JTAG or cJTAG, so
  * nothing here guesses.
  */
 #ifndef CJTAG_H
@@ -23,19 +23,28 @@
     ((1UL << CJTAG_OSCAN1) | (1UL << CJTAG_OSCAN2) | (1UL << CJTAG_OSCAN5) | (1UL << CJTAG_OSCAN6))
 
 /** DAP_JTAG_Format's values: 0 conventional JTAG, n for OScan n, which is SCNFMT 8 + n; bit n of
- * this is format n taken. A host finds them by trying each on a JTAG connection. */
+ * this is format n taken. A host finds them by trying each while disconnected, then Format 0. */
 #define CJTAG_SELECT_JTAG 0U
 #define CJTAG_SELECTABLE ((1UL << 1) | (1UL << 2) | (1UL << 5) | (1UL << 6))
 
-/** DAP_JTAG_Format: the format of the live JTAG connection, conventional JTAG or an OScan format,
- * at once. Every connection starts conventional, so nothing outlives it. It sends no TCKC period:
- * into an OScan format TCKC goes low and TDI is let go, and framing starts from Run-Test/Idle; back
- * to conventional TDI is driven again. In OScan2 and OScan6 the target's last move outside Shift
- * completes at the next TCKC rise (1149.7 25.6.1), so the host, which knows the TAP state, clocks one
- * more frame first. A change from one OScan format to another sends nothing either: the host's STFMT
- * and check packet have already moved the target. False, and nothing changed, with no JTAG
- * connection or for a value not offered. */
+/** DAP_JTAG_Format: conventional JTAG or an OScan format. Disconnected, it selects the format the
+ * next DAP_Connect(2) starts in, and moves no pin. On a JTAG connection it changes the live format at
+ * once, with no TCKC period: into an OScan format TCKC goes low and TDI is let go, and framing starts
+ * from Run-Test/Idle; back to conventional TDI is driven again. In OScan2 and OScan6 the target's last
+ * move outside Shift completes at the next TCKC rise (1149.7 25.6.1), so the host, which knows the TAP
+ * state, clocks one more frame first. A change from one OScan format to another sends nothing either:
+ * the host's STFMT and check packet have already moved the target. False, and nothing changed, over
+ * SWD or for a value not offered. */
 bool cJTAG_Select(uint32_t value);
+/** DAP_Disconnect: framing stops, as cJTAG_Deactivate stops it, and a selection made while
+ * disconnected is cleared, as at power-up. */
+void cJTAG_Disconnect(void);
+/** Every DAP_Connect the probe accepts uses up the selection: this returns it, 0 or n for OScan n,
+ * and leaves conventional JTAG for the next connection. */
+uint32_t cJTAG_Take(void);
+/** DAP_Connect(2) with OScan `value` taken: cJTAG's pins (PORT_CJTAG_CONNECT), with no conventional
+ * JTAG on them first, then framing from Run-Test/Idle. The caller has stopped any framing before. */
+void cJTAG_Connect(uint32_t value);
 
 /** DAP_JTAG_Escape: one TCKC period with `edges` TMSC transitions while TCKC is high. TMSC goes to
  * `level` a quarter period after the last fall and a quarter period before the rise; an odd count

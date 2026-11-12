@@ -435,10 +435,37 @@ __STATIC_INLINE void PORT_CJTAG_TO_JTAG (void) {
   DBGIF_TDI_GPIO->DIRSET[DBGIF_TDI_PORT] = (1U << DBGIF_TDI_PIN);
 }
 
+/** DAP_Connect port 2 straight into an OScan format selected while disconnected. TCKC goes low
+before TMSC is driven high, so the target sees no TMSC edge while TCKC is high, which it would count
+as an escape edge. TDI and TDO are left undriven: cJTAG does not use them. */
+__STATIC_INLINE void PORT_CJTAG_CONNECT (void) {
+
+  // TCKC, low
+  DBGIF_TCK_SWCLK_GPIO->CLR[DBGIF_TCK_SWCLK_PORT]    = (1U << DBGIF_TCK_SWCLK_PIN);
+  DBGIF_TCK_SWCLK_GPIO->DIRSET[DBGIF_TCK_SWCLK_PORT] = (1U << DBGIF_TCK_SWCLK_PIN);
+
+  // TMSC, high
+  DBGIF_TMS_SWDIO_GPIO->SET[DBGIF_TMS_SWDIO_PORT]           = (1U << DBGIF_TMS_SWDIO_PIN);
+  DBGIF_TMS_SWDIO_GPIO->DIRSET[DBGIF_TMS_SWDIO_PORT]        = (1U << DBGIF_TMS_SWDIO_PIN);
+  DBGIF_TMS_SWDIO_TXEN_GPIO->SET[DBGIF_TMS_SWDIO_TXEN_PORT] = (1U << DBGIF_TMS_SWDIO_TXEN_PIN);
+
+  // nRESET
+  DBGIF_RESET_GPIO->SET[DBGIF_RESET_PORT]           = (1U << DBGIF_RESET_PIN);
+  DBGIF_RESET_GPIO->DIRSET[DBGIF_RESET_PORT]        = (1U << DBGIF_RESET_PIN);
+  DBGIF_RESET_TXEN_GPIO->SET[DBGIF_RESET_TXEN_PORT] = (1U << DBGIF_RESET_TXEN_PIN);
+
+  // TDI and TDO
+  DBGIF_TDI_GPIO->DIRCLR[DBGIF_TDI_PORT] = (1U << DBGIF_TDI_PIN);
+  DBGIF_TDO_SWO_GPIO->DIRCLR[PIN_SWO_TDO_PORT] = (1U << PIN_SWO_TDO_PIN);
+}
+
 #ifdef ARM_CJTAG_TEST
-/** The test build of ARM's cJTAG (CMake ARM_CJTAG): its two hooks are the transitions above. */
+/** The test build of ARM's cJTAG (CMake ARM_CJTAG): its three hooks are the ones above. */
 #define DAP_CJTAG 1
 __STATIC_INLINE void PORT_CJTAG_SETUP (void) {
+  PORT_CJTAG_CONNECT();
+}
+__STATIC_INLINE void PORT_CJTAG_ENTER (void) {
   PORT_CJTAG_FROM_JTAG();
 }
 __STATIC_INLINE void PORT_CJTAG_EXIT (void) {

@@ -31,5 +31,8 @@ void cJTAG_Escape(uint32_t edges, uint32_t level) {
     (void)arm_DAP_ProcessCommand(request, response);
 }
 
-// ARM's DAP_Connect and DAP_Disconnect end the format themselves.
+// ARM's DAP_Connect and DAP_Disconnect end the format, and use up or clear its selection, themselves.
 void cJTAG_Deactivate(void) {}
+void cJTAG_Disconnect(void) {}
+uint32_t cJTAG_Take(void) { return CJTAG_SELECT_JTAG; }
+void cJTAG_Connect(uint32_t value) { (void)value; }

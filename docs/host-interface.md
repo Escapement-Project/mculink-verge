@@ -90,7 +90,7 @@ Send `[0x82]`. The reply's fields, counted from the byte after the ID:
 | Offset | Field |
 | --- | --- |
 | 0 to 4 | `CJTAG` in ASCII |
-| 5 | Format version: 7 |
+| 5 | Format version: 8 |
 | 6 | Capability flags |
 | 7 | Length of the build string, `n` |
 | 8 to 7+n | The build string, `n` bytes, with no terminator |
@@ -98,8 +98,9 @@ Send `[0x82]`. The reply's fields, counted from the byte after the ID:
 | 9+n to 12+n | 0, u32 |
 | 13+n to 16+n | Extended capabilities, u32 |
 
-Format 7 holds every field above. From format 7 the probe has `0x95` and `0x96`
-([cJTAG](#cjtag-0x95-and-0x96)). On the HID interface the reply is padded to 64 bytes, and the
+Format 8 holds every field above. From format 7 the probe has `0x95` and `0x96`
+([cJTAG](#cjtag-0x95-and-0x96)); from format 8, `0x95` sent while disconnected selects the format
+the next `DAP_Connect(2)` starts in. On the HID interface the reply is padded to 64 bytes, and the
 bytes after the extended capabilities are padding. A later format adds fields only at the end, and
 raises the format version, so read the fields you know and ignore any after them.
 
@@ -158,40 +159,36 @@ Send `[0x95, format]`. The reply is `[0x95, status]`.
 | 0 | Conventional JTAG |
 | 1, 2, 5, 6 | OScan1, OScan2, OScan5, OScan6: 1149.7's SCNFMT 9, 10, 13 and 14 |
 
-Any other value answers `DAP_ERROR` and changes nothing. So does any value without a JTAG
-connection, and every value but 0 on an on-board MCU-Link, which has no cJTAG. A host finds which
-formats the probe has by trying them on a JTAG connection, before it activates the target:
-`DAP_Connect(2)`, then OScan1, 2, 5 and 6, then 0, fit in one `DAP_ExecuteCommands`.
+Any other value answers `DAP_ERROR` and changes nothing. So does any value over SWD, and every
+value but 0 on an on-board MCU-Link, which has no cJTAG. A host finds which formats the probe has
+by trying them while disconnected: OScan1, 2, 5 and 6, then 0, fit in one `DAP_ExecuteCommands`,
+and move no pin.
 
-- **The format belongs to the JTAG connection.** `0x95` changes the format of the live
-  `DAP_Connect(2)` connection, at once. Every connection the probe accepts starts in conventional
-  JTAG, and `DAP_Disconnect` ends the format with the connection. So nothing one session selects
-  outlives its connection: the next host's `DAP_Connect` starts conventional. A `DAP_Connect` the
-  probe refuses changes nothing.
-- **A host connects, then selects.** `DAP_Connect(2)` sets up the pins for conventional JTAG, as
-  Arm's does: TCK, TMS and TDI driven high. After a session that left TCKC low, TCKC rises, and
-  then TMSC may rise once while TCKC is high. One edge is not an escape. In one
-  `DAP_ExecuteCommands`, such as `[0x7F, 2, 0x02, 2, 0x95, 2]` for OScan2, the pins stay that way
-  only until the probe runs the second command. Sent apart, they leave TCKC high for at least a USB
-  round trip, and after 1 ms of that a TAP.7 in power-control mode 0 may power down (18.10).
-- **Into an OScan format,** TCKC goes low and TDI is let go, to the probe's pull-up. After a
-  session that left TCKC low, `DAP_Connect(2)` and `0x95` make one TCKC period between them. So
-  does a fresh connection on the Pro: its buffer drives TCK and TDI onto the connector even while
-  the probe has let them go, and TCK's pull-down holds TCKC low there. Elsewhere a fresh connection's
-  TCKC may rest high on the target's pull-up, and the target then sees only the fall. Either way, a
-  target sampling TMSC on the falling edge reads 1 there. Back to 0, TDI is driven high again.
+- **Selected while disconnected, a format waits for the connection.** `0x95` with no connection
+  moves no pin, and the next `DAP_Connect(2)` starts in that format. Every `DAP_Connect` the probe
+  accepts uses the selection up, whichever port it opens, so a host that connects without selecting
+  gets conventional JTAG. `DAP_Disconnect` clears the selection, and a `DAP_Connect` the probe
+  refuses changes nothing. Send the two together, such as `[0x7F, 2, 0x95, 2, 0x02, 2]` for OScan2.
+- **A connection into an OScan format** sets the pins straight to cJTAG: TCKC driven low first,
+  then TMSC driven high, and TDI let go to the probe's pull-up. No conventional JTAG goes onto the
+  wire, and TCKC makes no period. On the Pro, TCK's pull-down already holds TCKC low. Elsewhere TCKC
+  may rest high on the target's pull-up before the connection, and the target then sees one fall; a
+  target sampling TMSC on the falling edge reads 1 there.
+- **On a JTAG connection, `0x95` changes the format at once.** A connection in conventional JTAG
+  has its pins set up as Arm's are: TCK, TMS and TDI driven high. Into an OScan format TCKC goes low
+  and TDI is let go, so TCKC makes one fall. Back to 0, TDI is driven high again.
 - **From one OScan format to another,** nothing is sent. The host has already switched the target,
   with STFMT and its check packet.
 - **`0x95`, `DAP_Connect` and `DAP_Disconnect` send no TCKC period of their own.** TCKC can still
-  rise once. `DAP_Connect` sets the clock pin high, as Arm's does.
+  rise once. `DAP_Connect` in conventional JTAG sets the clock pin high, as Arm's does.
   After `DAP_Disconnect` TCKC rests on the target's pull-up. In OScan2 and OScan6 the last frame
   outside Shift moves the target's TAP at the next TCKC rise, whatever drives it (1149.7 25.6.1).
   So before it stops framing, a host sends one more frame, and the move lands on a rise it chose:
   TMS 0 in Run-Test/Idle, Pause-DR or Pause-IR, or TMS 1 in Test-Logic-Reset. That frame's own move
   keeps the TAP where it is, so whichever rise completes it changes nothing.
 - **OScan2, 5 and 6** frame each JTAG clock by the state of the target's TAP, so the probe follows it
-  from Run-Test/Idle, starting at the selection. Select them with the TAP in Run-Test/Idle. Sending
-  the same value again restates it.
+  from Run-Test/Idle, starting where the format takes effect: at the connection, or at `0x95` on a
+  live one. Have the TAP in Run-Test/Idle then. Sending the same value again restates it.
 
 With an OScan format selected on a JTAG connection, `DAP_JTAG_Sequence`, `DAP_JTAG_IDCODE`,
 `DAP_Transfer`, `DAP_TransferBlock` and `DAP_WriteABORT` go out as frames. `DAP_SWJ_Sequence` sends

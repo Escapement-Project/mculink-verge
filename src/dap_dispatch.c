@@ -52,7 +52,8 @@ extern uint32_t arm_DAP_ProcessCommand(const uint8_t* request, uint8_t* response
  *  the SRAM dispatch below it would take all of DAP.c into SRAM with it.
  *
  * The wire changes only here, in DAP_Connect, DAP_Disconnect and vendor 0x95 (DAP_JTAG_Format), so
- * this is where the FUNC LED learns it. */
+ * this is where the FUNC LED learns it. DAP_Connect(2) with an OScan format selected is Verge's: ARM's
+ * handler would drive TDI and leave TCK high. */
 __attribute__((noinline)) static uint32_t arm_command(const uint8_t* request, uint8_t* response) {
 #ifdef SWD_CODEGEN
     swd_sweep_watch(request);
@@ -62,14 +63,26 @@ __attribute__((noinline)) static uint32_t arm_command(const uint8_t* request, ui
 #endif
     const bool connect = *request == ID_DAP_Connect;
     const uint32_t port = (connect && (request[1] == DAP_PORT_AUTODETECT)) ? DAP_DEFAULT_PORT : request[1];
-    // Arm's DAP_Connect refuses any other port and changes nothing, so framing stays too.
+    // Arm's DAP_Connect refuses any other port and changes nothing, so cJTAG's state stays too.
     const bool connecting = connect && ((port == DAP_PORT_SWD) || (port == DAP_PORT_JTAG));
-    // The pins are about to be set up again or let go, and every connection starts conventional:
-    // stop framing first.
-    if (connecting || (*request == ID_DAP_Disconnect)) {
+    // The pins are about to be set up again or let go: stop framing first. A connection uses up the
+    // selection, and a disconnect clears it.
+    uint32_t selection = CJTAG_SELECT_JTAG;
+    if (connecting) {
         cJTAG_Deactivate();
+        selection = cJTAG_Take();
+    } else if (*request == ID_DAP_Disconnect) {
+        cJTAG_Disconnect();
     }
-    const uint32_t result = arm_DAP_ProcessCommand(request, response);
+    uint32_t result;
+    if (connecting && (port == DAP_PORT_JTAG) && (selection != CJTAG_SELECT_JTAG)) {
+        cJTAG_Connect(selection);
+        response[0] = ID_DAP_Connect;
+        response[1] = DAP_PORT_JTAG;
+        result = (2U << 16) | 2U;
+    } else {
+        result = arm_DAP_ProcessCommand(request, response);
+    }
     if (connect || (*request == ID_DAP_Disconnect) || (*request == ID_DAP_Vendor21)) {
         if (DAP_Data.debug_port == DAP_PORT_SWD) {
             led_wire(LED_WIRE_SWD);

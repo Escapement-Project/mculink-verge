@@ -107,9 +107,12 @@
  * is how a host knows the two are there; it finds the formats by trying them. Hosts that
  * know only 0x83 take cJTAG from flag bits 0 and 4 and the formats at [9+n], and none checks the
  * version, so format 7 clears all three: such a host sees no cJTAG and never sends 0x83.
+ *
+ * Format 8 changes no field: it says ID_VENDOR_JTAG_FORMAT, sent while disconnected, selects the format
+ * the next DAP_Connect(2) starts in. Format 7 refused it there.
  */
 #define CJTAG_INFO_MAGIC "CJTAG"
-#define CJTAG_INFO_VERSION 7U
+#define CJTAG_INFO_VERSION 8U
 /// The id, the magic, the version, the flags, the length, the board, the old formats and extended
 /// capabilities, around the build string. A v1 HID report holds 64 bytes.
 #define CJTAG_INFO_FIXED 18U
@@ -360,7 +363,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
                 : DAP_ERROR;
 #ifdef JTAG_CODEGEN
         // The wire changed: generate for it now rather than in the next command.
-        if (response[1] == DAP_OK) {
+        if ((response[1] == DAP_OK) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {
             (void)jtag_gen_ready(jtag_gen_wire());
         }
 #endif
