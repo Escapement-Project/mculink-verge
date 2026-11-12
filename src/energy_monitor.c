@@ -531,6 +531,13 @@ static uint32_t timer_effective_rate(uint32_t rate_hz) {
     return CLOCK_GetFroHfFreq() / (2U * timer_ticks(rate_hz));
 }
 
+/** The rate the timer runs at for `rate_hz`, to the nearest pair a second: what a reply reports. A
+ *  stream's header gives it exactly, as a clock and a period. */
+static uint32_t timer_rounded_rate(uint32_t rate_hz) {
+    uint32_t const ticks = timer_ticks(rate_hz);
+    return (CLOCK_GetFroHfFreq() + ticks) / (2U * ticks);
+}
+
 /** The stand-in's weight and CPU 0's re-arm window, for the timer `requested_hz` starts and the
  *  averaging `rate_hz` gets (src/energy_pairs.h, src/main.c). The
  *  re-arm comes in the first half of the time between a pair's end and the next trigger, which
@@ -633,7 +640,8 @@ static void capture_stream_begin(struct energy_integration* energy, bool identif
     uint8_t levels = 0U;
     uint8_t const pins = dio_stream_pins(stream_dio_mask, &levels);
     energy_stream_header_t const header = {
-        .rate_hz = actual_rate_hz,
+        .clock_hz = CLOCK_GetFroHfFreq(),
+        .period = 2U * timer_ticks(requested_rate_hz),
         .setting = energy->setting,
         .full_scale_mv = (uint16_t)energy->full_scale_mv,
         .first_sequence = 1U,
@@ -679,7 +687,9 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     energy->decoder.phase = ENERGY_EXPECT_VOLTAGE;
     energy->consumed_bytes = 0U;
     LPADC_DoResetFIFO0(ADC0);
-    energy->scale_q32 = (UINT64_C(1) << 32U) / actual_rate_hz;
+    // A pair's share of a second is its period over the clock, which no whole rate gives exactly:
+    // asked 7, the timer runs at 6.99999985 pairs a second.
+    energy->scale_q32 = ((uint64_t)(2U * timer_ticks(requested_rate_hz)) << 32U) / CLOCK_GetFroHfFreq();
     energy->low_range = low_range_calibration;
     energy->high_range = high_range_calibration;
     energy->calibrated = current_calibrated;
@@ -954,7 +964,7 @@ energy_monitor_status_t energy_monitor_start(uint32_t rate_hz) {
     return ENERGY_MONITOR_OK;
 }
 
-uint32_t energy_monitor_rate(void) { return actual_rate_hz; }
+uint32_t energy_monitor_rate(void) { return (actual_rate_hz != 0U) ? timer_rounded_rate(requested_rate_hz) : 0U; }
 
 energy_monitor_status_t energy_monitor_start_stream(uint32_t rate_hz, uint8_t dio_mask) {
     stream_on_start = true;
@@ -999,7 +1009,7 @@ energy_monitor_status_t energy_monitor_identity(energy_capture_id_t* id, uint32_
     if (requested_rate_hz == 0U) {
         return ENERGY_MONITOR_STOPPED;
     }
-    *rate = actual_rate_hz;
+    *rate = energy_monitor_rate();
     return ENERGY_MONITOR_OK;
 }
 

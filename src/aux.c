@@ -190,7 +190,8 @@ __attribute__((section(".ramfunc"))) static bool stream_command(void) {
         uint32_t stamp = 0U;
         uint8_t const pins = dio_edges_pins(local_request[2], &levels, &stamp);
         energy_stream_header_t const header = {
-            .rate_hz = stream->clock_hz / stream->period,
+            .clock_hz = stream->clock_hz,
+            .period = stream->period,
             .setting = energy->setting,
             .full_scale_mv = (uint16_t)energy->full_scale_mv,
             .first_sequence = stream->next_sequence,

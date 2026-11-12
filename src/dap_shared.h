@@ -61,7 +61,7 @@ struct energy_integration {
      *  calibration and what the conversion needs from the start. */
     energy_calibration_t low_range;
     energy_calibration_t high_range;
-    uint64_t scale_q32; // floor(2^32 / rate)
+    uint64_t scale_q32; // floor(2^32 x period / clock): a pair's share of a second
     uint32_t full_scale_mv;
     uint32_t rearm_below_na; // UM11673 Table 4's low-range limit for the setting
     uint32_t segments_at_start; // dap_shared.energy_segments when the ring started
@@ -248,8 +248,10 @@ typedef struct {
     volatile uint8_t led_sio;   // the host drives a DIO pin (dio.h)
 
     /** Counted by CPU 1 as SPI takes the DIO pins and again as it gives them back, so odd while
-     *  SPI has them. CPU 0 stops their edges meanwhile and marks the gap (src/dio_edges.c). */
+     *  SPI has them. CPU 0 stops their edges meanwhile and marks the gap (src/dio_edges.c), from
+     *  the stamping timer as CPU 1 read it just before it counted SPI taking them. */
     volatile uint32_t dio_spi_turns;
+    volatile uint32_t dio_spi_stamp;
 
     /** BOARD_KIND_* and BOARD_JUMPER_* (board_straps.h), written by CPU 0 before CPU 1 starts. */
     volatile uint8_t board;

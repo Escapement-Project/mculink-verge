@@ -726,11 +726,11 @@ def check_aux_stream(c, elf0, elf1, symbols0, symbols1, fields, layout):
     publish(usb, b"\xa0" + bytes(15))
     arrive(usb, b"\x90\x0a\x00")
     sent = drain(usb)
-    c.check(len(sent) == 2 and sent[0] == b"\x90\x00\x00" and len(sent[1]) == 99
-            and sent[1][:2] == b"\xa1\x02" and sent[1][68:92] == token,
+    c.check(len(sent) == 2 and sent[0] == b"\x90\x00\x00" and len(sent[1]) == 103
+            and sent[1][:2] == b"\xa1\x04" and sent[1][72:96] == token,
             f"protected attach boundary: {[m.hex() for m in sent]}")
     # An attach's header, which CPU 0 builds, says whether the capture holds the high range (0x90
-    # mode 14): the flags at 94 in format 2.
+    # mode 14): the flags at 98 in format 4.
     for held in (False, True):
         attached = fresh()
         capture(attached)
@@ -738,7 +738,7 @@ def check_aux_stream(c, elf0, elf1, symbols0, symbols1, fields, layout):
         field(attached, "high_range_only", int(held), 1)
         arrive(attached, b"\x90\x0a\x00")
         header = [m for m in drain(attached) if m[:1] == b"\xa1"]
-        c.check(len(header) == 1 and len(header[0]) == 99 and bool(header[0][94] & 4) == held,
+        c.check(len(header) == 1 and len(header[0]) == 103 and bool(header[0][98] & 4) == held,
                 f"an attach's header with the high range {'held' if held else 'free'}: {[m.hex() for m in header]}")
     for candidate, result in ((stale, 8), (bytes(24), 8), (token, 0), (token, 0)):
         before = bytes(usb.cpu0.uc.mem_read(usb.energy, symbols0["energy_integration"][1]))
@@ -805,15 +805,16 @@ def check_aux_stream(c, elf0, elf1, symbols0, symbols1, fields, layout):
     capture(usb)
     arrive(usb, b"\x90\x06\x00")
     sent = drain(usb)
-    c.check(len(sent) == 2 and sent[0] == b"\x90\x00\x00" and len(sent[1]) == 75 and sent[1][:2] == b"\xa1\x01",
+    c.check(len(sent) == 2 and sent[0] == b"\x90\x00\x00" and len(sent[1]) == 79 and sent[1][:2] == b"\xa1\x03",
             f"mode 6 sent {[m[:8].hex() for m in sent]}")
-    if len(sent) == 2 and len(sent[1]) == 75:
+    if len(sent) == 2 and len(sent[1]) == 79:
         h = sent[1]
-        c.check(int.from_bytes(h[2:6], "little") == 1000 and h[6] == 2 and int.from_bytes(h[7:9], "little") == 3000
-                and int.from_bytes(h[9:13], "little") == 42 and h[13] == 0, f"mode 6 header {h[:14].hex()}")
+        c.check(int.from_bytes(h[2:6], "little") == 96_000_000 and int.from_bytes(h[6:10], "little") == 96_000
+                and h[10] == 2 and int.from_bytes(h[11:13], "little") == 3000
+                and int.from_bytes(h[13:17], "little") == 42 and h[17] == 0, f"mode 6 header {h[:18].hex()}")
         # Step 5's fields, with the current of the last pair integrated.
-        c.check(int.from_bytes(h[68:70], "little") == 9786 and h[70] == 3 and int.from_bytes(h[71:75], "little") == 6_700_000,
-                f"mode 6 header's step 5 fields {h[68:].hex()}")
+        c.check(int.from_bytes(h[72:74], "little") == 9786 and h[74] == 3 and int.from_bytes(h[75:79], "little") == 6_700_000,
+                f"mode 6 header's step 5 fields {h[72:].hex()}")
     publish(usb, b"\xa0\x00" + bytes(14))
     c.check(drain(usb) == [b"\xa0\x00" + bytes(14)], "pairs after the header were not sent")
     # At full speed a message of whole packets, 48 pairs in 256 bytes, needs a zero-length packet to
@@ -930,7 +931,7 @@ def check_aux_stream(c, elf0, elf1, symbols0, symbols1, fields, layout):
     arrive(usb, b"\x90\x06\x00")
     publish(usb, b"\xa0\x02" + bytes(14))
     sent = drain(usb)
-    c.check([m[:2] for m in sent] == [b"\x90\x00", b"\xa1\x01"],
+    c.check([m[:2] for m in sent] == [b"\x90\x00", b"\xa1\x03"],
             f"after a configuration, mode 6 sent {[m[:2].hex() for m in sent]}")
     publish(usb, b"\xa0\x03" + bytes(14))
     c.check([m[:2] for m in drain(usb)] == [b"\xa0\x03"], "pairs after the new header were not sent")

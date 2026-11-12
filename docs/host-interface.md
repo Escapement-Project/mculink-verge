@@ -336,7 +336,7 @@ Every mode answers `[0x90, DAP_OK, result, ...]` on an interface that carries it
 OK; the others are under [Results](#results).
 
 - **Start (mode 0):** `[0x90, DAP_OK, result, rate:u32]`. `rate` is the rate the probe's timer
-  runs at.
+  runs at, to the nearest pair a second. A stream's header gives it exactly.
 - **Latest (mode 1):** the voltage code (u16), the current code (u16) and the sequence number (u32),
   then the voltage in mV (u32), the current in nA (i32), the range (u8) and calibrated (u8): 21
   bytes in all. When the result is not 0, every sample field
@@ -366,7 +366,7 @@ The probe adds up every calibrated pair itself, whether or not a host reads them
 - A stop keeps the total for later reads, and mode 3 reads it without clearing it.
 - Mode 3 returns 1 (stopped) before the first start that succeeds, and 2 (no sample) until the
   probe has counted a calibrated pair.
-- Each pair adds its power over one period at the capture's rate. A negative current counts as
+- Each pair adds its power over one period of the probe's timer. A negative current counts as
   zero. The pair count includes pairs with no current.
 - Time without pairs adds nothing. The probe pauses a capture for a moment while it reads the
   target's supply. It holds its conversions while it measures a target's read latency, how long
@@ -480,8 +480,8 @@ until it starts or attaches again.
 | Request | Bytes | Interfaces | What it does |
 | --- | ---: | --- | --- |
 | `[0x90, 8, rate:u32]` | 6 | CMSIS-DAP, Aux | Starts a new capture, as mode 0, and returns its identity |
-| `[0x90, 9, rate:u32, dio_mask]` | 7 | Aux | Starts a new capture and a format 2 stream, and returns the capture's identity |
-| `[0x90, 10, dio_mask]` | 3 | Aux | Attaches a format 2 stream to the running capture, as mode 6. Its header gives the identity |
+| `[0x90, 9, rate:u32, dio_mask]` | 7 | Aux | Starts a new capture and a format 4 stream, and returns the capture's identity |
+| `[0x90, 10, dio_mask]` | 3 | Aux | Attaches a format 4 stream to the running capture, as mode 6. Its header gives the identity |
 | `[0x90, 11, id[24]]` | 26 | CMSIS-DAP, Aux | Stops the capture, only if the identity matches |
 | `[0x90, 12]` | 2 | CMSIS-DAP, Aux | Reads the capture's state and identity, and changes nothing |
 | `[0x90, 13, id[24]]` | 26 | Aux | Ends the stream, only if the capture's identity matches. The capture carries on |
@@ -501,7 +501,7 @@ Modes 8 and 9 return 31 bytes:
 | 0 | `0x90` |
 | 1 | `DAP_OK` |
 | 2 | Result |
-| 3 to 6 | The rate the timer runs at, u32 |
+| 3 to 6 | The rate the timer runs at, to the nearest pair a second, u32 |
 | 7 to 30 | The identity of the capture this start began |
 
 The rate and the identity are the ones this start chose, not a later reading. When the result is
@@ -525,7 +525,7 @@ Mode 12 returns 32 bytes:
 | 1 | `DAP_OK` |
 | 2 | Result: 0 running, 1 stopped, 3 unavailable, 7 failed, 9 no identity |
 | 3 | Running, 0 or 1. A capture paused or held for a moment still reports 1 |
-| 4 to 7 | The rate the timer runs at, u32. Zero with any result but 0 |
+| 4 to 7 | The rate the timer runs at, to the nearest pair a second, u32. Zero with any result but 0 |
 | 8 to 31 | The capture's identity, running or kept. Zero before the first start that succeeds, or when there is none |
 
 The state, rate and identity in one reply always describe the same capture. A reply never pairs one
@@ -718,7 +718,7 @@ before the stream's first message.
 The header says which pins the stream reports. It reports none when J15 turned the DIO pins off, or
 when SPI has them as the stream starts.
 
-A stream message starts with a byte from `0xa0` to `0xa4`. Those are outside the vendor command
+A stream message starts with a byte from `0xa0` to `0xa5`. Those are outside the vendor command
 range, so a host tells a message from a reply by its first byte. Messages come between replies,
 never inside one.
 
@@ -728,35 +728,41 @@ message says which. After a restart, a host that wants the new capture sends mod
 ### Header: `0xa1`
 
 The first message of every stream. It holds everything a host needs to convert the pairs that
-follow. Stream format 1 has 75 bytes, and stream format 2 has 99.
+follow. Stream format 3 has 79 bytes, and stream format 4 has 103.
 
 | Offset | Field |
 | --- | --- |
 | 0 | `0xa1` |
-| 1 | The stream's format, 1 or 2 |
-| 2 to 5 | The rate the timer runs at, in pairs a second, u32 |
-| 6 | The current setting the jumpers pick: 1 for 350 mA, 2 for 50 mA, 0 unknown |
-| 7 to 8 | The voltage's full scale in mV, u16 |
-| 9 to 12 | The sequence number of the first pair the stream sends, u32 |
-| 13 | The range of the pair before that one: 1 low, 0 high. At the start of a capture, 1 when it switches automatically and 0 when it holds the high range |
-| 14 | Low range: the point count `n`, up to 4 |
-| 15 to 38 | Low range: four points, lowest first, each a code (u16) and the current through the sense resistor in nA (u32). Points past `n` are zero |
-| 39 | High range: the point count |
-| 40 to 63 | High range: four points, as for the low range |
-| 64 | The DIO pins that report edges, bit k for DIO k |
-| 65 | Their levels when the stream started. Pins not reporting read 0 |
-| 66 to 67 | The resolution of edge times in ns, u16. 0 when no pin reports |
-| 68 to 69 | The range-switch weight `w`, u16, 0 to 32,768 ([Converting a pair](#converting-a-pair), step 5) |
-| 70 | Range-switch flags. Bit 0: a pair that switched down keeps its own current. Bit 1: offsets 71 to 74 hold a current. Bit 2: the capture holds the high range (`0x90` mode 14) |
-| 71 to 74 | The current through the sense resistor of the pair before the first one sent, from step 3 of [Converting a pair](#converting-a-pair), in nA, u32. 0 without flag bit 1 |
+| 1 | The stream's format, 3 or 4 |
+| 2 to 5 | The clock the probe times pairs and edges by, in Hz, u32 |
+| 6 to 9 | The pair period, in counts of that clock, u32 |
+| 10 | The current setting the jumpers pick: 1 for 350 mA, 2 for 50 mA, 0 unknown |
+| 11 to 12 | The voltage's full scale in mV, u16 |
+| 13 to 16 | The sequence number of the first pair the stream sends, u32 |
+| 17 | The range of the pair before that one: 1 low, 0 high. At the start of a capture, 1 when it switches automatically and 0 when it holds the high range |
+| 18 | Low range: the point count `n`, up to 4 |
+| 19 to 42 | Low range: four points, lowest first, each a code (u16) and the current through the sense resistor in nA (u32). Points past `n` are zero |
+| 43 | High range: the point count |
+| 44 to 67 | High range: four points, as for the low range |
+| 68 | The DIO pins that report edges, bit k for DIO k |
+| 69 | Their levels when the stream started. Pins not reporting read 0 |
+| 70 to 71 | The resolution of edge times in ns, u16. 0 when no pin reports |
+| 72 to 73 | The range-switch weight `w`, u16, 0 to 32,768 ([Converting a pair](#converting-a-pair), step 5) |
+| 74 | Range-switch flags. Bit 0: a pair that switched down keeps its own current. Bit 1: offsets 75 to 78 hold a current. Bit 2: the capture holds the high range (`0x90` mode 14) |
+| 75 to 78 | The current through the sense resistor of the pair before the first one sent, from step 3 of [Converting a pair](#converting-a-pair), in nA, u32. 0 without flag bit 1 |
+
+The capture's rate in pairs a second is the clock over the period. It is rarely a whole number:
+asked for 7 pairs a second, the timer runs at 6.99999985. Time pairs and weigh them by the period
+and the clock, never by a rounded rate.
 
 The points are the ones `0x90` mode 4 reports.
 
-Modes 5 and 6 send stream format 1, and modes 9 and 10 stream format 2. Stream format 2 keeps
-offsets 0 to 67 as above, with 2 at offset 1. Offsets 68 to 91 hold the capture's 24-byte identity,
-whose counter is never zero, and the fields at 68 to 74 above move to 92 to 98.
+Modes 5 and 6 send stream format 3, and modes 9 and 10 stream format 4. Stream format 4 keeps
+offsets 0 to 71 as above, with 4 at offset 1. Offsets 72 to 95 hold the capture's 24-byte identity,
+whose counter is never zero, and the fields at 72 to 78 above move to 96 to 102.
 
-The header's identity, calibration, rate and first sequence number all describe the same capture.
+The header's identity, calibration, clock, period and first sequence number all describe the same
+capture.
 No other stream message carries the identity.
 
 A mode 9 or 10 that succeeds starts a new stream. The probe drops the messages it had queued, and
@@ -786,7 +792,7 @@ use it to stop or end a live capture.
 | 16 on | `k` pairs of 5 bytes: the voltage code (u16), the current code (u16), then a byte. Its bit 0 is set on the low range. Its bit 1 is set on a high-range pair under range, whose reading is unreliable |
 
 Pair i of a message, counting from 0, has the sequence number `first + i`. It was taken at
-`time + i × 1,000,000,000 / rate` ns. Its voltage and current were converted together from then,
+`time + i × period × 1,000,000,000 / clock` ns, with the header's period and clock. Its voltage and current were converted together from then,
 averaged over the same stretch of at most one period. A message never spans a pause or a hold, so
 its pairs are evenly spaced.
 
@@ -812,7 +818,7 @@ message can wait longer for its pairs: up to 2.3 s at one pair a second.
 | Offset | Field |
 | --- | --- |
 | 0 | `0xa3` |
-| 1 | Flags. Bit 0: edges were lost before this message's first edge. The other bits are zero |
+| 1 | Flags, zero |
 | 2 to 9 | The time of this message's first edge, in ns since the capture started, u64 |
 | 10 to 11 | The edge count `e`, u16, 1 to 99 |
 | 12 on | `e` edges of 5 bytes: the time after the first edge in ns (u32), then the levels after the edge, bit k for DIO k |
@@ -827,22 +833,46 @@ pulse that starts and ends between two runs of the interrupt shows as two edges 
 pulses on one pin between two runs show as one. The levels always end where the pins are.
 
 Each run of the interrupt costs the probe time it needs for USB. Past an average of 100,000 runs a
-second, or 32 runs back to back, the probe stops taking edges for 1 to 2 ms, and the next edges
-message sets bit 0. A pin toggling faster than that keeps about 20,000 to 35,000 of its edges a
-second. The probe also stops for a moment, and sets bit 0, when it holds 256 edges not yet sent.
+second, or 32 runs back to back, the probe stops taking edges for 1 to 2 ms, and says so with a DIO
+lost message when it starts again. A pin toggling faster than that keeps about 20,000 to 35,000 of
+its edges a second. The probe also stops for a moment when it holds 256 edges not yet sent.
 
 A pin reports its level whatever drives it: the target, when the pin is an input, or the host's own
-drive, when it is an output (`0x8E`). While SPI has the pins (`0x91`), the probe reports no edges,
-and the next edges message sets bit 0.
+drive, when it is an output (`0x8E`). While SPI has the pins (`0x91`), the probe reports no edges.
+A DIO lost message covers the transfer once SPI gives the pins back.
 
 The probe starts timing a stream's edges a moment after its header. For modes 6 and 10 that is as
 it answers the request, for mode 9 as the capture starts, and for mode 5 within a few milliseconds.
 A pin that moves in that moment shows the move when timing starts.
 
-All the edges up to a pairs message's last pair arrive before the next pairs message, or before the
-end. So a host that holds back one message's pairs until the next one arrives knows the levels
-across them. The probe sends edges with each pairs message, and on their own once they have waited
-10 ms.
+All the edges and DIO lost messages up to a pairs message's last pair arrive before the next pairs
+message, or before the end. So a host that holds back one message's pairs until the next one
+arrives knows the levels across them. The probe sends edges with each pairs message, and on their
+own once they have waited 10 ms.
+
+### DIO lost: `0xa5`
+
+| Offset | Field |
+| --- | --- |
+| 0 | `0xa5` |
+| 1 | Flags, zero |
+| 2 to 9 | The time from which edges may be missing, in ns since the capture started, u64 |
+| 10 to 17 | The time the probe knew the levels again, in ns since the capture started, u64 |
+| 18 | The levels from then on, bit k for DIO k. Pins not reporting read 0 |
+
+The probe sends one whenever it lost edges: while its edge interrupt rested, while SPI had the pins,
+and when the host fell behind. Between the two times the levels are unknown. From the second on
+they are known again, so a stop shows even when no edge follows it.
+
+The first time comes after every edge the stream has already sent, and before the second. For a
+rest, it is the interrupt run that started the rest. For SPI, it is when SPI took the pins. For edges
+the host fell behind on, it is just after the last run whose edges were sent, and the second time is
+the last run dropped. Every edge sent after a DIO lost message comes after its second time, and so
+does the next DIO lost message's first. Edges stamped together are sent or lost together. A stream
+that ends while edges are being lost sends one before its end, up to when its next pair was due.
+
+Edges and DIO lost messages come in time order. Their times convert from counts of the header's clock
+as the pairs' and edges' do.
 
 ### Markers: `0xa4`
 
@@ -871,8 +901,7 @@ while the stream ran, from its header to its end.
 The probe keeps 16 messages a host has not read yet. When they fill, it drops new pairs, edges and
 markers messages until there is room again. It keeps the last two places for a header and an end.
 The capture and its total carry on regardless. A host sees lost pairs as a jump in sequence
-numbers, lost edges as bit 0 on the next edges message, and lost markers as bit 0 on the next
-markers message.
+numbers, lost edges as a DIO lost message, and lost markers as bit 0 on the next markers message.
 
 ### Converting a pair
 
@@ -914,7 +943,7 @@ totals they give.
      and lost pairs leave no pair before.
 
 A host that wants the probe's total adds `mv × target_na` picowatts for each pair, scaled by
-`floor(2^32 / rate)` in 32-bit fixed point, carrying the fraction from pair to pair. For a stream
+`floor(2^32 × period / clock)` in 32-bit fixed point, carrying the fraction from pair to pair. For a stream
 started with mode 5, once the capture stops, that sum equals the total `0x90` mode 3 reports, as
 long as no pairs were lost. A host that ignores the header's range-switch fields gets a total a
 little apart from the probe's.

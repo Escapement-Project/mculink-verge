@@ -903,6 +903,26 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     probe.uc.hook_del(hook)
     c.note("a start publishes CPU 1's tables and constants to CPU 0's integration")
 
+    # A pair weighs its period over the clock, not one over a whole rate, and a reply
+    # reports the rate to the nearest pair a second. Asked 7 the timer runs at 6.99999985; asked
+    # 99,999 it runs at 100,000.
+    for rate in (7, 13, 1000, 99_999):
+        probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+        local("requested_rate_hz", rate)
+        c.check(probe.call("energy_capture_start", 1) == 1, f"{rate} pairs/s: the start failed")
+        ticks = (96_000_000 + rate) // (2 * rate)
+        scale = probe.energy.get("scale_q32", 8)
+        c.check(scale == ((2 * ticks) << 32) // 96_000_000,
+                f"{rate} pairs/s: scale {scale}, against {((2 * ticks) << 32) // 96_000_000} for a period of {2 * ticks}")
+        # Mode 12, the state, reports the rate as every reply does.
+        reply = probe.command(b"\x90\x0c")
+        reported = int.from_bytes(reply[4:8], "little")
+        nearest = (96_000_000 + ticks) // (2 * ticks)
+        c.check(reply[2] == 0 and reported == nearest,
+                f"{rate} pairs/s: mode 12 result {reply[2]} reports {reported}, the timer runs nearest {nearest}")
+        probe.uc.hook_del(hook)
+    c.note("a pair weighs its period over the clock; replies report the nearest whole rate")
+
     if "target_sense_convert_pair_for_calibration" in symbols:
         probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
         probe.energy.put("running", 0, 1)
@@ -1796,21 +1816,22 @@ def check_stream(c, setup, result, offsets, local_symbols):
     stamp = 0xFFFF0000
     c.check(start(probe, local, stamp), "stream: an armed start failed")
     header = messages(probe)
-    c.check(len(header) == 1 and len(header[0]) == 75 and header[0][:2] == b"\xa1\x01", f"stream: start sent {header}")
-    if header and len(header[0]) == 75:
+    c.check(len(header) == 1 and len(header[0]) == 79 and header[0][:2] == b"\xa1\x03", f"stream: start sent {header}")
+    if header and len(header[0]) == 79:
         h = header[0]
-        c.check(u16_at(h, 68) == probe.energy.get("switch_weight_q16", 4) and h[70] == probe.energy.get("rearm_between_pairs", 1)
-                and u32_at(h, 71) == 0, f"stream: header's step 5 fields {h[68:].hex()}")
-        c.check(u32_at(h, 2) == clock // period and h[6] == 1 and u16_at(h, 7) == probe.energy.get("full_scale_mv", 4)
-                and u32_at(h, 9) == 1 and h[13] == 1, f"stream: header fields {h[:14].hex()}")
-        c.check(h[14] == 2 and u16_at(h, 15) == 0 and u16_at(h, 21) == 65535 and h[39] == 2 and h[64] == 0,
-                f"stream: header tables {h[14:66].hex()}")
+        c.check(u16_at(h, 72) == probe.energy.get("switch_weight_q16", 4) and h[74] == probe.energy.get("rearm_between_pairs", 1)
+                and u32_at(h, 75) == 0, f"stream: header's step 5 fields {h[72:].hex()}")
+        c.check(u32_at(h, 2) == clock and u32_at(h, 6) == period and h[10] == 1
+                and u16_at(h, 11) == probe.energy.get("full_scale_mv", 4) and u32_at(h, 13) == 1 and h[17] == 1,
+                f"stream: header fields {h[:18].hex()}")
+        c.check(h[18] == 2 and u16_at(h, 19) == 0 and u16_at(h, 25) == 65535 and h[43] == 2 and h[68] == 0,
+                f"stream: header tables {h[18:70].hex()}")
     # High only (0x90 mode 14): the range before the first pair is the high one, and the flags say
     # the capture holds it.
     held, _, _, _, _, held_local, *_, held_hook = setup(ranges=1)
     c.check(start(held, held_local, stamp), "stream: a high-only start failed")
     header = messages(held)
-    c.check(len(header) == 1 and len(header[0]) == 75 and header[0][13] == 0 and header[0][70] & 4 == 4,
+    c.check(len(header) == 1 and len(header[0]) == 79 and header[0][17] == 0 and header[0][74] & 4 == 4,
             f"stream: a high-only start's header {header[0].hex() if header else None}")
     held.uc.hook_del(held_hook)
     # CPU 1 drains ten pairs at a pause: one message, timed from the start's stamp.
@@ -1986,8 +2007,8 @@ def check_identity(c, setup, offsets):
         c.check(a[:3] == b"\x90\x00\x00", "protected release fixture start failed")
         sent = probe.energy.get("stream.sent", 4)
         queued = probe.energy.get("stream.written", 4)
-        h = probe.energy.read_slots(92, sent % 16)
-        c.check(queued == sent + 1 and h[:2] == b"\xa1\x02" and h[68:] == a[7:],
+        h = probe.energy.read_slots(96, sent % 16)
+        c.check(queued == sent + 1 and h[:2] == b"\xa1\x04" and h[72:] == a[7:],
                 "identified start reply/header boundary mismatch")
         written(0)
         probe.uc.hook_del(hook)

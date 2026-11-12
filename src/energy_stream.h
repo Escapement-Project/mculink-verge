@@ -35,9 +35,9 @@
 #define ENERGY_STREAM_PAIR_LOW 1U
 #define ENERGY_STREAM_PAIR_UNDER_RANGE 2U
 #define ENERGY_STREAM_PAIRS_FIXED 16U
-/** Format 1's fields, then step 5's: weight, flags and the current before
+/** Format 3's fields, then step 5's: weight, flags and the current before
  *  (docs/host-interface.md). */
-#define ENERGY_STREAM_HEADER_BYTES 75U
+#define ENERGY_STREAM_HEADER_BYTES 79U
 #define ENERGY_STREAM_ID_HEADER_BYTES (ENERGY_STREAM_HEADER_BYTES + ENERGY_IDENTITY_BYTES)
 #define ENERGY_STREAM_END_BYTES 6U
 #define ENERGY_STREAM_HOLDS 8U
@@ -48,6 +48,8 @@
 #define ENERGY_STREAM_EDGES_MAX 99U
 #define ENERGY_STREAM_EDGE_BYTES 5U
 #define ENERGY_STREAM_EDGES_FIXED 12U
+/** DIO lost: the type, a zero flags byte, the two times and the levels. */
+#define ENERGY_STREAM_DIO_LOST_BYTES 19U
 /** What CPU 0's pin interrupt can record before the owner sends it. */
 #define ENERGY_STREAM_EDGE_ENTRIES 256U
 /** The most counts one edges message spans, so that its offsets fit 32 bits of nanoseconds and
@@ -85,6 +87,7 @@ enum : uint8_t {
     ENERGY_STREAM_END = 0xA2U,
     ENERGY_STREAM_EDGES = 0xA3U,
     ENERGY_STREAM_MARKS_MESSAGE = 0xA4U,
+    ENERGY_STREAM_DIO_LOST = 0xA5U,
 };
 
 /** What 0x94 answers, as energy_stream_mark finds it, and 1 for no capture, which its caller finds. */
@@ -112,12 +115,9 @@ enum : uint8_t {
 #define ENERGY_STREAM_FLAG_PAUSED 1U
 #define ENERGY_STREAM_FLAG_HELD 2U
 
-/** An edges message's flag: edges were lost before its first one. */
-#define ENERGY_STREAM_EDGES_LOST 1U
-
-/** An entry's flags: the interrupt dropped edges before this run; CPU 0's loop asked for this run
- *  to record the levels; and, from bit 4, the pins whose detectors the loop cleared since the last
- *  run. */
+/** An entry's flags: the interrupt dropped edges before this run, from `lost_from`; CPU 0's loop
+ *  asked for this run to record the levels; and, from bit 4, the pins whose detectors the loop
+ *  cleared since the last run. */
 #define ENERGY_STREAM_ENTRY_LOST 1U
 #define ENERGY_STREAM_ENTRY_SYNC 2U
 #define ENERGY_STREAM_ENTRY_CLEARED_SHIFT 4U
@@ -126,6 +126,7 @@ enum : uint8_t {
  *  rise and a fall since the last run, and the levels it read after clearing them. */
 typedef struct {
     uint32_t stamp;
+    uint32_t lost_from;
     uint8_t rise;
     uint8_t fall;
     uint8_t levels;
@@ -193,8 +194,21 @@ struct energy_stream {
      *  in the next run, already accounted for. */
     uint8_t edge_credit_rise;
     uint8_t edge_credit_fall;
-    /** ENERGY_STREAM_EDGES_* for the next edges message. */
-    uint8_t edge_flags;
+    /** CPU 0's pin interrupt and loop are losing edges, since the stamp `edge_dropped_from`; the next
+     *  entry the interrupt records says so (src/dio_edges.c). A loss lasts a rest or an SPI
+     *  transfer, well inside the 2^31 counts energy_stream_counts_at takes. */
+    volatile bool edge_dropped;
+    volatile uint32_t edge_dropped_from;
+    /** The counts of the last entry the owner took, or of the header: a loss starts after it, so
+     *  it never shares a time with an edge already sent. */
+    uint64_t edge_known;
+    /** A DIO lost message not yet sent: edges from `edge_lost_from` to `edge_lost_to`, in counts,
+     *  may be missing, and from then on the levels are `edge_lost_levels`. A later loss joins it,
+     *  and no edges or pairs message leaves before it. */
+    bool edge_lost;
+    uint8_t edge_lost_levels;
+    uint64_t edge_lost_from;
+    uint64_t edge_lost_to;
 
     /** Markers. CPU 1 records them as it runs 0x94, whichever core owns the rest, and the owner
      *  sends them as markers messages. CPU 1 records only while `marking`, from a stream's header to
@@ -235,7 +249,10 @@ extern uint8_t energy_stream_slots[ENERGY_STREAM_SLOTS][ENERGY_STREAM_MESSAGE_MA
 
 /** What a stream's header carries besides its tables (docs/host-interface.md, "Header: 0xa1"). */
 typedef struct {
-    uint32_t rate_hz;
+    /** The stamping clock, and the pair period in its counts: a host weights and spaces pairs by
+     *  their ratio, which no whole rate in pairs a second gives exactly. */
+    uint32_t clock_hz;
+    uint32_t period;
     uint8_t setting; // 1 for 350 mA, 2 for 50 mA, 0 unknown
     uint16_t full_scale_mv;
     uint32_t first_sequence;
@@ -369,6 +386,8 @@ ENERGY_STREAM_INLINE uint16_t energy_stream_edge_resolution(uint32_t clock_hz) {
  *  the only way to send markers: the pairs message is built in place, in the slot any other message
  *  would take. Out of line, as one copy in CPU 0's SRAM serves every caller. */
 void energy_stream_close(struct energy_stream* stream);
+/** Sends the DIO lost message waiting, if the ring has more than `keep` slots free. */
+void energy_stream_dio_lost_send(struct energy_stream* stream, uint32_t keep);
 
 /** As a stream ends: CPU 1 records no more markers, and any it has begun is recorded. */
 void energy_stream_unmark(struct energy_stream* stream);
@@ -433,8 +452,9 @@ ENERGY_STREAM_INLINE bool energy_stream_begin(struct energy_stream* stream, ener
     }
     uint8_t* out = energy_stream_slot(stream);
     *out++ = ENERGY_STREAM_HEADER;
-    *out++ = header->capture_id != NULL ? 2U : 1U;
-    out = energy_stream_u32(out, header->rate_hz);
+    *out++ = header->capture_id != NULL ? 4U : 3U;
+    out = energy_stream_u32(out, header->clock_hz);
+    out = energy_stream_u32(out, header->period);
     *out++ = header->setting;
     out = energy_stream_u16(out, header->full_scale_mv);
     out = energy_stream_u32(out, header->first_sequence);
@@ -466,7 +486,7 @@ ENERGY_STREAM_INLINE bool energy_stream_begin(struct energy_stream* stream, ener
     stream->edge_waiting = true;
     stream->edge_header_raw = header->dio_stamp;
     stream->edge_levels = header->dio_levels & header->dio_mask;
-    stream->edge_flags = 0U;
+    stream->edge_lost = false;
     stream->edge_mask = header->dio_mask;
     stream->marks_read = stream->marks_written;
     stream->mark_flags = 0U;
@@ -485,6 +505,20 @@ ENERGY_STREAM_INLINE void energy_stream_end(struct energy_stream* stream, uint8_
     }
     energy_stream_unmark(stream);
     energy_stream_close(stream);
+    // Edges lost when the stream ends may be missing to its end: the time its next pair was due.
+    if ((stream->edge_mask != 0U) && !stream->edge_waiting && stream->edge_dropped) {
+        uint64_t from = energy_stream_counts_at(stream, stream->edge_dropped_from);
+        from = (from <= stream->edge_known) ? stream->edge_known + 1U : from;
+        if (!stream->edge_lost) {
+            stream->edge_lost = true;
+            stream->edge_lost_from = from;
+        }
+        stream->edge_lost_to = (stream->next_counts > from) ? stream->next_counts : from + 1U;
+        stream->edge_lost_levels = stream->edge_levels;
+    }
+    // One slot stays for the end message.
+    energy_stream_dio_lost_send(stream, 1U);
+    stream->edge_lost = false;
     stream->active = false;
     stream->edge_mask = 0U;
     if (energy_stream_free(stream) == 0U) {
@@ -611,6 +645,11 @@ ENERGY_STREAM_INLINE void energy_stream_pair(struct energy_stream* stream, uint3
         }
     }
     if (stream->open_pairs == 0U) {
+        // A DIO lost message waiting goes before any later pairs. It takes a slot whenever a pairs
+        // message could, so a pairs message never overtakes it.
+        if (stream->edge_lost) {
+            energy_stream_dio_lost_send(stream, ENERGY_STREAM_CONTROL_SLOTS);
+        }
         stream->open_dropped = energy_stream_free(stream) <= ENERGY_STREAM_CONTROL_SLOTS;
         stream->open_counts = counts;
         if (!stream->open_dropped) {

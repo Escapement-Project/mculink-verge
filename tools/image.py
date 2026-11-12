@@ -938,10 +938,12 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: 
     check_aux_stream(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets | stream_shared,
                      stream_layout)
     from dio_edges_checks import check_edge_rest, check_edge_spi
-    edge_shared = shared_offsets(slots, "energy_control_ack", "dio_spi_turns", small_enums=short_enums(elf0))
+    edge_shared = shared_offsets(slots, "energy_control_ack", "dio_spi_turns", "dio_spi_stamp",
+                                 small_enums=short_enums(elf0))
     edge_layout = shared_offsets(slots, "stream", "stream.active", "stream.edge_mask", "stream.timeline_pending",
                                  "stream.edge_begins", "stream.edge_entries_written", "stream.edge_entries_read",
-                                 "stream.edge_entries", small_enums=short_enums(elf0),
+                                 "stream.edge_entries", "stream.edge_dropped", "stream.edge_dropped_from",
+                                 small_enums=short_enums(elf0),
                                  struct_type="struct energy_integration")
     check_edge_rest(c, elf0, symbols_with_size(elf0), edge_shared, edge_layout)
     check_edge_spi(c, elf0, symbols_with_size(elf0), edge_shared, edge_layout)

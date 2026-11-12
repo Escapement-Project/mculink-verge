@@ -143,7 +143,10 @@ bool dio_spi_begin(void) {
     }
 
     // A stream reports no edges while SPI has the pins: stop the pin interrupts before SPI moves
-    // them. CPU 0 turns them back on afterwards (src/dio_edges.c).
+    // them. CPU 0 turns them back on afterwards (src/dio_edges.c), and its stream marks the edges
+    // lost from this stamp.
+    dap_shared.dio_spi_stamp = CTIMER4->TC;
+    __DMB();
     dap_shared.dio_spi_turns++;
     __DMB();
     PINT->CIENR = DIO_PINS;

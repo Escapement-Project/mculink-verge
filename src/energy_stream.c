@@ -32,16 +32,38 @@ typedef struct {
 } energy_stream_edges_t;
 
 ENERGY_STREAM_INLINE void energy_stream_edges_send(struct energy_stream* stream, energy_stream_edges_t* message) {
-    if (message->edges != 0U) {
-        if (message->dropped) {
-            stream->edge_flags |= ENERGY_STREAM_EDGES_LOST;
-        } else {
-            (void)energy_stream_u16(energy_stream_slot(stream) + 10, message->edges);
-            energy_stream_publish(stream,
-                                  (uint16_t)(ENERGY_STREAM_EDGES_FIXED + message->edges * ENERGY_STREAM_EDGE_BYTES));
-        }
+    // A dropped message's edges have joined the DIO lost message waiting.
+    if ((message->edges != 0U) && !message->dropped) {
+        (void)energy_stream_u16(energy_stream_slot(stream) + 10, message->edges);
+        energy_stream_publish(stream, (uint16_t)(ENERGY_STREAM_EDGES_FIXED + message->edges * ENERGY_STREAM_EDGE_BYTES));
     }
     message->edges = 0U;
+}
+
+/** Edges from `from` to `to`, in counts, may be missing; the levels after are `edge_levels` as they
+ *  are now. Joins the DIO lost message waiting, if there is one. */
+ENERGY_STREAM_INLINE void energy_stream_dio_lost_join(struct energy_stream* stream, uint64_t from, uint64_t to) {
+    if (!stream->edge_lost) {
+        stream->edge_lost = true;
+        stream->edge_lost_from = from;
+    }
+    stream->edge_lost_to = to;
+    stream->edge_lost_levels = stream->edge_levels;
+}
+
+ENERGY_STREAM_RAMFUNC __attribute__((noinline)) void energy_stream_dio_lost_send(struct energy_stream* stream,
+                                                                                 uint32_t keep) {
+    if (!stream->edge_lost || (energy_stream_free(stream) <= keep)) {
+        return;
+    }
+    uint8_t* out = energy_stream_slot(stream);
+    *out++ = ENERGY_STREAM_DIO_LOST;
+    *out++ = 0U;
+    out = energy_stream_u64(out, energy_stream_flush_ns(stream->edge_lost_from, stream->clock_hz));
+    out = energy_stream_u64(out, energy_stream_flush_ns(stream->edge_lost_to, stream->clock_hz));
+    *out = stream->edge_lost_levels;
+    energy_stream_publish(stream, ENERGY_STREAM_DIO_LOST_BYTES);
+    stream->edge_lost = false;
 }
 
 /** One edge at `counts`, leaving the levels `stream->edge_levels`. */
@@ -52,13 +74,14 @@ ENERGY_STREAM_INLINE void energy_stream_edge(struct energy_stream* stream, energ
     }
     if (message->edges == 0U) {
         message->first_counts = counts;
-        message->dropped = energy_stream_free(stream) <= ENERGY_STREAM_CONTROL_SLOTS;
+        // A loss before goes first; while it cannot, these edges join it.
+        energy_stream_dio_lost_send(stream, ENERGY_STREAM_CONTROL_SLOTS);
+        message->dropped = stream->edge_lost || (energy_stream_free(stream) <= ENERGY_STREAM_CONTROL_SLOTS);
         if (!message->dropped) {
             uint8_t* out = energy_stream_slot(stream);
             *out++ = ENERGY_STREAM_EDGES;
-            *out++ = stream->edge_flags;
+            *out++ = 0U;
             (void)energy_stream_u64(out, energy_stream_flush_ns(counts, stream->clock_hz));
-            stream->edge_flags = 0U;
         }
     }
     if (!message->dropped) {
@@ -66,6 +89,10 @@ ENERGY_STREAM_INLINE void energy_stream_edge(struct energy_stream* stream, energ
             energy_stream_slot(stream) + ENERGY_STREAM_EDGES_FIXED + message->edges * ENERGY_STREAM_EDGE_BYTES;
         (void)energy_stream_u32(out, energy_stream_edge_offset(stream, (uint32_t)(counts - message->first_counts)));
         out[4] = stream->edge_levels;
+    } else {
+        // Its run's edges came after the last run the stream took, and the levels are known again
+        // from this edge on.
+        energy_stream_dio_lost_join(stream, stream->edge_known + 1U, counts);
     }
     message->edges++;
     if (message->edges == ENERGY_STREAM_EDGES_MAX) {
@@ -124,27 +151,50 @@ ENERGY_STREAM_RAMFUNC static void energy_stream_edges_flush(struct energy_stream
                 stream->edge_waiting = false;
                 stream->edge_credit_rise = 0U;
                 stream->edge_credit_fall = 0U;
+                stream->edge_known = energy_stream_counts_at(stream, stream->edge_header_raw);
             }
-            if ((entry.flags & ENERGY_STREAM_ENTRY_LOST) != 0U) {
+            // After a loss the run's latches still move the levels and the credits, but the probe
+            // cannot say when: the edges go out as one DIO lost message, to this run.
+            bool const lost = (entry.flags & ENERGY_STREAM_ENTRY_LOST) != 0U;
+            if (lost) {
                 energy_stream_edges_send(stream, &message);
-                stream->edge_flags |= ENERGY_STREAM_EDGES_LOST;
             }
             // A cleared detector will not show the latch a credit waits for.
             uint8_t const cleared = (uint8_t)(entry.flags >> ENERGY_STREAM_ENTRY_CLEARED_SHIFT);
             stream->edge_credit_rise &= (uint8_t)~cleared;
             stream->edge_credit_fall &= (uint8_t)~cleared;
             uint64_t const counts = energy_stream_counts_at(stream, entry.stamp);
+            // A run's edges share its stamp, so they go out together or are lost together: a loss
+            // never shares a time with an edge sent. Each pin's count reads only its own level.
+            uint32_t edges[4] = {0U};
+            uint32_t total = 0U;
             for (uint32_t pin = 0U; pin < 4U; pin++) {
                 uint8_t const bit = (uint8_t)(1U << pin);
-                if ((mask & bit) == 0U) {
-                    continue;
-                }
-                uint32_t const edges = energy_stream_pin_edges(stream, &entry, bit);
-                for (uint32_t i = 0U; i < edges; i++) {
-                    stream->edge_levels ^= bit;
-                    energy_stream_edge(stream, &message, counts);
+                if ((mask & bit) != 0U) {
+                    edges[pin] = energy_stream_pin_edges(stream, &entry, bit);
+                    total += edges[pin];
                 }
             }
+            if (!lost && ((message.edges + total) > ENERGY_STREAM_EDGES_MAX)) {
+                energy_stream_edges_send(stream, &message);
+            }
+            for (uint32_t pin = 0U; pin < 4U; pin++) {
+                for (uint32_t i = 0U; i < edges[pin]; i++) {
+                    stream->edge_levels ^= (uint8_t)(1U << pin);
+                    if (!lost) {
+                        energy_stream_edge(stream, &message, counts);
+                    }
+                }
+            }
+            if (lost) {
+                // Edges are lost after the last run the stream took: its edges were all sent.
+                uint64_t from = energy_stream_counts_at(stream, entry.lost_from);
+                from = (from <= stream->edge_known) ? stream->edge_known + 1U : from;
+                from = (from > counts) ? counts : from;
+                energy_stream_dio_lost_join(stream, from, counts);
+                energy_stream_dio_lost_send(stream, ENERGY_STREAM_CONTROL_SLOTS);
+            }
+            stream->edge_known = counts;
         }
         energy_stream_edges_send(stream, &message);
     }

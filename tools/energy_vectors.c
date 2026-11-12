@@ -119,7 +119,11 @@ static void print_sequence(const vector_tables_t* tables, uint32_t rate, uint32_
     energy.low_range = tables->low;
     energy.high_range = tables->high;
     energy.full_scale_mv = tables->full_scale_mv;
-    energy.scale_q32 = (UINT64_C(1) << 32U) / rate;
+    // The period the probe's timer runs at for `rate`, in counts of its 96 MHz clock, and a pair's
+    // share of a second, as energy_capture_start sets them (src/energy_monitor.c).
+    uint32_t const clock_hz = 96000000U;
+    uint32_t const period = 2U * ((clock_hz + rate) / (2U * rate));
+    energy.scale_q32 = ((uint64_t)period << 32U) / clock_hz;
     energy.rearm_below_na = UINT32_MAX;
     energy.calibrated = true;
     energy.previous_low = true;
@@ -128,9 +132,9 @@ static void print_sequence(const vector_tables_t* tables, uint32_t rate, uint32_
     energy_total_t total = {0};
     lcg_state = seed;
 
-    printf("    {\"rate\": %" PRIu32 ", \"full_scale_mv\": %" PRIu32 ", \"switch_weight_q16\": %" PRIu32
-           ", \"rearm_between_pairs\": %s, \"low\": ",
-           rate, tables->full_scale_mv, weight_q16, between ? "true" : "false");
+    printf("    {\"clock_hz\": %" PRIu32 ", \"period\": %" PRIu32 ", \"full_scale_mv\": %" PRIu32
+           ", \"switch_weight_q16\": %" PRIu32 ", \"rearm_between_pairs\": %s, \"low\": ",
+           clock_hz, period, tables->full_scale_mv, weight_q16, between ? "true" : "false");
     print_points(&tables->low);
     printf(", \"high\": ");
     print_points(&tables->high);
@@ -179,7 +183,7 @@ int main(void) {
     };
     uint32_t const count = sizeof(tables) / sizeof(tables[0]);
 
-    printf("{\n  \"format\": 2,\n  \"convert\": [\n");
+    printf("{\n  \"format\": 3,\n  \"convert\": [\n");
     for (uint32_t i = 0U; i < count; i++) {
         print_convert(&tables[i], i + 1U == count);
     }

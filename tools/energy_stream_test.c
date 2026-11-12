@@ -49,7 +49,7 @@ static void start(struct energy_stream* stream, uint32_t started_raw, bool strea
     energy_stream_timeline_prepare(stream, 1U);
     if (streaming) {
         energy_stream_header_t const header = {
-            .rate_hz = CLOCK_HZ / PERIOD, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = 1U,
+            .clock_hz = CLOCK_HZ, .period = PERIOD, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = 1U,
             .previous_low = true, .low = &low, .high = &high, .dio_mask = 0U, .dio_levels = 5U, .edge_resolution_ns = 0U,
             .switch_weight_q16 = 24576U, .rearm_between_pairs = true};
         assert(energy_stream_begin(stream, &header));
@@ -63,14 +63,15 @@ static void test_header(void) {
     uint16_t length = 0U;
     uint8_t const* m = take(&stream, &length);
     assert(m != NULL && length == ENERGY_STREAM_HEADER_BYTES);
-    assert(m[0] == 0xA1U && m[1] == 1U && u32(m + 2) == 1000U && m[6] == 1U && u16(m + 7) == 3000U);
-    assert(u32(m + 9) == 1U && m[13] == 1U);
-    assert(m[14] == 2U && u16(m + 15) == 100U && u32(m + 17) == 5000U && u16(m + 21) == 30000U);
-    assert(u32(m + 23) == 900000U && u16(m + 27) == 0U && u32(m + 29) == 0U && u16(m + 33) == 0U && u32(m + 35) == 0U);
-    assert(m[39] == 4U && u16(m + 40) == 200U && u32(m + 42) == 1000000U && u16(m + 58) == 60000U);
-    assert(u32(m + 60) == 150000000U && m[64] == 0U && m[65] == 5U && u16(m + 66) == 0U);
+    // The clock and the period, which no whole rate in pairs a second gives exactly.
+    assert(m[0] == 0xA1U && m[1] == 3U && u32(m + 2) == CLOCK_HZ && u32(m + 6) == PERIOD && m[10] == 1U);
+    assert(u16(m + 11) == 3000U && u32(m + 13) == 1U && m[17] == 1U);
+    assert(m[18] == 2U && u16(m + 19) == 100U && u32(m + 21) == 5000U && u16(m + 25) == 30000U);
+    assert(u32(m + 27) == 900000U && u16(m + 31) == 0U && u32(m + 33) == 0U && u16(m + 37) == 0U && u32(m + 39) == 0U);
+    assert(m[43] == 4U && u16(m + 44) == 200U && u32(m + 46) == 1000000U && u16(m + 62) == 60000U);
+    assert(u32(m + 64) == 150000000U && m[68] == 0U && m[69] == 5U && u16(m + 70) == 0U);
     // Step 5's fields; no pair before a capture's first, so no current before.
-    assert(u16(m + 68) == 24576U && m[70] == 1U && u32(m + 71) == 0U);
+    assert(u16(m + 72) == 24576U && m[74] == 1U && u32(m + 75) == 0U);
     assert(take(&stream, &length) == NULL);
 }
 
@@ -79,13 +80,13 @@ static void test_high_range_only_header(void) {
     static struct energy_stream stream;
     reset_stream(&stream);
     energy_stream_header_t const header = {
-        .rate_hz = CLOCK_HZ / PERIOD, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = 1U,
+        .clock_hz = CLOCK_HZ, .period = PERIOD, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = 1U,
         .previous_low = false, .low = &low, .high = &high, .switch_weight_q16 = 24576U,
         .rearm_between_pairs = true, .high_range_only = true};
     assert(energy_stream_begin(&stream, &header));
     uint16_t length = 0U;
     uint8_t const* m = take(&stream, &length);
-    assert(m != NULL && length == ENERGY_STREAM_HEADER_BYTES && m[13] == 0U && m[70] == 5U);
+    assert(m != NULL && length == ENERGY_STREAM_HEADER_BYTES && m[17] == 0U && m[74] == 5U);
 }
 
 static void test_identified_header(void) {
@@ -101,16 +102,17 @@ static void test_identified_header(void) {
     energy_capture_id_t const zero = {0};
     assert(!energy_identity_matches(&zero, zero.bytes));
     energy_stream_header_t const header = {
-        .rate_hz = 1000U, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = 1U,
+        .clock_hz = CLOCK_HZ, .period = 96000U, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = 1U,
         .previous_low = true, .low = &low, .high = &high, .capture_id = &id,
         .switch_weight_q16 = 32768U, .previous_known = true, .previous_na = 1234567U};
     assert(energy_stream_begin(&stream, &header));
     uint16_t length = 0U;
     uint8_t const* message = take(&stream, &length);
-    assert(message != NULL && length == 99U && message[1] == 2U);
-    // The identity where format 2 always had it, step 5's fields after it.
-    assert(memcmp(message + 68U, id.bytes, sizeof(id.bytes)) == 0);
-    assert(u16(message + 92) == 32768U && message[94] == 2U && u32(message + 95) == 1234567U);
+    assert(message != NULL && length == 103U && message[1] == 4U);
+    assert(u32(message + 2) == CLOCK_HZ && u32(message + 6) == 96000U);
+    // The identity where format 4 always has it, step 5's fields after it.
+    assert(memcmp(message + 72U, id.bytes, sizeof(id.bytes)) == 0);
+    assert(u16(message + 96) == 32768U && message[98] == 2U && u32(message + 99) == 1234567U);
 }
 
 /** 99 pairs a message at most, evenly spaced, each message timed from the capture's start; the
@@ -418,7 +420,7 @@ static void test_untimed(void) {
     assert(stream.next_counts == TICKS + 49U * (uint64_t)PERIOD + 777U + 999U);
     // A stream started now times its first pair from there.
     energy_stream_header_t const header = {
-        .rate_hz = CLOCK_HZ / PERIOD, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = s + 1U,
+        .clock_hz = CLOCK_HZ, .period = PERIOD, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = s + 1U,
         .previous_low = true, .low = &low, .high = &high, .dio_mask = 0U, .dio_levels = 0U, .edge_resolution_ns = 0U};
     assert(energy_stream_begin(&stream, &header));
     uint16_t length = 0U;
@@ -467,7 +469,7 @@ static void start_edges(struct energy_stream* stream, uint32_t started_raw, uint
     reset_stream(stream);
     energy_stream_timeline_prepare(stream, 1U);
     energy_stream_header_t const header = {
-        .rate_hz = CLOCK_HZ / PERIOD, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = 1U,
+        .clock_hz = CLOCK_HZ, .period = PERIOD, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = 1U,
         .previous_low = true, .low = &low, .high = &high, .dio_mask = mask, .dio_levels = levels,
         .dio_stamp = header_raw, .edge_resolution_ns = energy_stream_edge_resolution(CLOCK_HZ)};
     assert(energy_stream_begin(stream, &header));
@@ -494,7 +496,7 @@ static void test_edges(void) {
     start_edges(&stream, 1000U, 0x09U, 0x0FU, 900U, 1000U + 100U);
     uint16_t length = 0U;
     uint8_t const* m = take(&stream, &length);
-    assert(m != NULL && m[64] == 0x09U && m[65] == 0x0FU && u16(m + 66) == 11U);
+    assert(m != NULL && m[68] == 0x09U && m[69] == 0x0FU && u16(m + 70) == 11U);
     assert(stream.edge_levels == 0x09U);
     // DIO0 falls; DIO1 moves too, but nobody asked for it.
     edge_entry(&stream, 1000U + 500U, 0x00U, 0x03U, 0x0CU, 0U);
@@ -577,9 +579,27 @@ static void test_edges_messages(void) {
            (uint32_t)(((uint64_t)(ENERGY_STREAM_EDGE_SPAN - 1U) * 1000000000U) / CLOCK_HZ));
 }
 
-/** A run after dropped edges ends the message before it and flags the next; so does an edges
- *  message the full ring dropped. A stamp before the capture started reads 0; a new stream
- *  forgets what was recorded before it. */
+/** An entry the interrupt records after losing edges from `lost_from`. */
+static void lost_entry(struct energy_stream* stream, uint32_t stamp, uint32_t lost_from, uint8_t rise, uint8_t fall,
+                       uint8_t levels, uint8_t flags) {
+    uint32_t const at = stream->edge_entries_written;
+    stream->edge_entries[at & (ENERGY_STREAM_EDGE_ENTRIES - 1U)] = (energy_stream_edge_entry_t){
+        .stamp = stamp, .lost_from = lost_from, .rise = rise, .fall = fall, .levels = levels, .flags = flags};
+    stream->edge_entries_written = at + 1U;
+}
+
+/** A DIO lost message's times and levels. */
+static void lost_of(uint8_t const* m, uint16_t length, uint64_t* from, uint64_t* to, uint8_t* levels) {
+    assert(m != NULL && m[0] == 0xA5U && m[1] == 0U && length == 19U);
+    *from = u64(m + 2);
+    *to = u64(m + 10);
+    *levels = m[18];
+}
+
+/** A run after dropped edges ends the message before it, and its edges go out as one DIO lost
+ *  message, from the loss's start to the run, with the levels it read; edges the full ring dropped
+ *  do the same, from the first to the last. A stamp before the capture started reads 0; a new
+ *  stream forgets what was recorded before it. */
 static void test_edges_lost(void) {
     static struct energy_stream stream;
     start_edges(&stream, 5000U, 0x02U, 0x00U, 3000U, 3500U);
@@ -587,39 +607,85 @@ static void test_edges_lost(void) {
     (void)take(&stream, &length);
     edge_entry(&stream, 4000U, 0x02U, 0x00U, 0x02U, 0U);
     edge_entry(&stream, 6000U, 0x00U, 0x02U, 0x00U, 0U);
-    edge_entry(&stream, 9000U, 0x02U, 0x00U, 0x02U, LOST);
+    // Edges lost from 8000; the run at 9000 latched a rise.
+    lost_entry(&stream, 9000U, 8000U, 0x02U, 0x00U, 0x02U, LOST);
     energy_stream_pause(&stream);
     uint64_t times[99];
     uint8_t levels[99];
+    uint64_t from = 0U;
+    uint64_t to = 0U;
+    uint8_t after = 0U;
     uint8_t const* m = take(&stream, &length);
     assert(m != NULL && m[1] == 0U && edges_of(m, length, times, levels) == 2U);
     assert(times[0] == 0U && times[1] == ns(1000U) && levels[0] == 0x02U && levels[1] == 0x00U);
     m = take(&stream, &length);
-    assert(m != NULL && m[1] == ENERGY_STREAM_EDGES_LOST && edges_of(m, length, times, levels) == 1U);
-    assert(times[0] == ns(4000U) && levels[0] == 0x02U);
-    // Fill the ring to its control slots: the edges message after is dropped, and the next one that
-    // leaves says so.
+    lost_of(m, length, &from, &to, &after);
+    assert(from == ns(3000U) && to == ns(4000U) && after == 0x02U);
+    assert(take(&stream, &length) == NULL);
+    // A loss stamped from before an edge already sent starts just after it.
+    edge_entry(&stream, 10000U, 0x00U, 0x02U, 0x00U, 0U);
+    lost_entry(&stream, 12000U, 9500U, 0x00U, 0x00U, 0x00U, LOST | SYNC);
+    energy_stream_pause(&stream);
+    m = take(&stream, &length);
+    assert(m != NULL && edges_of(m, length, times, levels) == 1U && times[0] == ns(5000U));
+    m = take(&stream, &length);
+    lost_of(m, length, &from, &to, &after);
+    assert(from == ns(5001U) && to == ns(7000U) && after == 0x00U);
+    // A rest with no edge after it says so at its end, with the levels unchanged.
+    lost_entry(&stream, 14000U, 13000U, 0x00U, 0x00U, 0x00U, LOST | SYNC);
+    energy_stream_pause(&stream);
+    m = take(&stream, &length);
+    lost_of(m, length, &from, &to, &after);
+    assert(from == ns(8000U) && to == ns(9000U) && after == 0x00U);
+    assert(take(&stream, &length) == NULL);
+    // Fill the ring to its control slots: the edges message after is dropped, and its edges join a
+    // DIO lost message from just after the last run sent to the last one dropped, which leaves
+    // before the next edges.
     stream.period = 960U;
     uint32_t s = 1U;
     while (energy_stream_free(&stream) > ENERGY_STREAM_CONTROL_SLOTS) {
         energy_stream_pair(&stream, s++, 1U, 1U, true);
     }
-    edge_entry(&stream, 20000U, 0x00U, 0x02U, 0x00U, 0U);
+    edge_entry(&stream, 20000U, 0x02U, 0x00U, 0x02U, 0U);
+    edge_entry(&stream, 21000U, 0x00U, 0x02U, 0x00U, 0U);
     energy_stream_pause(&stream);
-    assert(stream.edge_entries_read == stream.edge_entries_written && (stream.edge_flags & ENERGY_STREAM_EDGES_LOST));
+    assert(stream.edge_entries_read == stream.edge_entries_written && stream.edge_lost);
+    assert(stream.edge_lost_from == 9001U && stream.edge_lost_to == 16000U && stream.edge_lost_levels == 0x00U);
     while (take(&stream, &length) != NULL) {
     }
     edge_entry(&stream, 30000U, 0x02U, 0x00U, 0x02U, 0U);
     energy_stream_pause(&stream);
     m = take(&stream, &length);
-    assert(m != NULL && m[1] == ENERGY_STREAM_EDGES_LOST && edges_of(m, length, times, levels) == 1U);
+    lost_of(m, length, &from, &to, &after);
+    assert(from == ns(9001U) && to == ns(16000U) && after == 0x00U);
+    m = take(&stream, &length);
+    assert(m != NULL && m[1] == 0U && edges_of(m, length, times, levels) == 1U);
+    assert(times[0] == ns(25000U) && levels[0] == 0x02U && !stream.edge_lost);
+    // A loss waiting goes before the next pairs message, too.
+    while (energy_stream_free(&stream) > ENERGY_STREAM_CONTROL_SLOTS) {
+        energy_stream_pair(&stream, s++, 1U, 1U, true);
+    }
+    edge_entry(&stream, 30500U, 0x00U, 0x02U, 0x00U, 0U);
+    energy_stream_pause(&stream);
+    assert(stream.edge_lost);
+    while (take(&stream, &length) != NULL) {
+    }
+    energy_stream_pair(&stream, s++, 1U, 1U, true);
+    energy_stream_pause(&stream);
+    m = take(&stream, &length);
+    lost_of(m, length, &from, &to, &after);
+    // One run dropped still spans time: from just after the run before it.
+    assert(from == ns(25001U) && to == ns(25500U) && after == 0x00U);
+    m = take(&stream, &length);
+    assert(m != NULL && m[0] == 0xA0U && u32(m + 2) == s - 1U);
+    assert(take(&stream, &length) == NULL);
     // Recorded before a new stream began: not the new stream's.
     edge_entry(&stream, 31000U, 0x00U, 0x02U, 0x00U, 0U);
     energy_stream_end(&stream, 3U, s);
     while (take(&stream, &length) != NULL) {
     }
     edge_entry(&stream, 32000U, 0x02U, 0x00U, 0x02U, 0U);
-    energy_stream_header_t const header = {.rate_hz = 1000U, .low = &low, .high = &high, .dio_mask = 0x02U};
+    energy_stream_header_t const header = {.clock_hz = CLOCK_HZ, .period = 96000U, .low = &low, .high = &high, .dio_mask = 0x02U};
     assert(energy_stream_begin(&stream, &header));
     energy_stream_pause(&stream);
     m = take(&stream, &length);
@@ -628,12 +694,80 @@ static void test_edges_lost(void) {
     energy_stream_end(&stream, 3U, s);
     while (take(&stream, &length) != NULL) {
     }
-    energy_stream_header_t const none = {.rate_hz = 1000U, .low = &low, .high = &high, .dio_mask = 0U};
+    energy_stream_header_t const none = {.clock_hz = CLOCK_HZ, .period = 96000U, .low = &low, .high = &high, .dio_mask = 0U};
     assert(energy_stream_begin(&stream, &none));
     (void)take(&stream, &length);
     edge_entry(&stream, 33000U, 0x02U, 0x00U, 0x02U, 0U);
     energy_stream_pause(&stream);
     assert(take(&stream, &length) == NULL && stream.edge_entries_read == stream.edge_entries_written);
+}
+
+/** A run's edges share one message: a message that cannot hold them all leaves before them. */
+static void test_edges_of_a_run_together(void) {
+    static struct energy_stream stream;
+    start_edges(&stream, 1000U, 0x03U, 0x00U, 900U, 950U);
+    uint16_t length = 0U;
+    (void)take(&stream, &length);
+    uint8_t level = 0U;
+    for (uint32_t i = 0U; i < 97U; i++) {
+        level ^= 1U;
+        edge_entry(&stream, 2000U + 100U * i, level, level ^ 1U, level, 0U);
+    }
+    // Pulses there and back on both pins in one run: four edges at one stamp.
+    edge_entry(&stream, 20000U, 0x03U, 0x03U, level, 0U);
+    energy_stream_pause(&stream);
+    uint64_t times[99];
+    uint8_t levels[99];
+    uint8_t const* m = take(&stream, &length);
+    assert(m != NULL && edges_of(m, length, times, levels) == 97U);
+    m = take(&stream, &length);
+    assert(m != NULL && edges_of(m, length, times, levels) == 4U);
+    assert(times[0] == ns(19000U) && times[3] == ns(19000U) && take(&stream, &length) == NULL);
+}
+
+/** A stream that ends while edges are being lost says so before its end: from the loss's start to
+ *  when the stream's next pair was due. */
+static void test_edges_lost_at_end(void) {
+    static struct energy_stream stream;
+    start_edges(&stream, 5000U, 0x02U, 0x02U, 3000U, 6000U);
+    uint16_t length = 0U;
+    (void)take(&stream, &length);
+    energy_stream_pause(&stream);
+    assert(take(&stream, &length) == NULL);
+    stream.edge_dropped = true;
+    stream.edge_dropped_from = 9000U;
+    energy_stream_end(&stream, 2U, 0U);
+    uint64_t from = 0U;
+    uint64_t to = 0U;
+    uint8_t after = 0U;
+    uint8_t const* m = take(&stream, &length);
+    lost_of(m, length, &from, &to, &after);
+    assert(from == ns(4000U) && to == ns(TICKS) && after == 0x02U);
+    m = take(&stream, &length);
+    assert(m != NULL && m[0] == 0xA2U && take(&stream, &length) == NULL);
+}
+
+/** A stream that begins while the interrupt rests has its edges lost from just after its header, not
+ *  from the rest's start before it. */
+static void test_edges_lost_at_begin(void) {
+    static struct energy_stream stream;
+    reset_stream(&stream);
+    energy_stream_timeline_prepare(&stream, 1U);
+    energy_stream_header_t const header = {
+        .clock_hz = CLOCK_HZ, .period = PERIOD, .low = &low, .high = &high, .dio_mask = 0x01U, .dio_levels = 0x01U,
+        .dio_stamp = 3000U, .edge_resolution_ns = energy_stream_edge_resolution(CLOCK_HZ)};
+    assert(energy_stream_begin(&stream, &header));
+    energy_stream_timeline_run(&stream, true, CLOCK_HZ, TICKS, 1000U);
+    lost_entry(&stream, 3500U, 2500U, 0x00U, 0x00U, 0x00U, LOST | SYNC | CLEARED(0x01U));
+    uint16_t length = 0U;
+    (void)take(&stream, &length);
+    energy_stream_pause(&stream);
+    uint64_t from = 0U;
+    uint64_t to = 0U;
+    uint8_t after = 0U;
+    uint8_t const* m = take(&stream, &length);
+    lost_of(m, length, &from, &to, &after);
+    assert(from == ns(2001U) && to == ns(2500U) && after == 0x00U && take(&stream, &length) == NULL);
 }
 
 /** The edges of one stream's messages, as counts since the capture started and the levels after. */
@@ -852,7 +986,7 @@ static void test_marks_lost_per_stream(void) {
     energy_stream_end(&stream, 1U, 0U);
     while (take(&stream, &length) != NULL) {
     }
-    energy_stream_header_t const header = {.rate_hz = 1000U, .low = &low, .high = &high};
+    energy_stream_header_t const header = {.clock_hz = CLOCK_HZ, .period = 96000U, .low = &low, .high = &high};
     assert(energy_stream_begin(&stream, &header));
     (void)take(&stream, &length);
     assert(mark(&stream, TICKS + 100U, 100U, "fresh") == ENERGY_STREAM_MARK_SENT);
@@ -897,7 +1031,7 @@ static void test_marks_early(void) {
 
     reset_stream(&stream);
     energy_stream_timeline_prepare(&stream, 1U);
-    energy_stream_header_t const header = {.rate_hz = 1000U, .low = &low, .high = &high};
+    energy_stream_header_t const header = {.clock_hz = CLOCK_HZ, .period = 96000U, .low = &low, .high = &high};
     assert(energy_stream_begin(&stream, &header));
     (void)take(&stream, &length);
     assert(mark(&stream, 123U, 1U, "pending") == ENERGY_STREAM_MARK_SENT);
@@ -931,6 +1065,9 @@ int main(void) {
     test_edges();
     test_edges_messages();
     test_edges_lost();
+    test_edges_lost_at_end();
+    test_edges_of_a_run_together();
+    test_edges_lost_at_begin();
     test_edges_rule();
     test_marks();
     test_marks_full();

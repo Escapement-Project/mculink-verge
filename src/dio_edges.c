@@ -28,10 +28,9 @@ static uint32_t credit;
 static uint32_t credit_stamp;
 static volatile bool resting;
 static volatile uint32_t rest_from;
-/** Shared with the interrupt, which the loop masks to change them. Edges were dropped since the
- *  last run recorded; the next run records the levels even with no edge latched; the pins whose
- *  detectors the loop cleared since. The next run's entry says all three. */
-static volatile bool dropped;
+/** Shared with the interrupt, which the loop masks to change them, as the stream's `edge_dropped`
+ *  is: the next run records the levels even with no edge latched; the pins whose detectors the loop
+ *  cleared since. The next run's entry says both, and whether edges were dropped. */
 static volatile bool sync;
 static volatile uint8_t cleared;
 /** The pins whose interrupts the loop has turned on. */
@@ -39,6 +38,15 @@ static uint8_t enabled;
 /** dio_spi_turns as the loop last acted on it. The interrupt reads it too. */
 static volatile uint32_t spi_turns_seen;
 static uint32_t begins_seen;
+
+/** Edges are lost from `stamp` on, unless they already were from earlier. In the interrupt, or
+ *  masked. */
+__attribute__((section(".ramfunc"))) static void drop_from(struct energy_stream* stream, uint32_t stamp) {
+    if (!stream->edge_dropped) {
+        stream->edge_dropped_from = stamp;
+        stream->edge_dropped = true;
+    }
+}
 
 __attribute__((noinline)) void dio_edges_init(struct energy_stream* stream, uint8_t board, uint8_t jumpers) {
     if ((board != BOARD_KIND_PRO) || ((jumpers & BOARD_JUMPER_USBSIO_OFF) != 0U)) {
@@ -100,7 +108,7 @@ __attribute__((section(".ramfunc"))) void PIN_INT0_IRQHandler(void) {
         NVIC->ICER[0] = DIO_EDGES_IRQS;
         rest_from = stamp;
         resting = true;
-        dropped = true;
+        drop_from(stream, stamp);
         return;
     }
     credit -= run_cost;
@@ -111,17 +119,18 @@ __attribute__((section(".ramfunc"))) void PIN_INT0_IRQHandler(void) {
     __DMB();
     uint32_t const turns = dap_shared.dio_spi_turns;
     if ((turns != spi_turns_seen) || ((turns & 1U) != 0U)) {
-        dropped = true;
+        drop_from(stream, dap_shared.dio_spi_stamp);
         return;
     }
     energy_stream_edge_entry_t* const entry = &stream->edge_entries[at & (ENERGY_STREAM_EDGE_ENTRIES - 1U)];
     entry->stamp = stamp;
+    entry->lost_from = stream->edge_dropped_from;
     entry->rise = (uint8_t)rise;
     entry->fall = (uint8_t)fall;
     entry->levels = levels;
-    entry->flags = (uint8_t)((dropped ? ENERGY_STREAM_ENTRY_LOST : 0U) | (synced ? ENERGY_STREAM_ENTRY_SYNC : 0U) |
-                             ((uint32_t)cleared << ENERGY_STREAM_ENTRY_CLEARED_SHIFT));
-    dropped = false;
+    entry->flags = (uint8_t)((stream->edge_dropped ? ENERGY_STREAM_ENTRY_LOST : 0U) |
+                             (synced ? ENERGY_STREAM_ENTRY_SYNC : 0U) | ((uint32_t)cleared << ENERGY_STREAM_ENTRY_CLEARED_SHIFT));
+    stream->edge_dropped = false;
     sync = false;
     cleared = 0U;
     __DMB();
@@ -146,20 +155,32 @@ __attribute__((section(".ramfunc"))) static void resync(uint8_t pins) {
     NVIC->ISPR[0] = 1UL << PIN_INT0_IRQn;
 }
 
-__attribute__((section(".ramfunc"))) static void set_dropped(bool value) {
+/** No edges are lost: no stream reports any. */
+__attribute__((section(".ramfunc"))) static void clear_dropped(struct energy_stream* stream) {
     uint32_t const primask = __get_PRIMASK();
     __disable_irq();
-    dropped = value;
+    stream->edge_dropped = false;
+    __set_PRIMASK(primask);
+}
+
+/** SPI took the pins at the stamp CPU 1 wrote as it counted (src/dio.c). */
+__attribute__((section(".ramfunc"))) static void spi_dropped(struct energy_stream* stream) {
+    uint32_t const primask = __get_PRIMASK();
+    __disable_irq();
+    drop_from(stream, dap_shared.dio_spi_stamp);
     __set_PRIMASK(primask);
 }
 
 /** A new stream starts with no edges lost, unless the interrupt is resting: edges until the rest
- *  ends are lost to the new stream too. `resting` is read under the mask, so a rest that starts
- *  meanwhile keeps its mark. */
-__attribute__((section(".ramfunc"))) static void begin_dropped(void) {
+ *  ends are lost to the new stream too, from the rest's start. `resting` is read under the mask, so
+ *  a rest that starts meanwhile keeps its mark. */
+__attribute__((section(".ramfunc"))) static void begin_dropped(struct energy_stream* stream) {
     uint32_t const primask = __get_PRIMASK();
     __disable_irq();
-    dropped = resting;
+    stream->edge_dropped = false;
+    if (resting) {
+        drop_from(stream, rest_from);
+    }
     __set_PRIMASK(primask);
 }
 
@@ -182,16 +203,16 @@ __attribute__((section(".ramfunc"), noinline)) void dio_edges_task(void) {
     }
     uint8_t const reported = (stream->active && !waiting) ? stream->edge_mask : 0U;
     if (reported == 0U) {
-        set_dropped(false);
+        clear_dropped(stream);
     } else if (began) {
-        begin_dropped();
+        begin_dropped(stream);
     }
     if (turns != spi_turns_seen) {
         // CPU 1 turned the interrupts off for SPI (src/dio.c).
         spi_turns_seen = turns;
         enabled = 0U;
         if (reported != 0U) {
-            set_dropped(true);
+            spi_dropped(stream);
         }
     }
     uint8_t const wanted = ((turns & 1U) != 0U) ? 0U : reported;
