@@ -27,10 +27,11 @@ at 3.3 V only.
 The VCOM jumper turns the first port off: J4 on the standalone MCU-Link, J14 on the Pro. The Pro's
 second port stays ([Probes and jumpers](probes.md#jumpers)).
 
-A loopback passed at 19.2 Mbaud, both Pro ports running together included. That is the fastest rate
-the console UART's 96 MHz clock makes. For a rate that clock cannot make within 3%, such as 10
-Mbaud, the UART runs from the 150 MHz main clock instead, up to 30 Mbaud. Those rates have not run
-on hardware yet. The probe stalls a request for a rate neither clock makes, and the port keeps its
-last rate. Rates above 10 Mbaud are past NXP's specification for the UART
+A loopback passed at 30 Mbaud, both Pro ports running together included. The console UART runs
+from a 96 MHz clock for any rate that clock makes within 3%, up to 19.2 Mbaud. For any other rate,
+such as 10 Mbaud, it runs from the 150 MHz main clock, up to 30 Mbaud. The probe stalls a request
+for a rate neither clock makes, and the port keeps its last rate. On Linux the program's call
+succeeds anyway: the cdc-acm driver does not pass the stall on. Rates above 10 Mbaud are past NXP's
+specification for the UART
 ([Past NXP's limits](wires.md#past-nxps-limits)). NXP's firmware ran its console at 3 Mbaud with
 both Pro ports running, the fastest tested; its limit has not been measured.

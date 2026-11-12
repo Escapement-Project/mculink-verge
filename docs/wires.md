@@ -114,7 +114,7 @@ to use them.
 
 | Feature | NXP's limit | Verge past it |
 | --- | --- | --- |
-| Console | The UART is specified to 10 Mbit/s (LPC55S6x data sheet, 7.26.3.4) | Above 10 Mbaud: 12, 16 and 19.2 Mbaud ran clean |
-| Console | The UART's clock divider is specified to 100 MHz (UM11126, 4.5.49) | For a rate the 96 MHz clock cannot make within 3%, such as 10 Mbaud: the divider runs at 150 MHz. Not yet run on hardware |
+| Console | The UART is specified to 10 Mbit/s (LPC55S6x data sheet, 7.26.3.4) | Above 10 Mbaud: 12, 16, 19.2, 21.4, 25 and 30 Mbaud ran clean |
+| Console | The UART's clock divider is specified to 100 MHz (UM11126, 4.5.49) | For a rate the 96 MHz clock cannot make within 3%, such as 10 Mbaud: 10, 21.4, 25 and 30 Mbaud ran clean with it at 150 MHz |
 | SWO | The same UART, to 10 Mbit/s | Above 10 Mbaud: 12, 16, 24 and 30 Mbaud ran clean |
 | SWO | The UART's clock divider is specified to 100 MHz (UM11126, 4.5.49) | Above 20.1 Mbaud, where nothing inside the divider's limit comes within 0.5% of the rate: 21.4, 24, 25 and 30 Mbaud ran clean with it at 107 to 150 MHz |
