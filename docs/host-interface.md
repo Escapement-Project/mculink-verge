@@ -211,7 +211,7 @@ Send `[0x96, edges, level]`, with `edges` from 2 to 255 and `level` 0 or 1. The 
 The probe sets TMSC to `level` with TCKC low, a quarter period after the last fall and a quarter
 period before the rise. Then it makes one TCKC period with `edges` TMSC transitions while TCKC is
 high, so an odd count leaves TMSC at the other level. The rise, each edge and the fall come one
-TCKC period after the one before, at the clock `DAP_SWJ_Clock` set. That meets 1149.7 10.4.2 b)
+TCKC period after the one before, at the clock `DAP_SWJ_Clock` set. That meets 1149.7 10.4.2 c)
 whenever the clock is within the target's rating. The host picks the count and the clock, and with
 them how long TCKC stays high: `edges` + 1 periods. At 10 kHz a 10-edge escape takes 1.1 ms, past the
 1 ms after which a TAP.7 in power-control mode 0 may power down (18.10). 1149.7 reads 4 or 5 edges as

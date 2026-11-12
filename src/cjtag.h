@@ -49,7 +49,7 @@ void cJTAG_Connect(uint32_t value);
 /** DAP_JTAG_Escape: one TCKC period with `edges` TMSC transitions while TCKC is high. TMSC goes to
  * `level` a quarter period after the last fall and a quarter period before the rise; an odd count
  * leaves it at the other level. The rise, each edge and the fall come one TCKC period after the one
- * before (1149.7 10.4.2 b), at whatever clock the host set, then a quarter period's wait, since the
+ * before (1149.7 10.4.2 c), at whatever clock the host set, then a quarter period's wait, since the
  * target counts the period as a bit. Entered and left with TCKC low; framing is untouched. */
 void cJTAG_Escape(uint32_t edges, uint32_t level);
 /** DAP_SWJ_Sequence with an OScan format selected: `count` raw TCKC periods, TMSC from `bits` least
