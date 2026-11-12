@@ -435,6 +435,17 @@ __STATIC_INLINE void PORT_CJTAG_TO_JTAG (void) {
   DBGIF_TDI_GPIO->DIRSET[DBGIF_TDI_PORT] = (1U << DBGIF_TDI_PIN);
 }
 
+#ifdef ARM_CJTAG_TEST
+/** The test build of ARM's cJTAG (CMake ARM_CJTAG): its two hooks are the transitions above. */
+#define DAP_CJTAG 1
+__STATIC_INLINE void PORT_CJTAG_SETUP (void) {
+  PORT_CJTAG_FROM_JTAG();
+}
+__STATIC_INLINE void PORT_CJTAG_EXIT (void) {
+  PORT_CJTAG_TO_JTAG();
+}
+#endif
+
 /** Disable JTAG/SWD I/O Pins.
 Disables the DAP Hardware I/O pins which configures:
  - TCK/SWCLK, TMS/SWDIO, TDI, TDO, nTRST, nRESET to High-Z mode.

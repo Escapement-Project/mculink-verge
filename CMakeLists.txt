@@ -72,6 +72,13 @@ option(CJTAG_ZERO_SETUP "Lab: move TMSC in the store of the rise that clocks the
 if((CJTAG_ZERO_HOLD OR CJTAG_ZERO_SETUP) AND (SWD_CODEGEN OR JTAG_CODEGEN))
   message(FATAL_ERROR "CJTAG_ZERO_HOLD and CJTAG_ZERO_SETUP change ARM's cJTAG frames only: build them with SWD_CODEGEN and JTAG_CODEGEN off")
 endif()
+# A test of ARM's cJTAG for CMSIS-DAP: the CMSIS-DAP tree at this path, with DAP_JTAG_Format and
+# DAP_JTAG_Escape, in place of Verge's cJTAG layer, behind Verge's vendor IDs (src/cjtag_arm_shim.c).
+# The ARM reference build only. Never shipped; the version string carries it.
+set(ARM_CJTAG "" CACHE PATH "A CMSIS-DAP tree with cJTAG to test in place of Verge's, ARM reference build only")
+if(ARM_CJTAG AND (SWD_CODEGEN OR JTAG_CODEGEN))
+  message(FATAL_ERROR "ARM_CJTAG replaces ARM's own JTAG paths: build it with SWD_CODEGEN and JTAG_CODEGEN off")
+endif()
 if(CJTAG_ZERO_HOLD AND CJTAG_ZERO_SETUP)
   message(FATAL_ERROR "CJTAG_ZERO_HOLD and CJTAG_ZERO_SETUP are two different measurements: build one")
 endif()
@@ -116,6 +123,9 @@ endif()
 if(CJTAG_ZERO_SETUP)
   string(APPEND FW_VARIANT "+zero-setup-lab")
 endif()
+if(ARM_CJTAG)
+  string(APPEND FW_VARIANT "+arm-cjtag")
+endif()
 if(DAP_TIMING_DIAGNOSTICS)
   string(APPEND FW_VARIANT "+timing")
 endif()
@@ -136,7 +146,11 @@ add_custom_target(fw_version ALL
 add_dependencies(${PROJECT_NAME} fw_version)
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 
-set(DAP_SRC ${CMAKE_CURRENT_SOURCE_DIR}/external/CMSIS-DAP/Firmware/Source)
+set(DAP_TREE ${CMAKE_CURRENT_SOURCE_DIR}/external/CMSIS-DAP)
+if(ARM_CJTAG)
+  set(DAP_TREE ${ARM_CJTAG})
+endif()
+set(DAP_SRC ${DAP_TREE}/Firmware/Source)
 
 # CPU 0's image: USB, the console and the way back to the bootloader. Every DAP command runs in
 # CPU 1's image, which is built below and embedded here by src/core1_image.S.
@@ -188,6 +202,14 @@ if(NOT JTAG_CODEGEN)
                         ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp_tracked.c)
   set(ARM_JTAG_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_dp_block.c ${DAP_SRC}/JTAG_DP.c)
 endif()
+set(VERGE_CJTAG_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag.c ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_dp.c)
+if(ARM_CJTAG)
+  # ARM's JTAG_DP.c owns the JTAG names and frames OScan1 itself.
+  set(ARM_CJTAG_SOURCES "")
+  set(ARM_JTAG_SOURCES ${DAP_SRC}/JTAG_DP.c)
+  set(VERGE_CJTAG_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_arm_shim.c)
+  target_compile_definitions(${CORE1} PRIVATE ARM_CJTAG_TEST=1)
+endif()
 target_sources(${CORE1} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/core1_start.S
   ${CMAKE_CURRENT_SOURCE_DIR}/src/core1_main.c
@@ -209,8 +231,7 @@ target_sources(${CORE1} PRIVATE
   ${DAP_SRC}/DAP.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_vendor.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/sample_probe.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_dp.c
+  ${VERGE_CJTAG_SOURCES}
   ${ARM_CJTAG_SOURCES}
   ${DAP_SRC}/SW_DP.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_dp.c
@@ -423,7 +444,7 @@ foreach(_target ${PROJECT_NAME} ${CORE1})
     )
   target_include_directories(${_target} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/CMSIS-DAP/Firmware/Include
+    ${DAP_TREE}/Firmware/Include
     ${DAP_SRC}
     )
 endforeach()
@@ -454,9 +475,11 @@ set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/core1_image.S PROPER
 # ARM's JTAG entry points are renamed here so src/cjtag_dp.c can own the real names and dispatch
 # between four-wire and OScan1. Renaming at compile time rather than patching keeps the submodule
 # at a released tag.
-set_source_files_properties(${DAP_SRC}/JTAG_DP.c PROPERTIES COMPILE_DEFINITIONS
-  "JTAG_Sequence=jtag4_Sequence;JTAG_IR=jtag4_IR;JTAG_ReadIDCode=jtag4_ReadIDCode;JTAG_WriteAbort=jtag4_WriteAbort;JTAG_Transfer=arm_jtag4_Transfer"
-  )
+if(NOT ARM_CJTAG)
+  set_source_files_properties(${DAP_SRC}/JTAG_DP.c PROPERTIES COMPILE_DEFINITIONS
+    "JTAG_Sequence=jtag4_Sequence;JTAG_IR=jtag4_IR;JTAG_ReadIDCode=jtag4_ReadIDCode;JTAG_WriteAbort=jtag4_WriteAbort;JTAG_Transfer=arm_jtag4_Transfer"
+    )
+endif()
 
 # Unroll the bit paths. ARM unrolls the packet phases of a transfer by hand but leaves the 32-bit
 # data phases as loops, so the data bits carry a loop branch and an induction variable that the
@@ -474,7 +497,7 @@ set_source_files_properties(
 
 target_include_directories(${PROJECT_NAME} PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
-  ${CMAKE_CURRENT_SOURCE_DIR}/external/CMSIS-DAP/Firmware/Include
+  ${DAP_TREE}/Firmware/Include
   ${DAP_SRC}
   )
 

@@ -98,6 +98,9 @@ COMMAND_PATH static uint32_t transfer_block(const uint8_t* request, uint8_t* res
     const uint32_t length = jgen_TransferBlock(request, response);
     jtag_gen_learn(wire);
     return length;
+#elif defined(ARM_CJTAG_TEST)
+    // ARM's DAP_TransferBlock, framed by ARM's JTAG_DP.c.
+    return arm_DAP_ProcessCommand(request - 1, response - 1) - (1U << 16) - 1U;
 #else
     if (!cJTAG_Active()) {
         return JTAG_TransferBlock(request, response);
@@ -171,6 +174,7 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
         return refuse(request, response);
     }
 #endif
+#ifndef ARM_CJTAG_TEST
     if ((*request == ID_DAP_SWJ_Sequence) && cJTAG_Active()) {
         // Raw output in an OScan format: one TCKC period a bit, as ARM's, but TMSC moves only while
         // TCKC is low, where ARM's moves it with SWCLK still high: on two pins that is an escape edge.
@@ -180,6 +184,7 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
         response[1] = DAP_OK;
         return ((2U + ((count + 7U) / 8U)) << 16) | 2U;
     }
+#endif
     if ((*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_SWD)) {
 #ifdef SWD_CODEGEN
         if (swd_sweep_pending()) {
@@ -189,6 +194,7 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
         *response = *request;
         return (1U << 16) + 1U + SWD_TransferCommand(request + 1, response + 1);
     }
+#ifndef ARM_CJTAG_TEST
     if ((*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {
 #ifdef JTAG_CODEGEN
         if (jtag_sweep_pending()) {
@@ -204,6 +210,7 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
 #endif
         return result;
     }
+#endif
     if (*request == ID_DAP_JTAG_Configure) {
         // Validate the whole chain before ARM's handler or either sweep watcher changes it.
         const uint32_t devices = request[1];
