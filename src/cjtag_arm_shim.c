@@ -15,7 +15,8 @@ static_assert(DAP_CJTAG != 0, "the test build turns ARM's cJTAG on (src/DAP_conf
 
 bool cJTAG_Active(void) { return DAP_Data.jtag_format != DAP_JTAG_FORMAT_JTAG; }
 
-uint32_t cJTAG_Format(void) { return CJTAG_OSCAN1; }
+// SCNFMT, 8 + the format.
+uint32_t cJTAG_Format(void) { return 8U + DAP_Data.jtag_format; }
 
 bool cJTAG_Select(uint32_t value) {
     uint8_t const request[] = {ID_DAP_JTAG_Format, (uint8_t)value};
