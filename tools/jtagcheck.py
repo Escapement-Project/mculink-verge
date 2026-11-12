@@ -100,7 +100,7 @@ def held_late(r: cy.Read, stall: int) -> int | None:
 
 
 def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire: str = "cjtag",
-        stall: int = 0) -> dict:
+        stall: int = 0, release_by: int = 3) -> dict:
     dr = cy.JTAG_DR_OK | (WORD << 3)
     model = cy.Model(engine=True)
     probe = cy.Machine(elf, cy.Target([]), restart_at=set(), model=model, record_trace=False, record_stats=False)
@@ -124,7 +124,7 @@ def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire
     # An escape edge a host's clock period after the last: the standard asks for the target's
     # shortest TCKC period, which a host running at that clock or slower meets.
     target = (cy.TimedCjtagTarget(tap, latency=latency, oscan2=wire == "cjtag2", oscan5=wire == "cjtag5",
-                                  oscan6=wire == "cjtag6", escape_gap=-(-cpu_hz // hz),
+                                  oscan6=wire == "cjtag6", escape_gap=-(-cpu_hz // hz), release_by=release_by,
                                   quarter=-(-max(-(-cpu_hz // hz), 3) // 4)) if two_pin
               else cy.TimedJtagTarget(tap, latency=latency))
     probe.target = target
@@ -315,7 +315,7 @@ def run_raw(elf: str, hz: int, cpu_hz: int) -> dict:
     return {"period": period, "frame": 0, "margin": None, "problems": problems}
 
 
-def run_point(args: tuple[str, int, int, int, int, str, int]) -> dict:
+def run_point(args: tuple[str, int, int, int, int, str, int, int]) -> dict:
     if args[5] == "raw":
         return run_raw(args[0], args[1], args[3])
     return run(*args)
@@ -331,6 +331,10 @@ def main() -> int:
     ap.add_argument("--gen-latency", type=int, default=0, help="the latency to generate for, with vendor 0x8A; 0 leaves the image's")
     ap.add_argument("--cpu", type=int, default=150)
     ap.add_argument("--stall", type=int, default=0, help="cycles another master can hold a TDO sample's load")
+    ap.add_argument("--release-by", type=int, default=3,
+                    help="cycles after the fall that starts a TDO packet by which the probe must let TMSC go; "
+                         "0 holds it to 1149.7 14.2.3, which also wants the packet before it released at its rise "
+                         "(after an EOT escape's edges); Verge's frames let go just after the fall")
     ap.add_argument("--jobs", type=int, default=min(4, available_cpus()),
                     help="independent clock simulations to run at once")
     args = ap.parse_args()
@@ -342,7 +346,7 @@ def main() -> int:
     raw_mhz = [m for m in mhz] + ([] if args.mhz else [0.01])
 
     points = [
-        (elf, int(m * 1e6 + 0.5), args.latency, cpu_hz, args.gen_latency, wire, args.stall)
+        (elf, int(m * 1e6 + 0.5), args.latency, cpu_hz, args.gen_latency, wire, args.stall, args.release_by)
         for elf in args.elf
         for wire in args.wire
         for m in (raw_mhz if wire == "raw" else mhz)
@@ -356,7 +360,7 @@ def main() -> int:
     failures = 0
     print(f"{'image':>16} {'wire':>7} {'MHz':>8} {'P':>5} {'frame':>6} {'margin':>7}  problems")
     for point, r in zip(points, results):
-        elf, hz, _, _, _, wire, _ = point
+        elf, hz, _, _, _, wire, _, _ = point
         failures += bool(r["problems"])
         margin = "-" if r["margin"] is None else str(r["margin"])
         print(f"{os.path.basename(os.path.dirname(elf)):>16} {wire:>7} {hz / 1e6:8.3f} {r['period']:5d} "

@@ -475,6 +475,12 @@ class TimedCjtagTarget:
     falling edge that ends it (CJTAG.md, measured on a CC1312R1). A read outside that sees
     what the released wire held, which is the TMS level the probe drove last.
 
+    TMSC has a keeper: a released line keeps the level last driven onto it, and letting go is not
+    an edge. The probe may let go in the packet just before the TDO packet, as 1149.7 14.2.3 has it
+    (it drives that packet only while TCKC is low), and must have let go by `release_by` cycles after
+    the fall that starts the TDO packet. 0 holds it to the standard: that packet is released at its
+    rise, unless it is an nTDI packet with an EOT escape, let go after the escape's edges. Verge's
+    frames drive through the rise and let go just after the fall.
     It also records what hardware punishes and the order-only model cannot see: a probe still
     driving `release_by` cycles into a TDO packet, a TMSC move while TCKC is high or in the same
     store as a TCKC edge, a packet the probe should drive but has let go, and any entry into
@@ -511,6 +517,10 @@ class TimedCjtagTarget:
         self.driving = True
         self.released_at: int | None = None
         self.driven_at: int | None = None
+        self.began = 0  # the fall that started the packet under way
+        self.through_rise = False  # the packet before the TDO packet was driven at its rise
+        self.before_is_ntdi = False  # and it is OScan5's or OScan6's nTDI packet, which may carry EOT
+        self.before_tdo = 0  # the fall that started the packet before the TDO packet
         self.frames = 0
         self.reads: list[Read] = []
         self._open: list[Read] = []
@@ -520,7 +530,9 @@ class TimedCjtagTarget:
         pass
 
     def wire(self, cycle: int, driven: str, clock_high: bool, with_edge: bool) -> None:
-        if clock_high and self.shift5 and self.packet == 0 and driven != "z":
+        if driven == "z" and self.driving and self._before_tdo():
+            pass  # letting go, which the keeper makes no edge: allowed in the packet before TDO
+        elif clock_high and self.shift5 and self.packet == 0 and driven != "z":
             self.escape.append(cycle)
             self.escape_edges += 1
         elif clock_high:
@@ -538,20 +550,36 @@ class TimedCjtagTarget:
             self.driving = True
             self.held = int(driven)
 
+    def _before_tdo(self) -> bool:
+        """Whether the packet under way is the one just before a TDO packet: OScan1's TMS packet,
+        OScan5's and OScan6's nTDI packet in Shift (with its EOT edges), or OScan6's PAD."""
+        if self.single or self.packet == 2:
+            return False
+        if self.packet == 0:
+            return self.shift5 and not self.pad
+        return True
+
     def rise(self, cycle: int, driven: str) -> None:
         if self.packet == 2:
             return
-        if driven == "z":
-            self.problems.append(f"packet {self.packet + 1} rose at {cycle} with TMSC released")
-            return
-        self.single = self.packet == 0 and self.oscan2 and self.tap.state not in ("shdr", "shir")
         if self.packet == 0:
+            # The frame's shape, from the TAP state it starts in.
             shift = self.tap.state in ("shdr", "shir")
+            self.single = self.oscan2 and not shift
             self.shift5 = self.oscan5 and shift
             self.pad = self.oscan6 and shift and not self.prev_shift
             self.prev_shift = shift
             self.rose_at, self.escape = cycle, []
-        elif self.packet == 1 and self.pad:
+        if self._before_tdo():
+            self.before_tdo = self.began
+            self.through_rise = driven != "z"
+            self.before_is_ntdi = self.packet == 0
+        if driven == "z":
+            if not self._before_tdo():
+                self.problems.append(f"packet {self.packet + 1} rose at {cycle} with TMSC released")
+                return
+            driven = str(self.held)  # the keeper's level
+        if self.packet == 1 and self.pad:
             return  # OScan6's PAD packet carries nothing
         if self.packet == 0 and not self.single:
             self.tdi = 1 - int(driven)
@@ -566,6 +594,7 @@ class TimedCjtagTarget:
         # Which falls end a packet the probe drove: nTDI, TMS, OScan6's PAD, OScan2's single TMS
         # packet, all but the TDO packet. Decided before the state below moves on.
         self.sampled_fall = None if (self.packet == 2 and not self.single) else cycle
+        self.began = cycle
         if self.single:
             # OScan2's one-packet frame is over; the next packet starts a frame.
             self.single = False
@@ -591,6 +620,12 @@ class TimedCjtagTarget:
                 return  # the PAD packet comes before TDO's
         if self.packet == 1:
             self.pad = False
+            # 14.2.3: before the target's bit the probe drives TMSC only while TCKC is low, apart
+            # from an escape's edges. Verge's frames drive through the rise and let go after the fall.
+            if self.release_by == 0 and self.through_rise and not (self.before_is_ntdi and self.escape):
+                self.problems.append(f"frame {self.frames}: TMSC driven by the probe at the rise of the packet "
+                                     "before the TDO packet, outside an escape")
+            self.through_rise = False
             self.tdo_fall = cycle
             self.drive_from, self.drive_until = cycle + self.latency, None
         elif self.packet == 2:
@@ -599,7 +634,7 @@ class TimedCjtagTarget:
                 read.late = self.drive_until - read.cycle
             self._open = []
             start = self.tdo_fall + self.release_by
-            let_go = self.released_at is not None and self.tdo_fall <= self.released_at <= start
+            let_go = self.released_at is not None and self.before_tdo <= self.released_at <= start
             back = self.driving or (self.driven_at is not None and self.driven_at > self.released_at)
             if not let_go or back:
                 self.problems.append(f"frame {self.frames}: TMSC driven by the probe during the TDO packet")
@@ -863,6 +898,8 @@ class Machine:
         self._shift5 = False  # OScan5's two-packet frame in Shift is under way
         self._escape = 0  # TMSC moves while TCKC is high in that frame's nTDI packet
         self._packet = 0
+        self._release_pending = False  # let go before the fall that starts the TDO packet
+        self._tdo_started = False  # the last clock edge was the fall that starts a TDO packet
         self._frame_tms = 0
         # The TDO the target holds for the whole of a frame's third packet, rising edge included.
         self._frame_tdo = 0
@@ -1118,16 +1155,22 @@ class Machine:
                 self.counts.trace.append(f"W{after_wire}")
             if after_wire == "z":
                 self.counts.swdio_release += 1
-                # A frame releases the wire exactly once, immediately before its third packet.
-                # That is a marker on the wire, so the framing stays in step with the probe
-                # whatever the optimiser does to the code that produces it.
-                self._packet = 2
-            if before_clock and after_clock:
+                # A frame releases the wire exactly once, for its TDO packet: after the fall that
+                # starts it (Verge's frames), or in the packet before it (1149.7 14.2.3), when the
+                # next fall starts it. That is a marker on the wire, so the framing stays in step
+                # with the probe whatever the optimiser does to the code that produces it.
+                if not after_clock and self._tdo_started:
+                    self._packet = 2
+                else:
+                    self._release_pending = True
+            # Letting go is no edge: the line's keeper holds its level.
+            if before_clock and after_clock and after_wire != "z":
                 self.counts.moves_while_high += 1
                 if self._shift5 and self._packet == 1:
                     self._escape += 1
                     self.counts.escape_edges += 1
         if after_clock and not before_clock:
+            self._tdo_started = False
             if self.record_stats:
                 self.counts.tck_rise += 1
             self.counts.edge_cycles.append(self.cycle)
@@ -1169,12 +1212,18 @@ class Machine:
         elif before_clock and not after_clock:
             if self.tap is not None:
                 self._tdo_latch = self.tap.tdo()
+            # The TDO packet follows the TMS packet, OScan6's PAD, or OScan5's nTDI packet in Shift.
+            self._tdo_started = self.cjtag_tap is not None and (
+                self._packet == 2 or (self._shift5 and self._packet == 1 and not self._pad))
             if self.cjtag_tap is not None and self._shift5 and self._packet == 1:
                 # The end of OScan5's nTDI packet in Shift, and so of its TMS: 1 only by an EOT
                 # escape. The TDO packet that follows drives what this clock shifted out.
                 self._shift5 = False
                 self._frame_tdo = self.cjtag_tap.tdo()
                 self.cjtag_tap.clock(1 if self._escape >= 2 else 0)
+            if self.cjtag_tap is not None and self._release_pending:
+                self._release_pending = False
+                self._packet = 2
             if self.record_stats:
                 self.counts.tck_fall += 1
             self.counts.fall_cycles.append(self.cycle)
