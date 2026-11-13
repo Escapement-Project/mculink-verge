@@ -212,6 +212,35 @@ def check_edge_spi(c, elf, symbols, shared, layout):
         pins.take = take if spi else None
         returned = probe.call("dio_edges_pins", 0xF, SCRATCH, SCRATCH + 4, timeout_insns=10_000) & 0xFF
         found[("header", spi)] = (returned, probe.uc.mem_read(SCRATCH, 1)[0])
+    # A run that took an edge as SPI took the pins: the edge is timed by the run, so the gap starts at
+    # the run's stamp when that comes first, and at SPI's otherwise.
+    for tc, expect in ((0x100, 0x100), (0xFF00, 0xABCD)):
+        probe = machine(elf, symbols)
+        pins = Pins(probe)
+        word = lambda address, value: probe.uc.mem_write(address, value.to_bytes(4, "little"))
+        word(statics["edges_stream"], stream)
+        for name, value in (("burst", 1000), ("credit", 1000), ("run_cost", 1), ("credit_stamp", 0),
+                            ("spi_turns_seen", 2)):
+            word(statics[name], value)
+        for name, value in (("sync", 0), ("cleared", 0), ("present", 1)):
+            probe.uc.mem_write(statics[name], bytes([value]))
+        probe.uc.mem_write(dropped, b"\x00")
+        word(spi_stamp, 0xABCD)
+        word(turns, 2)
+        word(PINT_RISE, 1)
+        word(CTIMER4_TC, tc)
+        word(integration + layout["stream.edge_entries_written"], 0)
+        word(integration + layout["stream.edge_entries_read"], 0)
+
+        def take_now():
+            word(turns, 3)
+            pins.ports[:] = SPI_LEVELS
+        pins.take = take_now
+        probe.call("PIN_INT0_IRQHandler", timeout_insns=10_000)
+        lost = probe.uc.mem_read(dropped, 1)[0]
+        since = int.from_bytes(probe.uc.mem_read(dropped_from, 4), "little")
+        c.check((lost, since) == (1, expect),
+                f"DIO edges: a run that took an edge at {tc:#x} as SPI took the pins at 0xabcd; (dropped, from) {(lost, since)}")
     c.check(found[("run", False)] == (1, 0, 0, None), f"DIO edges: a sync run with SPI away recorded {found[('run', False)]}")
     c.check(found[("run", True)] == (0, None, 1, 0xABCD),
             f"DIO edges: SPI took the pins as the sync run read them; (entries, levels, dropped, from) {found[('run', True)]}")

@@ -1855,8 +1855,27 @@ def check_dio(c: Checker, elf: str, request_slots: int) -> None:
             c.check(not pins.fights and max(pins.moves) <= 1 and pins.header == headers and (taken or not pins.stores),
                     f"{name}: vendor 0x8E {bytes(request).hex()} left headers {pins.header} (wanted {headers}), "
                     f"moved them {pins.moves} times, {pins.fights or 'no fights'}, stores {pins.stores}")
+        # SPI's stamp for the edge gap (src/dio.c): taken while CPU 0 has seen every earlier transfer,
+        # kept while it lags (the pins have been off since then), and none before an energy capture
+        # has clocked CTimer 4, which is then not read.
+        spi = shared_offsets(request_slots, "dio_spi_turns", "dio_spi_stamp", "dio_spi_seen", small_enums=short_enums(elf))
+        word = lambda name, value: probe.uc.mem_write(shared + spi[name], value.to_bytes(4, "little"))
+        read = lambda name: int.from_bytes(probe.uc.mem_read(shared + spi[name], 4), "little")
+        stamps = []
+        for timer_on, tc, caught_up in ((True, 0x100, True), (True, 0x900, False), (True, 0x2000, True),
+                                        (False, 0x3000, True)):
+            probe.uc.mem_write(AHBCLKCTRL2, (AHBCLKCTRL2_TIMER4 if timer_on else 0).to_bytes(4, "little"))
+            probe.uc.mem_write(CTIMER4_TC, tc.to_bytes(4, "little"))
+            if caught_up:
+                word("dio_spi_seen", read("dio_spi_turns"))
+            began = probe.call("dio_spi_begin") & 0xFF
+            stamps.append((began, read("dio_spi_stamp")))
+            probe.call("dio_spi_end")
+        c.check(stamps == [(1, 0x100), (1, 0x100), (1, 0x2000), (1, 0)],
+                f"{name}: SPI's stamps (taken, stamp) for a fresh, a lagging, a caught-up and an unclocked start: "
+                f"{[(t, hex(v)) for t, v in stamps]}")
     c.note("DIO: vendor 0x8E on the Pro only, J15 honoured, groups turned whole without a fight or a double move, "
-           "state and groups in every reply")
+           "state and groups in every reply; SPI's gap stamp kept while CPU 0 lags, unread before a capture")
 
 
 def check_target_power(c: Checker, elf: str, request_slots: int) -> None:
@@ -2192,6 +2211,7 @@ CTIMER_TCR, CTIMER_PR, CTIMER_MCR, CTIMER_MR0, CTIMER_MR3, CTIMER_PWMC, CTIMER_M
 CTIMER_TCR_CEN = 1
 # SYSCON's clock select for CTimer 1 and 3, and the clock gate bit for CTimer 1 in AHBCLKCTRL1.
 CTIMER1_CLKSEL, CTIMER3_CLKSEL, AHBCLKCTRL1, AHBCLKCTRL1_TIMER1 = 0x40000270, 0x40000278, 0x40000204, 1 << 27
+AHBCLKCTRL2, AHBCLKCTRL2_TIMER4, CTIMER4_TC = 0x40000208, 1 << 22, 0x4002A008
 IOCON = 0x40001000
 CTIMER_MCR_MR0R, CTIMER_MCR_MR0RL, CTIMER_MCR_MR3RL, CTIMER_PWMC_PWMEN3 = 1 << 1, 1 << 24, 1 << 27, 1 << 3
 GPIO_SET, GPIO_CLR, GPIO_DIRSET = 0x2200, 0x2280, 0x2380

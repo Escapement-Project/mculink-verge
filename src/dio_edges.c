@@ -119,7 +119,12 @@ __attribute__((section(".ramfunc"))) void PIN_INT0_IRQHandler(void) {
     __DMB();
     uint32_t const turns = dap_shared.dio_spi_turns;
     if ((turns != spi_turns_seen) || ((turns & 1U) != 0U)) {
-        drop_from(stream, dap_shared.dio_spi_stamp);
+        // Edges are timed by the run that takes them, and this one's are lost with SPI's levels. Its
+        // stamp can come before CPU 1's for SPI, so the gap starts at the earlier of the two when it
+        // took any.
+        uint32_t const spi = dap_shared.dio_spi_stamp;
+        bool const earlier = ((rise | fall) != 0U) && ((int32_t)(stamp - spi) < 0);
+        drop_from(stream, earlier ? stamp : spi);
         return;
     }
     energy_stream_edge_entry_t* const entry = &stream->edge_entries[at & (ENERGY_STREAM_EDGE_ENTRIES - 1U)];
@@ -214,6 +219,9 @@ __attribute__((section(".ramfunc"), noinline)) void dio_edges_task(void) {
         if (reported != 0U) {
             spi_dropped(stream);
         }
+        // After the stamp is read: CPU 1 writes a new one only once it sees this.
+        __DMB();
+        dap_shared.dio_spi_seen = turns;
     }
     uint8_t const wanted = ((turns & 1U) != 0U) ? 0U : reported;
     uint32_t const off = (uint32_t)enabled & ~(uint32_t)wanted;

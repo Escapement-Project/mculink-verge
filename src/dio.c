@@ -137,7 +137,7 @@ uint8_t dio_stream_pins(uint8_t requested, uint8_t* levels) {
     return pins;
 }
 
-bool dio_spi_begin(void) {
+__attribute__((noinline)) bool dio_spi_begin(void) {
     if ((dio_on == 0U) || (dio_outputs != 0U) || dio_spi_owned) {
         return false;
     }
@@ -145,7 +145,14 @@ bool dio_spi_begin(void) {
     // A stream reports no edges while SPI has the pins: stop the pin interrupts before SPI moves
     // them. CPU 0 turns them back on afterwards (src/dio_edges.c), and its stream marks the edges
     // lost from this stamp.
-    dap_shared.dio_spi_stamp = CTIMER4->TC;
+    // A transfer CPU 0 hasn't seen yet left the pins off from its own start, which its stamp holds.
+    // CPU 0 starts a loss after the last edge it sent whatever the stamp (src/energy_stream.c), so
+    // one kept as CPU 0 catches up is safe. CTIMER4 runs from the first energy capture on, and the
+    // stamp matters only to a stream, which needs one; before that its clock is off.
+    if (dap_shared.dio_spi_seen == dap_shared.dio_spi_turns) {
+        bool const stamping = (SYSCON->AHBCLKCTRL.AHBCLKCTRL2 & SYSCON_AHBCLKCTRL2_TIMER4_MASK) != 0U;
+        dap_shared.dio_spi_stamp = stamping ? CTIMER4->TC : 0U;
+    }
     __DMB();
     dap_shared.dio_spi_turns++;
     __DMB();
@@ -164,7 +171,7 @@ bool dio_spi_begin(void) {
     return true;
 }
 
-void dio_spi_end(void) {
+__attribute__((noinline)) void dio_spi_end(void) {
     if (!dio_spi_owned) {
         return;
     }

@@ -252,6 +252,9 @@ typedef struct {
      *  the stamping timer as CPU 1 read it just before it counted SPI taking them. */
     volatile uint32_t dio_spi_turns;
     volatile uint32_t dio_spi_stamp;
+    /** The count CPU 0 last acted on. While it lags, the pins have been off since the first transfer
+     *  CPU 0 hasn't seen, and CPU 1 keeps that transfer's stamp. */
+    volatile uint32_t dio_spi_seen;
 
     /** BOARD_KIND_* and BOARD_JUMPER_* (board_straps.h), written by CPU 0 before CPU 1 starts. */
     volatile uint8_t board;
