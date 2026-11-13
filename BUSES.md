@@ -64,6 +64,10 @@ contends with any other.
 | CPU 1 | 8 | Channel 21's completion flags and XFERCFG, for the ring's position (`ring_written`) | The latest pair (`0x90` mode 1) while a capture runs, and a pause's drain; own core, never during a window |
 | CPU 1 | 7 | SYSCON clocks and IOCON for the DIO pins (`dio_init`) | Boot only, on the Pro |
 | CPU 1 | 7 | PINT's enables for the DIO pins, turned off as SPI takes them (`dio_spi_begin`) | Each `0x91` SPI command, on the Pro; own core, never during a window |
+| CPU 1 | 7 | CTimer 4's count, the stamp for SPI's edge gap, only once an energy capture has clocked it (`dio_spi_begin`) | Each `0x91` SPI command, on the Pro; own core, never during a window |
+| CPU 1 | 7 | SYSCON clock selects and IOCON for the bridges' pins: DIO0 to DIO3 for SPI, P0_4 and P0_21 for I2C | Each `0x91` and `0x92` command, on the Pro; own core, never during a window |
+| CPU 1 | 9 | HS SPI (Flexcomm 8): its configuration and FIFO, polled through each transfer | Each `0x91` command, on the Pro; own core, never during a window |
+| CPU 1 | 8 | Flexcomm 3 as I2C master, polled through each transfer, and port 0's GPIO for P0_4 and P0_21 when it clears a stuck bus | Each `0x92` command, on the Pro, with SWO off; own core, never during a window |
 | CPU 1 | 7, 8 | SWO: SYSCON resets and clocks, Flexcomm 3, DMA0 channel 8's regs and its bit in the shared ones, each written one bit per channel; its two completion flags and XFERCFG for the ring's position, and the stop and restart after a lost count | SWO commands only |
 | DMA0 | 8 then 11 | Flexcomm 3 FIFO to the SWO ring | Whenever SWO bytes arrive |
 | DMA0 | 8 then 2 | Flexcomm 0 and 1 FIFOs to the consoles' receive rings | Whenever console bytes arrive |
