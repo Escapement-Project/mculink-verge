@@ -231,6 +231,34 @@ static_assert(DBGIF_TMS_SWDIO_PORT == DBGIF_TCK_SWCLK_PORT, "one masked store mo
 CJTAG_FRAME_FUNCTION(Slow, CJTAG_DELAY(), CJTAG_QUARTER())
 CJTAG_FRAME_FUNCTION(Fast, PIN_DELAY_FAST(), CJTAG_QUARTER_FAST())
 
+/** The TDO packet, entered with TCKC high. The target drives TMSC from the fall that starts it, and
+ * tools/jtagcheck.py wants the wire let go within 3 cycles of that fall. That is a most time, which
+ * C cannot promise: inlined in the frame, a branch and the compiler's reloads of the pin addresses
+ * landed there. So the fall and the release are one asm block, the stores PIN_SWCLK_TCK_CLR and
+ * PIN_SWDIO_OUT_DISABLE make. The function sits in SRAM with the bit paths, since a flash miss
+ * between them would cost 12 cycles. The rest are least times, which ARM's delay loop only
+ * lengthens. */
+__attribute__((noinline)) HOT_PATH static uint32_t cjtag_tdo_packet(void) {
+    __asm volatile("str %[tck], [%[tck_clr]]\n\t"
+                   "str %[txen], [%[txen_clr]]\n\t"
+                   "str %[tms], [%[tms_dirclr]]"
+                   :
+                   : [tck] "r"(1U << DBGIF_TCK_SWCLK_PIN),
+                     [tck_clr] "r"(&DBGIF_TCK_SWCLK_GPIO->CLR[DBGIF_TCK_SWCLK_PORT]),
+                     [txen] "r"(1U << DBGIF_TMS_SWDIO_TXEN_PIN),
+                     [txen_clr] "r"(&DBGIF_TMS_SWDIO_TXEN_GPIO->CLR[DBGIF_TMS_SWDIO_TXEN_PORT]),
+                     [tms] "r"(1U << DBGIF_TMS_SWDIO_PIN),
+                     [tms_dirclr] "r"(&DBGIF_TMS_SWDIO_GPIO->DIRCLR[DBGIF_TMS_SWDIO_PORT])
+                   : "memory");
+    CJTAG_DELAY();
+    const uint32_t tdo = PIN_SWDIO_IN();
+    PIN_SWCLK_TCK_SET();
+    CJTAG_DELAY();
+    PIN_SWCLK_TCK_CLR();
+    PIN_SWDIO_OUT_ENABLE();
+    return tdo;
+}
+
 uint32_t cJTAG_FrameTap(uint32_t tms, uint32_t tdi) {
     const bool shift = cJTAG_TapClock(tms);
     if (((format == CJTAG_OSCAN2) || (format == CJTAG_OSCAN6)) && !shift) {
@@ -241,6 +269,7 @@ uint32_t cJTAG_FrameTap(uint32_t tms, uint32_t tdi) {
     // fall; this paced copy waits whatever came before.
     CJTAG_QUARTER();
     if (((format == CJTAG_OSCAN5) || (format == CJTAG_OSCAN6)) && shift) {
+        const bool pad = (format == CJTAG_OSCAN6) && entered;
         PIN_SWDIO_OUT(tdi ^ 1U);
         CJTAG_DELAY();
         PIN_SWCLK_TCK_SET();
@@ -261,24 +290,23 @@ uint32_t cJTAG_FrameTap(uint32_t tms, uint32_t tdi) {
             CJTAG_DELAY();
             CJTAG_DELAY();
         }
-        PIN_SWCLK_TCK_CLR();
-        if ((format == CJTAG_OSCAN6) && entered) {
+        if (pad) {
             // The PAD packet, at nTDI's level, so that it moves nothing.
-            CJTAG_PACKET(tdi ^ 1U, CJTAG_DELAY());
+            PIN_SWCLK_TCK_CLR();
+            PIN_SWDIO_OUT(tdi ^ 1U);
+            CJTAG_DELAY();
+            PIN_SWCLK_TCK_SET();
+            CJTAG_DELAY();
         }
     } else {
         CJTAG_PACKET(tdi ^ 1U, CJTAG_DELAY());
-        CJTAG_SAMPLED_PACKET(tms, CJTAG_QUARTER(), CJTAG_DELAY());
+        CJTAG_QUARTER();
+        PIN_SWDIO_OUT(tms);
+        CJTAG_QUARTER();
+        PIN_SWCLK_TCK_SET();
+        CJTAG_DELAY();
     }
-
-    PIN_SWDIO_OUT_DISABLE();
-    CJTAG_DELAY();
-    const uint32_t tdo = PIN_SWDIO_IN();
-    PIN_SWCLK_TCK_SET();
-    CJTAG_DELAY();
-    PIN_SWCLK_TCK_CLR();
-    PIN_SWDIO_OUT_ENABLE();
-    return tdo;
+    return cjtag_tdo_packet();
 }
 
 /* Paced C, as cJTAG_FrameTap is: every constraint below is a least time, which ARM's delay loop only
