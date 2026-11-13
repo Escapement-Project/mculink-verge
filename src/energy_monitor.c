@@ -38,10 +38,11 @@
 static_assert(ENERGY_SEGMENTS == 2U, "a completion flag for each half");
 
 /** Ring words a pair takes on average: its three results, and the empty reads after them. The
- *  watermark request is still raised for two reads after the one that empties the FIFO, and those
- *  read an empty FIFO. The voltage's and the current's results land together, so a pair took 6.9
- *  to 7.0 words at every rate, measured, and 5 to 9 any one pair; converted one after the other
- *  they took 9. UM11126 asks for a watermark of at least 2 with DMA, and the watermark stays at 0
+ *  watermark request is still raised for up to two reads after the one that empties the FIFO, and
+ *  those read an empty FIFO. The voltage's and the current's results land together: a pair took
+ *  6.4 words up to 3,000 pairs a second and 6.86 to 6.98 from 10,000 to 100,000, measured with the
+ *  ADC at 18.75 MHz. Segment sizes follow the high rates' figure; below 4,572 pairs a second every
+ *  segment is the 16-word floor. Converted one after the other, a pair took 9. UM11126 asks for a watermark of at least 2 with DMA, and the watermark stays at 0
  *  regardless: at 2 the request sometimes stops one result short, so a pair's last results wait in
  *  the FIFO for the next pair's and the latest reply runs a pair behind. */
 #define ENERGY_WORDS_PER_PAIR 7U
@@ -55,9 +56,8 @@ static_assert(ENERGY_SEGMENTS == 2U, "a completion flag for each half");
 
 /** ADC clocks from a trigger to its pair's first conversion: an allowance, not measured. */
 #define ENERGY_TRIGGER_LATENCY_ADCK 4U
-/** The least time between a pair's end and the next trigger that CPU 0 aims a re-arm into: 2 us of
- *  FRO_HF. */
-#define ENERGY_REARM_MIN_GAP_TICKS 192U
+/** The least time between a pair's end and the next trigger that CPU 0 aims a re-arm into: 2 us. */
+#define ENERGY_REARM_MIN_GAP_TICKS (ENERGY_TIMER_HZ / 500000U)
 
 static uint32_t requested_rate_hz;
 static uint32_t actual_rate_hz;
@@ -515,13 +515,13 @@ static bool capture_drain(void) {
     return empty;
 }
 
-/** CTIMER4 runs free from FRO_HF, the conversion timer's clock, so a stream's times count the clock
+/** CTIMER4 runs free from PLL0, the conversion timer's clock, so a stream's times count the clock
  *  its pairs are paced by (src/energy_stream.h). */
 static void stamp_init(void) {
     if (stamp_ready) {
         return;
     }
-    CLOCK_AttachClk(kFRO_HF_to_CTIMER4);
+    CLOCK_AttachClk(kPLL0_to_CTIMER4);
     CLOCK_EnableClock(kCLOCK_Timer4);
     RESET_PeripheralReset(kCTIMER4_RST_SHIFT_RSTn);
     CTIMER4->PR = 0U;
@@ -530,20 +530,20 @@ static void stamp_init(void) {
     stamp_ready = true;
 }
 
-/** CTIMER2 toggles the trigger every half period of this many FRO_HF ticks; it rises once a period. */
+/** CTIMER2 toggles the trigger every half period of this many ticks; it rises once a period. */
 static uint32_t timer_ticks(uint32_t rate_hz) {
-    return (CLOCK_GetFroHfFreq() + rate_hz) / (2U * rate_hz);
+    return (ENERGY_TIMER_HZ + rate_hz) / (2U * rate_hz);
 }
 
 static uint32_t timer_effective_rate(uint32_t rate_hz) {
-    return CLOCK_GetFroHfFreq() / (2U * timer_ticks(rate_hz));
+    return ENERGY_TIMER_HZ / (2U * timer_ticks(rate_hz));
 }
 
 /** The rate the timer runs at for `rate_hz`, to the nearest pair a second: what a reply reports. A
  *  stream's header gives it exactly, as a clock and a period. */
 static uint32_t timer_rounded_rate(uint32_t rate_hz) {
     uint32_t const ticks = timer_ticks(rate_hz);
-    return (CLOCK_GetFroHfFreq() + ticks) / (2U * ticks);
+    return (ENERGY_TIMER_HZ + ticks) / (2U * ticks);
 }
 
 /** The stand-in's weight and CPU 0's re-arm window, for the timer `requested_hz` starts and the
@@ -566,13 +566,12 @@ static void switch_timing(struct energy_integration* energy, uint32_t requested_
 
 /** Returns CTIMER4 as the timer starts; the first conversion comes `*ticks` later. */
 static uint32_t timer_start(uint32_t rate_hz, uint32_t* ticks_out) {
-    uint32_t const clock_hz = CLOCK_GetFroHfFreq();
     uint32_t const ticks = timer_ticks(rate_hz);
-    actual_rate_hz = clock_hz / (2U * ticks);
+    actual_rate_hz = ENERGY_TIMER_HZ / (2U * ticks);
     trigger_ticks = ticks;
     *ticks_out = ticks;
 
-    CLOCK_AttachClk(kFRO_HF_to_CTIMER2);
+    CLOCK_AttachClk(kPLL0_to_CTIMER2);
     CLOCK_EnableClock(kCLOCK_Timer2);
     RESET_PeripheralReset(kCTIMER2_RST_SHIFT_RSTn);
     CTIMER2->TCR = CTIMER_TCR_CRST_MASK;
@@ -648,7 +647,7 @@ static void capture_stream_begin(struct energy_integration* energy, bool identif
     uint8_t levels = 0U;
     uint8_t const pins = dio_stream_pins(stream_dio_mask, &levels);
     energy_stream_header_t const header = {
-        .clock_hz = CLOCK_GetFroHfFreq(),
+        .clock_hz = ENERGY_TIMER_HZ,
         .period = 2U * timer_ticks(requested_rate_hz),
         .setting = energy->setting,
         .full_scale_mv = (uint16_t)energy->full_scale_mv,
@@ -659,7 +658,7 @@ static void capture_stream_begin(struct energy_integration* energy, bool identif
         .dio_mask = pins,
         .dio_levels = levels,
         .dio_stamp = CTIMER4->TC,
-        .edge_resolution_ns = (pins != 0U) ? energy_stream_edge_resolution(CLOCK_GetFroHfFreq()) : 0U,
+        .edge_resolution_ns = (pins != 0U) ? energy_stream_edge_resolution(ENERGY_TIMER_HZ) : 0U,
         .capture_id = identified ? &next_identity : nullptr,
         .switch_weight_q16 = energy->switch_weight_q16,
         .rearm_between_pairs = energy->rearm_between_pairs,
@@ -696,8 +695,8 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     energy->consumed_bytes = 0U;
     LPADC_DoResetFIFO0(ADC0);
     // A pair's share of a second is its period over the clock, which no whole rate gives exactly:
-    // asked 7, the timer runs at 6.99999985 pairs a second.
-    energy->scale_q32 = ((uint64_t)(2U * timer_ticks(requested_rate_hz)) << 32U) / CLOCK_GetFroHfFreq();
+    // asked 7, the timer runs at 6.99999987 pairs a second.
+    energy->scale_q32 = ((uint64_t)(2U * timer_ticks(requested_rate_hz)) << 32U) / ENERGY_TIMER_HZ;
     energy->low_range = low_range_calibration;
     energy->high_range = high_range_calibration;
     energy->calibrated = current_calibrated;
@@ -780,7 +779,7 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     }
     uint32_t ticks = 0U;
     uint32_t const started = timer_start(requested_rate_hz, &ticks);
-    energy_stream_timeline_run(stream, new_session, CLOCK_GetFroHfFreq(), ticks, started);
+    energy_stream_timeline_run(stream, new_session, ENERGY_TIMER_HZ, ticks, started);
     return true;
 }
 

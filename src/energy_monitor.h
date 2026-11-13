@@ -7,8 +7,13 @@
 
 #include "fsl_device_registers.h"
 
+#include "core_clock.h"
 #include "energy_samples.h"
 #include "energy_identity.h"
+
+/** What CTIMER2 paces pairs by and CTIMER4 stamps pairs, edges and markers with. ADC0 runs from the
+ *  same PLL0 (TARGET_SENSE_ADC_DIVIDER), so a pair's length in its counts is exact. */
+#define ENERGY_TIMER_HZ PLL0_CLOCK_HZ
 
 #define ENERGY_DMA_CHANNEL 21U
 #define ENERGY_DMA_MASK (1UL << ENERGY_DMA_CHANNEL)

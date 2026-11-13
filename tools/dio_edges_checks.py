@@ -5,8 +5,13 @@ from energy_checks import ORDINARY_GPIO, machine
 from unicorn import UC_HOOK_CODE, UC_HOOK_MEM_READ
 from unicorn.arm_const import UC_ARM_REG_PRIMASK
 
-STATICS = ("resting", "rest_from", "rest_counts", "begins_seen", "edges_stream", "enabled",
-           "spi_turns_seen", "sync", "cleared", "credit", "credit_stamp", "burst", "run_cost")
+STATICS = ("resting", "rest_from", "begins_seen", "edges_stream", "enabled", "spi_turns_seen", "sync", "cleared",
+           "credit", "credit_stamp")
+# The interrupt's rate budget in counts of the 150 MHz stamping clock (src/dio_edges.c): a run's
+# cost, the most credit kept, 32 runs' worth, and a rest, 1 ms.
+RUN_COST = 150_000_000 // 100_000
+CREDIT_MAX = 32 * RUN_COST
+REST_COUNTS = 150_000_000 // 1000
 # PINT's RISE register: a pin's rise stays latched, as the model never clears it.
 PINT_RISE = 0x4000401C
 # The stamping timer (src/energy_monitor.c).
@@ -50,7 +55,6 @@ def check_edge_rest(c, elf, symbols, shared, layout):
         """A stream that has just begun, with pin 0 reported, CPU 0 owning its state and SPI off."""
         byte(statics["present"], 1)
         word(statics["edges_stream"], stream)
-        word(statics["rest_counts"], 96_000)
         for name in ("resting", "enabled"):
             byte(statics[name], 0)
         byte(dropped, 0)
@@ -115,8 +119,18 @@ def check_edge_rest(c, elf, symbols, shared, layout):
     since = int.from_bytes(probe.uc.mem_read(dropped_from, 4), "little")
     c.check(read(statics["resting"]) == 1 and read(dropped) == 1 and since == 0x1234,
             f"DIO edges: a stream begun during a rest marked its edges lost {read(dropped)} from {since:#x}")
+    # A rest lasts 1 ms: a pass one count short of it keeps resting, and one at it ends the rest.
+    ended = []
+    for elapsed in (REST_COUNTS - 1, REST_COUNTS):
+        reset()
+        byte(statics["resting"], 1)
+        word(statics["rest_from"], 0x1234)
+        word(CTIMER4_TC, 0x1234 + elapsed)
+        probe.call("dio_edges_task", timeout_insns=10_000)
+        ended.append(read(statics["resting"]) == 0)
+    c.check(ended == [False, True], f"DIO edges: a rest ended {ended[0]} one count short of 1 ms and {ended[1]} at it")
     c.note(f"DIO edges: a rest starting at any of {len(trace)} instructions of a new stream's pass keeps its LOST mark,"
-           " and one under way marks the new stream's edges lost")
+           " one under way marks the new stream's edges lost, and a rest lasts 1 ms to the count")
 
 
 class Pins:
@@ -167,8 +181,7 @@ def check_edge_spi(c, elf, symbols, shared, layout):
 
         # The interrupt's sync run, with credit to spare and the pins turned on under count 2.
         word(statics["edges_stream"], stream)
-        for name, value in (("burst", 1000), ("credit", 1000), ("run_cost", 1), ("credit_stamp", 0),
-                            ("spi_turns_seen", 2)):
+        for name, value in (("credit", CREDIT_MAX), ("credit_stamp", 0), ("spi_turns_seen", 2)):
             word(statics[name], value)
         for name, value in (("sync", 1), ("cleared", 0), ("present", 1)):
             byte(name, value)
@@ -219,8 +232,7 @@ def check_edge_spi(c, elf, symbols, shared, layout):
         pins = Pins(probe)
         word = lambda address, value: probe.uc.mem_write(address, value.to_bytes(4, "little"))
         word(statics["edges_stream"], stream)
-        for name, value in (("burst", 1000), ("credit", 1000), ("run_cost", 1), ("credit_stamp", 0),
-                            ("spi_turns_seen", 2)):
+        for name, value in (("credit", CREDIT_MAX), ("credit_stamp", 0), ("spi_turns_seen", 2)):
             word(statics[name], value)
         for name, value in (("sync", 0), ("cleared", 0), ("present", 1)):
             probe.uc.mem_write(statics[name], bytes([value]))
@@ -245,9 +257,10 @@ def check_edge_spi(c, elf, symbols, shared, layout):
     c.check(found[("run", True)] == (0, None, 1, 0xABCD),
             f"DIO edges: SPI took the pins as the sync run read them; (entries, levels, dropped, from) {found[('run', True)]}")
     # Two recorded runs' stamps are at least this far apart: the next run reads its stamp only after
-    # this one returns, and each instruction takes a cycle of CPU 0's 150 MHz clock or more. DIO
-    # lost messages rely on it: a loss from just after one run ends at a later one.
-    apart = found["after stamp"] * 96 / 150
+    # this one returns, and each instruction takes a cycle of CPU 0's clock or more, which is no
+    # faster than the 150 MHz stamping clock. DIO lost messages rely on it: a loss from just after
+    # one run ends at a later one.
+    apart = found["after stamp"]
     c.check(apart >= 2, f"DIO edges: a recording run takes {found['after stamp']} instructions after its stamp,"
                         f" so two runs' stamps may be {apart:.1f} counts apart")
     c.note(f"DIO edges: a recording run takes {found['after stamp']} instructions after its stamp, so two"
@@ -260,29 +273,32 @@ def check_edge_spi(c, elf, symbols, shared, layout):
     # Runs that find SPI has the pins still pay for themselves and rest: with the pins turned on as
     # SPI took them, every SPI clock edge would run the interrupt and starve the loop that turns
     # them off.
-    probe = machine(elf, symbols)
-    Pins(probe)
-    probe.uc.mem_write(stream - layout["stream"] + layout["stream.edge_entries_written"], bytes(8))
-    probe.uc.mem_write(statics["edges_stream"], stream.to_bytes(4, "little"))
-    for name, value in (("burst", 32), ("credit", 32), ("run_cost", 1), ("credit_stamp", 0), ("spi_turns_seen", 2)):
-        probe.uc.mem_write(statics[name], value.to_bytes(4, "little"))
-    for name in ("sync", "resting"):
-        probe.uc.mem_write(statics[name], b"\x00")
-    probe.uc.mem_write(dropped, b"\x00")
-    probe.uc.mem_write(turns, (3).to_bytes(4, "little"))
-    probe.uc.mem_write(PINT_RISE, (1).to_bytes(4, "little"))
-    runs = 0
-    while runs < 64 and probe.uc.mem_read(statics["resting"], 1)[0] == 0:
-        probe.call("PIN_INT0_IRQHandler", timeout_insns=10_000)
-        runs += 1
-    c.check(runs <= 33 and probe.uc.mem_read(statics["resting"], 1)[0] == 1,
-            f"DIO edges: runs under SPI did not rest after a burst of 32 ({runs} runs)")
+    # No credit but a second since the last run fills the credit to its cap, 32 runs; 10 runs'
+    # worth of credit and no time pays for 10. The stamp stays put, so no credit comes back.
+    for credit, since, paid in ((0, (-150_000_000) & 0xFFFFFFFF, 32), (10 * RUN_COST, 0, 10)):
+        probe = machine(elf, symbols)
+        Pins(probe)
+        probe.uc.mem_write(stream - layout["stream"] + layout["stream.edge_entries_written"], bytes(8))
+        probe.uc.mem_write(statics["edges_stream"], stream.to_bytes(4, "little"))
+        for name, value in (("credit", credit), ("credit_stamp", since), ("spi_turns_seen", 2)):
+            probe.uc.mem_write(statics[name], value.to_bytes(4, "little"))
+        for name in ("sync", "resting"):
+            probe.uc.mem_write(statics[name], b"\x00")
+        probe.uc.mem_write(dropped, b"\x00")
+        probe.uc.mem_write(turns, (3).to_bytes(4, "little"))
+        probe.uc.mem_write(PINT_RISE, (1).to_bytes(4, "little"))
+        runs = 0
+        while runs < 64 and probe.uc.mem_read(statics["resting"], 1)[0] == 0:
+            probe.call("PIN_INT0_IRQHandler", timeout_insns=10_000)
+            runs += 1
+        c.check(runs == paid + 1 and probe.uc.mem_read(statics["resting"], 1)[0] == 1,
+                f"DIO edges: runs under SPI with {credit} credit rested at run {runs}, not after {paid}")
     # A rest with SPI away marks the edges lost from the run that started it.
     probe = machine(elf, symbols)
     Pins(probe)
     probe.uc.mem_write(stream - layout["stream"] + layout["stream.edge_entries_written"], bytes(8))
     probe.uc.mem_write(statics["edges_stream"], stream.to_bytes(4, "little"))
-    for name, value in (("burst", 32), ("credit", 0), ("run_cost", 1000), ("credit_stamp", 0x5555), ("spi_turns_seen", 2)):
+    for name, value in (("credit", 0), ("credit_stamp", 0x5555), ("spi_turns_seen", 2)):
         probe.uc.mem_write(statics[name], value.to_bytes(4, "little"))
     for name in ("sync", "resting"):
         probe.uc.mem_write(statics[name], b"\x00")

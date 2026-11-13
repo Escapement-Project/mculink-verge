@@ -641,7 +641,7 @@ def check_hold(c, elf1, symbols1, offsets1, layout):
 # The fixture's calibration: this shunt current at every code.
 SHUNT_NA = 1_000_000
 # The fixture's capture: a rate the timer makes exactly, with full-size segments.
-FIXTURE_RATE = 16000
+FIXTURE_RATE = 15000
 # A full segment: ENERGY_SEGMENT_MAX_WORDS, the most a start picks.
 SEGMENT = 512
 FIXTURE_SCALE = (1 << 32) // FIXTURE_RATE
@@ -710,7 +710,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         for field, value, size in (("running", 1, 1), ("calibrated", 1, 1), ("scale_q32", FIXTURE_SCALE, 8),
                                    ("segment_words", SEGMENT, 4), ("full_scale_mv", 3300, 4),
                                    ("rearm_below_na", 1500000, 4), ("band_from_na", 750000, 4),
-                                   ("short_low_pairs", 48, 4), ("hold_max_segments", 1750, 4),
+                                   ("short_low_pairs", 45, 4), ("hold_max_segments", 1640, 4),
                                    ("hold_segments", 1, 4), ("previous_low", 0, 1)):
             energy.put(field, value, size)
         calibration = struct.pack("<4H7IB3x", 0, 65535, 0, 0, SHUNT_NA, SHUNT_NA, 0, 0, 0, 0, 0, 2)
@@ -719,7 +719,6 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
             probe.uc.mem_write(probe.sym[name], calibration)
         for field in ("low_range", "high_range"):
             energy.write(field, calibration)
-        probe.uc.mem_write(0x40013010, u32(0x40000000))  # Enable the SDK's 96 MHz FRO source.
 
         def acknowledge(uc, access, at, size, value, data):
             put("energy_control_ack", value)
@@ -759,16 +758,16 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
 
         return probe, dma, adc, put, get, local, written, feed, pause, total, hook
 
-    limits = ((3323, 7), (6596, 6), (13001, 5), (25263, 4), (47808, 3), (86330, 2), (100000, 1))
+    limits = ((4546, 7), (9036, 6), (17840, 5), (34786, 4), (66254, 3), (100000, 2))
     # Each limit's last request and the next, and the segment sizes' boundaries.
-    rates = (1, 10, 1000, 3323, 3324, 4572, 4573, 6596, 6597, 6598, 9143, 9144, 13002, 13003, 18289, 18290, 25269,
-             25270, 36571, 36572, 47832, 47833, 73115, 73116, 86408, 86409, 100000)
+    rates = (1, 10, 1000, 4546, 4547, 4548, 4571, 4572, 9036, 9037, 9143, 9144, 17842, 17843, 18285, 18286, 34794,
+             34795, 36576, 36577, 66283, 66284, 73135, 73136, 100000)
 
     def check_commands(words, average, calibration):
         tail = 0 if calibration else 2
         # Voltage and current as one dual single-ended conversion of CH0 (CMDL[CTYPE] 3), both
-        # sampling for ADCK7 (CMDH[STS] 2).
-        expected = (0xE0, (tail << 24) | (average << 12) | (2 << 8))
+        # sampling for ADCK11 (CMDH[STS] 3).
+        expected = (0xE0, (tail << 24) | (average << 12) | (3 << 8))
         c.check(words[:2] == expected, "ADC voltage/current channel, resolution, averaging, timing or chain changed")
         if not calibration:
             c.check(words[2:4] == (0x82, 0), "ADC range command is not a fresh unaveraged side-A conversion")
@@ -782,21 +781,21 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
         average = next(average for limit, average in limits if actual <= limit)
         words = tuple(int.from_bytes(adc.page[at:at + 4], "little") for at in range(0x100, 0x118, 4))
         check_commands(words, average, False)
-        # The pair, 27 + 28 N cycles of the ADC's FRO_HF / 8 clock, fits the conversion timer's
-        # period of two match intervals, whatever rate the request rounded to.
+        # The pair, 27 + 32 N cycles of the ADC's PLL0 / 8 clock, fits the conversion timer's
+        # period of two match intervals of PLL0, whatever rate the request rounded to.
         ticks = int.from_bytes(probe.uc.mem_read(CTIMER2_MR3, 4), "little") + 1
-        c.check((27 + 28 * (1 << average)) * 8 <= 2 * ticks,
+        c.check((27 + 32 * (1 << average)) * 8 <= 2 * ticks,
                 f"{rate} pairs/s: {1 << average} averages overrun a period of {ticks} ticks a half")
         # The stand-in's weight is half the share of a period the current's conversions span, and a
         # re-arm waits for the first half of a pair's gap where that is 2 us or more (src/energy_pairs.h).
-        window, busy = 28 * (1 << average) * 8, (27 + 28 * (1 << average) + 4) * 8
+        window, busy = 32 * (1 << average) * 8, (27 + 32 * (1 << average) + 4) * 8
         weight = min(32768, ((window << 16) + 2 * ticks) // (4 * ticks))
         gap = max(0, 2 * ticks - busy)
         timing = tuple(probe.energy.get(name, size) for name, size in (
             ("switch_weight_q16", 4), ("rearm_between_pairs", 1), ("trigger_ticks", 4), ("rearm_from_ticks", 4),
             ("rearm_until_ticks", 4)))
-        c.check(timing == (weight, int(gap >= 192), ticks, busy, busy + gap // 2),
-                f"{actual} pairs/s: switch timing {timing}, against {(weight, int(gap >= 192), ticks, busy, busy + gap // 2)}")
+        c.check(timing == (weight, int(gap >= 300), ticks, busy, busy + gap // 2),
+                f"{actual} pairs/s: switch timing {timing}, against {(weight, int(gap >= 300), ticks, busy, busy + gap // 2)}")
         c.check(int.from_bytes(adc.page[0xBC:0xC0], "little") == 0x01000001,
                 "ADC monitor is not hardware trigger 7 starting at command 1")
         # About 1 ms of the ring's seven words a pair: a power of two, no longer than 1 ms and over
@@ -904,24 +903,46 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     c.note("a start publishes CPU 1's tables and constants to CPU 0's integration")
 
     # A pair weighs its period over the clock, not one over a whole rate, and a reply
-    # reports the rate to the nearest pair a second. Asked 7 the timer runs at 6.99999985; asked
+    # reports the rate to the nearest pair a second. Asked 7 the timer runs at 6.99999987; asked
     # 99,999 it runs at 100,000.
     for rate in (7, 13, 1000, 99_999):
         probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
         local("requested_rate_hz", rate)
         c.check(probe.call("energy_capture_start", 1) == 1, f"{rate} pairs/s: the start failed")
-        ticks = (96_000_000 + rate) // (2 * rate)
+        ticks = (150_000_000 + rate) // (2 * rate)
         scale = probe.energy.get("scale_q32", 8)
-        c.check(scale == ((2 * ticks) << 32) // 96_000_000,
-                f"{rate} pairs/s: scale {scale}, against {((2 * ticks) << 32) // 96_000_000} for a period of {2 * ticks}")
+        c.check(scale == ((2 * ticks) << 32) // 150_000_000,
+                f"{rate} pairs/s: scale {scale}, against {((2 * ticks) << 32) // 150_000_000} for a period of {2 * ticks}")
         # Mode 12, the state, reports the rate as every reply does.
         reply = probe.command(b"\x90\x0c")
         reported = int.from_bytes(reply[4:8], "little")
-        nearest = (96_000_000 + ticks) // (2 * ticks)
+        nearest = (150_000_000 + ticks) // (2 * ticks)
         c.check(reply[2] == 0 and reported == nearest,
                 f"{rate} pairs/s: mode 12 result {reply[2]} reports {reported}, the timer runs nearest {nearest}")
         probe.uc.hook_del(hook)
     c.note("a pair weighs its period over the clock; replies report the nearest whole rate")
+
+    # The pair timer, the stamping timer and the converter all run from PLL0: CTIMERCLKSEL2 and 4
+    # select it (1), ADCCLKSEL too (1), and ADCCLKDIV's 3-bit DIV divides by 8, with its reserved
+    # bits 28:3 clear (UM11126 Table 106). A pair's length in timer counts is exact only so
+    # (src/energy_monitor.h).
+    def syscon(offset):
+        return int.from_bytes(probe.uc.mem_read(0x40000000 + offset, 4), "little")
+
+    probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+    c.check(probe.call("energy_capture_start", 1) == 1, "the start for the timers' clocks failed")
+    timers = (syscon(0x274) & 7, syscon(0x27C) & 7)
+    probe.uc.hook_del(hook)
+    probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
+    local("adc_ready", 0)
+    probe.command(bytes([0x90, 0]) + u32(1000))
+    divider = syscon(0x394)
+    converter = (syscon(0x2A4) & 7, (divider & 7) + 1, divider & 0x1FFFFFF8)
+    probe.uc.hook_del(hook)
+    c.check(timers == (1, 1) and converter == (1, 8, 0),
+            f"CTIMER2 and CTIMER4 select clock {timers}, ADC0 clock {converter[0]} over {converter[1]}, reserved"
+            f" divider bits {converter[2]:#x}; want PLL0 for all three, the converter over 8")
+    c.note("the pair timer, the stamping timer and the converter run from PLL0, the converter over 8")
 
     if "target_sense_convert_pair_for_calibration" in symbols:
         probe, dma, adc, put, get, local, written, feed, pause, total, hook = setup()
@@ -1090,7 +1111,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
     # The sense read borrowed command 1; the resume gives it back to the dual pair.
     average = next(average for limit, average in limits if FIXTURE_RATE <= limit)
     restored = tuple(int.from_bytes(adc.page[at:at + 4], "little") for at in range(0x100, 0x110, 4))
-    c.check(restored == (0xE0, (2 << 24) | (average << 12) | (2 << 8), 0x82, 0),
+    c.check(restored == (0xE0, (2 << 24) | (average << 12) | (3 << 8), 0x82, 0),
             f"after a sense read, the capture's commands are {[hex(w) for w in restored]}")
     total(codes)
     feed([result(1, 1), result(2, 0), result(1, 32768), result(1, 1), result(2, 0)])
@@ -1424,7 +1445,7 @@ def check_samples(c, elf0, elf1, symbols0, symbols1, offsets, layout, model_sysc
                 f"{size}-word segments: backoff re-arms {got}, against the model's {want}, {cycle} cycles")
         c.check(holds == expected, f"{size}-word segments: holds at each re-arm {holds}, against {expected}")
         probe.uc.hook_del(hook)
-    c.note("re-arm backoff at 10, 1000 and 16000 pairs/s: a start's constants, doubling to the cap, a low phase that holds"
+    c.note("re-arm backoff at 10, 1000 and 15000 pairs/s: a start's constants, doubling to the cap, a low phase that holds"
            " resets it, a burst over the limit at the verdict pair doubles nothing and one a pair shorter does,"
            " under the band re-arms at once")
 
@@ -1816,7 +1837,7 @@ def check_stream(c, setup, result, offsets, local_symbols):
     def u32_at(m, at):
         return int.from_bytes(m[at:at + 4], "little")
 
-    clock = 96_000_000
+    clock = 150_000_000
     ticks = (clock + FIXTURE_RATE) // (2 * FIXTURE_RATE)
     period = 2 * ticks
 

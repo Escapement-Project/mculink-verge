@@ -673,8 +673,8 @@ def check_aux_stream(c, elf0, elf1, symbols0, symbols1, fields, layout):
         field(usb, "rearm_between_pairs", 1, 1)
         field(usb, "previous_known", 1, 1)
         field(usb, "previous_na", 6_700_000)
-        field(usb, "stream.clock_hz", 96_000_000)
-        field(usb, "stream.period", 96_000)
+        field(usb, "stream.clock_hz", 150_000_000)
+        field(usb, "stream.period", 150_000)
         field(usb, "stream.next_sequence", 42)
         field(usb, "decoder", 41, 4, 12)
 
@@ -809,7 +809,7 @@ def check_aux_stream(c, elf0, elf1, symbols0, symbols1, fields, layout):
             f"mode 6 sent {[m[:8].hex() for m in sent]}")
     if len(sent) == 2 and len(sent[1]) == 79:
         h = sent[1]
-        c.check(int.from_bytes(h[2:6], "little") == 96_000_000 and int.from_bytes(h[6:10], "little") == 96_000
+        c.check(int.from_bytes(h[2:6], "little") == 150_000_000 and int.from_bytes(h[6:10], "little") == 150_000
                 and h[10] == 2 and int.from_bytes(h[11:13], "little") == 3000
                 and int.from_bytes(h[13:17], "little") == 42 and h[17] == 0, f"mode 6 header {h[:18].hex()}")
         # Step 5's fields, with the current of the last pair integrated.
@@ -891,12 +891,12 @@ def check_aux_stream(c, elf0, elf1, symbols0, symbols1, fields, layout):
     drain(usb)
     sent = mark(usb, b"\x94\x07\x00\x00\x00\x02hi")
     c.check(sent == [b"\x94\x00\x00"], f"a marker during a stream answered {[m.hex() for m in sent]}")
-    usb.cpu0.uc.mem_write(CTIMER4_TC, (1000 + 959_999).to_bytes(4, "little"))
+    usb.cpu0.uc.mem_write(CTIMER4_TC, (1000 + 1_499_999).to_bytes(4, "little"))
     c.check(drain(usb) == [] and usb.call0("aux_has_work") == 0, "a marker left before it had waited 10 ms")
-    usb.cpu0.uc.mem_write(CTIMER4_TC, (1000 + 960_000).to_bytes(4, "little"))
+    usb.cpu0.uc.mem_write(CTIMER4_TC, (1000 + 1_500_000).to_bytes(4, "little"))
     c.check(usb.call0("aux_has_work") == 1, "a marker that waited 10 ms left no work for CPU 0's loop")
-    # 1,000 counts of 96 MHz from the timeline's origin: 10,416 ns, rounded down.
-    want = b"\xa4\x00\x01" + (10_416).to_bytes(8, "little") + (7).to_bytes(4, "little") + b"\x02hi"
+    # 1,000 counts of 150 MHz from the timeline's origin: 6,666 ns, rounded down.
+    want = b"\xa4\x00\x01" + (6_666).to_bytes(8, "little") + (7).to_bytes(4, "little") + b"\x02hi"
     sent = drain(usb)
     c.check(sent == [want], f"a marker that waited 10 ms was sent as {[m.hex() for m in sent]}")
     for available, running, streaming, payload, want in (

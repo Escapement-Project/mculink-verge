@@ -756,7 +756,7 @@ follow. Stream format 3 has 79 bytes, and stream format 4 has 103.
 | 75 to 78 | The current through the sense resistor of the pair before the first one sent, from step 3 of [Converting a pair](#converting-a-pair), in nA, u32. 0 without flag bit 1 |
 
 The capture's rate in pairs a second is the clock over the period. It is rarely a whole number:
-asked for 7 pairs a second, the timer runs at 6.99999985. Time pairs and weigh them by the period
+asked for 7 pairs a second, the timer runs at 6.99999987. Time pairs and weigh them by the period
 and the clock, never by a rounded rate.
 
 The points are the ones `0x90` mode 4 reports.
@@ -814,8 +814,8 @@ it switches down. Nothing is marked under range without a calibration. Low-range
 under range.
 
 A message holds at most 99 pairs, which keeps it under 512 bytes, and less than 10 ms of them. The
-probe sends it once it is full, or once its pairs reach 10 ms. Below about 230 pairs a second, a
-message can wait longer for its pairs: up to 2.3 s at one pair a second.
+probe sends it once it is full, or once its pairs reach 10 ms. Below about 250 pairs a second, a
+message can wait longer for its pairs: up to 2.5 s at one pair a second.
 
 ### DIO edges: `0xa3`
 

@@ -52,14 +52,18 @@ uint32_t target_sense_full_scale_mv(void) {
 /** Bring the converter up on first use, so a probe nobody asks spends nothing on it. A Pro with
  * energy capture uses it as it boots, to calibrate.
  *
- * FRO_HF clocks it rather than MAIN_CLK, so the rate does not move with the core clock: 96 MHz
- * over 8 is 12 MHz. The reference is VREFP. The plain board ties it to VDDA, the probe's own
- * 3.3 V supply, so a reading there is only as absolute as that regulator. The Pro gives it an
- * LM4040 3.0 V reference instead (schematic sheet 2), which BOARDS.md's energy section builds on.
+ * PLL0 clocks it rather than MAIN_CLK, so the rate does not move with the core clock: 150 MHz
+ * over 8 is 18.75 MHz. The capture's timers count PLL0 itself (ENERGY_TIMER_HZ), so a pair's
+ * length in their counts is exact. The reference is VREFP. The plain board ties it to VDDA, the
+ * probe's own 3.3 V supply, so a reading there is only as absolute as that regulator. The Pro
+ * gives it an LM4040 3.0 V reference instead (schematic sheet 2), which BOARDS.md's energy section
+ * builds on.
  */
+static_assert(TARGET_SENSE_ADC_DIVIDER >= 1U && TARGET_SENSE_ADC_DIVIDER <= 8U, "ADCCLKDIV divides by 1 to 8");
+static_assert(PLL0_CLOCK_HZ / TARGET_SENSE_ADC_DIVIDER <= 24000000U, "fclk(ADC) is 24 MHz at most");
 static target_sense_status_t adc_init(void) {
     CLOCK_SetClkDiv(kCLOCK_DivAdcAsyncClk, TARGET_SENSE_ADC_DIVIDER, true);
-    CLOCK_AttachClk(kFRO_HF_to_ADC_CLK);
+    CLOCK_AttachClk(kPLL0_to_ADC_CLK);
     POWER_DisablePD(kPDRUNCFG_PD_LDOGPADC);
 
     lpadc_config_t config;
@@ -117,34 +121,32 @@ target_sense_current_range_t target_sense_current_range(void) {
 }
 
 static lpadc_hardware_average_mode_t monitor_average_mode(uint32_t rate_hz) {
-    // A pair at N averages takes 27 + 28 N ADCK cycles, the unaveraged range-state conversion
+    // A pair at N averages takes 27 + 32 N ADCK cycles, the unaveraged range-state conversion
     // included. Each limit is the fastest effective rate whose period holds one at every request
-    // that rounds to it: 6,597 can come from a period a quarter cycle short of 64 averages. A
-    // longer sample time in configure_pair_command moves them.
-    if (rate_hz <= 3323U) {
+    // that rounds to it: 9,037 can come from a period a quarter cycle short of 64 averages. A
+    // longer sample time in configure_pair_command moves them. 4 averages fit at
+    // ENERGY_MAX_RATE_HZ.
+    if (rate_hz <= 4546U) {
         return kLPADC_HardwareAverageCount128;
     }
-    if (rate_hz <= 6596U) {
+    if (rate_hz <= 9036U) {
         return kLPADC_HardwareAverageCount64;
     }
-    if (rate_hz <= 13001U) {
+    if (rate_hz <= 17840U) {
         return kLPADC_HardwareAverageCount32;
     }
-    if (rate_hz <= 25263U) {
+    if (rate_hz <= 34786U) {
         return kLPADC_HardwareAverageCount16;
     }
-    if (rate_hz <= 47808U) {
+    if (rate_hz <= 66254U) {
         return kLPADC_HardwareAverageCount8;
     }
-    if (rate_hz <= 86330U) {
-        return kLPADC_HardwareAverageCount4;
-    }
-    return kLPADC_HardwareAverageCount2;
+    return kLPADC_HardwareAverageCount4;
 }
 
-/** A conversion takes 28 ADC clocks at ADCK7, so N averages take 28 N; the range's is the rest. */
+/** A conversion takes 32 ADC clocks at ADCK11, so N averages take 32 N; the range's is the rest. */
 uint32_t target_sense_monitor_window_adck(uint32_t rate_hz) {
-    return 28U << (uint32_t)monitor_average_mode(rate_hz);
+    return 32U << (uint32_t)monitor_average_mode(rate_hz);
 }
 
 uint32_t target_sense_monitor_pair_adck(uint32_t rate_hz) {
@@ -163,9 +165,10 @@ static void configure_pair_command(lpadc_hardware_average_mode_t average, uint32
     command->sampleChannelMode = kLPADC_SampleChannelDualSingleEndBothSide;
     command->conversionResolutionMode = kLPADC_ConversionResolutionHigh;
     command->hardwareAverageMode = average;
-    // At ADCK3 the voltage read 0.27% higher unaveraged than averaged 16 times. At ADCK7 every
-    // averaging reads within 0.02% of 16 times at 10,000 pairs/s.
-    command->sampleTimeMode = kLPADC_SampleTimeADCK7;
+    // 11.5 cycles, 613 ns. With a 12 MHz ADC clock, 292 ns read the voltage 0.27% higher
+    // unaveraged than averaged 16 times, and 625 ns read every averaging within 0.02% of 16 times
+    // at 10,000 pairs/s.
+    command->sampleTimeMode = kLPADC_SampleTimeADCK11;
     command->chainedNextCommandNumber = next;
     LPADC_SetConvCommandConfig(ADC0, 1U, command);
 }

@@ -292,7 +292,8 @@ Energy capture runs on the Pro, with HW_VER_5 fitted, and uses both cores.
   conversion timer for the measurement, so the capture's DMA cannot delay a sample on the wire.
 
 The stream's clock is another timer, CTimer 4. Pairs, DIO edges and markers are all stamped on it,
-so they share one timeline. DIO edges come from CPU 0's pin interrupts, the only interrupts above
+so they share one timeline. Both timers and the ADC run from PLL0, at 150 MHz from the board's
+16 MHz crystal. DIO edges come from CPU 0's pin interrupts, the only interrupts above
 CPU 0's others. A marker (`0x94`) runs on CPU 1, like any command. It goes out with the next pairs
 message, or on its own after 10 ms.
 

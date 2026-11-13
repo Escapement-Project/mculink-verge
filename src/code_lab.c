@@ -21,7 +21,7 @@
  *     LAB_WRITE  [1] arena, [2..3] offset, [4..5] length, [6..] bytes; reply: status
  *     LAB_READ   [1] arena, [2..3] offset, [4..5] length; reply: status, bytes
  *     LAB_RUN    [1] arena, [2..3] entry offset, [4..19] r0..r3; reply: status, r0, r1
- *     LAB_EDGES  [1..4] half period in FRO_HF counts, 0 to stop; reply: status
+ *     LAB_EDGES  [1..4] half period in counts of PLL0, 0 to stop; reply: status
  *
  * LAB_EDGES toggles DIO2 (PIO1_2) from CTimer 0's match 3, so the DIO edges an energy stream
  * reports come at intervals known to the count, with no analyser. The pin's translator has to face
@@ -101,7 +101,7 @@ __attribute__((naked)) void HardFault_Handler(void) {
 
 typedef uint64_t (*lab_fn)(uint32_t, uint32_t, uint32_t, uint32_t);
 
-/** DIO2 toggling every `half` counts of FRO_HF, the clock the stream stamps with; 0 gives the pin
+/** DIO2 toggling every `half` counts of PLL0, the clock the stream stamps with; 0 gives the pin
  *  back to GPIO. */
 static void lab_edges(uint32_t half) {
     CTIMER0->TCR = 0U;
@@ -109,7 +109,7 @@ static void lab_edges(uint32_t half) {
         IOCON_PinMuxSet(IOCON, 1U, 2U, IOCON_FUNC0 | IOCON_MODE_INACT | IOCON_DIGITAL_EN);
         return;
     }
-    CLOCK_AttachClk(kFRO_HF_to_CTIMER0);
+    CLOCK_AttachClk(kPLL0_to_CTIMER0);
     CLOCK_EnableClock(kCLOCK_Timer0);
     RESET_PeripheralReset(kCTIMER0_RST_SHIFT_RSTn);
     CTIMER0->PR = 0U;

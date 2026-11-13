@@ -119,9 +119,9 @@ static void print_sequence(const vector_tables_t* tables, uint32_t rate, uint32_
     energy.low_range = tables->low;
     energy.high_range = tables->high;
     energy.full_scale_mv = tables->full_scale_mv;
-    // The period the probe's timer runs at for `rate`, in counts of its 96 MHz clock, and a pair's
+    // The period the probe's timer runs at for `rate`, in counts of its 150 MHz clock, and a pair's
     // share of a second, as energy_capture_start sets them (src/energy_monitor.c).
-    uint32_t const clock_hz = 96000000U;
+    uint32_t const clock_hz = 150000000U;
     uint32_t const period = 2U * ((clock_hz + rate) / (2U * rate));
     energy.scale_q32 = ((uint64_t)period << 32U) / clock_hz;
     energy.rearm_below_na = UINT32_MAX;

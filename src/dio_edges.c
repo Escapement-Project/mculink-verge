@@ -6,6 +6,7 @@
 #include "board_straps.h"
 #include "dap_shared.h"
 #include "dio_pins.h"
+#include "energy_monitor.h"
 #include "energy_stream.h"
 
 /** The average rate of interrupt runs CPU 0 keeps up with. A run takes every edge since the last
@@ -21,9 +22,9 @@
 static struct energy_stream* edges_stream;
 static bool present;
 /** In counts of the stamping clock: what a run costs, the most credit kept, and a rest. */
-static uint32_t run_cost;
-static uint32_t burst;
-static uint32_t rest_counts;
+#define DIO_EDGES_RUN_COST (ENERGY_TIMER_HZ / DIO_EDGES_RUNS_HZ)
+#define DIO_EDGES_CREDIT_MAX (DIO_EDGES_RUN_COST * DIO_EDGES_BURST)
+#define DIO_EDGES_REST_COUNTS (ENERGY_TIMER_HZ / DIO_EDGES_REST_PER_S)
 static uint32_t credit;
 static uint32_t credit_stamp;
 static volatile bool resting;
@@ -53,11 +54,6 @@ __attribute__((noinline)) void dio_edges_init(struct energy_stream* stream, uint
         return;
     }
     edges_stream = stream;
-    // CTIMER4 stamps from FRO_HF (src/energy_monitor.c).
-    uint32_t const clock_hz = CLOCK_GetFroHfFreq();
-    run_cost = clock_hz / DIO_EDGES_RUNS_HZ;
-    burst = run_cost * DIO_EDGES_BURST;
-    rest_counts = clock_hz / DIO_EDGES_REST_PER_S;
     CLOCK_EnableClock(kCLOCK_InputMux);
     RESET_ReleasePeripheralReset(kMUX0_RST_SHIFT_RSTn);
     CLOCK_EnableClock(kCLOCK_Pint);
@@ -100,10 +96,10 @@ __attribute__((section(".ramfunc"))) void PIN_INT0_IRQHandler(void) {
     }
     uint32_t const elapsed = stamp - credit_stamp;
     credit_stamp = stamp;
-    credit = (elapsed >= (burst - credit)) ? burst : (credit + elapsed);
+    credit = (elapsed >= (DIO_EDGES_CREDIT_MAX - credit)) ? DIO_EDGES_CREDIT_MAX : (credit + elapsed);
     struct energy_stream* const stream = edges_stream;
     uint32_t const at = stream->edge_entries_written;
-    if ((credit < run_cost) || ((at - stream->edge_entries_read) >= ENERGY_STREAM_EDGE_ENTRIES)) {
+    if ((credit < DIO_EDGES_RUN_COST) || ((at - stream->edge_entries_read) >= ENERGY_STREAM_EDGE_ENTRIES)) {
         // A sync asked for, and the pins cleared, wait for the run that records.
         NVIC->ICER[0] = DIO_EDGES_IRQS;
         rest_from = stamp;
@@ -111,7 +107,7 @@ __attribute__((section(".ramfunc"))) void PIN_INT0_IRQHandler(void) {
         drop_from(stream, stamp);
         return;
     }
-    credit -= run_cost;
+    credit -= DIO_EDGES_RUN_COST;
     // CPU 1 counts before SPI moves the pins (src/dio.c). A count read after the levels that is
     // still the even one the loop turned the pins on under says the levels were read first; any
     // other, and they may be SPI's. Such a run still pays its credit: with the pins turned on as
@@ -253,7 +249,7 @@ __attribute__((section(".ramfunc"), noinline)) void dio_edges_task(void) {
         }
     }
     enabled = wanted;
-    if (resting && ((CTIMER4->TC - rest_from) >= rest_counts)) {
+    if (resting && ((CTIMER4->TC - rest_from) >= DIO_EDGES_REST_COUNTS)) {
         resting = false;
         NVIC->ICPR[0] = DIO_EDGES_IRQS;
         NVIC->ISER[0] = DIO_EDGES_IRQS;

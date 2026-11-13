@@ -337,7 +337,7 @@ With 5 ms it read it right.
   conversions from one that switched before them. So a sample that switched up takes a stand-in
   for its current in the energy total: the next sample's current, less a share of the difference
   from the one before it. The share is half the part of the sample period its conversions span:
-  almost half just under each averaging step's limit, 23% at 100,000 samples a second, 15% at
+  almost half just under each averaging step's limit, 34% at 100,000 samples a second, 11% at
   1,000, and less below that. Over
   many switches at moments the target sets, that is the right total on average. A sample that
   switched down between samples keeps its own current; at a rate with too little time between
@@ -350,8 +350,10 @@ With 5 ms it read it right.
 - The stand-in leaves out what happens inside the switching sample. That is most of the
   decoupling's recharge at a switch up, about its capacitance times 90 mV in the 350 mA setting.
   From about 40,000 samples a second the samples after the switch catch part of it, so the total
-  rises with the rate there. A target with about 5 µF that woke every 10 ms read 1.4% apart
-  across 1,000 to 100,000 samples a second, highest at both ends. The stand-in also leaves out a
+  rises with the rate there. A target with about 5 µF that woke every 10 ms read 1.5% apart
+  across 1,000 to 100,000 samples a second, highest at both ends. In the 50 mA setting, where its
+  1.1 mA idle stays on the high range and nothing switches, the same rates read within 0.1% of
+  each other. The stand-in also leaves out a
   burst shorter than one sample period that starts on the low range. The same target with 200 µs
   bursts read 6.7% low at 1,000 samples a second against 20,000. Pick a rate whose sample period
   is well under the shortest burst.
@@ -359,14 +361,17 @@ With 5 ms it read it right.
   conversion takes both at once, so they average over the same stretch. Both results land in FIFO0,
   the voltage's first: with both FIFO selects alike, "the CH_A results will always be stored before
   the CH_B results" (UM11126 section 38.7.8), and the part did so in 1,600 trials of 1,600. Both
-  acquire for 7.5 cycles of the 12 MHz ADC clock, the range for 3.5. With 3.5 cycles, an unaveraged
-  voltage read 0.27% higher than one averaged 16 times, and the energy total carried that error.
-  With 7.5, the voltage read within 0.02% of 16 averages at 10,000 samples a second, at every
-  averaging, when the two sides converted one after the other. A sample with N averages takes 27 +
-  28 N cycles, measured; converting the two sides one after the other took 27 + 52 N. The firmware
-  uses the most averaging that finishes a sample before the next is due: 128 up to 3,323 samples a
-  second, 64 up to 6,596, 32 up to 13,001, 16 up to 25,263, 8 up to 47,808, 4 up to 86,330, and 2 up
-  to 100,000.
+  acquire for 11.5 cycles of the 18.75 MHz ADC clock, 613 ns, and the range for 3.5 cycles.
+  Measured on 2026-10-26 with a 12 MHz ADC clock: 292 ns of acquisition read an unaveraged voltage
+  0.27% higher than one averaged 16 times, and the energy total carried that error. 625 ns read
+  within 0.02% of 16 averages at 10,000 samples a second, at every averaging, when the two sides
+  converted one after the other. A sample with N averages takes 27 + 32 N cycles: 27 + 28 N was
+  measured at 7.5 cycles, and each conversion samples 4 cycles longer at 11.5 (UM11126, CMDH[STS]).
+  Converting the two sides one after the other took 27 + 52 N at 7.5 cycles. The firmware uses the
+  most averaging that finishes a sample before the next is due: 128 up to 4,546 samples a second,
+  64 up to 9,036, 32 up to 17,840, 16 up to 34,786, 8 up to 66,254, and 4 up to 100,000. The ADC
+  and the timer that starts each sample both run from PLL0, so a sample's length in timer counts is
+  exact.
 - While the probe measures the target's read latency, it stops the conversions, and the energy
   total leaves that time out. It measures at a connection at fast clocks, again when a measurement
   contradicts itself, and when a host asks. With capture running, the measurement found later

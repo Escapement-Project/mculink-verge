@@ -52,7 +52,8 @@ target_sense_status_t target_sense_adc_init(void);
 target_sense_current_range_t target_sense_current_range(void);
 void target_sense_configure_monitor(uint32_t rate_hz);
 
-/** ADC0 runs from FRO_HF over this, the clock the capture's timer counts. */
+/** ADC0 runs from PLL0 over this, and the capture's timers count PLL0: an ADC clock is this many of
+ *  their counts. */
 #define TARGET_SENSE_ADC_DIVIDER 8U
 
 /** The capture's pair at `rate_hz`, in ADC clocks: from its first current sample to its range
