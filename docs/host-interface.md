@@ -576,7 +576,8 @@ The reply is `[0x91, result, count:u16, rx[count]]`. The count is zero on an err
 no bytes is refused.
 
 `clock_hz` can be from 1/4096 to 1/2 of the SPI's source clock. The source runs at 96 MHz, so the
-probe takes about 23.4 kHz to 48 MHz. The divider rounds the clock it gets.
+probe takes about 23.4 kHz to 48 MHz. It runs the fastest clock it can make at or below
+`clock_hz`: 96 MHz divided by a whole number.
 
 The SPI pins are DIO0 to DIO3, so the command returns `BUSY` while any DIO pin is an output. During
 a transfer the probe owns the pins, and it leaves them inputs afterwards.

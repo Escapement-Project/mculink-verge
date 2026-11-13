@@ -185,7 +185,9 @@ else()
 endif()
 # After the toolchain's CPU 0 flags on every command line, so these are the ones that count.
 target_compile_options(${CORE1} PRIVATE ${CORE1_CPU_FLAGS} ${WARN_FLAGS_${CMAKE_C_COMPILER_ID}})
-target_compile_definitions(${CORE1} PRIVATE CPU_LPC55S69JBD64_cm33_core1 SPI_RETRY_TIMES=100000U
+# An SPI master clocks its own transfers, so they always end: no budget, which the SDK would spend
+# on the whole transfer and so cut a long slow one short.
+target_compile_definitions(${CORE1} PRIVATE CPU_LPC55S69JBD64_cm33_core1 SPI_RETRY_TIMES=0U
                                              I2C_RETRY_TIMES=100000U I2C_MASTER_TRANSMIT_IGNORE_LAST_NACK=0U)
 
 set(MCUX_DRIVERS ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcuxsdk-core/drivers)

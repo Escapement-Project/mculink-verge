@@ -27,7 +27,8 @@
 #define I2C_MIN_CLOCK_HZ 10000U
 #define I2C_MAX_CLOCK_HZ 1000000U
 
-#define SPI_PIN_MODE (IOCON_MODE_INACT | IOCON_DIGITAL_EN)
+// HS SPI's timing is specified at fast slew (LPC55S6x data sheet, Table 37).
+#define SPI_PIN_MODE (IOCON_MODE_INACT | IOCON_DIGITAL_EN | IOCON_SLEW_FAST)
 #define I2C_PIN_MODE (IOCON_MODE_INACT | IOCON_DIGITAL_EN)
 
 static uint16_t get_u16(const uint8_t* bytes) {
@@ -48,12 +49,13 @@ bool pro_bus_available(void) {
     return (board_kind == BOARD_KIND_PRO) && ((dap_shared.jumpers & BOARD_JUMPER_USBSIO_OFF) == 0U);
 }
 
+/** HS_SPI_SSEL0, MOSI, SCK and MISO on DIO0 to DIO3 (LPC55S6x data sheet, Table 3). */
 static void spi_pinmux(void) {
     CLOCK_EnableClock(kCLOCK_Iocon);
     IOCON_PinMuxSet(IOCON, 0U, 20U, IOCON_FUNC8 | SPI_PIN_MODE);
-    IOCON_PinMuxSet(IOCON, 0U, 26U, IOCON_FUNC8 | SPI_PIN_MODE);
-    IOCON_PinMuxSet(IOCON, 1U, 2U, IOCON_FUNC3 | SPI_PIN_MODE);
-    IOCON_PinMuxSet(IOCON, 1U, 3U, IOCON_FUNC2 | SPI_PIN_MODE);
+    IOCON_PinMuxSet(IOCON, 0U, 26U, IOCON_FUNC9 | SPI_PIN_MODE);
+    IOCON_PinMuxSet(IOCON, 1U, 2U, IOCON_FUNC6 | SPI_PIN_MODE);
+    IOCON_PinMuxSet(IOCON, 1U, 3U, IOCON_FUNC6 | SPI_PIN_MODE);
 }
 
 uint32_t pro_spi_command(const uint8_t* request, uint8_t* response) {
@@ -70,19 +72,20 @@ uint32_t pro_spi_command(const uint8_t* request, uint8_t* response) {
         response[1] = PRO_BUS_UNAVAILABLE;
         return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
     }
-    if (!dio_spi_begin()) {
-        response[1] = PRO_BUS_BUSY;
-        return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
-    }
 
+    // A refused clock leaves the pins where they are: checked before SPI takes them.
     uint32_t const requested_clock = get_u32(request + 2U);
     CLOCK_AttachClk(kFRO_HF_DIV_to_HSLSPI);
     uint32_t const source_clock = CLOCK_GetHsLspiClkFreq();
     if ((source_clock == 0U) || (requested_clock < (source_clock / 4096U)) ||
         (requested_clock > (source_clock / 2U))) {
         CLOCK_AttachClk(kNONE_to_HSLSPI);
-        dio_spi_end();
         response[1] = PRO_BUS_INVALID;
+        return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
+    }
+    if (!dio_spi_begin()) {
+        CLOCK_AttachClk(kNONE_to_HSLSPI);
+        response[1] = PRO_BUS_BUSY;
         return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
     }
 
@@ -93,7 +96,10 @@ uint32_t pro_spi_command(const uint8_t* request, uint8_t* response) {
                                                             : kSPI_ClockPolarityActiveHigh;
     config.phase = ((request[1] & SPI_MODE_CPHA) != 0U) ? kSPI_ClockPhaseSecondEdge : kSPI_ClockPhaseFirstEdge;
     config.direction = ((request[1] & SPI_MODE_LSB_FIRST) != 0U) ? kSPI_LsbFirst : kSPI_MsbFirst;
-    config.baudRate_Bps = requested_clock;
+    // The fastest clock the divider makes that doesn't exceed the request: the SDK rounds its
+    // divider to the nearest, which can come out faster.
+    uint32_t const divider = (source_clock + requested_clock - 1U) / requested_clock;
+    config.baudRate_Bps = source_clock / divider;
     status_t status = SPI_MasterInit(SPI8, &config, source_clock);
     if (status == kStatus_Success) {
         spi_transfer_t transfer = {
