@@ -155,24 +155,32 @@ static uint32_t hunt_cycle(struct energy_integration* energy, energy_total_t* to
     return high_segment(energy, total, 400U, code, 8U) ? 0U : segments_to_rearm(energy, total, code);
 }
 
-/** The re-arm's backoff (src/energy_pairs.h), with the 350 mA setting's limit of 1.5 mA: 1.08 mA is
- *  in the band, 0.3 mA under it. A low phase under three pairs after a re-arm from the band
- *  doubles the hold, to at most 20 segments; one of three resets it; under the band, one segment
+/** The backoff's state as a start leaves it, with the 350 mA setting's limit of 1.5 mA: 1.08 mA is
+ *  in the band, 0.3 mA under it. The verdict on a short low phase is two pairs after the switch up. */
+static void backoff_start(struct energy_integration* energy) {
+    *energy = (struct energy_integration){0};
+    energy->low_range = (energy_calibration_t){
+        .code = {0U, 65535U}, .current_na = {0U, 30U * 65535U}, .slope_na_per_code_q16 = {30U << 16U}, .count = 2U};
+    energy->high_range = (energy_calibration_t){
+        .code = {0U, 65535U}, .current_na = {0U, 6000U * 65535U}, .slope_na_per_code_q16 = {6000U << 16U}, .count = 2U};
+    energy->scale_q32 = 4194304U;
+    energy->full_scale_mv = 3300U;
+    energy->calibrated = true;
+    energy->rearm_below_na = 1500000U;
+    energy->band_from_na = 750000U;
+    energy->short_low_pairs = 3U;
+    energy->verdict_pairs = 2U;
+    energy->hold_max_segments = 20U;
+    energy->hold_segments = 1U;
+}
+
+/** The re-arm's backoff (src/energy_pairs.h): a low phase under three pairs after a re-arm from the
+ *  band doubles the hold, to at most 20 segments, when the high range still reads the target in
+ *  the band past the switch up's recharge; one of three resets it; under the band, one segment
  *  re-arms whatever the hold; a pair over the limit starts the count again. */
 static void test_backoff(void) {
     static struct energy_integration energy;
-    energy.low_range = (energy_calibration_t){
-        .code = {0U, 65535U}, .current_na = {0U, 30U * 65535U}, .slope_na_per_code_q16 = {30U << 16U}, .count = 2U};
-    energy.high_range = (energy_calibration_t){
-        .code = {0U, 65535U}, .current_na = {0U, 6000U * 65535U}, .slope_na_per_code_q16 = {6000U << 16U}, .count = 2U};
-    energy.scale_q32 = 4194304U;
-    energy.full_scale_mv = 3300U;
-    energy.calibrated = true;
-    energy.rearm_below_na = 1500000U;
-    energy.band_from_na = 750000U;
-    energy.short_low_pairs = 3U;
-    energy.hold_max_segments = 20U;
-    energy.hold_segments = 1U; // as a start leaves it
+    backoff_start(&energy);
     energy_total_t total = {0};
     uint16_t const band = 180U;  // 1.08 mA
     uint16_t const under = 50U;  // 0.3 mA
@@ -208,10 +216,71 @@ static void test_backoff(void) {
     assert(segments_to_rearm(&energy, &total, band) == 16U);
 }
 
+/** A re-arm from the band, a low phase of `low` pairs, then the switch up into `burst` pairs at
+ *  `burst_code` before the target is back in the band; returns the segments the next re-arm took.
+ *  The switch-up pair is the burst's first. */
+static uint32_t burst_cycle(struct energy_integration* energy, energy_total_t* total, uint32_t low, uint32_t burst,
+                            uint16_t burst_code, uint16_t band) {
+    for (uint32_t i = 0U; i < low; i++) {
+        feed_pair(energy, total, 35000U, 60000U, true);
+    }
+    for (uint32_t i = 0U; i < burst; i++) {
+        feed_pair(energy, total, 36000U, burst_code, false);
+    }
+    (void)energy_segment_rearm(energy);
+    return segments_to_rearm(energy, total, band);
+}
+
+/** A target that bursts over the limit right after each short low phase, as a slow rate's re-arm
+ *  leaves one: the verdict reads the burst, so the hold stays at one segment. A burst that has
+ *  ended by the verdict reads as the low range giving way, and so does a switch back down before
+ *  the verdict. */
+static void test_backoff_burst(void) {
+    static struct energy_integration energy;
+    backoff_start(&energy);
+    energy_total_t total = {0};
+    uint16_t const band = 180U;   // 1.08 mA
+    uint16_t const burst = 1100U; // 6.6 mA
+    assert(high_segment(&energy, &total, band, band, 8U) && energy.rearmed_in_band);
+    for (uint32_t i = 0U; i < 6U; i++) {
+        assert(burst_cycle(&energy, &total, 1U, 8U, burst, band) == 1U && energy.hold_segments == 1U);
+    }
+    // The verdict is the second high pair after the switch-up pair: a burst of two has ended there.
+    assert(burst_cycle(&energy, &total, 1U, 3U, burst, band) == 1U && energy.hold_segments == 1U);
+    assert(burst_cycle(&energy, &total, 1U, 2U, burst, band) == 2U && energy.hold_segments == 2U);
+    // Back on the low range a pair after the switch up, before the verdict.
+    feed_pair(&energy, &total, 35000U, 60000U, true);
+    feed_pair(&energy, &total, 36000U, burst, false);
+    assert(energy.verdict_in == 2U && energy.hold_segments == 2U);
+    feed_pair(&energy, &total, 35000U, 60000U, true);
+    assert(energy.verdict_in == 0U && energy.hold_segments == 4U);
+    // A burst at a hold above one leaves the hold where it is.
+    assert(!energy_segment_rearm(&energy));
+    assert(segments_to_rearm(&energy, &total, band) == 4U && energy.rearmed_in_band);
+    assert(burst_cycle(&energy, &total, 1U, 8U, burst, band) == 4U && energy.hold_segments == 4U);
+}
+
+/** At hold 1 a segment can end on a switch-up pair under the limit, before the verdict: it waits for
+ *  the verdict, which doubles the hold before any re-arm is counted against it. */
+static void test_backoff_verdict_across_segments(void) {
+    static struct energy_integration energy;
+    backoff_start(&energy);
+    energy_total_t total = {0};
+    uint16_t const band = 180U; // 1.08 mA
+    assert(high_segment(&energy, &total, band, band, 8U) && energy.rearmed_in_band);
+    feed_pair(&energy, &total, 35000U, 60000U, true);
+    feed_pair(&energy, &total, 36000U, band, false);
+    assert(!energy_segment_rearm(&energy) && energy.verdict_in == 2U && energy.hold_segments == 1U);
+    assert(!high_segment(&energy, &total, band, band, 8U) && energy.hold_segments == 2U);
+    assert(high_segment(&energy, &total, band, band, 8U));
+}
+
 int main(void) {
     test_range_switches();
     test_weighted_switches();
     test_backoff();
+    test_backoff_burst();
+    test_backoff_verdict_across_segments();
     energy_sample_decoder_t decoder = {0};
     for (uint32_t i = 0U; i < 4096U; i++) {
         assert(!energy_sample_feed(&decoder, 0U));

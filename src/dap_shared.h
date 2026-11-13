@@ -93,14 +93,16 @@ struct energy_integration {
      *  target can reach the switch up on the low range alone, so that the range switches every few
      *  milliseconds (BOARDS.md). There a re-arm waits for `hold_segments` segments in a row
      *  under the limit. A low phase shorter than `short_low_pairs` after a re-arm from the band
-     *  doubles it, up to `hold_max_segments`, and one that lasts that long sets it back to 1. Set by
-     *  a start. */
+     *  doubles it, up to `hold_max_segments`, if the pair `verdict_pairs` after the switch up still
+     *  reads under the limit; one that lasts that long sets it back to 1. Set by a start. */
     uint32_t band_from_na;
     uint32_t short_low_pairs;
+    uint32_t verdict_pairs;
     uint32_t hold_max_segments;
     uint32_t hold_segments;
     uint32_t clean_segments; // segments in a row under the limit, from the band, since the last re-arm
     uint32_t low_pairs;      // the low phase's pairs so far, up to short_low_pairs
+    uint32_t verdict_in;     // pairs until a short low phase's verdict, 0 for none pending
     bool rearmed_in_band;    // the last re-arm asked for came from the band
     /** The capture holds the high range: U18's reset is held, so the latch never switches
      *  (`0x90` mode 14). Set by a new capture's start, before CPU 0 takes the state. */

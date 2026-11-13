@@ -226,13 +226,18 @@ the probe's target supply can give.
   The same board did not do it again, on the probe's supply alone or with its USB as well.
 - **The backoff.** Just under Table 4's limit, a re-arm waits for some number of segments in a row
   under it, at first one. That band runs from half the limit up to it: 0.75 to 1.5 mA in the
-  350 mA setting and 0.2 to 0.4 mA in the 50 mA setting, where the drop is 37 to 90 mV. A low
-  phase shorter than 3 ms after a re-arm from the band doubles the number, up to about a second of
-  segments. A low phase of 3 ms sets it back to one. At the slowest rates a low phase of one sample
-  still counts as short. Under the band one segment is still enough, so a target that falls asleep
-  gets the low range back as before. The L1306's dio-marker stays on the low range for 5 to 7 ms
-  between its bursts, so it switches as before. A target that bursts in the band within 3 ms of
-  each re-arm is held on the high range between its bursts.
+  350 mA setting and 0.2 to 0.4 mA in the 50 mA setting, where the drop is 37 to 90 mV. The
+  number doubles each time the low range gives way, up to about a second of segments: a low phase
+  shorter than 3 ms after a re-arm from the band, then the high range still reading the target
+  under the limit at least half a millisecond after the sample the switch up fell in, past the
+  recharge. At the slowest rates that reading is the next sample, and a low phase of one sample
+  still counts as short. No re-arm comes before that reading. A low phase of 3 ms sets the number
+  back to one. A target that switched up because it bursts still reads over the limit there while
+  the burst lasts, so a short low phase before such a burst doesn't double the number. At the
+  slowest rates the re-arm alone can take most of a short sleep. Under the band one segment is
+  still enough, so a target that falls asleep gets the low range back as before. A target that
+  reaches the switch up on the low range alone within 3 ms of each re-arm is held on the high
+  range.
 - **Holding the high range.** `0x90` mode 14 can hold the high range for a capture instead
   (docs/host-interface.md). The firmware drives U18's reset low from PIO0_29 as a GPIO output, as
   calibration does, so the latch stays clear whatever the comparator says, and CPU 0 never

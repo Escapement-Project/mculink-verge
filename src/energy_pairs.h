@@ -40,11 +40,26 @@ static inline uint32_t energy_stand_in_na(uint32_t next_na, uint32_t before_na, 
     return (uint32_t)(((uint64_t)next_na * (65536U - weight_q16) + (uint64_t)before_na * weight_q16 + 32768U) >> 16U);
 }
 
-/** A pair's part in the re-arm's backoff (struct energy_integration): count the low phase, and at
- *  a switch up, double the hold if the low range gave way within `short_low_pairs` of a re-arm from
- *  the band. Only a start sets a low phase going without a re-arm, and it clears `rearmed_in_band`. */
+static inline void energy_double_hold(struct energy_integration* energy) {
+    energy->hold_segments = (energy->hold_segments <= energy->hold_max_segments / 2U) ? 2U * energy->hold_segments
+                                                                                     : energy->hold_max_segments;
+}
+
+/** A pair's part in the re-arm's backoff (struct energy_integration): count the low phase, and
+ *  double the hold if the low range gave way. It gave way if the low phase after a re-arm from the
+ *  band ended within `short_low_pairs`, and the high range still reads the target under the limit
+ *  `verdict_pairs` after the switch up, past its recharge. A target that switched up because it
+ *  bursts still reads over the limit there while the burst lasts, and a short low phase before such
+ *  a burst doubles nothing: at the slowest rates the re-arm alone can take most of a target's quiet
+ *  time. Back on the low range before the verdict counts as giving way: a re-arm asked for before
+ *  the switch up can land after it. Only a start sets a low phase going without a re-arm, and it
+ *  clears `rearmed_in_band`. */
 static inline void energy_track_low_phase(struct energy_integration* energy, bool low, uint32_t shunt_na) {
     if (low) {
+        if (energy->verdict_in != 0U) {
+            energy->verdict_in = 0U;
+            energy_double_hold(energy);
+        }
         if (energy->low_pairs < energy->short_low_pairs) {
             energy->low_pairs++;
             if (energy->low_pairs == energy->short_low_pairs) {
@@ -56,11 +71,12 @@ static inline void energy_track_low_phase(struct energy_integration* energy, boo
     if (shunt_na >= energy->band_from_na) {
         energy->in_band = true;
     }
+    if ((energy->verdict_in != 0U) && (--energy->verdict_in == 0U) && (shunt_na < energy->rearm_below_na)) {
+        energy_double_hold(energy);
+    }
     if (energy->low_pairs != 0U) {
         if (energy->rearmed_in_band && (energy->low_pairs < energy->short_low_pairs)) {
-            energy->hold_segments = (energy->hold_segments <= energy->hold_max_segments / 2U)
-                                        ? 2U * energy->hold_segments
-                                        : energy->hold_max_segments;
+            energy->verdict_in = energy->verdict_pairs;
         }
         energy->rearmed_in_band = false;
         energy->low_pairs = 0U;
@@ -68,11 +84,12 @@ static inline void energy_track_low_phase(struct energy_integration* energy, boo
 }
 
 /** After each segment's pairs: whether to ask for the low range back. The segment has to end on
- *  the high range with every high-range pair under the limit. Under the band one such segment is
- *  enough; in it, `hold_segments` in a row. Clears the segment's record. */
+ *  the high range with every high-range pair under the limit, and with no low phase's verdict still
+ *  to come, so that the hold it is counted against includes that verdict. Under the band one such
+ *  segment is enough; in it, `hold_segments` in a row. Clears the segment's record. */
 static inline bool energy_segment_rearm(struct energy_integration* energy) {
     bool rearm = false;
-    if (!energy->on_high_range || energy->rearm_blocked) {
+    if (!energy->on_high_range || energy->rearm_blocked || (energy->verdict_in != 0U)) {
         energy->clean_segments = 0U;
     } else if (!energy->in_band) {
         energy->clean_segments = 0U;

@@ -440,6 +440,14 @@ static uint32_t short_low_pairs(uint32_t rate_hz) {
     return pairs > 2U ? pairs : 2U;
 }
 
+/** Where the backoff judges a short low phase (struct energy_integration): the pair half a
+ *  millisecond after the switch up, and at least the one after it. The recharge at a switch up
+ *  lifts the pairs after it for about 140 us at 100,000 pairs/s. */
+static uint32_t verdict_pairs(uint32_t rate_hz) {
+    uint32_t const pairs = (rate_hz + 1999U) / 2000U;
+    return pairs > 1U ? pairs : 1U;
+}
+
 /** The backoff's longest hold: about a second of segments. */
 static uint32_t hold_max_segments(uint32_t rate_hz, uint32_t words) {
     uint32_t const segments = (rate_hz * ENERGY_WORDS_PER_PAIR) / words;
@@ -697,10 +705,12 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     energy->rearm_below_na = rearm_below_na();
     energy->band_from_na = energy->rearm_below_na / 2U;
     energy->short_low_pairs = short_low_pairs(actual_rate_hz);
+    energy->verdict_pairs = verdict_pairs(actual_rate_hz);
     energy->hold_max_segments = hold_max_segments(actual_rate_hz, energy->segment_words);
     energy->hold_segments = 1U;
     energy->clean_segments = 0U;
     energy->low_pairs = 0U;
+    energy->verdict_in = 0U;
     energy->rearmed_in_band = false;
     energy->in_band = false;
     // Where calibration would not keep a point: a high-range reading there is unreliable.
