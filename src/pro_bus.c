@@ -29,7 +29,14 @@
 
 // HS SPI's timing is specified at fast slew (LPC55S6x data sheet, Table 37).
 #define SPI_PIN_MODE (IOCON_MODE_INACT | IOCON_DIGITAL_EN | IOCON_SLEW_FAST)
-#define I2C_PIN_MODE (IOCON_MODE_INACT | IOCON_DIGITAL_EN)
+// These are standard pins, not the true open-drain I2C pair, so I2C needs their high driver off
+// (UM11126, 15.4.2.9).
+#define I2C_PIN_MODE (IOCON_MODE_INACT | IOCON_DIGITAL_EN | IOCON_OPENDRAIN_EN)
+
+#define I2C_SDA_PIN 4U
+#define I2C_SCL_PIN 21U
+/** Half an SCL period of the bus clear, at 100 kHz. */
+#define I2C_CLEAR_HALF_US 5U
 
 static uint16_t get_u16(const uint8_t* bytes) {
     return (uint16_t)((uint16_t)bytes[0] | ((uint16_t)bytes[1] << 8U));
@@ -124,6 +131,45 @@ uint32_t pro_spi_command(const uint8_t* request, uint8_t* response) {
     return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
 }
 
+static void i2c_wait_half(void) {
+    uint32_t const start = TIMESTAMP_GET();
+    while ((TIMESTAMP_GET() - start) < (I2C_CLEAR_HALF_US * (TIMESTAMP_CLOCK / 1000000U))) {
+    }
+}
+
+/** Lets go of `pin` on port 0, or pulls it low: open drain on its GPIO. */
+static void i2c_line(uint32_t pin, bool low) {
+    if (low) {
+        GPIO->CLR[0] = 1UL << pin;
+        GPIO->DIRSET[0] = 1UL << pin;
+    } else {
+        GPIO->DIRCLR[0] = 1UL << pin;
+    }
+}
+
+/** After a transfer ended without its STOP, a target may still hold SDA low mid-byte. Clock SCL
+ *  until it lets go, nine times at most, then send a STOP, with the pins as GPIO. */
+static void i2c_clear_bus(void) {
+    IOCON_PinMuxSet(IOCON, 0U, I2C_SDA_PIN, IOCON_FUNC0 | I2C_PIN_MODE);
+    IOCON_PinMuxSet(IOCON, 0U, I2C_SCL_PIN, IOCON_FUNC0 | I2C_PIN_MODE);
+    i2c_line(I2C_SDA_PIN, false);
+    i2c_line(I2C_SCL_PIN, false);
+    i2c_wait_half();
+    for (uint32_t n = 0U; (n < 9U) && ((GPIO->B[0][I2C_SDA_PIN]) == 0U); n++) {
+        i2c_line(I2C_SCL_PIN, true);
+        i2c_wait_half();
+        i2c_line(I2C_SCL_PIN, false);
+        i2c_wait_half();
+    }
+    i2c_line(I2C_SCL_PIN, true);
+    i2c_line(I2C_SDA_PIN, true);
+    i2c_wait_half();
+    i2c_line(I2C_SCL_PIN, false);
+    i2c_wait_half();
+    i2c_line(I2C_SDA_PIN, false);
+    i2c_wait_half();
+}
+
 static status_t i2c_transfer(uint8_t address, i2c_direction_t direction, uint8_t* data,
                             uint16_t length, uint32_t flags) {
     i2c_master_transfer_t transfer = {
@@ -162,8 +208,8 @@ uint32_t pro_i2c_command(const uint8_t* request, uint8_t* response) {
 
     CLOCK_EnableClock(kCLOCK_Iocon);
     CLOCK_AttachClk(kFRO_HF_DIV_to_FLEXCOMM3);
-    IOCON_PinMuxSet(IOCON, 0U, 4U, IOCON_FUNC8 | I2C_PIN_MODE);
-    IOCON_PinMuxSet(IOCON, 0U, 21U, IOCON_FUNC1 | I2C_PIN_MODE);
+    IOCON_PinMuxSet(IOCON, 0U, I2C_SDA_PIN, IOCON_FUNC8 | I2C_PIN_MODE);
+    IOCON_PinMuxSet(IOCON, 0U, I2C_SCL_PIN, IOCON_FUNC1 | I2C_PIN_MODE);
 
     uint32_t const source_clock = CLOCK_GetFlexCommClkFreq(3U);
     uint16_t returned = 0U;
@@ -198,12 +244,16 @@ uint32_t pro_i2c_command(const uint8_t* request, uint8_t* response) {
         returned = rx_length;
         goto i2c_release_pins;
     }
-    response[1] = ((status == kStatus_I2C_Nak) || (status == kStatus_I2C_Addr_Nak)) ? PRO_BUS_NACK
-                                                                                   : PRO_BUS_TRANSFER_ERROR;
+    bool const nack = (status == kStatus_I2C_Nak) || (status == kStatus_I2C_Addr_Nak);
+    response[1] = nack ? PRO_BUS_NACK : PRO_BUS_TRANSFER_ERROR;
+    // A NACK ends with the SDK's STOP; a timeout or a lost arbitration doesn't.
+    if (!nack) {
+        i2c_clear_bus();
+    }
 
 i2c_release_pins:
-    IOCON_PinMuxSet(IOCON, 0U, 4U, IOCON_FUNC0 | I2C_PIN_MODE);
-    IOCON_PinMuxSet(IOCON, 0U, 21U, IOCON_FUNC0 | I2C_PIN_MODE);
+    IOCON_PinMuxSet(IOCON, 0U, I2C_SDA_PIN, IOCON_FUNC0 | I2C_PIN_MODE);
+    IOCON_PinMuxSet(IOCON, 0U, I2C_SCL_PIN, IOCON_FUNC0 | I2C_PIN_MODE);
     CLOCK_AttachClk(kNONE_to_FLEXCOMM3);
     return (consumed << 16U) | (PRO_BUS_RESPONSE_FIXED + returned);
 }

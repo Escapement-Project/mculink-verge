@@ -53,8 +53,10 @@ USB-SIO endpoint. J15, fitted when the probe starts, turns both off.
 - **SPI** runs on the DIO pins, so the probe refuses it, answering busy, while any DIO pin is an
   output. It leaves the pins as inputs afterwards. Its clock goes from about 23.4 kHz to 48 MHz.
 - **I2C** runs on Flexcomm 3, which SWO also uses, so the probe refuses it, answering busy, while
-  SWO is set up: turn SWO off first. The bus runs from 10 kHz to 1 MHz. The probe enables no
-  pull-ups on the bus; fit your own, to the bus voltage.
+  SWO is set up: turn SWO off first. The bus runs from 10 kHz to 1 MHz. 1 MHz is past NXP's
+  limit for these pins: the LPC55S6x specifies Fast-mode Plus only on its open-drain I2C pins,
+  PIO0_13 and PIO0_14 (UM11126, 32.2 and 15.2). The probe enables no pull-ups on the bus; fit
+  your own, to the bus voltage.
 
 verge has no command for the bridges.
 

@@ -186,9 +186,10 @@ endif()
 # After the toolchain's CPU 0 flags on every command line, so these are the ones that count.
 target_compile_options(${CORE1} PRIVATE ${CORE1_CPU_FLAGS} ${WARN_FLAGS_${CMAKE_C_COMPILER_ID}})
 # An SPI master clocks its own transfers, so they always end: no budget, which the SDK would spend
-# on the whole transfer and so cut a long slow one short.
+# on the whole transfer and so cut a long slow one short. An I2C target can hold SCL low, so each
+# of the SDK's waits keeps one, of at least 150 ms at 150 MHz.
 target_compile_definitions(${CORE1} PRIVATE CPU_LPC55S69JBD64_cm33_core1 SPI_RETRY_TIMES=0U
-                                             I2C_RETRY_TIMES=100000U I2C_MASTER_TRANSMIT_IGNORE_LAST_NACK=0U)
+                                             I2C_RETRY_TIMES=1000000U I2C_MASTER_TRANSMIT_IGNORE_LAST_NACK=0U)
 
 set(MCUX_DRIVERS ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcuxsdk-core/drivers)
 target_sources(${CORE1} PRIVATE src/energy_identity.c)

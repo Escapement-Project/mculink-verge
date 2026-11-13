@@ -596,6 +596,10 @@ and one stop at the end. A read alone starts with the read. The bus clock must b
 
 The reply is `[0x92, result, rx_count:u16, rx[rx_count]]`. The count is zero on an error.
 
+A target can hold SCL low for at least 150 ms at each step of a transfer. Past that, and after a
+lost arbitration, the probe answers `TRANSFER_ERROR` and frees the bus: it clocks SCL until the
+target lets go of SDA, nine times at most, then sends a stop.
+
 The I2C controller, Flexcomm 3, also drives SWO, so I2C returns `BUSY` while SWO is set up. Turn SWO
 off before you use I2C. The probe leaves P0_4 and P0_21 without internal pull-ups, so fit pull-ups
 to the bus voltage.
