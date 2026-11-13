@@ -100,7 +100,7 @@ def held_late(r: cy.Read, stall: int) -> int | None:
 
 
 def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire: str = "cjtag",
-        stall: int = 0, release_by: int = 3) -> dict:
+        stall: int = 0, release_by: int = 3, clock_rules: bool = True) -> dict:
     dr = cy.JTAG_DR_OK | (WORD << 3)
     model = cy.Model(engine=True)
     probe = cy.Machine(elf, cy.Target([]), restart_at=set(), model=model, record_trace=False, record_stats=False)
@@ -186,15 +186,16 @@ def run(elf: str, hz: int, latency: int, cpu_hz: int, gen_latency: int = 0, wire
     low = 2 if period == 3 else period // 2
     high = period - low
     rises, falls = counts.edge_cycles, counts.fall_cycles
-    for name, seq in (("rise-to-rise", rises), ("fall-to-fall", falls)):
-        gaps = [b - a for a, b in zip(seq, seq[1:])]
-        if gaps and min(gaps) < period:
-            problems.append(f"{name} {min(gaps)} cycles, period {period}")
-    min_low, min_high = cy.minimum_clock_phases(rises, falls)
-    if min_low is not None and min_low < low:
-        problems.append(f"low phase {min_low} cycles, wanted {low}")
-    if min_high is not None and min_high < high:
-        problems.append(f"high phase {min_high} cycles, wanted {high}")
+    if clock_rules:
+        for name, seq in (("rise-to-rise", rises), ("fall-to-fall", falls)):
+            gaps = [b - a for a, b in zip(seq, seq[1:])]
+            if gaps and min(gaps) < period:
+                problems.append(f"{name} {min(gaps)} cycles, period {period}")
+        min_low, min_high = cy.minimum_clock_phases(rises, falls)
+        if min_low is not None and min_low < low:
+            problems.append(f"low phase {min_low} cycles, wanted {low}")
+        if min_high is not None and min_high < high:
+            problems.append(f"high phase {min_high} cycles, wanted {high}")
 
     per = 3 if two_pin else 1
     frames = sorted(b - a for a, b in zip(scan_rises, scan_rises[per:]))
@@ -315,7 +316,7 @@ def run_raw(elf: str, hz: int, cpu_hz: int) -> dict:
     return {"period": period, "frame": 0, "margin": None, "problems": problems}
 
 
-def run_point(args: tuple[str, int, int, int, int, str, int, int]) -> dict:
+def run_point(args: tuple[str, int, int, int, int, str, int, int, bool]) -> dict:
     if args[5] == "raw":
         return run_raw(args[0], args[1], args[3])
     return run(*args)
@@ -335,6 +336,10 @@ def main() -> int:
                     help="cycles after the fall that starts a TDO packet by which the probe must let TMSC go; "
                          "0 holds it to 1149.7 14.2.3, which also wants the packet before it released at its rise "
                          "(after an EOT escape's edges); Verge's frames let go just after the fall")
+    ap.add_argument("--no-clock-rules", action="store_true",
+                    help="leave out the period and phase rules, for the +armwire reference build, whose ARM paths "
+                         "run phases shorter than asked (README.md, \"Check\"); the replies, the TDO windows and "
+                         "the cJTAG wire rules still apply")
     ap.add_argument("--jobs", type=int, default=min(4, available_cpus()),
                     help="independent clock simulations to run at once")
     args = ap.parse_args()
@@ -346,7 +351,8 @@ def main() -> int:
     raw_mhz = [m for m in mhz] + ([] if args.mhz else [0.01])
 
     points = [
-        (elf, int(m * 1e6 + 0.5), args.latency, cpu_hz, args.gen_latency, wire, args.stall, args.release_by)
+        (elf, int(m * 1e6 + 0.5), args.latency, cpu_hz, args.gen_latency, wire, args.stall, args.release_by,
+         not args.no_clock_rules)
         for elf in args.elf
         for wire in args.wire
         for m in (raw_mhz if wire == "raw" else mhz)
@@ -360,7 +366,7 @@ def main() -> int:
     failures = 0
     print(f"{'image':>16} {'wire':>7} {'MHz':>8} {'P':>5} {'frame':>6} {'margin':>7}  problems")
     for point, r in zip(points, results):
-        elf, hz, _, _, _, wire, _, _ = point
+        elf, hz, _, _, _, wire, _, _, _ = point
         failures += bool(r["problems"])
         margin = "-" if r["margin"] is None else str(r["margin"])
         print(f"{os.path.basename(os.path.dirname(elf)):>16} {wire:>7} {hz / 1e6:8.3f} {r['period']:5d} "

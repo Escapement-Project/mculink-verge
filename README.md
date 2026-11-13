@@ -94,7 +94,9 @@ build to `tools/baseline-armwire/` instead. It finds ARM's paths clocking SWD, J
 than requested at 10 and 20 MHz, and JTAG at 50 MHz too. That directory's `known-overshoot.txt`
 records them. ARM's code computes one delay for every wire from a cost model of an SWD bit. A JTAG
 clock makes one store fewer and runs fast, most of all at 50 MHz, and SWD and the cJTAG frame land
-within a cycle of the request.
+within a cycle of the request. The gate holds that build's cJTAG frames to `tools/jtagcheck.py`'s
+wire rules with `--no-clock-rules`. `tools/equiv.py` compares levels, and a frame that drives TMSC
+into the target's TDO packet still has the right ones.
 
 Use `tools/equiv.py` to compare a replacement implementation with a reference build. It drives two
 builds over 536 SWD block cases, 188 JTAG cases, 128 cJTAG cases in each format and, with

@@ -240,6 +240,16 @@ def main() -> int:
               *TIMED_WIRES, "--stall", "2"]),
         )
     )
+    # The reference images' cJTAG frames, held to the wire rules alone: their ARM paths run phases
+    # shorter than asked (README.md, "Check"), and equiv compares levels, which a late release passes.
+    reference_images = [directory for _, codegen, directory in built if not codegen]
+    if reference_images:
+        timed_checks.append((
+            "cJTAG wire rules reference images",
+            ["uv", "run", "tools/jtagcheck.py",
+             *(os.path.join(directory, "mculink_cjtag_core1.elf") for directory in reference_images),
+             "--wire", "cjtag", "cjtag2", "cjtag5", "cjtag6", "--mhz", "1", "5", "10", "--no-clock-rules"],
+        ))
     image_jobs = sum(cycles_jobs if codegen else min(2, cycles_jobs) for _, codegen, _ in built)
     jobs_per_timed_check = max(
         1,

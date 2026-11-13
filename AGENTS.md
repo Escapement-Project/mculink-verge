@@ -28,8 +28,9 @@ Code that predates the rule and breaks it, which is the work list:
 **Gate on both compilers.** `uv run tools/gate.py` before committing firmware or tool changes. It
 runs the host checks, then builds gcc and clang, each in the default configuration and as the ARM
 reference, with `SWD_CODEGEN` and `JTAG_CODEGEN` off. The two options go together; CMake refuses
-one without the other. It holds every image to its baselines in the emulator, and
-each generated image to its compiler's ARM paths on every `tools/equiv.py` matrix. Two more gcc
+one without the other. It holds every image to its baselines in the emulator,
+each generated image to its compiler's ARM paths on every `tools/equiv.py` matrix, and the
+reference images' cJTAG frames to `tools/jtagcheck.py`'s wire rules. Two more gcc
 images, one with `DAP_TIMING_DIAGNOSTICS` and one with `CODE_LAB`, get `tools/image.py` alone.
 `ninja -C <build> check` checks one image only.
 
