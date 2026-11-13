@@ -71,10 +71,6 @@ The other formats send fewer packets for some clocks:
   CC1312R1 it reads level with OScan5 at 12.5 MHz, and slower from 25 MHz, where the target answers
   WAIT more often to the shorter frames.
 
-The probe drives TMSC again right after the fall that ends the target's TDO packet, which 1149.7
-allows. A CC1312R1 keeps driving TMSC for about 16 to 38 ns past that fall, so on about a third of
-frames the two drive it at once for that long. Reads were right at 1, 10 and 50 MHz (2026-11-12).
-
 The host picks one of the formats both the probe and the target offer. [cJTAG](../CJTAG.md) has the
 wire in detail.
 
