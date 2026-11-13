@@ -176,6 +176,53 @@ Each time the host sets a configuration, which follows every bus reset, CPU 0 st
 numbering. CPU 1 drops older commands unrun and CPU 0 drops their replies unsent. CPU 0 also raises
 the abort flag, to cut short a command a gone host left running.
 
+### One command, end to end
+
+The figure follows one command through the code that handles it: a `DAP_Transfer` that reads the
+DP's CTRL/STAT register over SWD, which a host polls while the target's debug domain powers up. It
+goes down the left to the wire, and its reply comes back up the right. Each step that reads or
+writes the packet has the bytes it handles underlined.
+
+![One DAP_Transfer that reads the DP's CTRL/STAT, bytes 05 00 01 06, followed down the left from the host through the USB controller, CPU 0, the mailbox and CPU 1 to the wire, and back up the right as the reply, 05 01 01 and the register's four bytes. Each step names its function and file and underlines the bytes it reads or writes: CPU 0's tud_vendor_rx_cb reads the first byte to rule out an abort and copies the packet into dap_stage; CPU 1's dap_task takes it; DAP_ProcessCommand reads 05, DAP_Transfer on SWD; SWD_TransferCommand reads the index, the count and the request, which swd_gen_packet makes 8D; the generated swd_gen_read drives the pins. Along the bottom, the SWD read in time: the probe sends 8D, a turnaround, then the target sends ACK OK, the 32-bit value and its parity. Back up the right, SWD_TransferCommand writes 01 01 and the value into dap_stage, dap_task publishes the reply, CPU 0's send_bulk_head copies it into the USB slot, and the controller sends it on EP1 IN.](docs/figures/architecture-packet.svg)
+
+1. The host sends four bytes: the command, `05`; the DAP index, `00`; the number of transfers,
+   `01`; and the request, `06`, a read of DP register 0x4.
+2. The USB controller writes the packet straight into the request slot CPU 0 armed, in
+   `dap_shared`. The controller reaches no memory but USB SRAM, so the slots are there.
+3. The controller's interrupt queues the transfer's completion for TinyUSB. TinyUSB's task, in CPU
+   0's loop, calls `tud_vendor_rx_cb` in `main.c`, which reads the first byte to catch
+   `DAP_TransferAbort`. This command is not an abort. CPU 0 copies it into `dap_stage` in SRAM3,
+   gives it the next sequence number and publishes its length. Then it raises CPU 1's mailbox and
+   arms the endpoint into the next free slot.
+4. CPU 1 has been polling its mailbox register. `dap_task` in `core1_main.c` takes the oldest
+   waiting command and frees its USB slot, so that CPU 0 can receive the next command while this
+   one runs. It runs the command from its copy in `dap_stage`, and the reply goes into `dap_stage`
+   as well.
+5. `DAP_ProcessCommand` in `dap_dispatch.c` reads the command byte. `05` is `DAP_Transfer`. With
+   SWD selected, it goes straight to `SWD_TransferCommand`, not through ARM's `DAP.c`. The
+   dispatcher writes the reply's first byte, `05`, itself.
+6. `SWD_TransferCommand` in `swd_dp.c` runs ARM's transfer loop, a copy of the one in `DAP.c`. The
+   loop skips the DAP index, takes the count and reads the request. A DP read is not posted, so
+   the loop reads it straight away. `swd_gen_packet` turns the request's four bits into the SWD
+   request, `8D`: a start bit, the four bits, their parity, a stop bit and a park bit.
+7. `swd_gen_read` is code CPU 1 generated into SRAMX for the clock and settings in use. It sends
+   `8D` on SWDIO. Then it turns SWDIO's buffer around with TXEN, P0_28, and reads the target's
+   three-bit acknowledge, its 32 bits and their parity. Each edge is placed to the cycle: SWCLK
+   falls on the same store that sets SWDIO, and rises on a store to the port's SET register. The
+   target's bits are read at its read latency ([The wire](#the-wire), below).
+8. The generated code returns the acknowledge and the word. ARM's loop writes the number of
+   transfers done, `01`, the last acknowledge, `01` for OK, and the word, its lowest byte first.
+9. `dap_task` publishes the reply in the bulk reply ring and raises CPU 0's mailbox.
+10. `send_bulk_head` in `main.c` takes the head of the ring. It copies the seven bytes into the
+    slot's USB buffer in `dap_shared` and starts the IN transfer on EP1.
+11. The controller sends them when the host next asks EP1 for data. Then `tud_vendor_tx_cb` frees
+    the reply slot and raises CPU 1's mailbox, since CPU 1 may be waiting for one.
+12. The host reads seven bytes: `05 01 01` and the register's value.
+
+The wire along the bottom is that read in time. The probe changes SWDIO as SWCLK falls, and the
+target changes it as SWCLK rises, so the target's bits sit half a cycle later. A dashed stretch is
+a turnaround, where neither side drives the line. The middle of the data is cut out.
+
 ## Verge Aux
 
 On the Pro, Verge Aux carries `0x82`, `0x8E`, `0x8F`, `0x90` and `0x94`, so a tool can use the DIO

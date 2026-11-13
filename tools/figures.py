@@ -390,6 +390,164 @@ def command():
     return f, bottom + 4
 
 
+# ---------------------------------------------------------------- one packet's route
+
+def packet():
+    """One DAP_Transfer, a DP read of CTRL/STAT over SWD, through the modules that handle it: down
+    the left column to the wire, along the wire in time, and back up the right column. At each stop
+    that reads or writes the packet, the bytes it handles are underlined."""
+    f = Fig("architecture-packet")
+    LX, RX = 96, 704          # the two routes, on which the stops' numbers sit
+    TL, TR, ROOM = 118, 682, 276
+    PITCH = 24
+
+    def badge(x, y, n):
+        f.parts.append(f'<circle cx="{x}" cy="{num(y)}" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/>')
+        f.text(x, y + 4.5, str(n), size=13, kind="strong", anchor="middle", room=17)
+
+    def dump(y, data, marked, right=False, note=None):
+        n = len(data)
+        for i, b in enumerate(data):
+            cx = TR - 10 - PITCH * (n - 1 - i) if right else TL + 10 + PITCH * i
+            f.text(cx, y, b, size=13, kind="code", tone=None if i in marked else NOTE, anchor="middle",
+                   room=PITCH - 4)
+            if i in marked:
+                f.path(f"M{num(cx - 10)},{num(y + 5)}H{num(cx + 10)}", width=1.5)
+        if note:
+            f.text(TL + PITCH * n + 6, y, note, size=14, tone=NOTE, room=ROOM - PITCH * n - 6)
+
+    def stop(right, y, n, rows, room=ROOM):
+        """A stop: its number on the route, then its rows from the baseline y down, 18 apart. A
+        stop with nothing beside it in the other column can take a wider `room`."""
+        badge(RX if right else LX, y - 5, n)
+        yy = y
+        for row in rows:
+            if isinstance(row, tuple):
+                dump(yy, *row[:2], right=right, note=row[2] if len(row) > 2 else None)
+                yy += 4  # room under the underlines
+            else:
+                s, tone = (row[1:], NOTE) if row.startswith("~") else (row, None)
+                f.text(TR if right else TL, yy, s, size=14, tone=tone, anchor="end" if right else "start",
+                       room=room)
+            yy += 18
+        return y - 5
+
+    def band(top, name, y, kind="head"):
+        f.path(f"M0,{num(top)}H{W}", tone="hair", width=1)
+        if kind == "head":
+            f.text(0, y, name, size=17, kind="head", room=LX - 16)
+        else:
+            f.text(0, y, name, size=13, tone=NOTE, room=LX - 16)
+
+    f.text(TL, 18, "The command", size=14, tone=NOTE, room=ROOM)
+    f.text(TR, 18, "The reply", size=14, tone=NOTE, anchor="end", room=ROOM)
+    cmd = ["05", "00", "01", "06"]
+    reply = ["05", "01", "01", "d0", "d1", "d2", "d3"]
+
+    band(30, "Host", 52)
+    left = [stop(False, 52, 1, ["The host sends a `DAP_Transfer`", (cmd, (), "on EP1 OUT")])]
+    right = [stop(True, 52, 12, ["The host reads it on EP1 IN", (reply, ())])]
+    band(84, "USB", 106)
+    left.append(stop(False, 106, 2, ["The controller fills a request slot", "~in `dap_shared`, in USB SRAM"]))
+    right.append(stop(True, 106, 11, ["The controller sends it when asked", "~`tud_vendor_tx_cb` frees the slot"]))
+    band(138, "CPU 0", 160)
+    left.append(stop(False, 160, 3, ["`tud_vendor_rx_cb` in `main.c`", (cmd, (0,), "not an abort"),
+                                     "Copies it into `dap_stage` in SRAM3,", "numbers it, raises CPU 1's mailbox"]))
+    right.append(stop(True, 160, 10, ["`send_bulk_head` in `main.c`", "Copies it into the slot's USB buffer,",
+                                      "starts EP1 IN"]))
+    band(228, "mailbox", 246, kind="note")
+    band(254, "CPU 1", 276)
+    left.append(stop(False, 276, 4, ["`dap_task` in `core1_main.c`", "Takes the oldest command, frees its slot,",
+                                     "runs it from `dap_stage`"]))
+    right.append(stop(True, 276, 9, ["`dap_task` in `core1_main.c`", "Publishes it in the reply ring,",
+                                     "raises CPU 0's mailbox"]))
+    left.append(stop(False, 340, 5, ["`DAP_ProcessCommand` in `dap_dispatch.c`",
+                                     (cmd, (0,), "`DAP_Transfer`, on SWD")], room=ROOM + 28))
+    left.append(stop(False, 386, 6, ["`SWD_TransferCommand` in `swd_dp.c`", (cmd, (1, 2, 3)),
+                                     "ARM's transfer loop: a DP read of 0x4,", "which `swd_gen_packet` makes 8D"]))
+    left.append(stop(False, 468, 7, ["`swd_gen_read`, generated into SRAMX", "Drives the pins to the cycle,",
+                                     "then samples the target's answer"]))
+    right.append(stop(True, 468, 8, ["`SWD_TransferCommand` in `swd_dp.c`", (reply, (1, 2, 3, 4, 5, 6)),
+                                     "One done, ACK OK, the word,", "written into `dap_stage`"]))
+
+    # The routes: down the left, up the right, each stop's number breaking the line. The hop
+    # between the cores is the mailbox, dashed as the other figures dash it.
+    def route(x, a, b, up):
+        hop = (a < 228 < b) or (b < 228 < a)
+        f.arrow([(x, a + (-10 if up else 10)), (x, b + (10 if up else -10))],
+                tone="rule" if hop else None, dash="4 3" if hop else None)
+    for a, b in zip(left, left[1:]):
+        route(LX, a, b, up=False)
+    order = right[::-1]  # 8, 9, 10, 11, 12, as the reply climbs
+    for a, b in zip(order, order[1:]):
+        route(RX, a, b, up=True)
+
+    # The wire, in time from left to right: SWCLK falls at each period's start and rises halfway.
+    # The probe changes SWDIO as the clock falls; the target as it rises, so its bits sit half a
+    # period later. 46 periods: request 8, turnaround 1, ACK 3, data and parity 33, turnaround 1.
+    # The data's middle is cut out.
+    band(536, "Wire", 558)
+    P, X0 = 16, 112
+    CK, DI = 576, 610           # the rows' middles
+    hi_c, lo_c, hi, lo = CK - 7, CK + 7, DI - 7, DI + 7
+    cut0, cut1 = 448, 480
+    f.text(0, CK + 4, "SWCLK", size=13, kind="code", room=LX - 16)
+    f.text(0, CK + 18, "P0_0", size=12, kind="code", tone=NOTE, room=LX - 16)
+    f.text(0, DI + 4, "SWDIO", size=13, kind="code", room=LX - 16)
+    f.text(0, DI + 18, "P0_2", size=12, kind="code", tone=NOTE, room=LX - 16)
+
+    def clock(x0, x1, lead=0, tail=0):
+        d = f"M{num(x0 - lead)},{num(hi_c)}"
+        for x in range(x0, x1, P):
+            d += f"H{num(x)}V{num(lo_c)}H{num(x + P / 2)}V{num(hi_c)}"
+        d += f"H{num(x1 + tail)}"
+        f.path(d, tone="wire")
+    clock(X0, cut0, lead=8)
+    clock(cut1, 640, tail=48)
+
+    def levels(x0, bits, step):
+        d, y = f"M{num(x0)},{num(hi if bits[0] else lo)}", hi if bits[0] else lo
+        for i, bit in enumerate(bits):
+            ny = hi if bit else lo
+            if ny != y:
+                d += f"V{num(ny)}"
+                y = ny
+            d += f"H{num(x0 + step * (i + 1))}"
+        f.path(d, tone="wire")
+    request = [1, 0, 1, 1, 0, 0, 0, 1]  # 0x8D, least significant bit first
+    levels(X0, request, P)
+    ack0 = X0 + 8 * P + P // 2      # the target's first bit, from the turnaround's rise
+    levels(ack0, [1, 0, 0], P)       # OK
+    for i, bit in enumerate(request):
+        f.text(X0 + P * i + P / 2, DI - 12, str(bit), size=12, kind="code", tone=NOTE, anchor="middle", room=P)
+    for i, bit in enumerate([1, 0, 0]):
+        f.text(ack0 + P * i + P / 2, DI - 12, str(bit), size=12, kind="code", tone=NOTE, anchor="middle", room=P)
+    # Neither drives the line in a turnaround, so it shows dashed.
+    f.path(f"M{num(X0 + 8 * P)},{num(hi)}H{num(ack0)}", tone="rule", dash="3 2")
+    d0, d1 = ack0 + 3 * P, 640 - P // 2
+    f.path(f"M{num(d0)},{num(DI)}L{num(d0 + 5)},{num(hi)}H{num(cut0)}M{num(d0)},{num(DI)}L{num(d0 + 5)},{num(lo)}"
+           f"H{num(cut0)}", tone="wire")
+    f.path(f"M{num(cut1)},{num(hi)}H{num(d1 - 5)}L{num(d1)},{num(DI)}M{num(cut1)},{num(lo)}H{num(d1 - 5)}"
+           f"L{num(d1)},{num(DI)}", tone="wire")
+    f.path(f"M{num(d1)},{num(hi)}H640", tone="rule", dash="3 2")
+    f.path(f"M640,{num(hi)}H688", tone="wire")
+    for x in (cut0 + 6, cut0 + 18):
+        f.path(f"M{num(x - 4)},{num(lo + 6)}L{num(x + 4)},{num(hi_c - 6)}", tone="rule", width=1)
+
+    # Who drives which bits.
+    def drive(x0, x1, label):
+        y = DI + 24
+        f.path(f"M{num(x0)},{num(y - 5)}V{num(y)}H{num(x1)}V{num(y - 5)}", tone="rule", width=1)
+        f.text((x0 + x1) / 2, y + 16, label, size=14, anchor="middle", room=x1 - x0 + 40)
+    drive(X0, X0 + 8 * P, "8D, from the probe")
+    drive(ack0, d1, "ACK OK, CTRL/STAT and parity, from the target")
+
+    # Down the left route into the wire, out of it and up the right route.
+    f.arrow([(LX, left[-1] + 10), (LX, hi), (X0 - 2, hi)])
+    f.arrow([(692, hi), (RX, hi), (RX, right[4] + 10)])
+    return f, DI + 50
+
+
 # ---------------------------------------------------------------- memory
 
 def memory():
@@ -589,7 +747,7 @@ def energy():
     return f, ty + 54
 
 
-FIGURES = [blocks, command, memory, energy]
+FIGURES = [blocks, command, packet, memory, energy]
 
 
 def main():
