@@ -72,10 +72,9 @@ energy and marker commands, so a tool can use them while a debugger holds the CM
 Debuggers pass it by: its name does not contain `CMSIS-DAP`.
 
 Every Pro has it, whatever its jumpers. Both interfaces share one set of DIO pins, one target supply
-and one energy capture. `verge power` and `verge energy` use Verge Aux wherever the probe has it, so
-they work beside a debugger, as the desktop app's supply, DIO and energy panels do. `verge dio`
-still goes through CMSIS-DAP, so it cannot run while a debugger holds the probe. [Host
-interface](host-interface.md#the-auxiliary-interface-verge-aux) describes it for tool authors.
+and one energy capture. `verge power`, `verge dio` and `verge energy` use Verge Aux wherever the
+probe has it, so they work beside a debugger, as the desktop app's supply, DIO and energy panels do.
+[Host interface](host-interface.md#the-auxiliary-interface-verge-aux) describes it for tool authors.
 
 ## Energy capture
 
