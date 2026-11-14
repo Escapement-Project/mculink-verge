@@ -3,19 +3,12 @@
 Open CMSIS-DAP firmware for NXP's MCU-Link and MCU-Link Pro debug probes, named Verge. It speaks
 SWD, JTAG and cJTAG (IEEE 1149.7) in OScan1, OScan2, OScan5 and OScan6, captures SWO and runs the
 probes' serial ports. On the Pro it adds GPIO, SPI and I2C bridges, a switched target supply and
-energy capture. It runs on the standalone boards, not on MCU-Links built into evaluation boards.
+energy capture. It runs on the standalone boards; an MCU-Link built into an evaluation board is not
+supported.
 
-[Verge's page](https://escapement-project.github.io/verge/) covers using it. Its docs live here and
-in verge, the tool that installs it:
-
-- [Wires and clocks](docs/wires.md): which hosts drive each wire, the clock you get for the one you
-  ask for, and how fast each wire runs beside NXP's firmware.
-- [Trace and serial ports](docs/trace-and-serial.md): SWO capture and the target's serial ports.
-- [Probes and jumpers](docs/probes.md): what each probe has, and what each jumper turns off.
-- [The Pro](docs/pro.md): the target supply, the DIO pins, the SPI and I2C bridges, and Verge Aux.
-- [Host interface](docs/host-interface.md): the vendor commands, for tools that drive the probe.
-
-This README is for building, checking and releasing the firmware.
+[Verge's page](https://escapement-project.github.io/verge/) covers using it. This file covers
+building, checking and releasing the firmware, and "Where to read next", at the end, lists the
+other docs.
 
 ## Build
 
@@ -40,7 +33,8 @@ These checks need no hardware. An emulated Cortex-M33 runs the image's DAP comma
 a modelled target. Hardware results are in `MEASUREMENTS.md`.
 
 ```
-ninja -C build check                      # the gate, against what was just built
+uv run tools/gate.py                      # the gate: host checks, then gcc and clang images
+ninja -C build check                      # one image's checks, against what was just built
 uv run tools/cycles.py --check            # the same thing by hand
 uv run tools/cycles.py --clock 10 50      # throughput, wire period, where the time goes
 uv run tools/cycles.py --explain          # name the code in the longest gap between edges
@@ -77,8 +71,7 @@ The wire gate requires six things of a build:
 
 `--bless` rewrites the baseline.
 
-Also check Release and MinSizeRel with LTO on and off. An inlined transfer once hid an
-uninitialised-variable warning that appeared only without LTO.
+Also check Release and MinSizeRel with LTO on and off: inlining changes which warnings appear.
 
 ```
 for t in Release MinSizeRel; do for l in ON OFF; do
@@ -106,9 +99,17 @@ address patterns, block sizes from one word to a full packet, and the match valu
 timestamps only `DAP_Transfer` reaches. It requires identical wire events and identical replies
 from both. `--wire all` runs every matrix for every wire, and the gate runs that for each compiler.
 
-Address-pattern and word-count coverage were added after the implementation. The original suite
-used two request values that left parity inputs fixed. It also sent two words in every block
-case, missing errors in counts derived from the response pointer.
+## When a build misbehaves
+
+| symptom | first suspect |
+| --- | --- |
+| comes up as `1fc9:0021`, not as a probe | the ISP jumper is still fitted. Check this first |
+| device does not enumerate at all | the unique-id read at `0x0009_FC70` in `src/ser_num.c`. If that region faults it faults inside `GetSerialNum`, before USB comes up |
+| enumerates, console silent | `FRO_HF` or its divider not running. `board_clocks_init` starts both; a Flexcomm with no clock reports no error and never reaches a baud rate |
+| enumerates, SWO silent | same clock, and NXP's driver also waits on a status bit |
+| probe stops answering for about ninety seconds | `DAP_Delay(0)`, ARM's pacing loop counting down from 2³². Guarded in `src/dap_dispatch.c`, so seeing this means the guard is not in the image you flashed |
+| every command times out after one | a stalled bulk endpoint from `DAP_TransferAbort`. `usb.core.Device.reset()` |
+| attaches but the target behaves oddly at a high clock | the probe may be clocking faster than asked. A product image never does, since the gate refuses it; a `+armwire` build can ("Check", above) |
 
 ## Releases
 
@@ -162,6 +163,26 @@ sha256sum mculink-verge-v0.3.0.s19 > mculink-verge-v0.3.0.s19.sha256
 minisign -S -s verge.key -m mculink-verge-v0.3.0.s19 -t "file:mculink-verge-v0.3.0.s19 tag:v0.3.0"
 ```
 
+### The board declaration
+
+An image declares the boards it runs on in a 16-byte record that starts with a magic value. The
+firmware places it after CPU 0's vector table, and verge looks at every 4-byte-aligned address in
+the image. Fields are little-endian:
+
+| offset | size | field |
+| --- | --- | --- |
+| 0 | 8 | the ASCII bytes `VERGEIMG`, with no terminator |
+| 8 | 1 | format, 1 |
+| 9 | 1 | the record's length in bytes, 16 at format 1 |
+| 10 | 2 | zero |
+| 12 | 4 | boards: bit n set means the image runs on board n |
+
+The board numbers are the ones Verge's identification reply uses: 0 for the standalone MCU-Link, 1
+for the MCU-Link Pro and 2 for an on-board MCU-Link. verge ignores board bits it does not know.
+Later formats add fields at the end, read only in the formats that define them. verge refuses two
+declarations in one image, format 0, a length under 16, and a declaration that runs past its part of
+the image. `verge inspect IMAGE` shows the record.
+
 ## Licence
 
 Apache-2.0, in `LICENSE`. Files changed from Arm's CMSIS-DAP carry Arm's notice and say what was
@@ -173,25 +194,40 @@ NXP's SDK drivers (BSD-3-Clause) and newlib-nano: `THIRD-PARTY-NOTICES.md` has t
 
 - On the Pro: the analog trace input and the LPC804 (BOARDS.md).
 - SWO over a streaming endpoint, from the ring already in USB SRAM.
-- A cheaper read-latency measurement at connect. In OScan2 and OScan5 at 25 and 50 MHz it costs
-  each session 10 to 15 ms.
+- A cheaper read-latency measurement at connect. On a CC1312R1 it costs a JTAG connection 3.4 to
+  5.8 ms, and a cJTAG one 2.9 to 4.5 ms.
 - The generated scan engine as a loop rather than 32 near-identical copies, which would shrink
   the generated code at slow clocks.
 
 ## Where to read next
 
+For using the probe and for host authors:
+
+- [Wires and clocks](docs/wires.md): which hosts drive each wire, the clock you get for the one you
+  ask for, and how fast each wire runs beside NXP's firmware.
+- [Trace and serial ports](docs/trace-and-serial.md): SWO capture and the target's serial ports.
+- [Probes and jumpers](docs/probes.md): what each probe has, and what each jumper turns off.
+- [The Pro](docs/pro.md): the target supply, the DIO pins, the SPI and I2C bridges, and Verge Aux.
+- [Host interface](docs/host-interface.md): the vendor commands, for tools that drive the probe.
+- [cJTAG targets](docs/cjtag-targets.md): bringing a TI cJTAG target up from a host.
+
+How the firmware works, in the order to read it:
+
 - `ARCHITECTURE.md`: what each core runs, and the path from each USB interface to its feature.
 - `CONCURRENCY.md`: the state the cores, interrupts and DMA share, and what orders each access.
-- `DESIGN.md`: design rationale, cJTAG support in ARM's code, and the board.
-- `BENCH.md`: reading the target's supply, bench hazards, the marker header and failure modes.
-- `MEASUREMENTS.md`: what the bench measured, newest first.
+- `BUSES.md`: which code uses which bus port, and when.
+- `TIMING.md`: the timing rules the SWD generator places instructions by.
+- `CODEGEN.md`: generating the SWD, JTAG and cJTAG transfers at run time.
+- `CJTAG.md`: cJTAG as the firmware uses it.
+- `BOARDS.md`: both boards' pins and straps, and the Pro's circuits.
+- `STACK.md`: where each core's stack sits, and how an overflow is caught.
+
+And beside them:
+
+- `MEASUREMENTS.md`: the measurement log, newest first.
+- `BENCH.md`: the bench the firmware is checked on.
+- `AGENTS.md`: rules for changing this code.
 - [mculink-bench](https://github.com/Escapement-Project/mculink-bench) and
   [mculink-stock-notes](https://github.com/Escapement-Project/mculink-stock-notes): throughput and
   the wire clock against stock, and what stock does as seen from outside.
-- `TIMING.md`: measured timing rules for the generated paths.
-- `CODEGEN.md`: runtime generation of the SWD, JTAG and cJTAG paths.
-- `CJTAG.md`: cJTAG as the firmware uses it, and the CC1312R1 it was built against.
-- `BOARDS.md`: both boards' pins and straps, and the Pro's circuits.
-- `BUSES.md`: which code uses which bus port, and when.
-- `AGENTS.md`: rules for changing this code.
 - [verge](https://github.com/Escapement-Project/verge): the CLI and GUI for firmware updates.

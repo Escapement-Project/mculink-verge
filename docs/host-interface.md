@@ -31,6 +31,9 @@ leaves a case open, it answers as follows.
   fit, stops the batch before it runs. The reply keeps the replies of the commands before it, and
   its count says how many ran. A command that runs and reports an error still counts. This
   handling adds no support for nested batches or queued commands.
+- **`DAP_TransferAbort`** has no reply, as the specification says. A host that reads for one
+  stalls the probe's bulk endpoint, and every later command times out. A USB reset of the device
+  clears it without unplugging, and leaves a halted target halted.
 - **Slow clocks.** `DAP_SWJ_Clock` answers `DAP_ERROR` for a clock under 9 Hz, as it does for 0 Hz,
   and keeps the clock it had.
 - **Generated transfers.** The probe runs every transfer on code it generates for the clock and
@@ -98,22 +101,20 @@ Send `[0x82]`. The reply's fields, counted from the byte after the ID:
 | 9+n to 12+n | 0, u32 |
 | 13+n to 16+n | Extended capabilities, u32 |
 
-Format 8 holds every field above. From format 7 the probe has `0x95` and `0x96`
-([cJTAG](#cjtag-0x95-and-0x96)); from format 8, `0x95` sent while disconnected selects the format
-the next `DAP_Connect(2)` starts in. On the HID interface the reply is padded to 64 bytes, and the
+Format 8 holds every field above. On the HID interface the reply is padded to 64 bytes, and the
 bytes after the extended capabilities are padding. A later format adds fields only at the end, and
 raises the format version, so read the fields you know and ignore any after them.
 
 The capability flags, byte 6:
 
-- **Bit 0:** 0.
+- **Bit 0:** reserved, always 0.
 - **Bit 1:** cJTAG framing is on now.
 - **Bit 2:** [target sense](#target-sense-0x86), `0x86`.
 - **Bit 3:** the SWD transfers are generated, and `0x89` is there
-  ([Design](../DESIGN.md#vendor-commands)). Clear in the `+armwire` reference build.
-- **Bit 4:** 0.
+  ([Commands Verge's own tools use](#commands-verges-own-tools-use)).
+- **Bit 4:** reserved, always 0.
 - **Bit 5:** the JTAG and cJTAG transfers are generated, and `0x8A` is there
-  ([Design](../DESIGN.md#vendor-commands)). Clear in the reference build.
+  ([Commands Verge's own tools use](#commands-verges-own-tools-use)).
 - **Bit 6:** the Pro's DIO pins, `0x8E`.
 - **Bit 7:** the Pro's target supply, `0x8F`.
 
@@ -125,8 +126,7 @@ and I2C bridges. Bit 6 is clear then.
 
 The extended capabilities:
 
-- **Bit 0:** energy capture, `0x90`, on a Pro with its HW_VER_5 strap fitted
-  ([Boards](../BOARDS.md) lists the straps).
+- **Bit 0:** energy capture, `0x90`, on a Pro.
 - **Bit 2:** the energy total, `0x90` mode 3.
 - **Bit 3:** SPI, `0x91`.
 - **Bit 4:** I2C, `0x92`.
@@ -239,8 +239,7 @@ deselection, 6 or 7 as a selection and 8 or more as a reset. The target counts t
 as a bit, so the probe waits a quarter period after its fall. With an even count that bit is `level`
 (1149.7 10.4.2 h). An odd count leaves the other level before the fall, and targets can read that
 bit either way, so send even counts. Until the escape ends the probe answers no other CMSIS-DAP or
-Verge Aux request. A 255-edge escape takes 28 s at 9 Hz, the slowest clock the generated builds
-take, and longer still on the `+armwire` reference build.
+Verge Aux request. A 255-edge escape takes 28 s at 9 Hz.
 
 It needs a JTAG connection, in any format, and leaves the format and framing as they were. It does
 not move the TAP state the probe follows in OScan2, 5 and 6. In conventional JTAG, where TCK rests
@@ -394,8 +393,8 @@ The probe adds up every calibrated pair itself, whether or not a host reads them
 - Time without pairs adds nothing. The probe pauses a capture for a moment while it reads the
   target's supply. It holds its conversions while it measures a target's read latency, how long
   after a clock edge the target's data arrives: when a debugger connects at a fast clock or changes
-  to one, again when a measurement contradicts itself, and when a host asks for a measurement
-  ([Design](../DESIGN.md#vendor-commands)).
+  to one, again when a measurement contradicts itself, and when Verge's own tools ask for one
+  ([Commands Verge's own tools use](#commands-verges-own-tools-use)).
 - A stop or a pause counts every complete pair the probe has converted. A part pair is dropped.
 - The probe's own pauses do not restart the sequence numbers.
 - The total resets when the probe restarts.
@@ -831,8 +830,8 @@ the message's time shows how long the gap was. Only a pause ends a run of pairs 
 [Converting a pair](#converting-a-pair).
 
 A pair read on the high range is under range when its current code is less than 64 codes above the
-high range's no-load reading at the last calibration. Calibration keeps no point there, and the
-amplifier's output stops at that reading, so a reading there is unreliable. Both range settings
+high range's no-load reading at the last calibration. The amplifier's output stops at that
+reading, so a reading there is unreliable. Both range settings
 mark these pairs. A capture that switches automatically reads some after the current falls, before
 it switches down. Nothing is marked under range without a calibration. Low-range pairs are never
 under range.
@@ -980,5 +979,24 @@ little apart from the probe's.
 
 `0x80` and `0x81` are NXP's (mculink-stock-notes' `identity.md`). Verge answers neither, so a
 LinkServer feature that rests on them does not work with Verge. Verge's own tools use a few more
-IDs, whose bytes can change between builds ([Design](../DESIGN.md#vendor-commands)). Any other ID
-from `0x80` to `0x9F` gets the invalid-command reply.
+IDs (below). Any other ID from `0x80` to `0x9F` gets the invalid-command reply.
+
+## Commands Verge's own tools use
+
+These serve Verge's own tools and its bench tests. They are not a stable host interface: their
+requests and replies can change between builds, and `src/dap_vendor.c` has each one's bytes. Some
+exist only in some builds: `0x84` needs `MARKER`, which is on by default, and `0x88` needs
+`CODE_LAB`. `0x89` to `0x8B` and `0x8D` need the generated transfers. `0x93` needs
+`DAP_TIMING_DIAGNOSTICS`.
+
+| ID | Name | What it does |
+| --- | --- | --- |
+| `0x84` | J8 | Hands J8's four pins to the host, on the standalone MCU-Link |
+| `0x87` | Sample | Reads DPIDR with the SWDIO sample placed by the host; a measuring instrument |
+| `0x88` | Code lab | Runs code the host supplies from RAM |
+| `0x89` | SWD generation | Reports the generated SWD transfers, and sets or measures the read latency they are generated for |
+| `0x8A` | JTAG generation | The same for the generated JTAG and cJTAG transfers |
+| `0x8B` | JTAG pacing | Switches the generated JTAG transfers' learned idle clocks |
+| `0x8C` | Staging | Switches whether CPU 0 stages commands for CPU 1 |
+| `0x8D` | JTAG log | Reads back what each JTAG generation was for |
+| `0x93` | Timing | The command path's cycle counts |

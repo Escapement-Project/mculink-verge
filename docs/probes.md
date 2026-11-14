@@ -1,7 +1,7 @@
 # Probes and jumpers
 
-Verge runs on NXP's standalone MCU-Link and MCU-Link Pro. One image runs on both. It does not run on
-an MCU-Link built into an evaluation board.
+Verge runs on NXP's standalone MCU-Link and MCU-Link Pro. One image runs on both, and verge installs
+it on nothing else: an MCU-Link built into an evaluation board is not supported.
 
 ## What each probe has
 
@@ -15,7 +15,7 @@ an MCU-Link built into an evaluation board.
 | DIO pins | No | Four, on J19 | J15 turns them off, leaving them inputs ([The Pro](pro.md#dio-pins)). |
 | SPI and I2C bridges | No | SPI on DIO0 to DIO3; I2C on Flexcomm 3 | J15 turns both off. SPI shares the DIO pins; I2C shares Flexcomm 3 with SWO ([The Pro](pro.md#spi-and-i2c-bridges)). |
 | Target supply | No | 1.8 V or 3.3 V, up to 400 mA | J5 picks the voltage and J6 connects it. Off whenever the Pro starts ([The Pro](pro.md#target-supply)). |
-| Energy capture | No | Voltage, current and energy | Needs the board's HW_VER_5 strap fitted ([Boards](../BOARDS.md), [Energy capture](https://github.com/Escapement-Project/verge/blob/HEAD/docs/energy.md)). |
+| Energy capture | No | Voltage, current and energy | J16 to J18 pick the 350 mA or 50 mA setting ([Energy capture](https://github.com/Escapement-Project/verge/blob/HEAD/docs/energy.md)). |
 | Verge Aux | No | A second vendor interface | Every Pro has it, whatever its jumpers ([The Pro](pro.md#verge-aux)). |
 | Firmware update | With verge | With verge | No ISP jumper needed for a probe already running Verge. The ISP jumper stays the way back for an image that does not start ([Updating and recovery](https://github.com/Escapement-Project/verge/blob/HEAD/docs/updating.md#when-an-update-needs-your-hands)). |
 

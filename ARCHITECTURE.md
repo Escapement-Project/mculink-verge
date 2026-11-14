@@ -10,6 +10,22 @@ sees, and BOARDS.md the pins.
 
 ![The host's USB reaches CPU 0, which answers the host. CPU 1 drives the target. Between them are the mailbox each raises in the other and the memory both use: commands, replies, staged copies and stream messages. CPU 1 drives the target's SWD, JTAG and cJTAG wires, its DIO, SPI and I2C pins and its supply, and takes SWO in from it. CPU 0's consoles reach the target's serial lines.](docs/figures/architecture-blocks.svg)
 
+## What it is built from
+
+TinyUSB's `mcu_link` board support does the board and USB work: the gcc toolchain file, startup
+code, linker script, clock setup and the LPC55's `lpc_ip3511` device driver, all maintained
+upstream. ARM's CMSIS-DAP sources compile as they ship, with no patches. Their one accommodation is
+`-Wno-unused-variable` on their files, since `DAP.c` leaves a variable unused when SWO is configured
+out and TinyUSB's example flags are `-Werror`. The code that is the project's own is board and
+protocol specific: the pin layer, the bit paths and the generators that write them at run time, the
+cJTAG framing, the USB descriptors, and the command path between the two cores.
+
+The MS OS 2.0 descriptor set is built at boot rather than written by hand. It has nested length
+fields that must agree with the bytes after them, nothing reports a mismatch at run time, and the
+device then fails to bind. Which vendor interfaces it binds, and at which interface numbers, follows
+the jumpers. `tools/ms_os_20_test.c` checks every length field under sanitizers, and
+`tools/image.py` checks each strap state's set against its configuration.
+
 ## The two cores
 
 CPU 1 runs CMSIS-DAP. The commands a host sends, on CMSIS-DAP or on Verge Aux, run there, and so
@@ -250,7 +266,9 @@ The consoles are CPU 0's. VCOM is Flexcomm 0 on P0_24 and P0_25, on both boards.
 Flexcomm 1 on J26. DMA moves every byte. Each console receives into a ring that DMA fills without
 stopping, and sends what the host wrote from a buffer of its own, one transfer at a time. CPU 0's
 loop moves runs of bytes between TinyUSB and those buffers, so it has no deadline to meet. A
-console's line coding comes from the host on endpoint 0, and CPU 0 sets the UART to it.
+console's line coding comes from the host on endpoint 0, and CPU 0 sets the UART to it. TinyUSB's
+board support claims Flexcomm 0 for its own debug logging, on other pins, so `vcom_init` runs after
+`board_init` and takes it back. The probe has no console of its own, so nothing is lost.
 
 ## The DMA controller
 
@@ -309,13 +327,14 @@ code is generated. CODEGEN.md lists what triggers it.
 
 ARM's command logic stays in C around the generated code: posted reads, WAIT retries, value
 matching and timestamps. The sequence commands `DAP_SWJ_Sequence` and `DAP_SWD_Sequence` still run
-ARM's C, and so do the OScan2 and OScan6 frames `0x83` sends to switch a target's format
-(`cJTAG_FrameTap`). `DAP_JTAG_Sequence` runs on the generated scans.
+ARM's C. So do vendor `0x96`'s escapes and a raw `DAP_SWJ_Sequence` sent with a cJTAG format
+selected (`cJTAG_Escape` and `cJTAG_Clock`, paced by the clock in use). `DAP_JTAG_Sequence` runs on
+the generated scans.
 
-A connection measures the target's read latency on the wire before it trusts a sample position:
-at a fast clock, when its first read fails, and on a Pro when a capture changes which latencies the
-code serves. It measures only while the latency is automatic; `0x89` and `0x8A` can pin one, and
-report the generated code.
+A connection measures the target's read latency on the wire before it trusts a sample position: at a
+fast clock, when its first read fails, when the host changes the clock, and on a Pro when a capture
+changes which latencies the code serves. It measures only while the latency is automatic; `0x89` and
+`0x8A` can pin one, and report the generated code.
 
 TIMING.md has the timing rules the code is placed by, CODEGEN.md the generators, and CJTAG.md the
 cJTAG wire.
@@ -339,3 +358,23 @@ CPU 1 takes no interrupts, so any exception it takes is a fault. It records its 
 where it was in `dap_shared`, then stops. CPU 0 keeps running and reports the record through vendor
 request `0x04`, which `tools/dap.py core1` reads. Each core has a stack limit, so an overflow faults
 rather than overwriting the memory below (STACK.md).
+
+## References
+
+| project | why |
+| --- | --- |
+| [OpenOCD](https://github.com/openocd-org/openocd) | a host-side OScan1 implementation (`ftdi oscan1_mode on`): a second opinion on the bit encoding |
+| [kuopinghsu/cjtag](https://github.com/kuopinghsu/cjtag) | IEEE 1149.7 Class T4 in RTL, with a protocol document |
+| [free-dap](https://github.com/ataradov/free-dap) | a tighter CMSIS-DAP implementation than ARM's reference |
+| [debugprobe](https://github.com/raspberrypi/debugprobe) | Raspberry Pi's CMSIS-DAP on TinyUSB, the same architecture as this |
+| [DAPLink](https://github.com/ARMmbed/DAPLink) | ARM's production probe firmware, for comparison on anything ambiguous |
+
+In this repository:
+
+- `external/tinyusb`: TinyUSB's master with four changes, from a fork until they are upstreamed:
+  caller-owned vendor buffers, an endpoint bounds check, placeholder endpoints, and a callback that
+  lets the application refuse a line coding. The fork also moves `tools/get_deps.py`'s NXP SDK and
+  CMSIS 6 pins forward.
+- `external/CMSIS-DAP`: pinned at v2.1.2. `Firmware/Source` has `DAP.c`, `SW_DP.c`, `JTAG_DP.c`,
+  `SWO.c` (not built: `src/swo.c` replaces it), `UART.c` and `DAP_vendor.c`;
+  `Firmware/Examples/MCU-LINK/` has the board headers this started from.

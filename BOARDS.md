@@ -2,7 +2,8 @@
 
 One image runs on the plain MCU-Link and the MCU-Link Pro. It reads the board's straps at boot
 and starts what that board has. This file has both boards' pins and straps, then the Pro's own
-pins and circuits, and what the firmware does with them.
+pins and circuits, and what the firmware does with them. docs/pro.md says what the firmware does on
+a Pro for its user, and docs/probes.md what each feature needs.
 
 ## Sources
 
@@ -27,24 +28,6 @@ pins and circuits, and what the firmware does with them.
 - Data sheets for four parts of the energy circuit: TI's LM4040 (U3, the 3.0 V reference), TI's
   SN74LVC1G175 for the function table of U18 (a Nexperia 74LVC1G175, the same function), and
   Nexperia's PMPB15XP (Q3, the range switch) and PMF250XNE (the calibration switches).
-
-## What runs on a Pro
-
-docs/pro.md says what the firmware does on a Pro and docs/probes.md what each feature needs; the
-feature jumpers work as docs/probes.md "Jumpers" describes. SWD, JTAG and cJTAG reach the target on
-J7. The second serial port, on J26, is a second CDC interface and 3.3 V only: J26 has no level
-shifter.
-
-- **The LEDs**, with the meanings UM11673 gives them where the function exists. LED1 is lit while
-  USB is configured. The status, SWO and VCOM LEDs flicker with traffic. LED5 (FUNC) shows the wire
-  by the shape of its ramp: dark to light for SWD, light to dark for cJTAG, light to dark to light
-  for JTAG, solid with the SWD jumper fitted, dark with no port connected. LED6 (SIO) is lit while
-  the host drives a DIO pin or runs SPI. LED7 (energy) stays dark. The fades follow CIE lightness,
-  so they look linear to the eye.
-- **Energy capture** needs HW_VER_5 fitted. "Energy measurement" below derives the circuit's
-  settings from the documents.
-
-Not yet: the analog trace input and the LPC804.
 
 ## What the two boards share
 
@@ -96,8 +79,9 @@ Strap pins, all inputs needing a pull-up (DAPLink `IO_Config.h`):
 
 A Pro reads HW_VER_4 low and HW_VER_3 high. The plain board's 64-pin package (HTQFP64) bonds
 neither PIO1_4 nor PIO1_5 (`LPC55S6x.pdf` Table 3), so with their pull-ups both read high: not a
-Pro. HW_VER_4 low
-with HW_VER_3 low is an on-board MCU-Link, which this firmware does not support.
+Pro. HW_VER_4 low with HW_VER_3 low is an on-board MCU-Link. The firmware runs there without cJTAG,
+but the image does not declare that board, so verge does not install it there. Energy capture
+needs HW_VER_5 low.
 
 The rest of the Pro's pins, from schematic sheet 3:
 
@@ -105,13 +89,35 @@ The rest of the Pro's pins, from schematic sheet 3:
 | --- | --- |
 | LEDs, active low | LED1 USB PIO1_12, LED2 SWO PIO1_13, LED3 status P0_5 (red), LED4 VCOM PIO1_15, LED5 FUNC PIO1_16, LED6 SIO PIO1_17, LED7 NRG PIO1_18 |
 | target supply | P0_8 TARGET_PWR_EN enables a TPS73601; its output reaches the target only through J6, at the voltage J5 picks |
-| second VCOM (J26) | Flexcomm 1: RXD PIO1_10, TXD PIO1_11. J26 is a 1x6 header labelled "firmware debug console" in the FTDI TTL-232R-3V3 cable's order (page 3): 1 GND, 4 the cable's TXD into PIO1_10 through 499R, 5 PIO1_11 out to the cable's RXD through 499R, 2, 3 and 6 not connected. ESD diodes, no level shifter: 3.3 V only. So a target's TXD goes to pin 4 and its RXD to pin 5; UM11673 section 4.3 says the reverse, which the schematic contradicts. Check on the bench before wiring a target |
-| SPI | the high-speed SPI: SSEL0 P0_20, MOSI P0_26, SCK PIO1_2, MISO PIO1_3, each also a GPIO (DIO0 to DIO3) on J19 pins 2 to 5; level-translator directions IO_DIR1 PIO1_1 (DIO0 to DIO2, U17 and U13) and IO_DIR2 PIO1_25 (DIO3, U12), high to drive the header, each with a 1K pull-down (netlist, 2026-10-22). The header side runs at J19 pin 14 (VDD_IO_REF, 1.2 to 5.5 V), or 3.3 V with nothing there. The host uses vendor command 0x91; it temporarily owns the DIO pins |
+| second VCOM (J26) | Flexcomm 1: RXD PIO1_10, TXD PIO1_11. J26 is a 1x6 header labelled "firmware debug console" in the FTDI TTL-232R-3V3 cable's order (page 3): 1 GND, 4 the cable's TXD into PIO1_10 through 499R, 5 PIO1_11 out to the cable's RXD through 499R, 2, 3 and 6 not connected. ESD diodes, no level shifter: 3.3 V only. So a target's TXD goes to pin 4 and its RXD to pin 5: the probe transmits on pin 5. UM11673 section 4.3 gives pins 4 and 5 the other way round |
+| SPI | the high-speed SPI: SSEL0 P0_20, MOSI P0_26, SCK PIO1_2, MISO PIO1_3, each also a GPIO (DIO0 to DIO3) on J19 pins 2 to 5; level-translator directions IO_DIR1 PIO1_1 (DIO0 to DIO2, U17 and U13) and IO_DIR2 PIO1_25 (DIO3, U12), high to drive the header, each with a 1K pull-down (netlist). The header side runs at J19 pin 14 (VDD_IO_REF, 1.2 to 5.5 V), or 3.3 V with nothing there. The host uses vendor command 0x91; it temporarily owns the DIO pins |
 | I2C | J19 pin 6 SDA P0_4, pin 7 SCL P0_21, through a PCA9617. R94/R95 pull up the LPC side to 3.3 V; the target or fixture must pull up the J19 side to pin 14's I/O reference. SWO's UART is Flexcomm 3 too, so the two exclude each other. The host uses vendor command 0x92 |
 | energy measurement | voltage ADC0_0/CH0A on P0_23; current ADC0_8/CH0B on P0_16 and ACMP0_IN_D on PIO1_14; CURR_RANGE_SET ADC0_4 on PIO1_8; CTRL_HIGH_CURR on P0_15 (ADC0_2) and P0_30 (input); CTRL_HIGH_CURR_EN P0_17; CTRL_HIGH_CURR_DIS P0_29 (CMP0_OUT); calibration CTRL_CAL_R1 to R4 on PIO1_22, PIO1_23, PIO1_26, PIO1_29 and CTRL_CAL_DISC on PIO1_24; the comparator's ladder input ACMPVREF on PIO1_19, tied to VREF through R9 (0R) |
 | triggers | SYNC_TRIG P0_6, SYNC_LEAD P0_7 (J2), MEAS_TRIG PIO1_7 |
 | analog trace input | ANALOG_IN1, ADC0_11 on PIO1_0, behind a voltage follower |
 | LPC804 | reset PIO1_9, ISP enable PIO1_31, its ISP UART on Flexcomm 4: TXD PIO1_20, RXD PIO1_21 |
+
+## What the board support does not start
+
+Three clock facts from the manual and the board support, each of which shows only as a silent,
+dead peripheral.
+
+- **The board support's 150 MHz clock is 144 MHz.** `BOARD_InitBootClocks` calls
+  `BOARD_BootClockPLL150M`, whose name is wrong: it runs PLL1 at 16 MHz times 18 and attaches that
+  to MAIN_CLK. `board_core_clock_init` then moves MAIN_CLK to PLL0 at 150 MHz (`src/core_clock.h`;
+  `-DCORE_150MHZ=OFF` keeps 144). `CPU_CLOCK` and `TIMESTAMP_CLOCK` follow `CORE_CLOCK_HZ`, and
+  every requested SWD or JTAG clock is computed from that number.
+- **FRO_HF is off, and so is its divider.** The 96 MHz output of FRO192M is disabled out of reset
+  (UM11126: `ENA_96MHZCLK` resets to 0), and the board support only asks for the 12 MHz one, because
+  the core runs off PLL1. `FROHFDIV`'s HALT bit resets to 1 as well (UM11126 table 104). The console
+  and SWO clock off `FRO_HF_DIV`: with either missing, `CLOCK_GetFroHfFreq` reports 0 Hz,
+  `USART_Init` rejects the console's baud rate and `SWO_Baudrate` answers 0, and neither says why.
+  `board_clocks_init` starts both. Anything else that attaches to `FRO_HF_DIV` depends on that call.
+- **DWT is dormant until told otherwise.** `TIMESTAMP_GET` reads `DWT->CYCCNT`, which does not run
+  until TRCENA and CYCCNTENA are set. `DAP_SWJ_Pins` with a non-zero wait spins until the counter
+  passes a deadline, so a pin that never reaches the asked level would hang the probe rather than
+  time out, and a transfer with `DAP_TRANSFER_TIMESTAMP` set would report 0. `board_timestamp_init`
+  starts it.
 
 ## Energy measurement
 
@@ -198,10 +204,8 @@ the probe's target supply can give.
   segment under the limit re-arms the low range, so it comes back within about 2 ms of the current
   falling at any rate from 2,286
   samples a second. Below that rate a segment is its floor of 16 words, about two and a third
-  samples, and the low range comes back within five. Segments of 10 ms made the delay depend on the
-  rate, from 7 to 15 ms at 20,000 samples a second to 1.5 to 3 ms at 100,000. A target asleep for
-  8 ms in every 10 was then read on the high range for the whole of its sleep at the first rate
-  and mostly on the low range at the second, and its readings moved with the rate.
+  samples, and the low range comes back within five. From 2,286 samples a second up, segments of
+  about a millisecond keep that delay the same at every rate.
 - **Between samples.** CPU 0 clocks the latch only while the ADC is between samples, in the first
   half of the time from one sample's end to the next one's trigger, so the sample after a switch
   down is the low range's alone. It tells where the ADC is from the conversion timer. Where the rate
@@ -209,21 +213,18 @@ the probe's target supply can give.
   whenever it gets to it.
 - **What a switch down does to the target.** The low range's resistor goes back in series, and
   the target's supply falls by the drop above. The target's decoupling gives up part of its
-  current while the supply settles, so for about a millisecond the reading dips. On the L1306
-  LaunchPad the reading fell from 1.13 mA to 0.31 mA and came back with a time constant of
-  0.22 ms. That is 50 Ω times about 4 µF, the LaunchPad's decoupling: 4.4 µF from the time
-  constant, 3.8 µF from the charge the dip missed.
+  current while the supply settles, so for about a millisecond the reading dips. On an MSPM0L1306
+  LaunchPad the reading falls from 1.08 mA to 0.26 mA and comes back with a time constant of
+  0.26 ms: 50 Ω times about 5 µF, the LaunchPad's decoupling. A debug session on the target moves
+  both, until its supply is cycled.
   The current rises further on the low range before a switch up, as the decoupling feeds the
   target, until it reaches the threshold. The switch up then recharges the decoupling in a spike of
   a few microseconds. The energy total misses most of that spike (Accuracy limits).
 - **A target the low range cannot hold.** A target can reach the threshold on the low range
-  alone, again and again. A CC1312R1 LaunchPad that was also powered from its own USB took a
-  steady 1.05 mA from the probe on the high range. After each switch down its reading dipped to
-  0.23 mA, then rose past 1.05 mA to the threshold in 1.4 ms. The voltage channel showed the same
-  drop across the resistor, so the current was real. The firmware re-armed the low range a segment
-  after each switch up, and the range switched about 590 times a second. With the dips, the rises
-  and the recharges, the capture read 1.37 mA at 100,000 samples a second and 1.19 mA at 1,000.
-  The same board did not do it again, on the probe's supply alone or with its USB as well.
+  alone, again and again: after a switch down its reading dips, then rises past its steady current
+  as the decoupling refills, up to the threshold. Re-armed a segment after each switch up, such a
+  target switches hundreds of times a second, and the dips, the rises and the recharges move its
+  reading with the rate. The backoff, below, holds it on the high range instead.
 - **The backoff.** Just under Table 4's limit, a re-arm waits for some number of segments in a row
   under it, at first one. That band runs from half the limit up to it: 0.75 to 1.5 mA in the
   350 mA setting and 0.2 to 0.4 mA in the 50 mA setting, where the drop is 37 to 90 mV. The
@@ -251,9 +252,9 @@ circuitry and a known voltage applied. The firmware calibrates as it boots, befo
 first command, and keeps the result. A capture start calibrates again only when the last
 calibration failed, or when CURR_RANGE_SET reads a different setting from the one calibrated.
 
-Each step of a calibration waits 20 ms before it converts, so a calibration takes about 0.2 s. With
-1 ms waits, the first calibration after flashing read the no-load point at the amplifier's floor.
-With 5 ms it read it right.
+Each step of a calibration waits 20 ms before it converts, so a calibration takes about 0.2 s. A
+much shorter wait reads the no-load point at the amplifier's floor on the first calibration after
+a flash.
 
 - **Isolation.** CTRL_CAL_DISC disconnects J9 and puts the probe's 3.3 V on the sense resistors.
 - **The loads.** Four switched resistors load the target side to ground: R1, 6.65 kΩ
@@ -265,22 +266,19 @@ With 5 ms it read it right.
   scale (the table below).
 - **The point with no load.** With no load on, only the divider's 5 µA flows. The low ranges take
   that as a point too. The high ranges cannot: their sense resistors turn 5 µA into microvolts, and
-  the amplifier's output does not go that low. On one unit it stopped at about 57 ADC codes. The
-  divider keeps the low ranges clear of that floor whenever the target is powered: 2.7 µA at 1.8 V
-  is still 88 codes in the 350 mA setting and 355 in the 50 mA setting.
+  the amplifier's output does not go that low: on the Pro measured it stops at 55 to 57 ADC codes.
+  The divider keeps the low ranges clear of that floor whenever the target is powered: 2.7 µA at 1.8
+  V is still 88 codes in the 350 mA setting and 355 in the 50 mA setting.
 - **Below the lowest point.** A table extends its first segment below its lowest point. Extended
-  down from R3, the 350 mA setting's high range read R1's 0.5 mA 4% high on one unit, so R1 is a
-  point there too where it clears the floor (below). Where R1 is left out, that range read a
-  1.08 mA load 3.0 to 5.7% high over ten boots, and each code that R3's point moves between boots
-  moves such a reading by about 0.5%. Where R1 is kept, the same load read 3.0 to 4.2% high over
-  four boots.
-- **The floor.** Each high range first converts with no load, which reads the amplifier's floor.
-  A point less than 24 codes above that reading is left out: one pinned at the floor would read
-  the currents between it and the next point low. At the nominal resistance R1 gives about 84
-  codes less the amplifier's offset, 9 codes on one unit, so it lands 18 to 27 codes over the
-  floor and is kept only on a unit with little offset. R1 counts on a unit whose high range has
-  more resistance, as J17's contact can add (Accuracy limits): at 0.30 Ω it gave 33 to 38 codes
-  over a floor of 56 or 57, and at 0.49 Ω 155 codes over a floor of 57.
+  down from R3, the 350 mA setting's high range reads currents under 2 mA a few percent high, so R1
+  is a point there too where it clears the floor (below). With R1 out, each code R3's point moves
+  between boots moves such a reading by about 0.5%.
+- **The floor.** Each high range first converts with no load, which reads the amplifier's floor. A
+  point less than 24 codes above that reading is left out: one pinned at the floor would read the
+  currents between it and the next point low. At the nominal resistance R1 gives about 84 codes less
+  the amplifier's offset, about 9 codes on the Pro measured, so it lands 18 to 27 codes over the
+  floor and is kept only on a unit with little offset. R1 counts on a unit whose high range has more
+  resistance, as J17's contact can add (Accuracy limits).
 
 | setting | range | points | across the resistor |
 | --- | --- | --- | --- |
@@ -313,32 +311,29 @@ With 5 ms it read it right.
   target, the 350 mA setting's high range reads 2.8% high: Q3 goes from 16.5 mΩ to 23.7 mΩ
   (PMPB15XP Fig. 8) beside the 0.24 Ω resistor. In the 50 mA setting the same target reads 0.35% high.
   UM11673 gives the 350 mA setting's high range 5% accuracy and the others 1%.
-- In the 350 mA setting the high range reads currents under 2 mA high: a 1.08 mA load 3.0 to
-  4.2% high with R1 as a point, and 3.0 to 5.7% high without (Calibration, "Below the lowest
-  point"). A capture on auto reads them on the low range. In the 50 mA setting the high range read
-  the same load 0.9% high.
-- One boot out of more than twenty calibrated the 350 mA setting's high range 19% high at every
-  point, and that range read 10 to 14% low on it. The unit had come up from a USB hub reset.
-  Sixteen boots in a row with the jumpers untouched, three of them through the bootloader,
-  calibrated within 5 codes of each other at 2 mA. `verge energy calibration` shows the points:
-  every high-range code up by the same factor, with no jumper moved, marks such a boot. A restart
+- In the 350 mA setting the high range reads currents under 2 mA high: 3 to 4% with R1 as a point
+  on the Pro measured (Calibration, "Below the lowest point"). A capture on auto reads them on the
+  low range. In the 50 mA setting the high range read a 1.08 mA load 0.9% over the 350 mA
+  setting's low range.
+- A boot can calibrate the 350 mA setting's high range high at every point, by 19% the one time
+  it was seen, in more than twenty boots. `verge energy calibration` shows the points: every
+  high-range code up by the same factor, with no jumper moved, marks such a boot. A restart
   calibrates again.
-- J17's contact is in the high range's resistance too. Calibration measures it, but moving the
-  jumpers away and back leaves the setting as it was, so only a reset calibrates again. On one
-  unit the 350 mA setting's high range measured 0.27, 0.75 and 0.49 Ω at boots on three days,
-  against 0.26 Ω nominal, so its full scale was 366, 133 and 205 mA. Each boot read its own
-  resistance right; a current past that boot's full scale saturates.
+- The high range's resistance moves from boot to boot, and J17's contact is in that path: on the
+  Pro measured, the 350 mA setting's high range read 0.27 to 0.75 Ω at different boots, which
+  brought its full scale down to 133 mA. Calibration measures it, but moving the
+  jumpers away and back leaves the setting as it was, so only a reset calibrates again. Each boot
+  reads its own resistance right; a current past that boot's full scale saturates.
 - The low range lowers the target's supply (the drop across the sense resistors), so a target
   whose current follows its supply draws differently on the two ranges, and is read that way. A
   target that reaches the switch up on the low range alone, again and again, is read mostly on the
   high range once the backoff holds it there (Range switching).
-- The high range reads unreliably within 64 codes of the amplifier's output floor (Calibration,
-  "The point with no load"). The stream marks a high-range pair there under range, in either range
-  setting. In the 350 mA setting the mark starts at about 0.36 mA. Scaled to the 50 mA setting's
-  shunt it is about 46 µA, which has not been measured. A target asleep at 166 µA, as the low
-  range read it, read between 137 and 363 µA under the mark. A capture that holds the high range
-  reads every current under the mark this way. One that switches automatically does so only
-  between a fall and its switch down.
+- The high range reads unreliably within 64 codes of the amplifier's output floor (Calibration, "The
+  point with no load"). The stream marks a high-range pair there under range, in either range
+  setting. Through the calibration of the Pro measured, the mark starts at about 0.65 mA in the 350
+  mA setting. Scaled to the 50 mA setting's sense resistor it is about 90 µA, which has not been
+  measured. A capture that holds the high range reads every current under the mark this way. One
+  that switches automatically does so only between a fall and its switch down.
 - The calibration switches are counted at their typical on-resistance. Their spread moves the
   350 mA setting's high range by up to about 0.3%, through R4.
 - The sheet gives no tolerance for the divider. It moves the current taken off each sample, which
@@ -363,29 +358,25 @@ With 5 ms it read it right.
 - The stand-in leaves out what happens inside the switching sample. That is most of the
   decoupling's recharge at a switch up, about its capacitance times 90 mV in the 350 mA setting.
   From about 40,000 samples a second the samples after the switch catch part of it, so the total
-  rises with the rate there. A target with about 5 µF that woke every 10 ms read 1.5% apart
+  rises with the rate there. A target with about 5 µF that wakes every 10 ms reads about 1.5% apart
   across 1,000 to 100,000 samples a second, highest at both ends. In the 50 mA setting, where its
   1.1 mA idle stays on the high range and nothing switches, the same rates read within 0.1% of
-  each other. The stand-in also leaves out a
-  burst shorter than one sample period that starts on the low range. The same target with 200 µs
-  bursts read 6.7% low at 1,000 samples a second against 20,000. Pick a rate whose sample period
+  each other. The stand-in also leaves out a burst shorter than one sample period that starts on
+  the low range: the same target with 200 µs bursts reads 7 to 8% low at 1,000 samples a second
+  against 20,000. Pick a rate whose sample period
   is well under the shortest burst.
 - The voltage and the current are the A and B sides of channel 0, and one dual single-ended
   conversion takes both at once, so they average over the same stretch. Both results land in FIFO0,
   the voltage's first: with both FIFO selects alike, "the CH_A results will always be stored before
-  the CH_B results" (UM11126 section 38.7.8), and the part did so in 1,600 trials of 1,600. Both
-  acquire for 11.5 cycles of the 18.75 MHz ADC clock, 613 ns, and the range for 3.5 cycles.
-  Measured on 2026-10-26 with a 12 MHz ADC clock: 292 ns of acquisition read an unaveraged voltage
-  0.27% higher than one averaged 16 times, and the energy total carried that error. 625 ns read
-  within 0.02% of 16 averages at 10,000 samples a second, at every averaging, when the two sides
-  converted one after the other. A sample with N averages takes 27 + 32 N cycles: 27 + 28 N was
-  measured at 7.5 cycles, and each conversion samples 4 cycles longer at 11.5 (UM11126, CMDH[STS]).
-  Converting the two sides one after the other took 27 + 52 N at 7.5 cycles. The firmware uses the
-  most averaging that finishes a sample before the next is due: 128 up to 4,546 samples a second,
-  64 up to 9,036, 32 up to 17,840, 16 up to 34,786, 8 up to 66,254, and 4 up to 100,000. The ADC
-  and the timer that starts each sample both run from PLL0, so a sample's length in timer counts is
-  exact.
-- While the probe measures the target's read latency, it stops the conversions, and the energy
-  total leaves that time out. It measures at a connection at fast clocks, again when a measurement
-  contradicts itself, and when a host asks. With capture running, the measurement found later
-  latencies, or none, and those connections failed.
+  the CH_B results" (UM11126 section 38.7.8), and the part does. Both acquire for 11.5 cycles of the
+  18.75 MHz ADC clock, 613 ns, and the range for 3.5 cycles. A much shorter acquisition reads an
+  unaveraged voltage high, by 0.27% at 292 ns. 625 ns read within 0.02% of 16 averages, with the two
+  sides converted one after the other (the measurement log). A sample with N averages takes 27 + 32
+  N ADC cycles. The firmware uses the most averaging that finishes a sample before the next is due:
+  128 up to 4,546 samples a second, 64 up to 9,036, 32 up to 17,840, 16 up to 34,786, 8 up to
+  66,254, and 4 up to 100,000. The ADC and the timer that starts each sample both run from PLL0, so
+  a sample's length in timer counts is exact.
+- While the probe measures the target's read latency, it stops the conversions, and the energy total
+  leaves that time out. It measures at a connection at fast clocks, when the host changes the clock,
+  again when a measurement contradicts itself, and when Verge's own tools ask. The capture's DMA
+  would otherwise delay the measurement's samples, and it would find later latencies, or none.

@@ -266,6 +266,10 @@ recorded by the interrupt and by the loop (`vcom_dma_done`, `vcom_dma_error`). N
 BASEPRI: each flag has one writer per change, and a channel's descriptors change only while it is
 off.
 
+A DMA failure disables the channel it hit, and the loop waits for the channel to go idle before it
+restarts it. A receive ring's recovery drops its unread bytes. A send's drops the interrupted
+buffer, without sending again a part already handed to the UART. The other channels run on.
+
 ## The DMA controller
 
 Both cores program DMA0, each its own channels. The descriptor table has one entry per channel,

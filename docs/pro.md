@@ -18,8 +18,8 @@ verge power        # read it
 verge power off
 ```
 
-verge reports the state the firmware set, not a measured voltage. From a checkout of mculink-verge, `tools/dap.py target-power` switches it too, and [Host
-interface](host-interface.md#pro-target-supply-0x8f) has the command, `0x8F`. After switching the
+verge reports the state the firmware set, not a measured voltage. A tool of your own switches it
+with `0x8F` ([Host interface](host-interface.md#pro-target-supply-0x8f)). After switching the
 supply on, give the regulator and the target's rail time to settle before you talk to the target.
 
 ## DIO pins
@@ -36,7 +36,7 @@ verge dio --input all    # make them inputs again
 
 DIO0, DIO1 and DIO2 change direction together, and DIO3 on its own, so a change has to turn a whole
 group round: `--high 0` alone is refused while DIO1 and DIO2 are inputs. Inputs have pull-downs, and
-an output reads back its own drive. From a checkout of mculink-verge, `tools/dap.py dio` drives them too.
+an output reads back its own drive.
 
 The pins keep their state between debug sessions, and across hosts. So a pin can hold a target's
 boot mode through a reset and a reconnect. They go back to inputs when the probe restarts. LED6
@@ -63,7 +63,9 @@ verge has no command for the bridges.
 ## The second serial port
 
 The Pro has a second USB serial port, on J26. It is 3.3 V only: J26 has no level shifter. The VCOM
-jumper leaves it on. [Trace and serial ports](trace-and-serial.md#the-serial-ports).
+jumper leaves it on. Wire the target's TXD to J26 pin 4, its RXD to pin 5, and its ground to pin 1.
+NXP's manual for the Pro gives pins 4 and 5 the other way round, but the probe transmits on pin 5.
+[Trace and serial ports](trace-and-serial.md#the-serial-ports).
 
 ## Verge Aux
 

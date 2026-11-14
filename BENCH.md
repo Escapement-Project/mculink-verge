@@ -66,9 +66,10 @@ harness is not plugged in.
 - **`DAP_TransferAbort` answers nothing.** Reading for a reply after sending it stalls the probe's
   bulk endpoint, and every later command times out. `usb.core.Device.reset()` clears it without
   unplugging and does not disturb a halted target.
-- **Run `ninja -C build check` before flashing.** It refuses a build that clocks any wire faster
-  than the host asked for, beyond what `tools/baseline/known-overshoot.txt` records: nothing for
-  the default build. ARM's paths alone (`+armwire`) have theirs in `tools/baseline-armwire/`.
+- **Run the gate (`uv run tools/gate.py`) before flashing,** or at least `ninja -C build check` on
+  the image you flash. It refuses a build that clocks any wire faster than the host asked for,
+  beyond what `tools/baseline/known-overshoot.txt` records: nothing for the default build. ARM's
+  paths alone (`+armwire`) have theirs in `tools/baseline-armwire/`.
 - **Placement alone moves throughput.** Adding code that never runs cost 0.06% of block
   throughput (126 words: 702.8 to 702.3 KiB/s, three runs each). The ADC only wakes when asked, so
   this is placement in flash, not work. Treat anything under about 0.1% as inside the floor for any
@@ -94,17 +95,9 @@ reading the silkscreen. `uv run tools/dap.py j8 --walk` repeats it in twelve sec
 The firmware drives all four together while a host command runs, which is one store and makes the
 header orientation-free. `--mask` takes pins from the marker so a single one can be held.
 
-## Failure modes, and what each looks like
+## Failure modes
 
-| symptom | first suspect |
-| --- | --- |
-| comes up as `1fc9:0021`, not as a probe | the ISP jumper is still fitted. Check this first |
-| device does not enumerate at all | the unique-id read at `0x0009_FC70` in `src/ser_num.c`. If that region faults it faults inside `GetSerialNum`, before USB comes up |
-| enumerates, console silent | `FRO_HF` or its divider not running. `board_clocks_init` starts both; a Flexcomm with no clock reports no error and never reaches a baud rate |
-| enumerates, SWO silent | same clock, and NXP's driver also waits on a status bit |
-| probe stops answering for about ninety seconds | `DAP_Delay(0)`, ARM's pacing loop counting down from 2³². Guarded in `src/dap_dispatch.c`, so seeing this means the guard is not in the image you flashed |
-| every command times out after one | a stalled bulk endpoint from `DAP_TransferAbort`. `usb.core.Device.reset()` |
-| attaches but the target behaves oddly at a high clock | the probe may be clocking faster than asked. A product image never does, since the gate refuses it; a `+armwire` build can (README.md, "Check") |
+README.md, "When a build misbehaves", has what each failure looks like.
 
 ## What the emulator predicts, so you can check it
 
@@ -116,8 +109,7 @@ measures the target's latency, and a target that answers within 8 cycles runs at
 (docs/wires.md, "JTAG").
 
 cJTAG is shown in two formats. OScan1 has the longest frames on the wire and OScan6 the shortest.
-The modelled target never answers WAIT. A CC1312R1 answers WAIT more often to OScan6's shorter
-frames, and from 25 MHz it reads slower in OScan6 than in OScan5 (docs/wires.md, "cJTAG").
+The modelled target never answers WAIT. A CC1312R1's own figures are in docs/wires.md, "cJTAG".
 
 | asked | SWD read | SWD write | JTAG read | JTAG write | OScan1 read | OScan1 write | OScan6 read | OScan6 write |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |

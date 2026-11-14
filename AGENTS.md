@@ -16,7 +16,7 @@ Code that predates the rule and breaks it, which is the work list:
 
 - ARM's SWD paths: the unrolled C in `.ramfunc` and SW_DP.c's transfer. Only the ARM reference
   build (both generators off) carries them, as the wire tools/equiv.py holds the generated paths to.
-- The JTAG and cJTAG paths (`JTAG_DP.c`, compiled three times) and their pacing:
+- The JTAG and cJTAG paths (`JTAG_DP.c`, compiled four times) and their pacing:
   likewise the ARM reference build's alone.
 - The sequence commands `DAP_SWJ_Sequence` and `DAP_SWD_Sequence`, which every build runs on ARM's
   C. `DAP_JTAG_Sequence` runs on the generated scans.
