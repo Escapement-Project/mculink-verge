@@ -19,6 +19,94 @@ of its figures updates this list in the same commit.
 - **NXP's other figures:** "The console", below, and mculink-bench's
   `results/throughput/2026-10-21-stock.json`.
 
+## The re-measurement on df11e14 (2026-11-04)
+
+Before publishing, we retook every figure the other documents give for the current firmware, and
+compared JTAG and cJTAG as well as SWD. The Pro CJ8C2F60A3 ran `df11e14` built with gcc and with
+clang. A CC1312R1 LaunchPad was the target for JTAG, cJTAG, SWO and the consoles, and an MSPM0L1306
+LaunchPad for SWD. probe-rs 17beb8e80 was the host. mculink-bench's
+`results/throughput/2026-11-04.md` has the throughput and the comparison with stock. The energy
+figures and SWO at 30 Mbaud were not part of this run.
+
+Each run went twice. The first had nothing on the lines. The second had the logic analyser's
+digital leads on them, to record the wire at 1 GS/s. The leads load the lines, so the latencies
+here come from the first runs and the wire timing from the second.
+
+### Connecting
+
+The probe measures the target's read latency when a host connects (docs/wires.md). Ten
+connections a setting, and every one read right.
+
+- JTAG: the CC1312R1 measured 7 cycles after a pin reset, at 12.5, 25 and 50 MHz. After a system
+  reset it measured 10. docs/wires.md says 11.
+- cJTAG: 7 in OScan1, OScan2, OScan5 and OScan6 at 25 and 50 MHz, and 7 in OScan1 after a system
+  reset. docs/wires.md says 8 for OScan1. At 12.5 MHz the default latency already fits, so the probe
+  has nothing to measure.
+- With the leads on, OScan1 and OScan2 measured 8 and the other formats 7.
+- SWD: the L1306 measured 7 at 50, 37.5 and 30 MHz. The search took 8.4 ms at 50 MHz, 7.8 at 37.5
+  and 4.6 at 30 when it started from 7, and 18.4, 17.0 and 8.2 ms from 14.
+- The measurement took 3.5 to 5.9 ms of a JTAG connection and 2.9 to 4.4 ms of a cJTAG one.
+  probe-rs's whole attach took a median of 68 to 75 ms in every case.
+
+### The wire
+
+A phase's clock below is each transfer's mean period across the phase, then the median over
+transfers. The analyser samples at 1 ns, which cannot time a single 20 ns period to better than
+about 15%, but a mean over a phase can.
+
+- SWD: at a requested 50 MHz, a transfer's request and write data run at 50 MHz, and its
+  acknowledge and read data at 37.5 MHz. Every other request gets its step exactly: 37.5, 30,
+  18.75 for 20, 10, 5, 2 and 1 MHz. gcc and clang drive the same wire. At 50 MHz a read has one
+  12-cycle period before its data, where the probe checks the acknowledge. A write has an 11-cycle
+  turnaround, and a 12-cycle period before its parity bit.
+- JTAG: TCK runs at 30 MHz (5 cycles) at requests of 30 and 50 MHz, with the CC1312R1's latency of
+  7. At 20 MHz it runs at 18.75, and slower requests get their step.
+- cJTAG at a requested 50 MHz: the packets run at 50 MHz. With the leads' latency of 8, an OScan1 or
+  OScan2 frame took 19 cycles, 7.9 MHz a JTAG clock. A two-packet OScan5 or OScan6 frame in Shift
+  took 15 or 16 cycles. Through probe-rs the leads moved the latency between two values: frames of
+  19 and 20 cycles appeared in OScan1, 15 and 16 in OScan5. In the emulator a frame takes one more
+  cycle for each cycle of latency, and every recorded frame matches one of the two. At the clean
+  latency of 7 it gives 18 cycles in OScan1 and OScan2 (8.3 MHz) and 15 in OScan5 and OScan6
+  (10.0 MHz). docs/wires.md's OScan5 frame, 16 cycles at a latency of 7, is a cycle long. In the
+  emulator, 51980d9's quarter-period hold (2026-11-11) leaves these 50 MHz frames as they were: it
+  adds a cycle to OScan1 and OScan2 frames only at a requested 30 MHz.
+
+### Under energy capture
+
+The Pro captured at 10,000 and 100,000 pairs a second while the targets were read.
+
+- Every read was right: 256 KiB five times in five over JTAG and cJTAG at 30 and 50 MHz, at both
+  rates and without capture, and the L1306's 64 KiB of flash ten times in ten at 50, 37.5 and
+  30 MHz at 100,000 pairs a second.
+- SWD read data runs at 30 MHz while capture runs, as docs/wires.md says. Writes stretch too, which
+  docs/wires.md does not say. In about 12% of write transfers at a requested 50 MHz, about three of
+  the 31 data periods take 4 cycles instead of 3. At slower clocks 3 to 4% of transfers take a few
+  cycles longer, and 17 to 19% at 1 MHz. The capture's DMA delays a store, and a longer period is
+  the safe direction.
+- JTAG transfers keep 5-cycle clocks at a latency of 7, with a few periods of 6. The emulator
+  agrees: a 16-word block read built for the capture's 2-cycle stall has 8 periods of 6 cycles in
+  about 650, and a DR scan through DAP_JTAG_Sequence takes 6 cycles a clock (25 MHz). docs/wires.md
+  says scans run at 25 MHz at a latency of 6 or 7 while capture runs. That holds for the sequence
+  command, not for DAP_Transfer.
+- Through probe-rs at 100,000 pairs a second, a single-word read took 105 µs over JTAG against 81
+  without capture, and 145 µs in OScan5 against 103. SWD reads at 50 MHz were 23% slower.
+
+### SWO
+
+The Pro captured the CC1312R1's ITM counter (`tools/swo_target/itm_counter.c`) at 1, 8, 12, 16 and
+24 Mbaud, 3 s twice at each, with no break in the counter and no overrun. At 24 Mbaud it also ran
+for 12 s with both consoles looping at 3, 12 and 19.2 Mbaud: 28.8 MB, no break. 30 Mbaud, the
+UART's top rate, was not part of this run.
+
+### The consoles
+
+Both Pro ports at once, each looped back, returned every byte at every rate they accepted, up to
+19.2 Mbaud. Throughput was 16.8 Mbaud at 19.2 (18.2 on 2026-10-21) and 11.3 at 12 (11.7). The probe
+refuses 10 Mbaud: no divisor of the UART's 96 MHz clock comes within 3% of it, the nearest giving
+9.6 and 10.67. The port then keeps its earlier rate without telling the host, and the loopback ran
+at 0.12 Mbaud. Since 4e449f8 (2026-11-12), a rate the UART's clock cannot make runs from the
+150 MHz main clock (docs/trace-and-serial.md).
+
 ## cJTAG, from ARM's paths to every generated format
 
 Measured 2026-10-16 to 2026-10-22 on a CC1312R1 LaunchPad, first on ARM's paths and then on the
