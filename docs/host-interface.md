@@ -147,8 +147,11 @@ each JTAG clock in one of several scan formats. Verge frames OScan1, OScan2, OSc
 
 Two commands drive it. They are the `DAP_JTAG_Format` and `DAP_JTAG_Escape` proposed for CMSIS-DAP
 ([CMSIS-DAP#8](https://github.com/ARM-software/CMSIS-DAP/pull/8), IDs `0x24` and `0x25` there), at
-vendor IDs until Arm assigns them. The host activates the target itself, with escapes and raw bits.
-The probe never changes the target's format.
+vendor IDs until Arm assigns them. Verge does not set the capability bit the proposal gives
+`DAP_Info` (Info1 bit 1): a host learns the commands are there from `0x82`. The host activates the
+target itself, with escapes and raw bits. The probe never changes the target's format.
+
+The commands do what the proposal says. The wire timing below is Verge's own.
 
 ### Select a format: `0x95`
 
@@ -161,14 +164,19 @@ Send `[0x95, format]`. The reply is `[0x95, status]`.
 
 Any other value answers `DAP_ERROR` and changes nothing. So does any value over SWD, and every
 value but 0 on an on-board MCU-Link, which has no cJTAG. A host finds which formats the probe has
-by trying them while disconnected: OScan1, 2, 5 and 6, then 0, fit in one `DAP_ExecuteCommands`,
-and move no pin.
+by trying them after `DAP_Disconnect`: the disconnect, OScan1, 2, 5 and 6, then 0, fit in one
+`DAP_ExecuteCommands`, and move no pin.
 
 - **Selected while disconnected, a format waits for the connection.** `0x95` with no connection
   moves no pin, and the next `DAP_Connect(2)` starts in that format. Every `DAP_Connect` the probe
   accepts uses the selection up, whichever port it opens, so a host that connects without selecting
   gets conventional JTAG. `DAP_Disconnect` clears the selection, and a `DAP_Connect` the probe
-  refuses changes nothing. Send the two together, such as `[0x7F, 2, 0x95, 2, 0x02, 2]` for OScan2.
+  refuses changes nothing.
+- **Connect with a disconnect, the format and the connect, in one `DAP_ExecuteCommands`:**
+  `[0x7F, 3, 0x03, 0x95, 2, 0x02, 2]` for OScan2. A host that stopped without disconnecting leaves
+  its connection open. `0x95` on that connection changes its format at once, and the connect after
+  it comes up in conventional JTAG. In one command, a host that stops halfway leaves no selection
+  for the next host's connect.
 - **A connection into an OScan format** sets the pins straight to cJTAG: TCKC driven low first,
   then TMSC driven high, and TDI let go to the probe's pull-up. No conventional JTAG goes onto the
   wire, and TCKC makes no period. On the Pro, TCK's pull-down already holds TCKC low. Elsewhere TCKC
@@ -188,20 +196,32 @@ and move no pin.
   keeps the TAP where it is, so whichever rise completes it changes nothing.
 - **OScan2, 5 and 6** frame each JTAG clock by the state of the target's TAP, so the probe follows it
   from Run-Test/Idle, starting where the format takes effect: at the connection, or at `0x95` on a
-  live one. Have the TAP in Run-Test/Idle then. Sending the same value again restates it.
+  live one. Have the TAP in Run-Test/Idle then. Sending the same value again restates it. Only the
+  commands that go out as frames move the state the probe follows. Raw `DAP_SWJ_Sequence`, `0x96`,
+  `DAP_SWD_Sequence` and `DAP_SWJ_Pins` can move the target's TAP, but never the probe's state.
+  After one of them moves the target's TAP, as the activation does, bring the TAP to Run-Test/Idle
+  and send the format again. The frame before a check packet does not move the target's TAP
+  (1149.7 25.6.2 b), so send it as TMS 0 in Run-Test/Idle, where the probe's state stays right
+  either way.
 
 With an OScan format selected on a JTAG connection, `DAP_JTAG_Sequence`, `DAP_JTAG_IDCODE`,
-`DAP_Transfer`, `DAP_TransferBlock` and `DAP_WriteABORT` go out as frames. `DAP_SWJ_Sequence` sends
-raw bits, one TCKC period each, as Arm's does. But TMSC moves only while TCKC is low, a quarter period
-after the fall. Arm's moves it with SWCLK high, just before the fall, which leaves a target sampling
-on the falling edge almost no setup, and leaves SWCLK high between commands.
-`DAP_SWD_Sequence` and `DAP_SWJ_Pins` are Arm's, and keeping them off the cJTAG pins is the host's job.
+`DAP_Transfer`, `DAP_TransferBlock` and `DAP_WriteABORT` go out as frames. In OScan2 and OScan6 a
+frame outside Shift-DR and Shift-IR has no TDO slot, and a TDO bit captured from one reads 1.
+`DAP_SWJ_Sequence` sends raw bits, one TCKC period each, as Arm's does. But TMSC moves only while
+TCKC is low, a quarter period after the fall. Arm's moves it with SWCLK high, just before the fall,
+which leaves a target sampling on the falling edge almost no setup, and leaves SWCLK high between
+commands. `DAP_SWD_Sequence` and `DAP_SWJ_Pins` are Arm's, and keeping them off the cJTAG pins is
+the host's job.
 
 TCKC rests low between commands and between frames. After each fall on which the target samples a bit
 the probe drove, TMSC moves no sooner than a quarter period later, in frames and from one command to
 the next: a quarter of the clock the probe runs, rounded up to a whole core cycle. A target sampling
 on the falling edge gets that as hold. One sampling on the rising edge gets the rest of the low phase
 as setup, which at the fastest clocks comes down to one core cycle, 6.7 ns.
+
+In each frame the probe lets go of TMSC just after the fall that starts the target's TDO bit, and
+drives it again just after the next fall. So the probe's TMS bit stays driven through both its
+edges. The proposal allows a probe to let go sooner, by the rise of the bit before the target's.
 
 ### Send an escape: `0x96`
 
@@ -210,18 +230,22 @@ Send `[0x96, edges, level]`, with `edges` from 2 to 255 and `level` 0 or 1. The 
 
 The probe sets TMSC to `level` with TCKC low, a quarter period after the last fall and a quarter
 period before the rise. Then it makes one TCKC period with `edges` TMSC transitions while TCKC is
-high, so an odd count leaves TMSC at the other level. The rise, each edge and the fall come one
-TCKC period after the one before, at the clock `DAP_SWJ_Clock` set. That meets 1149.7 10.4.2 c)
-whenever the clock is within the target's rating. The host picks the count and the clock, and with
-them how long TCKC stays high: `edges` + 1 periods. At 10 kHz a 10-edge escape takes 1.1 ms, past the
-1 ms after which a TAP.7 in power-control mode 0 may power down (18.10). 1149.7 reads 4 or 5 edges as
-a deselection, 6 or 7 as a selection and 8 or more as a reset. The target counts the escape's period
-as a bit, so the probe waits a quarter period after its fall. Until the escape ends the probe
-answers no other CMSIS-DAP or Verge Aux request. A 255-edge escape takes 28 s at 9 Hz, the slowest
-clock the generated builds take, and longer still on the `+armwire` reference build.
+high, so an odd count leaves TMSC at the other level. The rise, each edge and the fall come one TCKC
+period after the one before, at the clock `DAP_SWJ_Clock` set. That meets 1149.7 10.4.2 c) whenever
+the clock is within the target's rating. The host picks the count and the clock, and with them how
+long TCKC stays high: `edges` + 1 periods. At 10 kHz a 10-edge escape takes 1.1 ms, past the 1 ms
+after which a TAP.7 in power-control mode 0 may power down (18.10). 1149.7 reads 4 or 5 edges as a
+deselection, 6 or 7 as a selection and 8 or more as a reset. The target counts the escape's period
+as a bit, so the probe waits a quarter period after its fall. With an even count that bit is `level`
+(1149.7 10.4.2 h). An odd count leaves the other level before the fall, and targets can read that
+bit either way, so send even counts. Until the escape ends the probe answers no other CMSIS-DAP or
+Verge Aux request. A 255-edge escape takes 28 s at 9 Hz, the slowest clock the generated builds
+take, and longer still on the `+armwire` reference build.
 
-It needs a JTAG connection, in any format, and leaves the format and framing as they were. With
-no JTAG connection, 0 or 1 edges, or a `level` above 1, it answers `DAP_ERROR`.
+It needs a JTAG connection, in any format, and leaves the format and framing as they were. It does
+not move the TAP state the probe follows in OScan2, 5 and 6. In conventional JTAG, where TCK rests
+high, the probe lowers TCK first and leaves it low. With no JTAG connection, 0 or 1 edges, or a
+`level` above 1, it answers `DAP_ERROR`.
 
 ## Target sense: `0x86`
 
