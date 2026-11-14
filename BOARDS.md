@@ -271,7 +271,9 @@ With 5 ms it read it right.
 - **Below the lowest point.** A table extends its first segment below its lowest point. The
   amplifier's output bends up as it nears its floor, so a reading there comes out high. Extended
   down from R3, the 350 mA setting's high range read R1's 0.5 mA 4% high on one unit, so R1 can be
-  a point there too.
+  a point there too. Where R1 is left out (below), that range read a 1.08 mA load 3.0 to 5.7%
+  high over ten boots. Each code that R3's point moves between boots moves such a reading by
+  about 0.5%.
 - **The floor.** Each high range first converts with no load, which reads the amplifier's floor.
   A point less than 64 codes above that reading is left out: one pinned at the floor would read
   the currents between it and the next point low. At the nominal resistance R1 gives about 84
@@ -310,6 +312,15 @@ With 5 ms it read it right.
   target, the 350 mA setting's high range reads 2.8% high: Q3 goes from 16.5 mΩ to 23.7 mΩ
   (PMPB15XP Fig. 8) beside the 0.24 Ω resistor. In the 50 mA setting the same target reads 0.35% high.
   UM11673 gives the 350 mA setting's high range 5% accuracy and the others 1%.
+- In the 350 mA setting the high range reads currents under 2 mA high, because they fall below
+  its lowest point (Calibration, "Below the lowest point"). A capture on auto reads them on the
+  low range. In the 50 mA setting the high range read the same 1.08 mA load 0.9% high.
+- One boot out of more than twenty calibrated the 350 mA setting's high range 19% high at every
+  point, and that range read 10 to 14% low on it. The unit had come up from a USB hub reset.
+  Sixteen boots in a row with the jumpers untouched, three of them through the bootloader,
+  calibrated within 5 codes of each other at 2 mA. `verge energy calibration` shows the points:
+  every high-range code up by the same factor, with no jumper moved, marks such a boot. A restart
+  calibrates again.
 - J17's contact is in the high range's resistance too. Calibration measures it, but moving the
   jumpers away and back leaves the setting as it was, so only a reset calibrates again. On one
   unit the 350 mA setting's high range measured 0.27, 0.75 and 0.49 Ω at boots on three days,
