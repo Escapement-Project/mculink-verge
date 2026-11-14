@@ -33,13 +33,16 @@ cJTAG wire, and the [measurement log](MEASUREMENTS.md) the evidence.
   when the host changes the clock, and on a capture board when a capture changes which latencies
   the code serves. It measures only
   while the latency is automatic; vendor `0x89` and `0x8A` set, pin or measure it.
+- `SWD_CODEGEN` and `JTAG_CODEGEN` build the two generators in. Both are on by default, and CMake
+  refuses one without the other. With both off, the image runs ARM's paths alone: the reference the
+  gate holds the generated paths to.
 - A product image has no ARM path to fall back to. When generation fails, a transfer reports a
   protocol error with no transfer done, and `DAP_JTAG_Sequence`, `DAP_JTAG_IDCODE` and
   `DAP_WriteABORT` answer `DAP_ERROR`, before the wire moves (docs/host-interface.md).
 - `tools/gen_host.py` builds the generators away from the firmware, under ASan and UBSan with gcc
   and clang and for QEMU's Cortex-M33, and requires every build to generate identical code.
 
-## The SWD generator (src/swd_gen.c, behind SWD_CODEGEN, on by default)
+## The SWD generator (src/swd_gen.c)
 
 - `swd_gen_build(config)` writes two functions into SRAMX 0x0400_0000..0x0400_3FFF (lab arena is
   the upper 16 KB): read and write, each `uint64_t fn(packet, words, count)`. Runs `count`
@@ -99,7 +102,7 @@ cJTAG wire, and the [measurement log](MEASUREMENTS.md) the evidence.
   sample's margin. The gate runs generated images on the engine against `tools/baseline`, and ARM's
   against `tools/baseline-armwire`: their sample positions differ.
 
-## The JTAG generator (src/jtag_gen.c, behind JTAG_CODEGEN)
+## The JTAG generator (src/jtag_gen.c)
 
 One generator draws both JTAG and cJTAG; `src/jtag_gen.c`'s opening comment has the design in brief.
 
