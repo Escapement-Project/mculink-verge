@@ -1789,17 +1789,20 @@ def check_calibration(c, elf, symbols, offsets, model_syscon):
                     f"{setting_ma} mA: mode 4 differs from the {'low' if low else 'high'} range's table")
 
     # J17's contact can double the 350 mA setting's high range resistance (BOARDS.md). Then R1
-    # clears the floor and is a point, unless the amplifier's offset pins it at the floor.
-    for offset, kept in ((Circuit.OFFSET, True), (-110, False)):
-        _, _, circuit, _, ok, tables = run(350, contact=0.25, offset=offset)
+    # clears the floor and is a point, unless the amplifier's offset pins it at the floor. 0.04 ohm
+    # more than nominal, as one unit measured, puts R1 31 codes over the floor, enough to keep.
+    for contact, offset, kept in ((0.25, Circuit.OFFSET, True), (0.25, -110, False), (0.04, Circuit.OFFSET, True)):
+        _, _, circuit, _, ok, tables = run(350, contact=contact, offset=offset)
         currents, count = tables[False][1], tables[False][3]
+        label = f"350 mA, {circuit.high:.2f} ohm high range, offset {offset}"
         c.check(ok and count == (4 if kept else 3) and abs(currents[0] - (500_000 if kept else 2_000_000)) < 50_000,
-                f"350 mA, 0.5 ohm high range, offset {offset}: {count} points from {currents[0]} nA")
+                f"{label}: {count} points from {currents[0]} nA")
+        step = circuit.full_scale / 65536 / 30 / circuit.shunt(False)
         for target in (0.8e-3, 1.1e-3, 1.5e-3):
             code = circuit.current_code(target + 3.3 / 660e3, False)
             measured = firmware_target_na(tables[False], code, circuit.code(3.3 / 2)) / 1e9
-            c.check(abs(measured - target) <= 0.002 * target,
-                    f"350 mA, 0.5 ohm high range, offset {offset}: {target * 1e6:.0f} uA read {measured * 1e6:.3f} uA")
+            c.check(abs(measured - target) <= max(0.002 * target, step),
+                    f"{label}: {target * 1e6:.0f} uA read {measured * 1e6:.3f} uA")
     _, _, _, _, ok, tables = run(350, gain=1.03)
     c.check(ok and tables[True][3] == 2, "350 mA: a saturated R3 point did not drop out of the low range")
     _, _, _, _, ok, _ = run(50, gain=1.025)

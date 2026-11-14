@@ -268,18 +268,19 @@ With 5 ms it read it right.
   the amplifier's output does not go that low. On one unit it stopped at about 57 ADC codes. The
   divider keeps the low ranges clear of that floor whenever the target is powered: 2.7 µA at 1.8 V
   is still 88 codes in the 350 mA setting and 355 in the 50 mA setting.
-- **Below the lowest point.** A table extends its first segment below its lowest point. The
-  amplifier's output bends up as it nears its floor, so a reading there comes out high. Extended
-  down from R3, the 350 mA setting's high range read R1's 0.5 mA 4% high on one unit, so R1 can be
-  a point there too. Where R1 is left out (below), that range read a 1.08 mA load 3.0 to 5.7%
-  high over ten boots. Each code that R3's point moves between boots moves such a reading by
-  about 0.5%.
+- **Below the lowest point.** A table extends its first segment below its lowest point. Extended
+  down from R3, the 350 mA setting's high range read R1's 0.5 mA 4% high on one unit, so R1 is a
+  point there too where it clears the floor (below). Where R1 is left out, that range read a
+  1.08 mA load 3.0 to 5.7% high over ten boots, and each code that R3's point moves between boots
+  moves such a reading by about 0.5%. Where R1 is kept, the same load read 3.0 to 4.2% high over
+  four boots.
 - **The floor.** Each high range first converts with no load, which reads the amplifier's floor.
-  A point less than 64 codes above that reading is left out: one pinned at the floor would read
+  A point less than 24 codes above that reading is left out: one pinned at the floor would read
   the currents between it and the next point low. At the nominal resistance R1 gives about 84
-  codes, about 27 over the floor, so R3 stays the lowest point. R1 counts on a unit whose high
-  range has more resistance, as J17's contact can add (Accuracy limits): at 0.49 Ω it gave 155
-  codes over a floor of 57.
+  codes less the amplifier's offset, 9 codes on one unit, so it lands 18 to 27 codes over the
+  floor and is kept only on a unit with little offset. R1 counts on a unit whose high range has
+  more resistance, as J17's contact can add (Accuracy limits): at 0.30 Ω it gave 33 to 38 codes
+  over a floor of 56 or 57, and at 0.49 Ω 155 codes over a floor of 57.
 
 | setting | range | points | across the resistor |
 | --- | --- | --- | --- |
@@ -312,9 +313,10 @@ With 5 ms it read it right.
   target, the 350 mA setting's high range reads 2.8% high: Q3 goes from 16.5 mΩ to 23.7 mΩ
   (PMPB15XP Fig. 8) beside the 0.24 Ω resistor. In the 50 mA setting the same target reads 0.35% high.
   UM11673 gives the 350 mA setting's high range 5% accuracy and the others 1%.
-- In the 350 mA setting the high range reads currents under 2 mA high, because they fall below
-  its lowest point (Calibration, "Below the lowest point"). A capture on auto reads them on the
-  low range. In the 50 mA setting the high range read the same 1.08 mA load 0.9% high.
+- In the 350 mA setting the high range reads currents under 2 mA high: a 1.08 mA load 3.0 to
+  4.2% high with R1 as a point, and 3.0 to 5.7% high without (Calibration, "Below the lowest
+  point"). A capture on auto reads them on the low range. In the 50 mA setting the high range read
+  the same load 0.9% high.
 - One boot out of more than twenty calibrated the 350 mA setting's high range 19% high at every
   point, and that range read 10 to 14% low on it. The unit had come up from a USB hub reset.
   Sixteen boots in a row with the jumpers untouched, three of them through the bootloader,
@@ -331,12 +333,12 @@ With 5 ms it read it right.
   target that reaches the switch up on the low range alone, again and again, is read mostly on the
   high range once the backoff holds it there (Range switching).
 - The high range reads unreliably within 64 codes of the amplifier's output floor (Calibration,
-  "The point with no load"), where calibration keeps no point. The stream marks a high-range pair
-  there under range, in either range setting. In the 350 mA setting the mark starts at about
-  0.36 mA. Scaled to the 50 mA setting's shunt it is about 46 µA, which has not been measured. A
-  target asleep at 166 µA, as the low range read it, read between 137 and 363 µA under the mark. A
-  capture that holds the high range reads every current under the mark this way. One that switches
-  automatically does so only between a fall and its switch down.
+  "The point with no load"). The stream marks a high-range pair there under range, in either range
+  setting. In the 350 mA setting the mark starts at about 0.36 mA. Scaled to the 50 mA setting's
+  shunt it is about 46 µA, which has not been measured. A target asleep at 166 µA, as the low
+  range read it, read between 137 and 363 µA under the mark. A capture that holds the high range
+  reads every current under the mark this way. One that switches automatically does so only
+  between a fall and its switch down.
 - The calibration switches are counted at their typical on-resistance. Their spread moves the
   350 mA setting's high range by up to about 0.3%, through R4.
 - The sheet gives no tolerance for the divider. It moves the current taken off each sample, which

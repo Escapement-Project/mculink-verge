@@ -227,7 +227,7 @@ static const calibration_load_t load_r4 = {1UL << 29U, 16500U + LOAD_SWITCH_MILL
 /** Each range's loads, smallest current first (BOARDS.md, "Calibration"). The divider's current
  *  alone is a point only in the low ranges: in the high ones it sits under the amplifier's output
  *  floor. Without R1, the 350 mA setting's high range read 0.5 mA 4% high, extending R3's slope
- *  down a curve that bends up towards the floor. R1 counts only clear of that floor. */
+ *  down. R1 counts only clear of the floor. */
 static const calibration_load_t* const loads_350_low[] = {&no_load, &load_r1, &load_r3, nullptr};
 static const calibration_load_t* const loads_350_high[] = {&load_r1, &load_r3, &load_r2, &load_r4, nullptr};
 static const calibration_load_t* const loads_50_low[] = {&no_load, &load_r1, nullptr};
@@ -239,8 +239,13 @@ static const calibration_load_t* const loads_50_high[] = {&load_r1, &load_r3, &l
 /** Two points closer than this give no slope worth having. */
 #define CALIBRATION_MIN_STEP 64U
 /** How far over a high range's no-load reading, the amplifier's output floor, a point has to be.
- *  A point pinned at the floor reads the currents between it and the next point low. */
-#define CALIBRATION_FLOOR_MARGIN 64U
+ *  A point pinned at the floor reads the currents between it and the next point low. In the 350 mA
+ *  setting R1 lands 18 to 27 codes over the floor at the nominal resistance, by the amplifier's
+ *  offset, and higher with the resistance J17's contact adds (BOARDS.md, "The floor"). */
+#define CALIBRATION_FLOOR_MARGIN 24U
+/** Within this many codes of the floor a high-range reading is unreliable: the stream marks the
+ *  pair under range (docs/host-interface.md). */
+#define UNDER_RANGE_MARGIN 64U
 /** Node T with the probe's 3.3 V on the shunts. Less means CTRL_CAL_DISC did not switch it. */
 #define CALIBRATION_MIN_MV 2500U
 
@@ -712,8 +717,7 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
     energy->verdict_in = 0U;
     energy->rearmed_in_band = false;
     energy->in_band = false;
-    // Where calibration would not keep a point: a high-range reading there is unreliable.
-    energy->under_range_code = current_calibrated ? (uint16_t)(high_floor_code + CALIBRATION_FLOOR_MARGIN) : 0U;
+    energy->under_range_code = current_calibrated ? (uint16_t)(high_floor_code + UNDER_RANGE_MARGIN) : 0U;
     energy->setting = (current_range == TARGET_SENSE_CURRENT_RANGE_350_MA) ? 1U
                       : (current_range == TARGET_SENSE_CURRENT_RANGE_50_MA) ? 2U : 0U;
     stamp_init();
