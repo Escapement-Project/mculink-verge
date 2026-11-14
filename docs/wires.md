@@ -7,10 +7,12 @@ OScan6. NXP's firmware has no cJTAG.
 
 Any CMSIS-DAP host drives SWD and JTAG, as it drives NXP's firmware.
 
-cJTAG takes a host that knows it. The host connects over JTAG and selects OScan1 on the probe with
-vendor command `0x95` ([Host interface](host-interface.md#cjtag-0x95-and-0x96)). Then it activates
-the target, switches it to a scan format, and selects the same format on the probe. It picks a format
-both the probe and the target offer. `verge read --protocol cjtag` reads target memory over cJTAG today.
+cJTAG takes a host that knows it. The host selects a scan format with vendor command `0x95`
+([Host interface](host-interface.md#cjtag-0x95-and-0x96)) and connects over JTAG, and the probe
+frames in that format from the connection on. Then the host activates the target and switches it to
+the same format. `verge read --protocol cjtag` reads target memory over cJTAG, through a probe-rs
+branch that drives the commands proposed for CMSIS-DAP. A probe-rs release has no cJTAG for
+CMSIS-DAP probes.
 
 ## From the clock asked for to the clock on the wire
 
@@ -60,8 +62,8 @@ frame. A CC1312R1 measures 8 in OScan1, so its frame takes 19 core cycles: 7.9 M
 
 The other formats send fewer packets for some clocks:
 
-- **OScan2** sends a clock outside Shift-DR and Shift-IR as a single packet. Through probe-rs that
-  reads a CC1312R1 4 to 7% faster than OScan1.
+- **OScan2** sends a clock outside Shift-DR and Shift-IR as a single packet. Through the project's
+  probe-rs fork of 2026-10-22, that read a CC1312R1 4 to 7% faster than OScan1.
 - **OScan5** sends a clock in Shift-DR and Shift-IR as two packets, the last of them leaving with an
   escape. A CC1312R1 measures 7 there, and its frame takes 16 core cycles: 9.4 MHz. `tools/dap.py`,
   a host in mculink-verge that drives the probe directly, reads a CC1312R1 27% faster in OScan5 than
@@ -71,7 +73,10 @@ The other formats send fewer packets for some clocks:
   CC1312R1 it reads level with OScan5 at 12.5 MHz, and slower from 25 MHz, where the target answers
   WAIT more often to the shorter frames.
 
-The host picks one of the formats both the probe and the target offer. [cJTAG](../CJTAG.md) has the
+verge connects in OScan1 unless asked for another format (`verge read --cjtag-format`). Ask only
+for a format the target has: the probe frames in the format the host selects, and neither verge nor
+probe-rs reads the target to check. The target's documentation, or its CNFG0 register, says which
+formats it has. A target without the asked format has not been tried. [cJTAG](../CJTAG.md) has the
 wire in detail.
 
 ## Limits
@@ -104,7 +109,8 @@ from, and [Trace and serial ports](trace-and-serial.md) how the console and SWO 
 reached. mculink-bench's
 [measurements page](https://escapement-project.github.io/verge/measurements/) compares throughput
 through the same probe-rs workload, on the same target, with NXP's firmware and a SEGGER J-Link
-Ultra.
+Ultra. Its figures come through probe-rs 17beb8e80, a build of the project's fork with changes for
+speed that the probe-rs under verge does not have.
 
 ### Past NXP's limits
 
