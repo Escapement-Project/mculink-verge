@@ -136,9 +136,11 @@ The extended capabilities:
 - **Bit 8:** capture identities and conditional stops, `0x90` modes 8 to 13.
 - **Bit 9:** the range setting, `0x90` mode 14, with the stream header's flag bit 2 and the pairs'
   under-range bit.
+- **Bit 10:** [DIO streams](#dio-streams), `0x90` mode 15 on Verge Aux.
 
 Bits 2, 5, 7, 8 and 9 come with bit 0. Bits 3 and 4 are set on a Pro whose J15 left USB-SIO on as
-it booted. Bit 6 comes with capability flag bit 6. The other bits are reserved.
+it booted. Bit 6 comes with capability flag bit 6. Bit 10 comes with flag bit 6 where bit 0 is
+clear. The other bits are reserved.
 
 ## cJTAG: `0x95` and `0x96`
 
@@ -741,7 +743,8 @@ On CMSIS-DAP they answer `DAP_ERROR`.
 | `[0x90, 7]` | Stops streaming. The capture carries on |
 
 Modes 9, 10 and 13 do the same with capture identities ([Identity-aware
-requests](#identity-aware-requests)).
+requests](#identity-aware-requests)). Mode 15 starts a stream of the DIO pins alone, on a board
+without energy capture ([DIO streams](#dio-streams)).
 
 Mode 5 replies as mode 0: `[0x90, DAP_OK, result, rate:u32]`. Modes 6 and 7 reply
 `[0x90, DAP_OK, result]`. Mode 6 returns 1 when no capture runs. It returns 7 when the capture has
@@ -752,7 +755,7 @@ before the stream's first message.
 The header says which pins the stream reports. It reports none when J15 turned the DIO pins off, or
 when SPI has them as the stream starts.
 
-A stream message starts with a byte from `0xa0` to `0xa5`. Those are outside the vendor command
+A stream message starts with a byte from `0xa0` to `0xa6`. Those are outside the vendor command
 range, so a host tells a message from a reply by its first byte. Messages come between replies,
 never inside one.
 
@@ -929,6 +932,55 @@ while the stream ran, from its header to its end.
 | 0 | `0xa2` |
 | 1 | Why the stream ended: 1 a host ended it (mode 7, mode 13, or a new mode 6); 2 the capture stopped; 3 a new start restarted the capture; 4 the capture failed (result 7) |
 | 2 to 5 | The sequence number of the last pair the capture took, u32 |
+
+A DIO stream's end is 14 bytes. Offsets 2 to 5 are zero, and 6 to 13 hold when the stream ended,
+in ns since it started, u64.
+
+### DIO streams
+
+A board with DIO pins and no energy capture streams their edges alone: the standalone MCU-Link,
+and a Pro without its energy circuit. Identify sets extended bit 10 there. On a Pro that measures
+energy, the capture's stream reports the pins instead (`dio_mask` above).
+
+| Request | What it does |
+| --- | --- |
+| `[0x90, 15, dio_mask]` | Starts a DIO stream of the pins in `dio_mask`, on Verge Aux only |
+| `[0x90, 7]` | Ends it |
+
+Mode 15 replies `[0x90, DAP_OK, result]`: 0 when the stream started, and 3 on a board without it.
+It ends a stream already running and drops what that stream had queued, its end included, as mode
+10 does. The reply comes before the header. On CMSIS-DAP it answers `DAP_ERROR`.
+
+The stream sends its header, then edges, DIO lost and DIO time messages, then its end. It has no
+pairs and no markers. Its times count from its header, in ns.
+
+| Offset | Field |
+| --- | --- |
+| 0 | `0xa1` |
+| 1 | The stream's format, 5 |
+| 2 to 5 | The clock the probe times edges by, in Hz, u32 |
+| 6 | The DIO pins that report edges, bit k for DIO k |
+| 7 | Their levels when the stream started. Pins not reporting read 0 |
+| 8 to 9 | The resolution of edge times in ns, u16. 0 when no pin reports |
+
+The pins exclude any the bench marker holds on the standalone MCU-Link (`0x84`). Edges go out
+within 10 ms of the first of them, or sooner when many wait. A stream reports whatever drives the pins,
+the host's own drive included, as the energy stream's edges do.
+
+A stream that has sent nothing for 200 ms sends a DIO time message:
+
+| Offset | Field |
+| --- | --- |
+| 0 | `0xa6` |
+| 1 | Flags, zero |
+| 2 to 9 | The stream's time, in ns since it started, u64 |
+
+Every edge stamped before that time has been sent, so the pins held their levels until then. The time
+comes after every edge and DIO lost message already sent. A later edge comes at or after it, and a
+later DIO lost message's first time comes after it. The probe holds the message back while edges
+wait to be sent, while a loss is under way or SPI has taken the pins, while the host has let the
+stream's messages pile up, and until timing starts. A stream with no pins sends none. The end comes
+no earlier than the last DIO time.
 
 ### When the host falls behind
 

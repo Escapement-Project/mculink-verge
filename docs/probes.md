@@ -56,7 +56,8 @@ from the debug connector.
 The pins start as inputs, pulled down inside the MCU, and go back to that whenever the probe
 restarts. Each one turns between input and output on its own. `verge dio` drives and reads them.
 It goes through Verge Aux, so it works while a debugger holds the probe ([Host
-interface](host-interface.md#dio-0x8e)).
+interface](host-interface.md#dio-0x8e)). `verge dio record` records their edges to a tickwave
+recording ([DIO streams](host-interface.md#dio-streams)).
 
 ## How the probe shows up
 

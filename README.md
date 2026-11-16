@@ -2,7 +2,8 @@
 
 Open CMSIS-DAP firmware for NXP's MCU-Link and MCU-Link Pro debug probes, named Verge. It speaks
 SWD, JTAG and cJTAG (IEEE 1149.7) in OScan1, OScan2, OScan5 and OScan6, captures SWO and runs the
-probes' serial ports. On the Pro it adds GPIO, SPI and I2C bridges, a switched target supply and
+probes' serial ports. Both probes get four DIO pins, and Verge Aux, a second interface for tools
+to use beside a debugger. On the Pro it adds SPI and I2C bridges, a switched target supply and
 energy capture. It runs on the standalone boards; an MCU-Link built into an evaluation board is not
 supported.
 

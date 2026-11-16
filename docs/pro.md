@@ -69,8 +69,8 @@ NXP's manual for the Pro gives pins 4 and 5 the other way round, but the probe t
 
 ## Verge Aux
 
-On the Pro, Verge adds a second vendor interface, Verge Aux. It carries the DIO, target supply,
-energy and marker commands, so a tool can use them while a debugger holds the CMSIS-DAP interface.
+Verge adds a second vendor interface, Verge Aux. It carries the DIO, target supply, energy and
+marker commands, so a tool can use them while a debugger holds the CMSIS-DAP interface.
 Debuggers pass it by: its name does not contain `CMSIS-DAP`.
 
 Every Pro has it, whatever its jumpers, and so does the standalone MCU-Link, for its DIO pins
