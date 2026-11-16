@@ -88,7 +88,7 @@
  *     [13+n]  extended capabilities   u32 LE; bit 0: energy capture; bit 2: accumulated energy;
  *                                     bits 3–4: SPI and I2C; bit 5: calibrated energy fields;
  *                                     bit 6: DIO on Verge Aux; bit 7: markers; bit 8: capture
- *                                     identities; bit 9: the range setting
+ *                                     identities; bit 9: the range setting; bit 10: DIO streams
  *
  * A host checks the magic to know it is us, the flags to know what it may use, and the build
  * string to know which image it is talking to. The capability flags are what makes this worth
@@ -153,6 +153,8 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
 #define CJTAG_EXT_CAP_CAPTURE_ID (1U << 8)
 /// ID_VENDOR_ENERGY mode 14 sets the ranges a capture may use, and a stream header says which.
 #define CJTAG_EXT_CAP_ENERGY_RANGES (1U << 9)
+/// 0x90 mode 15 on Verge Aux: a DIO stream, on a board with DIO pins and no energy capture.
+#define CJTAG_EXT_CAP_DIO_STREAM (1U << 10)
 #ifdef SWD_CODEGEN
 #define CJTAG_CAPS_SWD CJTAG_CAP_SWD_CODEGEN
 #else
@@ -348,7 +350,8 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
                                              CJTAG_EXT_CAP_CAPTURE_ID | CJTAG_EXT_CAP_ENERGY_RANGES
                                        : 0U) |
                                   (pro_bus_available() ? CJTAG_EXT_CAP_SPI | CJTAG_EXT_CAP_I2C : 0U) |
-                                  (dio_available() ? CJTAG_EXT_CAP_DIO_AUX : 0U);
+                                  (dio_available() ? CJTAG_EXT_CAP_DIO_AUX : 0U) |
+                                  ((dio_available() && !dap_shared.energy_available) ? CJTAG_EXT_CAP_DIO_STREAM : 0U);
         for (uint32_t i = 0U; i < 4U; i++) {
             *out++ = (uint8_t)(extended >> (8U * i));
         }
@@ -616,9 +619,10 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             }
             return (3U << 16) | 28U;
         }
-        // Mode 6 is Aux's alone, but its DIO mask is still part of the request in a batch.
+        // Modes 6 and 15 are Aux's alone, but their DIO mask is still part of the request in a
+        // batch.
         response[1] = DAP_ERROR;
-        return ((mode == 6U ? 3U : 2U) << 16) | 2U;
+        return (((mode == 6U) || (mode == 15U) ? 3U : 2U) << 16) | 2U;
     }
 
     case ID_VENDOR_MARK: {

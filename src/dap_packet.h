@@ -261,7 +261,7 @@ static inline bool dap_packet_plan(const uint8_t* p, uint32_t length, uint32_t c
         }
         switch (p[1]) {
         case 0U: case 8U: in = 6U; break;
-        case 4U: case 6U: case 10U: case 14U: in = 3U; break;
+        case 4U: case 6U: case 10U: case 14U: case 15U: in = 3U; break;
         case 5U: case 9U: in = 7U; break;
         case 11U: case 13U: in = 26U; break;
         default: in = 2U; break;

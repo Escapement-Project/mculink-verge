@@ -17,10 +17,7 @@ __attribute__((section(".stream_slots")))
 alignas(4) uint8_t energy_stream_slots[ENERGY_STREAM_SLOTS][ENERGY_STREAM_MESSAGE_MAX];
 #endif
 
-/** energy_stream_ns once for both flushes: clang unrolls its divisions to over a kilobyte, and
- *  CPU 0's SRAM has no room for a copy in each. */
-ENERGY_STREAM_RAMFUNC __attribute__((noinline)) static uint64_t energy_stream_flush_ns(uint64_t counts,
-                                                                                      uint32_t clock_hz) {
+ENERGY_STREAM_RAMFUNC __attribute__((noinline)) uint64_t energy_stream_flush_ns(uint64_t counts, uint32_t clock_hz) {
     return energy_stream_ns(counts, clock_hz);
 }
 

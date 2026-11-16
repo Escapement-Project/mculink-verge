@@ -70,8 +70,9 @@ int main(void) {
         assert(padded.consumed == length);
 
     }
-    {
-        uint8_t bytes[64] = {0x90U, 6U};
+    // Modes 6 and 15, Aux's alone, still carry a DIO mask a batch reads past.
+    for (uint8_t mode = 6U; mode <= 15U; mode += 9U) {
+        uint8_t bytes[64] = {0x90U, mode};
         prefixes(bytes, 3U, 2U);
         assert(check(bytes, sizeof(bytes), 2U, true).consumed == 3U);
     }

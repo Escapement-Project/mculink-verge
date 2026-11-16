@@ -21,6 +21,16 @@
 
 static struct energy_stream* edges_stream;
 static bool present;
+/** The standalone MCU-Link: DIO0 to DIO3 are J8's PIO1_0 to PIO1_3 (src/dio.c), not the Pro's. */
+static bool j8;
+
+/** J8's pins as pin interrupt selects, port * 32 + pin. */
+#define J8_PINTSEL {32U, 33U, 34U, 35U}
+
+/** The pins' levels, bit n DIOn. */
+__attribute__((section(".ramfunc"))) static uint8_t levels_now(void) {
+    return j8 ? (uint8_t)(GPIO->PIN[1] & DIO_PINS) : dio_pins_levels(GPIO->PIN[0], GPIO->PIN[1]);
+}
 /** In counts of the stamping clock: what a run costs, the most credit kept, and a rest. */
 #define DIO_EDGES_RUN_COST (ENERGY_TIMER_HZ / DIO_EDGES_RUNS_HZ)
 #define DIO_EDGES_CREDIT_MAX (DIO_EDGES_RUN_COST * DIO_EDGES_BURST)
@@ -50,7 +60,8 @@ __attribute__((section(".ramfunc"))) static void drop_from(struct energy_stream*
 }
 
 __attribute__((noinline)) void dio_edges_init(struct energy_stream* stream, uint8_t board, uint8_t jumpers) {
-    if ((board != BOARD_KIND_PRO) || ((jumpers & BOARD_JUMPER_USBSIO_OFF) != 0U)) {
+    j8 = board == BOARD_KIND_PLAIN;
+    if (!j8 && ((board != BOARD_KIND_PRO) || ((jumpers & BOARD_JUMPER_USBSIO_OFF) != 0U))) {
         return;
     }
     edges_stream = stream;
@@ -58,9 +69,20 @@ __attribute__((noinline)) void dio_edges_init(struct energy_stream* stream, uint
     RESET_ReleasePeripheralReset(kMUX0_RST_SHIFT_RSTn);
     CLOCK_EnableClock(kCLOCK_Pint);
     RESET_PeripheralReset(kPINT_RST_SHIFT_RSTn);
-    uint8_t const select[] = DIO_PINTSEL;
+    uint8_t const pro_select[] = DIO_PINTSEL;
+    uint8_t const j8_select[] = J8_PINTSEL;
     for (uint32_t pin = 0U; pin < 4U; pin++) {
-        INPUTMUX->PINTSEL[pin] = select[pin];
+        INPUTMUX->PINTSEL[pin] = j8 ? j8_select[pin] : pro_select[pin];
+    }
+    if (dap_shared.energy_available == 0U) {
+        // Without energy capture, nothing else starts the stamping timer, and a DIO stream needs
+        // it: PLL0, as CPU 1's stamp_init runs it for a capture (src/energy_monitor.c).
+        CLOCK_AttachClk(kPLL0_to_CTIMER4);
+        CLOCK_EnableClock(kCLOCK_Timer4);
+        RESET_PeripheralReset(kCTIMER4_RST_SHIFT_RSTn);
+        CTIMER4->PR = 0U;
+        CTIMER4->MCR = 0U;
+        CTIMER4->TCR = CTIMER_TCR_CEN_MASK;
     }
     // Edge-sensitive, every enable off: the detectors latch whatever happens, and the loop clears
     // them as it turns a pin on.
@@ -89,7 +111,7 @@ __attribute__((section(".ramfunc"))) void PIN_INT0_IRQHandler(void) {
     // This run took every pin's edges, so the other pins' requests are its too. One that is still
     // asserted comes straight back.
     NVIC->ICPR[0] = DIO_EDGES_IRQS;
-    uint8_t const levels = dio_pins_levels(GPIO->PIN[0], GPIO->PIN[1]);
+    uint8_t const levels = levels_now();
     bool const synced = sync;
     if (((rise | fall) == 0U) && !synced) {
         return;
@@ -249,6 +271,12 @@ __attribute__((section(".ramfunc"), noinline)) void dio_edges_task(void) {
         }
     }
     enabled = wanted;
+    if (stream->active && stream->pairless && owned(stream)) {
+        // No pairs move a DIO stream's origin on, and this runs every few milliseconds.
+        uint32_t const basepri = cpu0_mask_all_but_edges();
+        energy_stream_dio_advance(stream, CTIMER4->TC);
+        cpu0_unmask(basepri);
+    }
     if (resting && ((CTIMER4->TC - rest_from) >= DIO_EDGES_REST_COUNTS)) {
         resting = false;
         NVIC->ICPR[0] = DIO_EDGES_IRQS;
@@ -275,6 +303,10 @@ __attribute__((section(".ramfunc"), noinline)) void dio_edges_task(void) {
     cpu0_unmask(basepri);
 }
 
+__attribute__((section(".ramfunc"), noinline)) bool dio_edges_stream_ready(void) {
+    return present && (dap_shared.energy_available == 0U);
+}
+
 /** Only edges CPU 0 can send are work: CPU 1 sends them while it owns the state. */
 __attribute__((section(".ramfunc"), noinline)) bool dio_edges_waiting(void) {
     return present && owned(edges_stream) &&
@@ -288,8 +320,11 @@ __attribute__((section(".ramfunc"), noinline)) uint8_t dio_edges_pins(uint8_t re
     for (;;) {
         uint32_t const turns = dap_shared.dio_spi_turns;
         __DMB();
-        uint8_t const pins = (present && ((turns & 1U) == 0U)) ? (uint8_t)(requested & DIO_PINS) : 0U;
-        *levels = (uint8_t)(dio_pins_levels(GPIO->PIN[0], GPIO->PIN[1]) & pins);
+        // The bench marker's pins are not DIO pins (src/marker.h).
+        uint8_t const pins = (present && ((turns & 1U) == 0U))
+                                 ? (uint8_t)(requested & DIO_PINS & ~(j8 ? dap_shared.dio_marker_pins : 0U))
+                                 : 0U;
+        *levels = (uint8_t)(levels_now() & pins);
         *stamp = CTIMER4->TC;
         __DMB();
         if (dap_shared.dio_spi_turns == turns) {

@@ -725,6 +725,37 @@ def check_aux_stream(c, elf0, elf1, symbols0, symbols1, fields, layout):
         sent = drain(usb)
         c.check(sent == [want], f"aux {payload.hex()} with available {available}, running {running}, error {error}: {[m.hex() for m in sent]}")
 
+    # A DIO stream, mode 15, where the pin interrupts are and energy capture is not: its reply, then
+    # a format 5 header for the pins asked, after anything queued is dropped; mode 7 ends it with
+    # reason 1 and no last pair. With energy capture, or without the interrupts, it is refused, and a
+    # request without its mask is invalid.
+    from dio_edges_checks import edge_statics, j8_static
+    edges = edge_statics(symbols0)
+    j8 = j8_static(symbols0, edges)
+    for energy, present, payload, want in ((0, 1, b"\x90\x0f\x05", b"\x90\x00\x00"), (1, 1, b"\x90\x0f\x05", b"\x90\x00\x03"),
+                                           (0, 0, b"\x90\x0f\x05", b"\x90\x00\x03"), (0, 1, b"\x90\x0f", b"\xff")):
+        usb = fresh()
+        usb.put("energy_available", energy, 1)
+        usb.cpu0.uc.mem_write(edges["present"], bytes([present]))
+        usb.cpu0.uc.mem_write(j8, b"\x01")
+        # An earlier stream's header and end, never sent: the new stream's header must come alone.
+        publish(usb, b"\xa1\x05" + bytes(8))
+        publish(usb, b"\xa2\x01" + bytes(12))
+        arrive(usb, payload)
+        c.check(usb.dispatch() == 0, f"aux {payload.hex()} went to CPU 1")
+        sent = drain(usb)
+        if want != b"\x90\x00\x00":
+            c.check(sent == [want], f"DIO stream {payload.hex()} with energy {energy}, present {present}: {[m.hex() for m in sent]}")
+            continue
+        header = b"\xa1\x05" + (150_000_000).to_bytes(4, "little") + b"\x05\x00" + (7).to_bytes(2, "little")
+        c.check(sent == [want, header], f"DIO stream start: {[m.hex() for m in sent]}")
+        # The end says when: 1 ms on the stamping timer after the header's read.
+        usb.cpu0.uc.mem_write(0x4002A008, (150_000).to_bytes(4, "little"))
+        arrive(usb, b"\x90\x07")
+        sent = drain(usb)
+        end = b"\xa2\x01" + bytes(4) + (1_000_000).to_bytes(8, "little")
+        c.check(sent == [b"\x90\x00\x00", end], f"DIO stream end: {[m.hex() for m in sent]}")
+
     # A protected attach discards A's pending header and binds B's identity to the first new header.
     token = bytes(range(16)) + (2).to_bytes(8, "little")
     stale = bytes(range(16)) + (1).to_bytes(8, "little")

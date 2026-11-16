@@ -36,8 +36,9 @@ static inline __attribute__((always_inline)) void cpu0_unmask(uint32_t basepri) 
     __set_BASEPRI(basepri);
 }
 
-/** On a Pro with the DIO pins on, before CPU 1 starts: the pin interrupts, off until a stream asks
- *  for its pins. `stream` is the one they record for. */
+/** On a Pro with the DIO pins on, or the standalone MCU-Link, before CPU 1 starts: the pin
+ *  interrupts, off until a stream asks for its pins. `stream` is the one they record for. Without
+ *  energy capture it starts the stamping timer too, for DIO streams. */
 void dio_edges_init(struct energy_stream* stream, uint8_t board, uint8_t jumpers);
 
 /** CPU 0's loop: turns the pin interrupts on and off to match the stream and SPI, ends a rest,
@@ -46,6 +47,10 @@ void dio_edges_task(void);
 
 /** Whether the record is half full and CPU 0 owns the stream, so the loop should not wait. */
 bool dio_edges_waiting(void);
+
+/** Whether this board takes a DIO stream (0x90 mode 15): it has the pin interrupts and no energy
+ *  capture, whose stream reports the pins instead. */
+bool dio_edges_stream_ready(void);
 
 /** The pins of `requested` a stream can report and, in `levels`, their levels now, then the
  *  stamping timer: mode 6's header, on CPU 0. */

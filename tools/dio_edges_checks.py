@@ -312,3 +312,108 @@ def check_edge_spi(c, elf, symbols, shared, layout):
     c.check(rested == (1, 1, 0x5555), f"DIO edges: a rest; (resting, dropped, from) {rested}")
     c.note("DIO edges: levels read after SPI took the pins are recorded neither by the pin interrupt nor in a header,"
            " runs under SPI still rest, and each loss carries its start: SPI's stamp, a rest's run, a begun stream's rest")
+
+
+# INPUTMUX's PINTSEL registers, and CTIMER4's TCR (src/dio_edges.c).
+PINTSEL = 0x400060C0
+CTIMER4_TCR = 0x4002A004
+BOARD_PLAIN, BOARD_PRO = 0, 1
+
+
+def j8_static(symbols, statics):
+    """dio_edges.c's `j8`, which LTO may rename: the one nearest `resting`."""
+    candidates = [address for name, (address, _) in symbols.items() if name == "j8" or name.startswith("j8.")]
+    return min(candidates, key=lambda address: abs(address - statics["resting"]))
+
+
+def check_j8_edges(c, elf, symbols, shared, layout, model_syscon):
+    """The standalone MCU-Link's DIO edges (src/dio_edges.c): J8's pins as the pin interrupts'
+    selects and their levels from GPIO port 1; the stamping timer started where no energy capture
+    does it; the bench marker's pins left out of a stream; and a DIO stream's origin moved on by
+    CPU 0's loop, which nothing else moves."""
+    statics = edge_statics(symbols)
+    j8 = j8_static(symbols, statics)
+    integration = symbols["energy_integration"][0]
+    stream = integration + layout["stream"]
+    dap_shared = symbols["dap_shared"][0]
+
+    def put(probe, address, value, size=4):
+        probe.uc.mem_write(address, value.to_bytes(size, "little"))
+
+    def get(probe, address, size=4):
+        return int.from_bytes(probe.uc.mem_read(address, size), "little")
+
+    # dio_edges_init on each board, with and without energy capture. gcc's LTO drops the stream,
+    # which main always passes, into a clone that takes the board and the jumpers alone.
+    clone = next((name for name in symbols if name.startswith("dio_edges_init.constprop")), None)
+    for board, energy, selects, timer in ((BOARD_PLAIN, 0, [32, 33, 34, 35], 1), (BOARD_PRO, 0, [20, 26, 34, 35], 1),
+                                          (BOARD_PRO, 1, [20, 26, 34, 35], 0)):
+        probe = machine(elf, symbols)
+        model_syscon(probe)
+        put(probe, dap_shared + shared["energy_available"], energy, 1)
+        if clone is None:
+            probe.call("dio_edges_init", stream, board, 0, timeout_insns=200_000)
+        else:
+            probe.call(clone, board, 0, timeout_insns=200_000)
+            c.check(get(probe, statics["edges_stream"]) == stream, f"{clone} did not record energy_integration's stream")
+        got = [get(probe, PINTSEL + 4 * pin) for pin in range(4)]
+        c.check(got == selects, f"DIO edges on board {board}: pin interrupt selects {got}, wanted {selects}")
+        c.check(get(probe, CTIMER4_TCR) & 1 == timer,
+                f"DIO edges on board {board} with energy {energy}: stamping timer {'not ' if timer else ''}started")
+        c.check(get(probe, j8, 1) == (board == BOARD_PLAIN) and get(probe, statics["present"], 1) == 1,
+                f"DIO edges on board {board}: present or j8 wrong")
+
+    # The interrupt's sync run and a stream header's levels, read on each board from ports that
+    # tell the two apart: port 0 all high, port 1 0b1010.
+    for on_j8, run_levels, header_pins in ((1, 0x0A, 0x0B), (0, 0x0B, 0x0F)):
+        probe = machine(elf, symbols)
+        pins = Pins(probe)
+        pins.ports[:] = [0xFFFFFFFF, 0x0A]
+        put(probe, j8, on_j8, 1)
+        put(probe, statics["present"], 1, 1)
+        put(probe, statics["edges_stream"], stream)
+        for name, value in (("credit", CREDIT_MAX), ("credit_stamp", 0), ("spi_turns_seen", 0)):
+            put(probe, statics[name], value)
+        put(probe, statics["sync"], 1, 1)
+        put(probe, dap_shared + shared["dio_spi_turns"], 0)
+        put(probe, dap_shared + shared["dio_marker_pins"], 0x04, 1)
+        put(probe, integration + layout["stream.edge_entries_written"], 0)
+        probe.call("PIN_INT0_IRQHandler", timeout_insns=10_000)
+        entry = bytes(probe.uc.mem_read(integration + layout["stream.edge_entries"], ENTRY_BYTES))
+        c.check(get(probe, integration + layout["stream.edge_entries_written"]) == 1 and entry[ENTRY_LEVELS] == run_levels,
+                f"DIO edges, j8 {on_j8}: the interrupt read levels {entry[ENTRY_LEVELS]:#x}, wanted {run_levels:#x}")
+        # The marker holds DIO2 on J8: a stream leaves it out there, and the Pro has no marker.
+        returned = probe.call("dio_edges_pins", 0xF, SCRATCH, SCRATCH + 4, timeout_insns=10_000) & 0xFF
+        levels = probe.uc.mem_read(SCRATCH, 1)[0]
+        c.check(returned == header_pins and levels == (run_levels & header_pins),
+                f"DIO edges, j8 {on_j8}: a header's pins {returned:#x} and levels {levels:#x}, wanted {header_pins:#x}")
+        # Mode 15 runs where the pin interrupts are and energy capture is not.
+        for present, energy, ready in ((1, 0, 1), (1, 1, 0), (0, 0, 0)):
+            put(probe, statics["present"], present, 1)
+            put(probe, dap_shared + shared["energy_available"], energy, 1)
+            got = probe.call("dio_edges_stream_ready", timeout_insns=1_000) & 1
+            c.check(got == ready, f"DIO stream ready with present {present}, energy {energy}: {got}")
+
+    # The loop moves a DIO stream's origin to the stamping timer, across its wrap; a capture's
+    # stream it leaves to its pairs.
+    for pairless in (1, 0):
+        probe = machine(elf, symbols)
+        put(probe, statics["present"], 1, 1)
+        put(probe, statics["edges_stream"], stream)
+        put(probe, integration + layout["stream.active"], 1, 1)
+        put(probe, integration + layout["stream.pairless"], pairless, 1)
+        put(probe, integration + layout["stream.edge_mask"], 0, 1)
+        put(probe, integration + layout["stream.timeline_pending"], 0, 1)
+        put(probe, integration + layout["stream.next_raw"], 0xFFFFFF00)
+        put(probe, integration + layout["stream.next_counts"], 5, 8)
+        put(probe, dap_shared + shared["energy_control_ack"], 0)
+        put(probe, dap_shared + shared["dio_spi_turns"], 0)
+        put(probe, CTIMER4_TC, 0x100)
+        probe.uc.reg_write(UC_ARM_REG_PRIMASK, 0)
+        probe.call("dio_edges_task", timeout_insns=10_000)
+        raw = get(probe, integration + layout["stream.next_raw"])
+        counts = get(probe, integration + layout["stream.next_counts"], 8)
+        want = (0x100, 5 + 0x200) if pairless else (0xFFFFFF00, 5)
+        c.check((raw, counts) == want, f"DIO stream origin, pairless {pairless}: {raw:#x}, {counts}; wanted {want}")
+    c.note("DIO edges on J8: selects PIO1_0 to PIO1_3, levels from port 1, the timer started without energy capture, "
+           "marker pins left out, mode 15 ready only without energy capture, a DIO stream's origin moved by the loop")

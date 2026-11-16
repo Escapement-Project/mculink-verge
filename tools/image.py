@@ -699,6 +699,11 @@ def check_bounded_commands(c: Checker, elf: str, slots: int) -> None:
                     "malformed batch lost prior replies or counted rejected command")
             c.check(bytes(probe.uc.mem_read(state, 1)) == b"\x01", "rejected batch tail changed port")
             c.check(execute(bytes([2, 1])) == bytes([2, 1]), "command after malformed batch failed")
+        # Modes 6 and 15 are Verge Aux's alone, but their DIO mask is part of the request in a batch.
+        for mode in (6, 15):
+            reply = execute(bytes([0x7f, 2, 0x90, mode, 0x0f, 0, 0xff]))
+            c.check(reply == bytes([0x7f, 2, 0x90, 0xff, 0, 2]) + u16(capacity),
+                    f"0x90 mode {mode} in a batch: {reply.hex()}")
         if capacity == 64:
             payload = bytes([0x7f, 17]) + bytes([0, 0xff]) * 14 + bytes([0, 0xfe, 2, 1, 2, 2])
             reply = execute(payload)
@@ -947,6 +952,14 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: 
                                  struct_type="struct energy_integration")
     check_edge_rest(c, elf0, symbols_with_size(elf0), edge_shared, edge_layout)
     check_edge_spi(c, elf0, symbols_with_size(elf0), edge_shared, edge_layout)
+    from dio_edges_checks import check_j8_edges
+    j8_shared = shared_offsets(slots, "energy_control_ack", "dio_spi_turns", "energy_available", "dio_marker_pins",
+                               small_enums=short_enums(elf0))
+    j8_layout = shared_offsets(slots, "stream", "stream.active", "stream.pairless", "stream.edge_mask",
+                               "stream.timeline_pending", "stream.edge_entries_written", "stream.edge_entries",
+                               "stream.next_raw", "stream.next_counts", small_enums=short_enums(elf0),
+                               struct_type="struct energy_integration")
+    check_j8_edges(c, elf0, symbols_with_size(elf0), j8_shared, j8_layout, model_syscon)
 
 
 def written_before_branch(elf: str, function: str, register: str) -> int | None:
@@ -1705,6 +1718,7 @@ CAP_TARGET_POWER = 1 << 7
 EXT_CAP_DIO_AUX = 1 << 6
 EXT_CAP_MARKS = 1 << 7
 EXT_CAP_CAPTURE_ID = 1 << 8
+EXT_CAP_DIO_STREAM = 1 << 10
 # The ordinary GPIO's port-wide registers, which the hook below sees: SET, CLR, NOT, DIRSET, DIRCLR,
 # DIRNOT, one word per port each.
 GPIO_PORT_REGS = {0x2200: "SET", 0x2280: "CLR", 0x2300: "NOT", 0x2380: "DIRSET", 0x2400: "DIRCLR", 0x2480: "DIRNOT"}
@@ -1863,6 +1877,7 @@ def check_j8_dio(c: Checker, elf: str, request_slots: int) -> None:
     extended = int.from_bytes(info[14 + info[8]:18 + info[8]], "little")
     c.check(bool(flags & CAP_DIO), f"plain: vendor 0x82 flags {flags:#04x} lack the DIO pins")
     c.check(bool(extended & EXT_CAP_DIO_AUX), f"plain: vendor 0x82 extended {extended:#x} lacks DIO on Verge Aux")
+    c.check(bool(extended & EXT_CAP_DIO_STREAM), f"plain: vendor 0x82 extended {extended:#x} lacks DIO streams")
     c.check(not extended & (EXT_CAP_MARKS | EXT_CAP_CAPTURE_ID),
             f"plain: vendor 0x82 extended {extended:#x} claims markers or capture identity without energy capture")
 
@@ -1931,7 +1946,7 @@ def check_dio(c: Checker, elf: str, request_slots: int) -> None:
         c.problems.append("no dio_init symbol, so the DIO pins' setup cannot be run")
         return
     check_j8_dio(c, elf, request_slots)
-    offsets = shared_offsets(request_slots, "board", "jumpers", "led_sio", small_enums=short_enums(elf))
+    offsets = shared_offsets(request_slots, "board", "jumpers", "led_sio", "energy_available", small_enums=short_enums(elf))
     for name, board, jumpers in (("on-board", 2, 0), ("Pro", BOARD_PRO, 0), ("Pro with J15", BOARD_PRO, 4)):
         probe = Machine(elf, Target([0] * 64), restart_at=set(), model=Model())
         shared = probe.sym["dap_shared"]
@@ -1955,6 +1970,7 @@ def check_dio(c: Checker, elf: str, request_slots: int) -> None:
                     f"{name} board: the DIO pins were set up: IOCON {[hex(v) for v in iocon]}, stores {pins.stores}")
             c.check(not flags & CAP_DIO, f"{name} board: vendor 0x82 claims the DIO pins")
             c.check(not extended & EXT_CAP_DIO_AUX, f"{name} board: vendor 0x82 claims the DIO pins on Verge Aux")
+            c.check(not extended & EXT_CAP_DIO_STREAM, f"{name} board: vendor 0x82 claims DIO streams")
             c.check(not extended & EXT_CAP_MARKS, f"{name} board: vendor 0x82 claims markers without energy capture")
             c.check(not extended & EXT_CAP_CAPTURE_ID, f"{name} board: vendor 0x82 claims capture identity")
             ok, state = dio(0x0F, 0x0F, 0x0F)
@@ -1968,6 +1984,14 @@ def check_dio(c: Checker, elf: str, request_slots: int) -> None:
                 f"{name}: dio_init left the directions {pins.dir}, latches {pins.latch}: {pins.fights}")
         c.check(bool(flags & CAP_DIO), f"{name}: vendor 0x82 flags {flags:#04x} lack the DIO pins")
         c.check(bool(extended & EXT_CAP_DIO_AUX), f"{name}: vendor 0x82 extended {extended:#x} lacks DIO on Verge Aux")
+        # A Pro records its DIO pins beside energy capture where it has it, and in a DIO stream where
+        # it does not.
+        for energy in (0, 1):
+            probe.uc.mem_write(probe.sym["dap_shared"] + offsets["energy_available"], bytes([energy]))
+            info = probe.command(bytes([0x82]))
+            streams = bool(int.from_bytes(info[14 + info[8]:18 + info[8]], "little") & EXT_CAP_DIO_STREAM)
+            c.check(streams != bool(energy), f"{name} with energy capture {energy}: vendor 0x82 says DIO streams {streams}")
+        probe.uc.mem_write(probe.sym["dap_shared"] + offsets["energy_available"], b"\x00")
         # (mask, outputs, levels), whether it is taken, and outputs, latch and the LED after it.
         steps = (
             ((0x00, 0x00, 0x00), True, 0x00, 0x00, 0),

@@ -8,6 +8,7 @@
 #include "dap_core.h"
 #include "dap_shared.h"
 #include "dio_edges.h"
+#include "energy_monitor.h"
 #include "energy_stream.h"
 
 // DAP_config.h first: DAP.h reads the settings it defines.
@@ -36,12 +37,12 @@ static uint16_t in_packet = USB_BULK_HIGH_SPEED;
 static volatile bool zlp_due;
 /** Counts USB configurations, for the slot's `generation`. */
 static uint32_t generation;
-/** A stream command (0x90 mode 6, 7, 10 or 13) CPU 0 answers itself, waiting for the capture
+/** A stream command (0x90 mode 6, 7, 10, 13 or 15) CPU 0 answers itself, waiting for the capture
  *  state. */
 static uint8_t local_request[26];
 static uint8_t local_length;
 /** A header has gone since this configuration began: stream messages before it are a gone host's.
- *  Only a header this configuration asked for, by mode 5, 6, 9 or 10, counts. */
+ *  Only a header this configuration asked for, by mode 5, 6, 9, 10 or 15, counts. */
 static bool stream_synced;
 static bool stream_expected;
 
@@ -63,11 +64,11 @@ __attribute__((section(".ramfunc"))) void aux_received(const uint8_t* buffer, ui
     if ((buffer != aux_out) || (length == 0U) || (slot->state != AUX_SLOT_FREE)) {
         return;
     }
-    // Modes 6, 7, 10 and 13 start and stop a stream without stopping the capture. CPU 0 owns the
-    // capture state whenever CPU 1 has not asked for quiet (src/energy_integration.h), so it serves
-    // them.
+    // Modes 6, 7, 10 and 13 start and stop a stream without stopping the capture, and mode 15 a DIO
+    // stream without one. CPU 0 owns the capture state whenever CPU 1 has not asked for quiet
+    // (src/energy_integration.h), so it serves them.
     if ((buffer[0] == 0x90U) && (length >= 2U) &&
-        ((buffer[1] == 6U) || (buffer[1] == 7U) || (buffer[1] == 10U) || (buffer[1] == 13U))) {
+        ((buffer[1] == 6U) || (buffer[1] == 7U) || (buffer[1] == 10U) || (buffer[1] == 13U) || (buffer[1] == 15U))) {
         local_length = (uint8_t)(length < sizeof(local_request) ? length : sizeof(local_request));
         memcpy(local_request, buffer, local_length);
         return;
@@ -120,7 +121,7 @@ __attribute__((section(".ramfunc"))) static bool stream_owned_by_cpu1(struct ene
     return ((dap_shared.energy_control_ack & DAP_ENERGY_QUIET_FLAG) != 0U) || stream->timeline_pending;
 }
 
-/** Whether a mode 6, 7, 10 or 13 has to wait for the capture state. CPU 1 holds it from boot to
+/** Whether a mode 6, 7, 10, 13 or 15 has to wait for the capture state. CPU 1 holds it from boot to
  *  the first start and after every stop, with nothing running and no stream, and then the answer
  *  needs no write. It also holds it for a moment inside a command, around a supply read, with the
  *  capture running: then the answer waits. */
@@ -135,18 +136,48 @@ __attribute__((section(".ramfunc"))) static bool stream_waits(void) {
            stream_owned_by_cpu1(&energy->stream) && (energy->running || energy->stream.active);
 }
 
-/** 0x90 mode 6, 7, 10 or 13 into aux_in; false while it has to wait (stream_waits). Replies as
- *  docs/host-interface.md "The energy stream" gives them. */
+/** A DIO stream ends as a capture's does, at the time it ends: no pair marks it. */
+__attribute__((section(".ramfunc"))) static void stream_end_asked(struct energy_integration* energy) {
+    struct energy_stream* const stream = &energy->stream;
+    if (stream->pairless) {
+        energy_stream_dio_advance(stream, CTIMER4->TC);
+    }
+    energy_stream_end(stream, ENERGY_STREAM_END_ASKED, stream->pairless ? 0U : energy->decoder.sequence);
+}
+
+/** 0x90 mode 15 on a board without energy capture: a DIO stream, which CPU 0 alone owns there. It
+ *  ends any stream running and drops what was queued, as mode 10 does. */
+__attribute__((section(".ramfunc"))) static uint8_t dio_stream_start(struct energy_integration* energy) {
+    if (!dio_edges_stream_ready()) {
+        return 3U;
+    }
+    struct energy_stream* const stream = &energy->stream;
+    stream_end_asked(energy);
+    stream->sent = stream->written;
+    uint8_t levels = 0U;
+    uint32_t stamp = 0U;
+    uint8_t const pins = dio_edges_pins(local_request[2], &levels, &stamp);
+    if (!energy_stream_begin_dio(stream, ENERGY_TIMER_HZ, pins, levels, stamp)) {
+        return 7U;
+    }
+    stream_expected = true;
+    stream_synced = false;
+    return 0U;
+}
+
+/** 0x90 mode 6, 7, 10, 13 or 15 into aux_in; false while it has to wait (stream_waits). Replies as
+ *  docs/host-interface.md "The energy stream" and "DIO streams" give them. */
 __attribute__((section(".ramfunc"))) static bool stream_command(void) {
     if (stream_waits()) {
         return false;
     }
     __DMB();
     bool const identified = (local_request[1] == 10U) || (local_request[1] == 13U);
+    bool const dio = local_request[1] == 15U;
     bool const start = (local_request[1] == 6U) || (local_request[1] == 10U);
     aux_in[0] = 0x90U;
     aux_in[1] = DAP_OK;
-    if ((start && (local_length < 3U)) || (identified && !start && (local_length < 26U))) {
+    if (((start || dio) && (local_length < 3U)) || (identified && !start && (local_length < 26U))) {
         aux_in[0] = ID_DAP_Invalid;
         in_length = 1U;
         return true;
@@ -156,7 +187,19 @@ __attribute__((section(".ramfunc"))) static bool stream_command(void) {
     uint32_t const basepri = cpu0_mask_all_but_edges();
     struct energy_integration* const energy = dap_shared.energy_integration;
     struct energy_stream* const stream = (energy != nullptr) ? &energy->stream : nullptr;
-    if ((stream == nullptr) || (dap_shared.energy_available == 0U)) {
+    if (stream == nullptr) {
+        result = 3U;
+    } else if (dap_shared.energy_available == 0U) {
+        // Without energy capture there is no capture to stream, but a DIO stream, which mode 7 ends.
+        if (dio) {
+            result = dio_stream_start(energy);
+        } else if (local_request[1] == 7U) {
+            stream_end_asked(energy);
+        } else {
+            result = 3U;
+        }
+    } else if (dio) {
+        // With energy capture, mode 9's mask records the pins beside it.
         result = 3U;
     } else if (identified && !start) {
         uint32_t const before = energy->capture_id_sequence;

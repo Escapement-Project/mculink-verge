@@ -39,7 +39,12 @@
  *  (docs/host-interface.md). */
 #define ENERGY_STREAM_HEADER_BYTES 79U
 #define ENERGY_STREAM_ID_HEADER_BYTES (ENERGY_STREAM_HEADER_BYTES + ENERGY_IDENTITY_BYTES)
+/** A DIO stream's header, format 5: the type, the format, the clock, the pins, their levels and the
+ *  edge resolution. */
+#define ENERGY_STREAM_DIO_HEADER_BYTES 10U
 #define ENERGY_STREAM_END_BYTES 6U
+/** A DIO stream's end: its time follows, as no pair marks it. */
+#define ENERGY_STREAM_DIO_END_BYTES 14U
 #define ENERGY_STREAM_HOLDS 8U
 /** Pairs messages leave this many slots for the header and end messages a stream needs. */
 #define ENERGY_STREAM_CONTROL_SLOTS 2U
@@ -162,6 +167,9 @@ struct energy_stream {
     uint32_t untimed_from;
     uint32_t period;
     uint32_t clock_hz;
+    /** A DIO stream (0x90 mode 15): no capture behind it and no pairs, so `next_raw` and
+     *  `next_counts` are an origin that energy_stream_dio_advance moves on. */
+    bool pairless;
     /** Set by a start or a resume while it owns the state, cleared once its timer runs and `next_raw`
      *  holds the first trigger. No pair can complete before then. */
     volatile bool timeline_pending;
@@ -388,6 +396,9 @@ ENERGY_STREAM_INLINE uint16_t energy_stream_edge_resolution(uint32_t clock_hz) {
 void energy_stream_close(struct energy_stream* stream);
 /** Sends the DIO lost message waiting, if the ring has more than `keep` slots free. */
 void energy_stream_dio_lost_send(struct energy_stream* stream, uint32_t keep);
+/** energy_stream_ns once for the flushes and a DIO stream's end: clang unrolls its divisions to
+ *  over a kilobyte, and CPU 0's SRAM has no room for a copy in each. */
+uint64_t energy_stream_flush_ns(uint64_t counts, uint32_t clock_hz);
 
 /** As a stream ends: CPU 1 records no more markers, and any it has begun is recorded. */
 void energy_stream_unmark(struct energy_stream* stream);
@@ -440,8 +451,8 @@ ENERGY_STREAM_INLINE bool energy_stream_marks_due(struct energy_stream const* st
     return (*timer - stream->marks[read & (ENERGY_STREAM_MARKS - 1U)].stamp) >= (stream->clock_hz / 100U);
 }
 
-/** The first message of a stream. Starts the stream only if the ring had room for it. */
-ENERGY_STREAM_INLINE bool energy_stream_begin(struct energy_stream* stream, energy_stream_header_t const* header) {
+/** Whether the ring has room for a stream's header. A stream that has none does not start. */
+ENERGY_STREAM_INLINE bool energy_stream_room(struct energy_stream* stream) {
     stream->open_pairs = 0U;
     stream->open_dropped = false;
     stream->gap = 0U;
@@ -450,6 +461,37 @@ ENERGY_STREAM_INLINE bool energy_stream_begin(struct energy_stream* stream, ener
         stream->edge_mask = 0U;
         return false;
     }
+    return true;
+}
+
+/** Publishes the header the caller wrote, `length` bytes, and starts the stream: the pins in
+ *  `dio_mask` from their `dio_levels`, read just before the stamping timer read `dio_stamp`, and the
+ *  markers from now. */
+ENERGY_STREAM_INLINE void energy_stream_opened(struct energy_stream* stream, uint16_t length, uint8_t dio_mask,
+                                               uint8_t dio_levels, uint32_t dio_stamp) {
+    energy_stream_publish(stream, length);
+    // Whatever the pin interrupt recorded before is an earlier stream's.
+    stream->edge_entries_read = stream->edge_entries_written;
+    stream->edge_waiting = true;
+    stream->edge_header_raw = dio_stamp;
+    stream->edge_levels = dio_levels & dio_mask;
+    stream->edge_lost = false;
+    stream->edge_mask = dio_mask;
+    stream->marks_read = stream->marks_written;
+    stream->mark_flags = 0U;
+    stream->mark_streams++;
+    stream->active = true;
+    energy_stream_barrier();
+    stream->edge_begins++;
+    stream->marking = true;
+}
+
+/** The first message of a capture's stream. Starts the stream only if the ring had room for it. */
+ENERGY_STREAM_INLINE bool energy_stream_begin(struct energy_stream* stream, energy_stream_header_t const* header) {
+    if (!energy_stream_room(stream)) {
+        return false;
+    }
+    stream->pairless = false;
     uint8_t* out = energy_stream_slot(stream);
     *out++ = ENERGY_STREAM_HEADER;
     *out++ = header->capture_id != NULL ? 4U : 3U;
@@ -480,25 +522,61 @@ ENERGY_STREAM_INLINE bool energy_stream_begin(struct energy_stream* stream, ener
     *out++ = (uint8_t)((header->rearm_between_pairs ? 1U : 0U) | (header->previous_known ? 2U : 0U) |
                        (header->high_range_only ? 4U : 0U));
     out = energy_stream_u32(out, header->previous_known ? header->previous_na : 0U);
-    energy_stream_publish(stream, header->capture_id != NULL ? ENERGY_STREAM_ID_HEADER_BYTES : ENERGY_STREAM_HEADER_BYTES);
-    // Whatever the pin interrupt recorded before is an earlier stream's.
-    stream->edge_entries_read = stream->edge_entries_written;
-    stream->edge_waiting = true;
-    stream->edge_header_raw = header->dio_stamp;
-    stream->edge_levels = header->dio_levels & header->dio_mask;
-    stream->edge_lost = false;
-    stream->edge_mask = header->dio_mask;
-    stream->marks_read = stream->marks_written;
-    stream->mark_flags = 0U;
-    stream->mark_streams++;
-    stream->active = true;
-    energy_stream_barrier();
-    stream->edge_begins++;
-    stream->marking = true;
+    energy_stream_opened(stream, header->capture_id != NULL ? ENERGY_STREAM_ID_HEADER_BYTES : ENERGY_STREAM_HEADER_BYTES,
+                         header->dio_mask, header->dio_levels, header->dio_stamp);
     return true;
 }
 
-/** The last message of a stream, after the pairs it was building. */
+/** Times convert at `clock_hz`. */
+ENERGY_STREAM_INLINE void energy_stream_clock(struct energy_stream* stream, uint32_t clock_hz) {
+    stream->clock_hz = clock_hz;
+    uint32_t left = 0U;
+    uint32_t const whole = energy_stream_divide(1000000000U, clock_hz, &left);
+    uint32_t unused = 0U;
+    stream->ns_q32 = ((uint64_t)whole << 32U) | energy_stream_divide((uint64_t)left << 32U, clock_hz, &unused);
+}
+
+/** A DIO stream's first message, header format 5, on a board without energy capture
+ *  (docs/host-interface.md, "DIO streams"): no capture, no pairs, and times from `dio_stamp`. Its
+ *  owner keeps it from then on, and moves its origin on with energy_stream_dio_advance. Starts the
+ *  stream only if the ring had room for it. */
+ENERGY_STREAM_INLINE bool energy_stream_begin_dio(struct energy_stream* stream, uint32_t clock_hz, uint8_t dio_mask,
+                                                  uint8_t dio_levels, uint32_t dio_stamp) {
+    if (!energy_stream_room(stream)) {
+        return false;
+    }
+    stream->pairless = true;
+    stream->next_sequence = 0U;
+    stream->next_raw = dio_stamp;
+    stream->next_counts = 0U;
+    stream->period = 0U;
+    energy_stream_clock(stream, clock_hz);
+    stream->holds_read = stream->holds_written;
+    stream->holds_seen = stream->holds_read;
+    stream->timeline_pending = false;
+    uint8_t* out = energy_stream_slot(stream);
+    *out++ = ENERGY_STREAM_HEADER;
+    *out++ = 5U;
+    out = energy_stream_u32(out, clock_hz);
+    *out++ = dio_mask;
+    *out++ = (uint8_t)(dio_levels & dio_mask);
+    (void)energy_stream_u16(out, (dio_mask != 0U) ? energy_stream_edge_resolution(clock_hz) : 0U);
+    energy_stream_opened(stream, ENERGY_STREAM_DIO_HEADER_BYTES, dio_mask, dio_levels, dio_stamp);
+    return true;
+}
+
+/** A DIO stream's origin moves to the stamping timer's `now`. Nothing else moves it, and a stamp
+ *  converts only within 2^31 counts of it, so its owner calls this more often than that: 14 s at
+ *  150 MHz. `now` is never before the origin. */
+ENERGY_STREAM_INLINE void energy_stream_dio_advance(struct energy_stream* stream, uint32_t now) {
+    stream->next_counts += (uint32_t)(now - stream->next_raw);
+    stream->next_raw = now;
+}
+
+/** The last message of a stream, after the pairs it was building. A DIO stream's says when it
+ *  ended: its owner moves its origin to then first (energy_stream_dio_advance), and the end comes
+ *  no earlier than an edge or loss the stream sent. The pin interrupt can record an edge stamped
+ *  after that move, and the flush here sends it. */
 ENERGY_STREAM_INLINE void energy_stream_end(struct energy_stream* stream, uint8_t reason, uint32_t last_sequence) {
     if (!stream->active) {
         return;
@@ -516,6 +594,12 @@ ENERGY_STREAM_INLINE void energy_stream_end(struct energy_stream* stream, uint8_
         stream->edge_lost_to = (stream->next_counts > from) ? stream->next_counts : from + 1U;
         stream->edge_lost_levels = stream->edge_levels;
     }
+    uint64_t ended = stream->next_counts;
+    if (stream->pairless) {
+        // Until its sync run, `edge_known` is an earlier stream's.
+        ended = (!stream->edge_waiting && (stream->edge_known > ended)) ? stream->edge_known : ended;
+        ended = (stream->edge_lost && (stream->edge_lost_to > ended)) ? stream->edge_lost_to : ended;
+    }
     // One slot stays for the end message.
     energy_stream_dio_lost_send(stream, 1U);
     stream->edge_lost = false;
@@ -527,7 +611,12 @@ ENERGY_STREAM_INLINE void energy_stream_end(struct energy_stream* stream, uint8_
     uint8_t* const out = energy_stream_slot(stream);
     out[0] = ENERGY_STREAM_END;
     out[1] = reason;
-    (void)energy_stream_u32(out + 2, last_sequence);
+    uint8_t* const after = energy_stream_u32(out + 2, last_sequence);
+    if (stream->pairless) {
+        (void)energy_stream_u64(after, energy_stream_flush_ns(ended, stream->clock_hz));
+        energy_stream_publish(stream, ENERGY_STREAM_DIO_END_BYTES);
+        return;
+    }
     energy_stream_publish(stream, ENERGY_STREAM_END_BYTES);
 }
 
@@ -559,11 +648,7 @@ static inline void energy_stream_timeline_run(struct energy_stream* stream, bool
     }
     stream->next_raw = first_raw;
     stream->period = 2U * ticks;
-    stream->clock_hz = clock_hz;
-    uint32_t left = 0U;
-    uint32_t const whole = energy_stream_divide(1000000000U, clock_hz, &left);
-    uint32_t unused = 0U;
-    stream->ns_q32 = ((uint64_t)whole << 32U) | energy_stream_divide((uint64_t)left << 32U, clock_hz, &unused);
+    energy_stream_clock(stream, clock_hz);
     energy_stream_barrier();
     stream->timeline_pending = false;
 }

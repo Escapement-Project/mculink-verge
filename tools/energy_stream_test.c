@@ -1041,6 +1041,124 @@ static void test_marks_early(void) {
     assert(take(&stream, &length) == NULL);
 }
 
+/** A DIO stream's header is format 5, ten bytes: the clock, the pins, their levels among them, and
+ *  the edge resolution, which is 0 with no pins. */
+static void test_dio_header(void) {
+    static struct energy_stream stream;
+    reset_stream(&stream);
+    assert(energy_stream_begin_dio(&stream, CLOCK_HZ, 0x05U, 0x07U, 1234U));
+    uint16_t length = 0U;
+    uint8_t const* m = take(&stream, &length);
+    assert(m != NULL && length == ENERGY_STREAM_DIO_HEADER_BYTES);
+    assert(m[0] == 0xA1U && m[1] == 5U && u32(m + 2) == CLOCK_HZ && m[6] == 0x05U && m[7] == 0x05U);
+    assert(u16(m + 8) == energy_stream_edge_resolution(CLOCK_HZ));
+    assert(stream.pairless && stream.active && stream.edge_mask == 0x05U && stream.edge_levels == 0x05U);
+    assert(take(&stream, &length) == NULL);
+    energy_stream_end(&stream, 1U, 0U);
+    m = take(&stream, &length);
+    assert(m != NULL && length == ENERGY_STREAM_DIO_END_BYTES && m[0] == 0xA2U && m[1] == 1U && u32(m + 2) == 0U);
+    assert(u64(m + 6) == 0U);
+
+    reset_stream(&stream);
+    assert(energy_stream_begin_dio(&stream, CLOCK_HZ, 0U, 0x0FU, 0U));
+    m = take(&stream, &length);
+    assert(m[6] == 0U && m[7] == 0U && u16(m + 8) == 0U);
+}
+
+/** A DIO stream's times count from its header. Moving its origin keeps them counting past the
+ *  stamping timer's wrap, for a stamp either side of the last move. */
+static void test_dio_origin(void) {
+    static struct energy_stream stream;
+    uint32_t const header_raw = 0xFFFF0000U;
+    reset_stream(&stream);
+    assert(energy_stream_begin_dio(&stream, CLOCK_HZ, 0x01U, 0x00U, header_raw));
+    uint16_t length = 0U;
+    (void)take(&stream, &length);
+    edge_entry(&stream, header_raw + 100U, 0U, 0U, 0x00U, SYNC | CLEARED(0x01U));
+    // Six moves of 2^30 counts: 1.5 times round the timer.
+    uint64_t moved = 0U;
+    for (uint32_t i = 0U; i < 6U; i++) {
+        moved += UINT32_C(1) << 30U;
+        energy_stream_dio_advance(&stream, header_raw + (uint32_t)moved);
+    }
+    assert(stream.next_counts == moved);
+    // One edge just before the last move, one after it.
+    edge_entry(&stream, header_raw + (uint32_t)moved - 50U, 0x01U, 0x00U, 0x01U, 0U);
+    edge_entry(&stream, header_raw + (uint32_t)moved + 70U, 0x00U, 0x01U, 0x00U, 0U);
+    energy_stream_close(&stream);
+    uint8_t const* m = take(&stream, &length);
+    uint64_t times[99];
+    uint8_t levels[99];
+    uint32_t const count = edges_of(m, length, times, levels);
+    assert(count == 2U && levels[0] == 0x01U && levels[1] == 0x00U);
+    assert(times[0] == ns(moved - 50U));
+    assert(times[1] == ns(moved - 50U) + ((UINT64_C(120) * 1000000000U) / CLOCK_HZ));
+    assert(take(&stream, &length) == NULL);
+    // The end says when: the origin, moved to the end first.
+    energy_stream_dio_advance(&stream, header_raw + (uint32_t)moved + 1000U);
+    energy_stream_end(&stream, 1U, 0U);
+    m = take(&stream, &length);
+    assert(m != NULL && length == ENERGY_STREAM_DIO_END_BYTES && m[0] == 0xA2U && u64(m + 6) == ns(moved + 1000U));
+    // A capture's stream keeps its six-byte end.
+    start(&stream, 0U, true);
+    (void)take(&stream, &length);
+    energy_stream_end(&stream, 2U, 7U);
+    m = take(&stream, &length);
+    assert(m != NULL && length == ENERGY_STREAM_END_BYTES && u32(m + 2) == 7U);
+}
+
+/** A DIO stream's end comes no earlier than what it sent: an edge the pin interrupt stamped after
+ *  the owner moved the origin to end it, and a loss still running at the end. */
+static void test_dio_end_after_its_edges(void) {
+    static struct energy_stream stream;
+    uint32_t const header_raw = 1000U;
+    reset_stream(&stream);
+    assert(energy_stream_begin_dio(&stream, CLOCK_HZ, 0x01U, 0x00U, header_raw));
+    uint16_t length = 0U;
+    (void)take(&stream, &length);
+    edge_entry(&stream, header_raw + 100U, 0U, 0U, 0x00U, SYNC | CLEARED(0x01U));
+    energy_stream_dio_advance(&stream, header_raw + 5000U);
+    edge_entry(&stream, header_raw + 5040U, 0x01U, 0x00U, 0x01U, 0U);
+    energy_stream_end(&stream, 1U, 0U);
+    uint8_t const* m = take(&stream, &length);
+    uint64_t times[99];
+    uint8_t levels[99];
+    assert(edges_of(m, length, times, levels) == 1U && times[0] == ns(5040U));
+    m = take(&stream, &length);
+    assert(m != NULL && length == ENERGY_STREAM_DIO_END_BYTES && u64(m + 6) == ns(5040U));
+    assert(take(&stream, &length) == NULL);
+
+    // A stream begun after that one, and ended before its sync run, ends at its own origin: the
+    // edge the last stream knew is not its.
+    uint32_t const second_raw = header_raw + 6000U;
+    assert(energy_stream_begin_dio(&stream, CLOCK_HZ, 0x01U, 0x00U, second_raw));
+    (void)take(&stream, &length);
+    energy_stream_dio_advance(&stream, second_raw + 10U);
+    energy_stream_end(&stream, 1U, 0U);
+    m = take(&stream, &length);
+    assert(m != NULL && length == ENERGY_STREAM_DIO_END_BYTES && u64(m + 6) == ns(10U));
+    assert(take(&stream, &length) == NULL);
+
+    reset_stream(&stream);
+    assert(energy_stream_begin_dio(&stream, CLOCK_HZ, 0x01U, 0x00U, header_raw));
+    (void)take(&stream, &length);
+    edge_entry(&stream, header_raw + 100U, 0U, 0U, 0x00U, SYNC | CLEARED(0x01U));
+    energy_stream_dio_advance(&stream, header_raw + 5000U);
+    edge_entry(&stream, header_raw + 5040U, 0x01U, 0x00U, 0x01U, 0U);
+    stream.edge_dropped = true;
+    stream.edge_dropped_from = header_raw + 5060U;
+    energy_stream_end(&stream, 1U, 0U);
+    (void)take(&stream, &length);
+    uint64_t from = 0U;
+    uint64_t to = 0U;
+    uint8_t after = 0U;
+    m = take(&stream, &length);
+    lost_of(m, length, &from, &to, &after);
+    assert(from == ns(5060U) && to == ns(5061U) && after == 0x01U);
+    m = take(&stream, &length);
+    assert(m != NULL && length == ENERGY_STREAM_DIO_END_BYTES && u64(m + 6) == ns(5061U));
+}
+
 static void test_ns(void) {
     uint64_t const counts[] = {0U, 1U, CLOCK_HZ - 1U, CLOCK_HZ, UINT64_C(1) << 40U, UINT64_C(0xFFFFFFFFFFFF)};
     for (uint32_t i = 0U; i < sizeof(counts) / sizeof(counts[0]); i++) {
@@ -1075,6 +1193,9 @@ int main(void) {
     test_marks_lost_per_stream();
     test_marks_behind();
     test_marks_early();
+    test_dio_header();
+    test_dio_origin();
+    test_dio_end_after_its_edges();
     test_ns();
     return 0;
 }

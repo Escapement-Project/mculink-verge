@@ -194,6 +194,7 @@ bool dio_marker(uint8_t pins) {
     J8_GPIO->DIRSET[J8_PORT] = taken;
     J8_GPIO->DIRCLR[J8_PORT] = given;
     marker_mask = want;
+    dap_shared.dio_marker_pins = (uint8_t)want;
     dio_on = (uint8_t)(DIO_PINS & ~want);
     dio_outputs = (uint8_t)(dio_outputs & ~want);
     dio_levels = (uint8_t)(dio_levels & ~want);
