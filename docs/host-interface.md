@@ -115,7 +115,7 @@ The capability flags, byte 6:
 - **Bit 4:** reserved, always 0.
 - **Bit 5:** the JTAG and cJTAG transfers are generated, and `0x8A` is there
   ([Commands Verge's own tools use](#commands-verges-own-tools-use)).
-- **Bit 6:** the Pro's DIO pins, `0x8E`.
+- **Bit 6:** the DIO pins, `0x8E`.
 - **Bit 7:** the Pro's target supply, `0x8F`.
 
 An on-board MCU-Link has no cJTAG. There `0x95` takes only 0, conventional JTAG, and `0x96`
@@ -281,9 +281,10 @@ running capture the probe could not pause or resume. `detect` is read either way
 On a Pro with an energy capture running, a read pauses the capture for a moment, and the stream
 marks the gap ([Pairs](#pairs-0xa0)).
 
-## Pro DIO: `0x8E`
+## DIO: `0x8E`
 
-The Pro's J19 header has four DIO pins, DIO0 to DIO3. Each one is an input or a driven output.
+Four DIO pins, DIO0 to DIO3: on the Pro's J19 header, and on the standalone MCU-Link's J8 pads. Each
+one is an input or a driven output.
 
 Send `[0x8E, mask, outputs, levels]`. Bit k of each byte stands for DIO k. For each pin in `mask`,
 `outputs` sets its direction, 1 for an output, and `levels` sets the level it drives. Pins outside
@@ -294,17 +295,20 @@ The reply is `[0x8E, status, outputs, levels, read, pins, group_count, groups...
 - `outputs` is each pin's direction.
 - `levels` is the level each pin drives, or will drive once it is an output.
 - `read` is each pin's level as sampled. An output reads its own drive.
-- `pins` is `0x0f` on a Pro with DIO on, and 0 otherwise.
+- `pins` is `0x0f` on a Pro with DIO on and on the standalone MCU-Link, and 0 otherwise. On the
+  standalone MCU-Link it leaves out any pin a bench tool has given to its command marker (`0x84`).
 - `groups` is `group_count` bytes, each a mask of pins that change direction together. A Pro reports
-  `0x07` (DIO0 to DIO2) and `0x08` (DIO3).
+  `0x07` (DIO0 to DIO2) and `0x08` (DIO3). The standalone MCU-Link reports `0x01`, `0x02`, `0x04`
+  and `0x08`: each pin changes on its own.
 
 A pin outside `pins`, DIO turned off, or a direction change that splits a group gets `DAP_ERROR`
 and changes nothing. The reply still reports the state.
 
 The state lasts across debug sessions and hosts. So a pin can hold a target's boot mode through a
-reset and a reconnect. The pins go back to inputs when the probe restarts. A change reaches DIO2
-and DIO3 a moment after DIO0 and DIO1: about 40 ns later for DIO2. J15, fitted when the probe
-boots, turns DIO off.
+reset and a reconnect. The pins go back to inputs when the probe restarts. On the Pro, a change
+reaches DIO2 and DIO3 a moment after DIO0 and DIO1: about 40 ns later for DIO2. J15, fitted when the
+Pro boots, turns DIO off. The standalone MCU-Link's pins are wired straight to its MCU, run at 3.3 V
+only, and are pulled down inside the MCU while they are inputs.
 
 Verge Aux carries the same command, on the same pins, so a host can use them while a debugger holds
 CMSIS-DAP (extended capability bit 6). `verge dio` drives the pins from the command line. It checks
@@ -678,12 +682,12 @@ Verge, and wValue 1 starts the ROM bootloader. Any other value in those fields s
 request is acknowledged, the probe leaves the bus for at least 20 ms, then resets.
 
 The probe answers the request on the core that runs USB. So it works while a CMSIS-DAP command is
-running, and when the jumpers leave no CMSIS-DAP interface.
+running, and when the jumpers leave no CMSIS-DAP interface. `verge restart` sends it with wValue 0.
 
 ## The auxiliary interface: Verge Aux
 
-On the MCU-Link Pro, a second USB interface, Verge Aux, carries the DIO, supply, energy and marker
-commands. A host can use it while a debugger holds the CMSIS-DAP interface.
+A second USB interface, Verge Aux, carries the DIO pins and, on the Pro, the supply, energy and
+marker commands. A host can use it while a debugger holds the CMSIS-DAP interface.
 
 | Field | Value |
 | --- | --- |
@@ -692,14 +696,17 @@ commands. A host can use it while a debugger holds the CMSIS-DAP interface.
 | Endpoints | EP5 OUT and EP5 IN, bulk, 512 bytes at high speed and 64 at full speed |
 | Windows | WinUSB, DeviceInterfaceGUID `{A297EA18-39D8-41BE-B2E8-884CEC8FE819}` |
 
-Every Pro has it, whatever its jumpers, and no other board does. It is the last interface. Its
+Every Pro and standalone MCU-Link has it, whatever its jumpers. An on-board MCU-Link does not. It is
+the last interface. Its
 number depends on which interfaces the jumpers leave before it, so find it by its class and string,
 or on Windows by its GUID. Its string does not contain `CMSIS-DAP`, so debuggers pass it by.
 
 **Requests and replies.** A request is one transfer on EP5 OUT, in the format of the CMSIS-DAP
 command it names. Its reply is one transfer on EP5 IN, in the format of that command's reply on
 CMSIS-DAP. Verge Aux carries `0x82`, `0x8E`, `0x8F`, `0x90` and `0x94`. Any other command gets
-`[0xff]`, and so does a request too short for its command.
+`[0xff]`, and so does a request too short for its command. The standalone MCU-Link has no target
+supply or energy capture: there `0x8F` and `0x94` answer `DAP_ERROR`, and `0x90` reports energy
+capture unavailable.
 
 **Reading.** A stream message can be up to 512 bytes, so read EP5 IN with a 512-byte buffer. At
 full speed a message can fill a whole number of 64-byte packets. The probe then ends it with a
@@ -991,7 +998,7 @@ exist only in some builds: `0x84` needs `MARKER`, which is on by default, and `0
 
 | ID | Name | What it does |
 | --- | --- | --- |
-| `0x84` | J8 | Hands J8's four pins to the host, on the standalone MCU-Link |
+| `0x84` | J8 | Gives the standalone MCU-Link's J8 pins to a bench marker that drives them high while each command runs, and back to DIO |
 | `0x87` | Sample | Reads DPIDR with the SWDIO sample placed by the host; a measuring instrument |
 | `0x88` | Code lab | Runs code the host supplies from RAM |
 | `0x89` | SWD generation | Reports the generated SWD transfers, and sets or measures the read latency they are generated for |

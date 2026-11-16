@@ -120,7 +120,7 @@ function the board lacks, or a jumper turns off, is not in the configuration at 
 | VCOM | CDC ACM, two interfaces | EP2 OUT and IN, bulk; notification `0x86` | unless the VCOM jumper is fitted (J4 plain, J14 Pro) |
 | CMSIS-DAP v1 | HID, 64-byte reports | EP3 OUT and IN, interrupt | with CMSIS-DAP v2 |
 | VCOM2 | CDC ACM, two interfaces | EP4 OUT and IN, bulk; notification `0x87` | on the Pro |
-| Verge Aux | vendor class, string `Verge Aux` | EP5 OUT and IN, bulk | on the Pro, whatever the jumpers |
+| Verge Aux | vendor class, string `Verge Aux` | EP5 OUT and IN, bulk | on the Pro and the standalone MCU-Link, whatever the jumpers |
 
 The interfaces come in this order, and those after a missing one number down. The endpoints keep
 their numbers. CMSIS-DAP v2 is interface 0 whenever it is there, and Verge Aux is always last, so
@@ -241,8 +241,8 @@ a turnaround, where neither side drives the line. The middle of the data is cut 
 
 ## Verge Aux
 
-On the Pro, Verge Aux carries `0x82`, `0x8E`, `0x8F`, `0x90` and `0x94`, so a tool can use the DIO
-pins, the supply, energy capture and markers while a debugger holds CMSIS-DAP.
+Verge Aux carries `0x82`, `0x8E`, `0x8F`, `0x90` and `0x94`, so a tool can use the DIO pins and, on
+the Pro, the supply, energy capture and markers while a debugger holds CMSIS-DAP.
 
 A request takes one slot, in `dap_stage`. CPU 0 copies it in from EP5 OUT and raises CPU 1's
 mailbox. CPU 1 answers it before its next CMSIS-DAP command, with the same code that answers that

@@ -73,7 +73,8 @@ On the Pro, Verge adds a second vendor interface, Verge Aux. It carries the DIO,
 energy and marker commands, so a tool can use them while a debugger holds the CMSIS-DAP interface.
 Debuggers pass it by: its name does not contain `CMSIS-DAP`.
 
-Every Pro has it, whatever its jumpers. Both interfaces share one set of DIO pins, one target supply
+Every Pro has it, whatever its jumpers, and so does the standalone MCU-Link, for its DIO pins
+([Probes and jumpers](probes.md#the-mcu-links-dio-pins)). Both interfaces share one set of DIO pins, one target supply
 and one energy capture. `verge power`, `verge dio` and `verge energy` use Verge Aux wherever the
 probe has it, so they work beside a debugger, as the desktop app's supply, DIO and energy panels do.
 [Host interface](host-interface.md#the-auxiliary-interface-verge-aux) describes it for tool authors.

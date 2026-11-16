@@ -12,11 +12,11 @@ it on nothing else: an MCU-Link built into an evaluation board is not supported.
 | cJTAG | OScan1, OScan2, OScan5, OScan6 | OScan1, OScan2, OScan5, OScan6 | The host chooses a format the probe and the target share. |
 | SWO capture | UART encoding | UART encoding | No Manchester encoding and no streaming endpoint; up to 30 Mbaud ([Trace and serial ports](trace-and-serial.md#swo)). |
 | Target serial port | One | Two | The VCOM jumper turns the first off. The Pro's second is on J26, 3.3 V only. |
-| DIO pins | No | Four, on J19 | J15 turns them off, leaving them inputs ([The Pro](pro.md#dio-pins)). |
+| DIO pins | Four, on J8 | Four, on J19 | The MCU-Link's are 3.3 V only ([below](#the-mcu-links-dio-pins)). On the Pro, J15 turns them off, leaving them inputs ([The Pro](pro.md#dio-pins)). |
 | SPI and I2C bridges | No | SPI on DIO0 to DIO3; I2C on Flexcomm 3 | J15 turns both off. SPI shares the DIO pins; I2C shares Flexcomm 3 with SWO ([The Pro](pro.md#spi-and-i2c-bridges)). |
 | Target supply | No | 1.8 V or 3.3 V, up to 400 mA | J5 picks the voltage and J6 connects it. Off whenever the Pro starts ([The Pro](pro.md#target-supply)). |
 | Energy capture | No | Voltage, current and energy | J16 to J18 pick the 350 mA or 50 mA setting ([Energy capture](https://github.com/Escapement-Project/verge/blob/HEAD/docs/energy.md)). |
-| Verge Aux | No | A second vendor interface | Every Pro has it, whatever its jumpers ([The Pro](pro.md#verge-aux)). |
+| Verge Aux | A second vendor interface | A second vendor interface | Every probe has it, whatever its jumpers ([The Pro](pro.md#verge-aux)). On the MCU-Link it carries the DIO pins alone. |
 | Firmware update | With verge | With verge | No ISP jumper needed for a probe already running Verge. The ISP jumper stays the way back for an image that does not start ([Updating and recovery](https://github.com/Escapement-Project/verge/blob/HEAD/docs/updating.md#when-an-update-needs-your-hands)). |
 
 Analog trace, on the Pro, is not implemented.
@@ -29,7 +29,7 @@ them once, as it starts, so fit or remove one with the probe unplugged.
 | Function | MCU-Link | MCU-Link Pro | With the jumper fitted |
 | --- | --- | --- | --- |
 | VCOM | J4 | J14 | No target serial port. The Pro's second, on J26, stays. |
-| SWD | J5 | J13 | No CMSIS-DAP interface, so no debugger can use the probe. The Pro keeps Verge Aux. |
+| SWD | J5 | J13 | No CMSIS-DAP interface, so no debugger can use the probe. Verge Aux stays. |
 | USB-SIO | | J15 | No DIO, SPI or I2C bridges; the DIO pins on J19 stay inputs. |
 
 A function that is off is left out of the USB configuration, rather than shown as an interface that
@@ -44,6 +44,19 @@ jumper](https://github.com/Escapement-Project/verge/blob/HEAD/docs/updating.md#t
 
 The Pro's other jumpers set its hardware. J5 picks the target supply's voltage and J6 connects the
 supply to the target. J16 to J18 pick the energy capture's setting: 350 mA at 1-2, 50 mA at 2-3.
+
+## The MCU-Link's DIO pins
+
+J8 is four through-hole pads beside the MCU. With the USB connector to the left, they are DIO0 to
+DIO3 from left to right. They are wired straight to the MCU, with no level shifter, no series
+resistor and no protection, so they work at 3.3 V only. A 5 V signal can damage the probe, and a
+3.3 V output can damage a target that runs at a lower voltage. J8 has no ground pin, so take ground
+from the debug connector.
+
+The pins start as inputs, pulled down inside the MCU, and go back to that whenever the probe
+restarts. Each one turns between input and output on its own. `verge dio` drives and reads them.
+It goes through Verge Aux, so it works while a debugger holds the probe ([Host
+interface](host-interface.md#dio-0x8e)).
 
 ## How the probe shows up
 
