@@ -1159,6 +1159,60 @@ static void test_dio_end_after_its_edges(void) {
     assert(m != NULL && length == ENERGY_STREAM_DIO_END_BYTES && u64(m + 6) == ns(5061U));
 }
 
+/** A quiet DIO stream's time comes after every edge it sent, and says nothing when nothing is new.
+ *  A loss found after it starts after it, even from a stamp before it, as SPI's can be: CPU 1 reads
+ *  its stamp before it counts (src/dio.c). It waits while only the control slots are free, and the
+ *  end comes no earlier. */
+static void test_dio_time(void) {
+    static struct energy_stream stream;
+    uint32_t const header_raw = 1000U;
+    reset_stream(&stream);
+    assert(energy_stream_begin_dio(&stream, CLOCK_HZ, 0x01U, 0x00U, header_raw));
+    uint16_t length = 0U;
+    (void)take(&stream, &length);
+    edge_entry(&stream, header_raw + 100U, 0U, 0U, 0x00U, SYNC | CLEARED(0x01U));
+    energy_stream_dio_advance(&stream, header_raw + 5000U);
+    edge_entry(&stream, header_raw + 5040U, 0x01U, 0x00U, 0x01U, 0U);
+    energy_stream_close(&stream);
+    uint64_t times[99];
+    uint8_t levels[99];
+    uint8_t const* m = take(&stream, &length);
+    assert(edges_of(m, length, times, levels) == 1U && times[0] == ns(5040U));
+
+    energy_stream_dio_advance(&stream, header_raw + 9000U);
+    energy_stream_dio_time(&stream, header_raw + 9000U);
+    m = take(&stream, &length);
+    assert(m != NULL && length == ENERGY_STREAM_DIO_TIME_BYTES && m[0] == 0xA6U && m[1] == 0U && u64(m + 2) == ns(9000U));
+    energy_stream_dio_time(&stream, header_raw + 9000U);
+    assert(take(&stream, &length) == NULL);
+
+    edge_entry(&stream, header_raw + 9500U, 0U, 0U, 0x00U, LOST);
+    stream.edge_entries[(stream.edge_entries_written - 1U) & (ENERGY_STREAM_EDGE_ENTRIES - 1U)].lost_from = header_raw + 8000U;
+    energy_stream_close(&stream);
+    uint64_t from = 0U;
+    uint64_t to = 0U;
+    uint8_t after = 0xFFU;
+    m = take(&stream, &length);
+    lost_of(m, length, &from, &to, &after);
+    assert(from == ns(9001U) && to == ns(9500U) && after == 0x00U);
+    energy_stream_dio_time(&stream, header_raw + 9400U);
+    assert(take(&stream, &length) == NULL);
+
+    uint32_t const sent = stream.sent;
+    stream.written = sent + ENERGY_STREAM_SLOTS - ENERGY_STREAM_CONTROL_SLOTS;
+    energy_stream_dio_time(&stream, header_raw + 9700U);
+    assert(stream.written == sent + ENERGY_STREAM_SLOTS - ENERGY_STREAM_CONTROL_SLOTS);
+    stream.written = sent;
+
+    energy_stream_dio_advance(&stream, header_raw + 9600U);
+    energy_stream_dio_time(&stream, header_raw + 9700U);
+    m = take(&stream, &length);
+    assert(m != NULL && length == ENERGY_STREAM_DIO_TIME_BYTES && u64(m + 2) == ns(9700U));
+    energy_stream_end(&stream, 1U, 0U);
+    m = take(&stream, &length);
+    assert(m != NULL && length == ENERGY_STREAM_DIO_END_BYTES && u64(m + 6) == ns(9700U));
+}
+
 static void test_ns(void) {
     uint64_t const counts[] = {0U, 1U, CLOCK_HZ - 1U, CLOCK_HZ, UINT64_C(1) << 40U, UINT64_C(0xFFFFFFFFFFFF)};
     for (uint32_t i = 0U; i < sizeof(counts) / sizeof(counts[0]); i++) {
@@ -1196,6 +1250,7 @@ int main(void) {
     test_dio_header();
     test_dio_origin();
     test_dio_end_after_its_edges();
+    test_dio_time();
     test_ns();
     return 0;
 }

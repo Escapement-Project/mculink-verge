@@ -55,6 +55,8 @@
 #define ENERGY_STREAM_EDGES_FIXED 12U
 /** DIO lost: the type, a zero flags byte, the two times and the levels. */
 #define ENERGY_STREAM_DIO_LOST_BYTES 19U
+/** DIO time: the type, a zero flags byte and the time. */
+#define ENERGY_STREAM_DIO_TIME_BYTES 10U
 /** What CPU 0's pin interrupt can record before the owner sends it. */
 #define ENERGY_STREAM_EDGE_ENTRIES 256U
 /** The most counts one edges message spans, so that its offsets fit 32 bits of nanoseconds and
@@ -93,6 +95,7 @@ enum : uint8_t {
     ENERGY_STREAM_EDGES = 0xA3U,
     ENERGY_STREAM_MARKS_MESSAGE = 0xA4U,
     ENERGY_STREAM_DIO_LOST = 0xA5U,
+    ENERGY_STREAM_DIO_TIME = 0xA6U,
 };
 
 /** What 0x94 answers, as energy_stream_mark finds it, and 1 for no capture, which its caller finds. */
@@ -207,8 +210,9 @@ struct energy_stream {
      *  transfer, well inside the 2^31 counts energy_stream_counts_at takes. */
     volatile bool edge_dropped;
     volatile uint32_t edge_dropped_from;
-    /** The counts of the last entry the owner took, or of the header: a loss starts after it, so
-     *  it never shares a time with an edge already sent. */
+    /** The counts of the last entry the owner took, of the header, or of a DIO stream's last DIO
+     *  time: a loss starts after it, so it never shares a time with an edge already sent or with
+     *  quiet a DIO time covered. */
     uint64_t edge_known;
     /** A DIO lost message not yet sent: edges from `edge_lost_from` to `edge_lost_to`, in counts,
      *  may be missing, and from then on the levels are `edge_lost_levels`. A later loss joins it,
@@ -571,6 +575,24 @@ ENERGY_STREAM_INLINE bool energy_stream_begin_dio(struct energy_stream* stream, 
 ENERGY_STREAM_INLINE void energy_stream_dio_advance(struct energy_stream* stream, uint32_t now) {
     stream->next_counts += (uint32_t)(now - stream->next_raw);
     stream->next_raw = now;
+}
+
+/** A quiet DIO stream's time, the stamping timer's `stamp`: every edge stamped before it has been
+ *  sent. Its owner reads `stamp` with the pin interrupt's record empty, no loss waiting and SPI's
+ *  count unchanged since (src/dio_edges.c), so the interrupt stamps any later edge after it and
+ *  SPI moves the pins only after it. A loss found later starts after it, as after a run the
+ *  stream took. Nothing while only the control slots are free. */
+ENERGY_STREAM_INLINE void energy_stream_dio_time(struct energy_stream* stream, uint32_t stamp) {
+    uint64_t const counts = energy_stream_counts_at(stream, stamp);
+    if ((counts <= stream->edge_known) || (energy_stream_free(stream) <= ENERGY_STREAM_CONTROL_SLOTS)) {
+        return;
+    }
+    uint8_t* out = energy_stream_slot(stream);
+    *out++ = ENERGY_STREAM_DIO_TIME;
+    *out++ = 0U;
+    (void)energy_stream_u64(out, energy_stream_flush_ns(counts, stream->clock_hz));
+    energy_stream_publish(stream, ENERGY_STREAM_DIO_TIME_BYTES);
+    stream->edge_known = counts;
 }
 
 /** The last message of a stream, after the pairs it was building. A DIO stream's says when it

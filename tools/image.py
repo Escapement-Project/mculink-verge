@@ -960,6 +960,15 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: 
                                "stream.next_raw", "stream.next_counts", small_enums=short_enums(elf0),
                                struct_type="struct energy_integration")
     check_j8_edges(c, elf0, symbols_with_size(elf0), j8_shared, j8_layout, model_syscon)
+    from dio_edges_checks import check_dio_time
+    time_layout = shared_offsets(slots, "stream", "stream.active", "stream.pairless", "stream.edge_mask",
+                                 "stream.timeline_pending", "stream.edge_waiting", "stream.edge_dropped",
+                                 "stream.edge_lost", "stream.edge_known", "stream.edge_begins",
+                                 "stream.edge_entries_written", "stream.edge_entries_read", "stream.edge_entries",
+                                 "stream.written", "stream.sent", "stream.length", "stream.next_raw",
+                                 "stream.next_counts", "stream.clock_hz", small_enums=short_enums(elf0),
+                                 struct_type="struct energy_integration")
+    check_dio_time(c, elf0, symbols_with_size(elf0), edge_shared, time_layout)
 
 
 def written_before_branch(elf: str, function: str, register: str) -> int | None:

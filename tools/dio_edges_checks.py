@@ -6,7 +6,7 @@ from unicorn import UC_HOOK_CODE, UC_HOOK_MEM_READ
 from unicorn.arm_const import UC_ARM_REG_PRIMASK
 
 STATICS = ("resting", "rest_from", "begins_seen", "edges_stream", "enabled", "spi_turns_seen", "sync", "cleared",
-           "credit", "credit_stamp")
+           "credit", "credit_stamp", "quiet_written", "quiet_from")
 # The interrupt's rate budget in counts of the 150 MHz stamping clock (src/dio_edges.c): a run's
 # cost, the most credit kept, 32 runs' worth, and a rest, 1 ms.
 RUN_COST = 150_000_000 // 100_000
@@ -312,6 +312,173 @@ def check_edge_spi(c, elf, symbols, shared, layout):
     c.check(rested == (1, 1, 0x5555), f"DIO edges: a rest; (resting, dropped, from) {rested}")
     c.note("DIO edges: levels read after SPI took the pins are recorded neither by the pin interrupt nor in a header,"
            " runs under SPI still rest, and each loss carries its start: SPI's stamp, a rest's run, a begun stream's rest")
+
+
+# A quiet DIO stream sends its time every 200 ms (src/dio_edges.c), and a DIO time message's type.
+QUIET_COUNTS = 150_000_000 // 5
+DIO_TIME = 0xA6
+# Verge Aux's stream slots (src/energy_stream.h): 16, each the largest message.
+SLOTS, SLOT_BYTES = 16, 512
+
+
+def check_dio_time(c, elf, symbols, shared, layout):
+    """A quiet DIO stream's time (dio_time): sent once nothing has gone out for 200 ms, to the count,
+    with the stamping timer's time then; held back while an entry waits, a loss is found or waiting,
+    or the stream waits for its sync run. Wherever the pin interrupt lands in the pass, the edge it
+    records stamps after any time the pass sends: a host promises the time, and refuses an edge
+    before it."""
+    statics = edge_statics(symbols)
+    integration = symbols["energy_integration"][0]
+    stream = integration + layout["stream"]
+    slots = symbols["energy_stream_slots"][0]
+    dap_shared = symbols["dap_shared"][0]
+    origin_raw, origin_counts, sent = 0x10000, 1000, 3
+
+    def put(probe, address, value, size=4):
+        probe.uc.mem_write(address, value.to_bytes(size, "little"))
+
+    def get(probe, address, size=4):
+        return int.from_bytes(probe.uc.mem_read(address, size), "little")
+
+    def field(probe, name, value, size=1):
+        put(probe, integration + layout[name], value, size)
+
+    def ready(quiet_for, **held):
+        """A DIO stream of pin 0, quiet since `origin_raw`, which CPU 0 owns, its pin on."""
+        probe = machine(elf, symbols)
+        put(probe, statics["present"], 1, 1)
+        put(probe, statics["edges_stream"], stream)
+        put(probe, statics["enabled"], 1, 1)
+        for name in ("resting", "sync"):
+            put(probe, statics[name], 0, 1)
+        put(probe, statics["begins_seen"], 1)
+        put(probe, statics["spi_turns_seen"], 0)
+        put(probe, statics["quiet_written"], sent)
+        put(probe, statics["quiet_from"], origin_raw)
+        for name, value in (("stream.active", 1), ("stream.pairless", 1), ("stream.edge_mask", 1),
+                            ("stream.timeline_pending", 0), ("stream.edge_waiting", held.get("waiting", 0)),
+                            ("stream.edge_dropped", held.get("dropped", 0)), ("stream.edge_lost", held.get("lost", 0))):
+            field(probe, name, value)
+        for name, value in (("stream.edge_begins", 1), ("stream.edge_entries_written", held.get("entries", 0)),
+                            ("stream.edge_entries_read", 0), ("stream.written", sent), ("stream.sent", sent),
+                            ("stream.next_raw", origin_raw), ("stream.clock_hz", 150_000_000)):
+            field(probe, name, value, 4)
+        field(probe, "stream.next_counts", origin_counts, 8)
+        field(probe, "stream.edge_known", origin_counts, 8)
+        # An entry waiting, just recorded: too new for the loop to send.
+        entry = (origin_raw + quiet_for - 10).to_bytes(4, "little") + bytes(ENTRY_BYTES - 4)
+        probe.uc.mem_write(integration + layout["stream.edge_entries"], entry)
+        put(probe, dap_shared + shared["energy_control_ack"], 0)
+        put(probe, dap_shared + shared["dio_spi_turns"], 0)
+        put(probe, CTIMER4_TC, origin_raw + quiet_for)
+        probe.uc.reg_write(UC_ARM_REG_PRIMASK, 0)
+        return probe
+
+    def times(probe):
+        """The DIO time messages the pass published, in counts."""
+        out = []
+        for index in range(sent, get(probe, integration + layout["stream.written"])):
+            at = index % SLOTS
+            length = get(probe, integration + layout["stream.length"] + 2 * at, 2)
+            message = bytes(probe.uc.mem_read(slots + SLOT_BYTES * at, length))
+            c.check(length == 10 and message[:2] == bytes([DIO_TIME, 0]), f"DIO time: a pass published {message.hex()}")
+            ns = int.from_bytes(message[2:10], "little")
+            out.append(-(-ns * 150_000_000 // 1_000_000_000))
+        return out
+
+    found = {}
+    for quiet_for in (QUIET_COUNTS - 1, QUIET_COUNTS):
+        probe = ready(quiet_for)
+        probe.call("dio_edges_task", timeout_insns=20_000)
+        found[quiet_for] = (times(probe), get(probe, integration + layout["stream.edge_known"], 8))
+    c.check(found[QUIET_COUNTS - 1] == ([], origin_counts), f"DIO time: one count short of 200 ms sent {found[QUIET_COUNTS - 1]}")
+    at = origin_counts + QUIET_COUNTS
+    c.check(found[QUIET_COUNTS] == ([at], at), f"DIO time: at 200 ms sent {found[QUIET_COUNTS]}, wanted ([{at}], {at})")
+    held = {}
+    for reason in ("entries", "dropped", "lost", "waiting"):
+        probe = ready(QUIET_COUNTS, **{reason: 1})
+        probe.call("dio_edges_task", timeout_insns=20_000)
+        held[reason] = times(probe)
+    c.check(all(not sent_times for sent_times in held.values()), f"DIO time: sent while held back: {held}")
+    # A message the stream sent meanwhile starts the quiet again.
+    probe = ready(QUIET_COUNTS)
+    put(probe, statics["quiet_written"], sent - 1)
+    probe.call("dio_edges_task", timeout_insns=20_000)
+    c.check(times(probe) == [] and get(probe, statics["quiet_from"]) == origin_raw + QUIET_COUNTS,
+            "DIO time: a message sent meanwhile did not start the quiet again")
+
+    # The interrupt at each instruction of a sending pass, where it can be taken: not under PRIMASK.
+    # The stamping timer moves a count an instruction, no faster than it runs.
+    trace = []
+    probe = ready(QUIET_COUNTS)
+    hook = probe.uc.hook_add(UC_HOOK_CODE, lambda uc, address, size, data: trace.append(address))
+    probe.uc.ctl_flush_tb()
+    probe.call("dio_edges_task", timeout_insns=20_000)
+    probe.uc.hook_del(hook)
+    early = []
+    for cut in range(len(trace)):
+        probe = ready(QUIET_COUNTS)
+        step = 0
+        stamped = []
+
+        def interrupt(uc, address, size, data):
+            nonlocal step
+            now = get(probe, CTIMER4_TC)
+            if step == cut and uc.reg_read(UC_ARM_REG_PRIMASK) == 0:
+                written = get(probe, integration + layout["stream.edge_entries_written"])
+                probe.uc.mem_write(integration + layout["stream.edge_entries"] + ENTRY_BYTES * (written % 256),
+                                   now.to_bytes(4, "little") + bytes(ENTRY_BYTES - 4))
+                put(probe, integration + layout["stream.edge_entries_written"], written + 1)
+                stamped.append(now)
+            put(probe, CTIMER4_TC, now + 1)
+            step += 1
+
+        hook = probe.uc.hook_add(UC_HOOK_CODE, interrupt)
+        probe.uc.ctl_flush_tb()
+        probe.call("dio_edges_task", timeout_insns=20_000)
+        probe.uc.hook_del(hook)
+        for time in times(probe):
+            if stamped and origin_counts + (stamped[0] - origin_raw) <= time:
+                early.append((cut, stamped[0], time))
+    probe.uc.ctl_flush_tb()
+    c.check(not early, f"DIO time: an edge the interrupt took during the pass stamped at or before the time sent: {early[:3]}")
+    # SPI taking the pins at each instruction of the pass, CPU 1's stamp then its count: a time sent
+    # must come before SPI's stamp, since the loss SPI starts begins after the time.
+    turns = dap_shared + shared["dio_spi_turns"]
+    spi_stamp = dap_shared + shared["dio_spi_stamp"]
+    crossed = []
+    for cut in range(len(trace)):
+        probe = ready(QUIET_COUNTS)
+        step = 0
+        taken = []
+
+        def take(uc, address, size, data):
+            nonlocal step
+            now = get(probe, CTIMER4_TC)
+            if step == cut:
+                put(probe, spi_stamp, now)
+                put(probe, turns, 1)
+                taken.append(now)
+            put(probe, CTIMER4_TC, now + 1)
+            step += 1
+
+        hook = probe.uc.hook_add(UC_HOOK_CODE, take)
+        probe.uc.ctl_flush_tb()
+        probe.call("dio_edges_task", timeout_insns=20_000)
+        probe.uc.hook_del(hook)
+        for time in times(probe):
+            if taken and origin_counts + (taken[0] - origin_raw) <= time:
+                crossed.append((cut, taken[0], time))
+    probe.uc.ctl_flush_tb()
+    c.check(not crossed, f"DIO time: a time sent at or after SPI took the pins: {crossed[:3]}")
+    # The next pass, a count later, sends nothing: the quiet starts again at the time.
+    probe = ready(QUIET_COUNTS)
+    probe.call("dio_edges_task", timeout_insns=20_000)
+    put(probe, CTIMER4_TC, origin_raw + QUIET_COUNTS + 1)
+    probe.call("dio_edges_task", timeout_insns=20_000)
+    c.check(len(times(probe)) == 1, f"DIO time: two passes 200 ms into the quiet sent {times(probe)}")
+    c.note(f"DIO time: sent at 200 ms of quiet to the count and once, held back by a waiting entry, a loss or the sync,"
+           f" and with the interrupt or SPI's take at any of {len(trace)} instructions of the pass, sent only before them")
 
 
 # INPUTMUX's PINTSEL registers, and CTIMER4's TCR (src/dio_edges.c).

@@ -16,6 +16,8 @@
 #define DIO_EDGES_BURST 32U
 /** How long the interrupts rest once the rate or the record ran out: 1 ms. */
 #define DIO_EDGES_REST_PER_S 1000U
+/** How often a quiet DIO stream says how far it has got: every 200 ms. */
+#define DIO_EDGES_TIMES_PER_S 5U
 
 #define DIO_EDGES_IRQS (0xFUL << PIN_INT0_IRQn)
 
@@ -35,6 +37,7 @@ __attribute__((section(".ramfunc"))) static uint8_t levels_now(void) {
 #define DIO_EDGES_RUN_COST (ENERGY_TIMER_HZ / DIO_EDGES_RUNS_HZ)
 #define DIO_EDGES_CREDIT_MAX (DIO_EDGES_RUN_COST * DIO_EDGES_BURST)
 #define DIO_EDGES_REST_COUNTS (ENERGY_TIMER_HZ / DIO_EDGES_REST_PER_S)
+#define DIO_EDGES_QUIET_COUNTS (ENERGY_TIMER_HZ / DIO_EDGES_TIMES_PER_S)
 static uint32_t credit;
 static uint32_t credit_stamp;
 static volatile bool resting;
@@ -49,6 +52,9 @@ static uint8_t enabled;
 /** dio_spi_turns as the loop last acted on it. The interrupt reads it too. */
 static volatile uint32_t spi_turns_seen;
 static uint32_t begins_seen;
+/** The stream's message count as the loop last saw it change, and when. */
+static uint32_t quiet_written;
+static uint32_t quiet_from;
 
 /** Edges are lost from `stamp` on, unless they already were from earlier. In the interrupt, or
  *  masked. */
@@ -207,6 +213,44 @@ __attribute__((section(".ramfunc"))) static void begin_dropped(struct energy_str
     __set_PRIMASK(primask);
 }
 
+/** A DIO stream that has sent nothing for DIO_EDGES_QUIET_COUNTS sends its time
+ *  (energy_stream_dio_time), so a host knows the pins held their levels until then. Only with the
+ *  interrupt's record empty, no loss waiting and SPI still away from the pins, all read with the
+ *  time under one mask: the interrupt can take an edge only after it, and stamps it later. CPU 1
+ *  counts `dio_spi_turns` before SPI moves the pins (src/dio.c), so a count read after the time
+ *  unchanged means the pins held until then. */
+__attribute__((section(".ramfunc"))) static void dio_time(struct energy_stream* stream) {
+    uint32_t const written = stream->written;
+    uint32_t const now = CTIMER4->TC;
+    if (written != quiet_written) {
+        quiet_written = written;
+        quiet_from = now;
+        return;
+    }
+    if ((now - quiet_from) < DIO_EDGES_QUIET_COUNTS) {
+        return;
+    }
+    uint32_t const primask = __get_PRIMASK();
+    __disable_irq();
+    bool const caught_up = !stream->edge_waiting && !stream->edge_dropped && !stream->edge_lost &&
+                           (stream->edge_entries_written == stream->edge_entries_read);
+    uint32_t const stamp = CTIMER4->TC;
+    __DMB();
+    uint32_t const turns = dap_shared.dio_spi_turns;
+    __set_PRIMASK(primask);
+    if ((turns != spi_turns_seen) || ((turns & 1U) != 0U)) {
+        return;
+    }
+    if (!caught_up) {
+        return;
+    }
+    uint32_t const basepri = cpu0_mask_all_but_edges();
+    energy_stream_dio_time(stream, stamp);
+    cpu0_unmask(basepri);
+    quiet_written = stream->written;
+    quiet_from = now;
+}
+
 __attribute__((section(".ramfunc"), noinline)) void dio_edges_task(void) {
     if (!present) {
         return;
@@ -276,6 +320,9 @@ __attribute__((section(".ramfunc"), noinline)) void dio_edges_task(void) {
         uint32_t const basepri = cpu0_mask_all_but_edges();
         energy_stream_dio_advance(stream, CTIMER4->TC);
         cpu0_unmask(basepri);
+        if (reported != 0U) {
+            dio_time(stream);
+        }
     }
     if (resting && ((CTIMER4->TC - rest_from) >= DIO_EDGES_REST_COUNTS)) {
         resting = false;
