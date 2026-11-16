@@ -5,7 +5,6 @@
 #include "fsl_iocon.h"
 
 #include "dap_shared.h"
-#include "marker.h"
 
 static_assert(DBGIF_TCK_SWCLK_PORT == DBGIF_PORT && DBGIF_TDI_PORT == DBGIF_PORT &&
                    DBGIF_TMS_SWDIO_PORT == DBGIF_PORT && DBGIF_TDO_SWO_PORT == DBGIF_PORT &&
@@ -86,20 +85,6 @@ __attribute__((noinline)) void board_debug_pins_init(void) {
         DBGIF_GPIO->DIRSET[DBGIF_PORT] = 1UL << DBGIF_ISP_CTRL_PIN;
         IOCON_PinMuxSet(IOCON, DBGIF_PORT, DBGIF_ISP_CTRL_PIN, DEBUG_PIN_MODE | IOCON_GPIO_MODE);
     }
-
-#ifdef MARKER_PINS
-    // J8 is on port 1, which the secure GPIO does not reach, so it stays on the ordinary GPIO.
-    if (board_kind == BOARD_KIND_PLAIN) {
-        CLOCK_EnableClock(kCLOCK_Gpio1);
-        for (uint32_t pin = 0U; pin < 4U; pin++) {
-            IOCON_PinMuxSet(IOCON, J8_PORT, pin, IOCON_FUNC0 | PIN_MODE);
-        }
-        GPIO->CLR[J8_PORT] = J8_PIN_MASK;
-        GPIO->DIRSET[J8_PORT] = J8_PIN_MASK;
-    } else {
-        marker_mask = 0U;
-    }
-#endif
 }
 
 void board_swo_pin(bool capture) {

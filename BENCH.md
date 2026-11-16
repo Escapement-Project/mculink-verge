@@ -77,9 +77,9 @@ harness is not plugged in.
 
 ## J8, the marker header
 
-The four-pin 50-mil header beside the MCU, and the only pins on the board nothing else uses. No
-buffer, no series resistor and no ground pin, so the analyser takes its ground from the debug
-connector.
+The plain board's four DIO pins: through-hole pads at 50-mil pitch beside the MCU, and the only
+pins on the board nothing else uses. No buffer, no series resistor and no ground pin, so the
+analyser takes its ground from the debug connector.
 
 | J8 pin | MCU pin | signal |
 | --- | --- | --- |
@@ -92,8 +92,10 @@ connector.
 connector to the right. Settled by driving one pin at a time and watching the analyser, not by
 reading the silkscreen. `uv run tools/dap.py j8 --walk` repeats it in twelve seconds.
 
-The firmware drives all four together while a host command runs, which is one store and makes the
-header orientation-free. `--mask` takes pins from the marker so a single one can be held.
+The pins boot as DIO inputs, so a capture that wants the command marker gives it the pins first:
+`uv run tools/dap.py j8` gives it all four. They then go high together while a host command runs,
+which is one store and makes the header orientation-free. `--marker 0x8` gives it J8 pin 4 alone,
+and `--release` gives the pins back to DIO, as a restart does.
 
 ## Failure modes
 

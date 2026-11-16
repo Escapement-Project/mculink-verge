@@ -480,7 +480,8 @@ def check_unconfigured(c, elf0, elf1, symbols0, symbols1, fields, slots):
 def check_aux(c, elf0, elf1, symbols0, symbols1, fields):
     """Verge Aux beside CMSIS-DAP: CPU 0 hands each aux request to CPU 1 in dap_stage.aux, CPU 1 runs
     it ahead of the queue with CMSIS-DAP's own dispatch, and CPU 0 sends the reply on the aux
-    instance. Instance 1 is the Pro with CMSIS-DAP; instance 0 the Pro with its SWD jumper."""
+    instance. Instance 1 is the plain board or the Pro with CMSIS-DAP; instance 0 either with its
+    SWD jumper."""
     connect = symbols1["DAP_Data"][0]
 
     def fresh(present=True, instance=1):
@@ -515,8 +516,8 @@ def check_aux(c, elf0, elf1, symbols0, symbols1, fields):
         usb.call0("tud_vendor_tx_cb", 0, len(reply))
         return reply
 
-    def pro(usb):
-        usb.put("board", 1, 1)  # board_straps.h: the Pro
+    def board(usb, kind):
+        usb.put("board", kind, 1)  # board_straps.h: 0 the plain board, 1 the Pro
         usb.put("jumpers", 0, 1)
         usb.cpu1.uc.mem_write(usb.shared[0], bytes(usb.cpu0.uc.mem_read(*usb.shared)))
         for name in ("board_debug_pins_init", "dio_init"):
@@ -524,12 +525,18 @@ def check_aux(c, elf0, elf1, symbols0, symbols1, fields):
         usb.cpu0.uc.mem_write(usb.shared[0], bytes(usb.cpu1.uc.mem_read(*usb.shared)))
         return usb
 
+    def pro(usb):
+        return board(usb, 1)
+
+    def plain(usb):
+        return board(usb, 0)
+
     # The commands it carries answer as on CMSIS-DAP, size checks included.
     carried = (b"\x82", b"\x8e\x00\x00\x00", b"\x8e\x08\x08\x08", b"\x8e\x01\x01\x01", b"\x8e\x08\x00\x00", b"\x8e\x00",
                b"\x8f\x02", b"\x8f\x01", b"\x8f", b"\x90\x01", b"\x90\x03", b"\x90\x04\x00", b"\x90\x04\x02", b"\x90\x02",
                b"\x90", b"\x90\x00\x01", b"\x94\x01\x00\x00\x00\x02hi", b"\x94\x01\x00\x00\x00\x03hi", b"\x94",
                b"\x94\x01\x00\x00\x00\x20" + bytes(32))
-    for usb in (fresh(), pro(fresh())):
+    for usb in (fresh(), plain(fresh()), pro(fresh())):
         for payload in carried:
             c.check(ask(usb, payload) == bulk(usb, payload), f"aux reply to {payload.hex()} differs from CMSIS-DAP's")
     # Anything else gets [0xff] and does not run.
@@ -537,13 +544,15 @@ def check_aux(c, elf0, elf1, symbols0, symbols1, fields):
         c.check(ask(usb, payload) == b"\xff", f"aux ran {payload.hex()}")
     c.check(bytes(usb.cpu1.uc.mem_read(connect, 1)) == b"\x00", "an aux DAP_Connect connected")
 
-    # Aux drives the Pro's DIO pins themselves: CMSIS-DAP sees what aux left, and the other way round.
-    usb = pro(fresh())
-    driven = ask(usb, b"\x8e\x08\x08\x08")
-    c.check(driven[:4] == b"\x8e\x00\x08\x08" and bulk(usb, b"\x8e\x00\x00\x00")[2:4] == b"\x08\x08",
-            f"aux 0x8E driving DIO3 high answered {driven.hex()}, and CMSIS-DAP did not see it")
-    bulk(usb, b"\x8e\x08\x00\x00")
-    c.check(ask(usb, b"\x8e\x00\x00\x00")[2:4] == b"\x00\x00", "aux did not see CMSIS-DAP return DIO3 to an input")
+    # Aux drives the DIO pins themselves, the Pro's and J8: CMSIS-DAP sees what aux left, and the
+    # other way round.
+    for name, usb in (("Pro", pro(fresh())), ("plain", plain(fresh()))):
+        driven = ask(usb, b"\x8e\x08\x08\x08")
+        c.check(driven[:4] == b"\x8e\x00\x08\x08" and bulk(usb, b"\x8e\x00\x00\x00")[2:4] == b"\x08\x08",
+                f"{name}: aux 0x8E driving DIO3 high answered {driven.hex()}, and CMSIS-DAP did not see it")
+        bulk(usb, b"\x8e\x08\x00\x00")
+        c.check(ask(usb, b"\x8e\x00\x00\x00")[2:4] == b"\x00\x00",
+                f"{name}: aux did not see CMSIS-DAP return DIO3 to an input")
 
     # OUT is armed into aux_out once, and again only once the reply has left the slot.
     usb = fresh()

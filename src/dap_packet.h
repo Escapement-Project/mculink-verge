@@ -180,7 +180,7 @@ static inline bool dap_packet_plan(const uint8_t* p, uint32_t length, uint32_t c
         break;
 #ifdef MARKER_PINS
     case 0x84:
-        in = 3U;
+        in = 2U;
         out = 3U;
         break;
 #endif
@@ -247,8 +247,9 @@ static inline bool dap_packet_plan(const uint8_t* p, uint32_t length, uint32_t c
         out = 3U;
         break;
     case 0x8e:
+        // Seven bytes and a group mask each: four on the standalone board (dio.h DIO_GROUPS_MAX).
         in = 4U;
-        out = 9U;
+        out = 11U;
         break;
     case 0x8f:
         in = 2U;

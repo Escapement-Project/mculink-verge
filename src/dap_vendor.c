@@ -37,7 +37,7 @@
 
 /// Identifies this firmware and says what it can do. Read-only, so a host may send it blindly.
 #define ID_VENDOR_CJTAG_INFO ID_DAP_Vendor2
-/// Hands J8's four pins to the host, so a pad can be identified and a trigger can be placed.
+/// Gives J8's pins to the bench marker (marker.h), and back to DIO. A bench command.
 #define ID_VENDOR_J8 ID_DAP_Vendor4
 /// Reads the target's supply and J6 pin 9's detect line. See TARGET_* below.
 #define ID_VENDOR_TARGET ID_DAP_Vendor6
@@ -55,7 +55,7 @@
 #define ID_VENDOR_STAGE ID_DAP_Vendor12
 /// Reads back the JTAG generator's log of what each generation was for. See below.
 #define ID_VENDOR_JTAG_LOG ID_DAP_Vendor13
-/// Drives and reads the Pro's DIO pins on J19 (dio.h). See below.
+/// Drives and reads the DIO pins: the Pro's on J19, the plain board's on J8 (dio.h). See below.
 #define ID_VENDOR_DIO ID_DAP_Vendor14
 /// Switches and reads the Pro's target supply (target_power.h).
 #define ID_VENDOR_TARGET_POWER ID_DAP_Vendor15
@@ -129,8 +129,8 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
 #define CJTAG_CAP_SWD_CODEGEN (1U << 3)
 /// cJTAG frames are generated at run time, and ID_VENDOR_JTAG_GEN is implemented.
 #define CJTAG_CAP_JTAG_CODEGEN (1U << 5)
-/// ID_VENDOR_DIO acts: a Pro whose J15 (USB-SIO off) was not fitted when the probe started. The
-/// jumpers are read once at boot, so this describes the running image.
+/// ID_VENDOR_DIO acts: the plain board, and a Pro whose J15 (USB-SIO off) was not fitted when the
+/// probe started. The jumpers are read once at boot, so this describes the running image.
 #define CJTAG_CAP_DIO (1U << 6)
 /// ID_VENDOR_TARGET_POWER is available on an MCU-Link Pro.
 #define CJTAG_CAP_TARGET_POWER (1U << 7)
@@ -382,25 +382,12 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         return (3U << 16) | 2U;
 
 #ifdef MARKER_PINS
-    case ID_VENDOR_J8: {
-        // request[1] names the pins the host takes, request[2] the levels to drive them to. The
-        // marker keeps whatever the host did not take, so handing it one pin leaves the other
-        // three marking commands as usual. A mask of zero gives all four back.
-        if (board_kind != BOARD_KIND_PLAIN) {
-            response[1] = DAP_ERROR;
-            response[2] = 0U;
-            return (3U << 16) | 3U;
-        }
-        const uint32_t taken = (uint32_t)request[1] & J8_PIN_MASK;
-        const uint32_t levels = (uint32_t)request[2] & taken;
-        marker_mask = J8_PIN_MASK & ~taken;
-        J8_GPIO->SET[J8_PORT] = levels;
-        J8_GPIO->CLR[J8_PORT] = taken & ~levels;
-        response[1] = DAP_OK;
-        // What the pins actually read, so a host sees the levels rather than trusting the write.
-        response[2] = (uint8_t)(J8_GPIO->PIN[J8_PORT] & J8_PIN_MASK);
-        return (3U << 16) | 3U;
-    }
+    case ID_VENDOR_J8:
+        // request[1] names the J8 pins the marker drives; the rest are DIO pins. Zero, as at boot,
+        // gives all four to DIO.
+        response[1] = dio_marker(request[1]) ? DAP_OK : DAP_ERROR;
+        response[2] = (uint8_t)marker_mask;
+        return (2U << 16) | 3U;
 #endif
 
     case ID_VENDOR_DIO: {
@@ -412,6 +399,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         response[4] = state.read;
         response[5] = state.pins;
         response[6] = state.groups;
+        static_assert(DIO_REPLY_FIXED + DIO_GROUPS_MAX == 11U, "dap_packet.h plans 0x8E's reply at 11 bytes");
         memcpy(response + DIO_REPLY_FIXED, state.group, state.groups);
         return (4U << 16) | (DIO_REPLY_FIXED + state.groups);
     }

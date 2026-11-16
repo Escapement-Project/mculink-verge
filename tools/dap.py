@@ -708,41 +708,46 @@ def swd_reset(probe: "Probe") -> int:
 
 
 def cmd_j8(args) -> int:
-    """Drive J8's pins, which is how a pad gets identified and how a trigger gets placed.
+    """Give J8's pins to the bench marker, or name J8's pads.
 
-    The firmware marks command processing on all four pins at once, so an analyser clipped to any
-    of them sees the marker and the header needs no orientation. That leaves the question of which
-    pad is which, and `--walk` answers it: each pin is taken from the marker in turn and held high
-    on its own, so whichever pad the analyser or the meter is on names itself.
+    J8 is the plain board's four DIO pins, inputs from boot. The marker, given pins, drives them
+    high while a command runs, all at once, so an analyser clipped to any of them sees it and the
+    header needs no orientation. `--marker` gives it pins, all four by default, and `--release`
+    gives them back to DIO. A restart gives them back too.
 
-    A pin the host takes stops marking commands until it is given back, which `--release` does.
+    `--walk` names the pads: it holds each pin high on its own through the DIO command, so
+    whichever pad the analyser or the meter is on names itself, and leaves all four inputs.
     """
     probe = one(args)
     print(f"{probe.serial}  {probe.product}")
 
-    def drive(mask: int, levels: int) -> int:
-        reply = probe.command(bytes([DAP_VENDOR_J8, mask, levels]))
+    def marker(pins: int) -> int:
+        reply = probe.command(bytes([DAP_VENDOR_J8, pins]))
         if len(reply) < 3 or reply[0] != DAP_VENDOR_J8 or reply[1] != 0:
-            raise RuntimeError(f"J8 {mask:#04x}/{levels:#04x} answered {reply.hex()}")
+            raise RuntimeError(f"J8 marker {pins:#04x} answered {reply.hex()}")
         return reply[2]
 
+    def dio(mask: int, outputs: int, levels: int) -> int:
+        reply = probe.command(bytes([DAP_VENDOR_DIO, mask, outputs, levels]))
+        if len(reply) < 5 or reply[0] != DAP_VENDOR_DIO or reply[1] != 0:
+            raise RuntimeError(f"DIO {mask:#04x}/{outputs:#04x}/{levels:#04x} answered {reply.hex()}")
+        return reply[4]
+
     if args.walk:
+        marker(0)
         for pin in range(4):
             bit = 1 << pin
-            read = drive(bit, bit)
-            print(f"  J8 pin {pin + 1} (PIO1_{pin}) high, the other three still marking"
-                  f"  -- pins read {read:#06b}")
+            read = dio(bit, bit, bit)
+            print(f"  J8 pin {pin + 1} (PIO1_{pin}) driven high, the others inputs  -- pins read {read:#06b}")
             time.sleep(args.seconds)
-            drive(bit, 0)
-        drive(0, 0)
-        print("  all four handed back to the marker")
+            dio(bit, 0, 0)
+        print("  all four inputs again")
         probe.release()
         return 0
 
-    mask = 0 if args.release else args.mask
-    read = drive(mask, args.levels & mask)
-    owned = "none" if mask == 0 else ", ".join(f"{p + 1}" for p in range(4) if mask & (1 << p))
-    print(f"  host owns pin {owned}; pins read {read:#06b}")
+    held = marker(0 if args.release else args.marker)
+    owned = "none" if held == 0 else ", ".join(f"{p + 1}" for p in range(4) if held & (1 << p))
+    print(f"  the marker drives pin {owned}; the rest are DIO pins")
     probe.release()
     return 0
 
@@ -752,7 +757,8 @@ def dio_bits(value: int) -> str:
 
 
 def cmd_dio(args) -> int:
-    """The Pro's J19 DIO pins (src/dio.h): set the pins in --mask, then print what the probe reports.
+    """The DIO pins, the Pro's on J19 and the plain board's on J8 (src/dio.h): set the pins in --mask,
+    then print what the probe reports.
     With no --mask it only reads, which shows what a host before this one left driving."""
     probe = one(args)
     print(f"{probe.serial}  {probe.product}")
@@ -2043,15 +2049,14 @@ def main() -> int:
     pins.add_argument("--bit", type=int, default=0, help="which pin to drive, default SWCLK")
     pins.set_defaults(run=cmd_pins)
 
-    j8 = sub.add_parser("j8", help="drive the four-pin header beside the MCU")
+    j8 = sub.add_parser("j8", help="give the plain board's J8 pins to the bench marker, or name its pads")
     j8.add_argument("--walk", action="store_true", help="hold each pin high in turn, to name the pads")
     j8.add_argument("--seconds", type=float, default=3.0, help="how long to hold each one")
-    j8.add_argument("--mask", type=lambda s: int(s, 0), default=0x0F, help="pins the host takes")
-    j8.add_argument("--levels", type=lambda s: int(s, 0), default=0x00, help="levels for those pins")
-    j8.add_argument("--release", action="store_true", help="give all four back to the marker")
+    j8.add_argument("--marker", type=lambda s: int(s, 0), default=0x0F, help="pins the marker drives, bit n J8 pin n+1")
+    j8.add_argument("--release", action="store_true", help="give all four back to DIO")
     j8.set_defaults(run=cmd_j8)
 
-    dio = sub.add_parser("dio", help="drive and read the Pro's J19 DIO pins")
+    dio = sub.add_parser("dio", help="drive and read the DIO pins (the Pro's J19, the plain board's J8)")
     dio.add_argument("--mask", type=lambda s: int(s, 0), default=0, help="pins to change, bit n DIOn; 0 only reads")
     dio.add_argument("--outputs", type=lambda s: int(s, 0), default=0, help="which of them drive")
     dio.add_argument("--levels", type=lambda s: int(s, 0), default=0, help="their output levels")

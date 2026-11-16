@@ -45,11 +45,12 @@ static inline bool board_has_vcom2(uint8_t board, uint8_t jumpers) {
     return board == BOARD_KIND_PRO;
 }
 
-/** Verge Aux carries the Pro's supply and energy commands beside a debugger, so no jumper removes
- *  it: the SWD jumper leaves another debugger on the target, which is when it is wanted most. */
+/** Verge Aux carries the DIO pins, and the Pro's supply and energy commands, beside a debugger, so
+ *  no jumper removes it: the SWD jumper leaves another debugger on the target, which is when it is
+ *  wanted most. An on-board MCU-Link has none of them. */
 static inline bool board_has_aux(uint8_t board, uint8_t jumpers) {
     (void)jumpers;
-    return board == BOARD_KIND_PRO;
+    return (board == BOARD_KIND_PRO) || (board == BOARD_KIND_PLAIN);
 }
 
 /** CPU 0: read the straps into dap_shared's board and jumpers. Call after dap_shared_init and

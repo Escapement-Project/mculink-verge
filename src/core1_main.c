@@ -34,8 +34,8 @@ dap_shared_t dap_shared __attribute__((section(".dap_shared")));
 dap_stage_t dap_stage __attribute__((section(".dap_stage")));
 
 #ifdef MARKER_PINS
-/** Which J8 pins the marker still owns. ID_VENDOR_J8 takes pins away from it and gives them back. */
-volatile uint32_t marker_mask = J8_PIN_MASK;
+/** Which J8 pins the marker drives: none until ID_VENDOR_J8 gives it some (src/dio.c). */
+volatile uint32_t marker_mask = 0U;
 #endif
 
 /** The command being executed and its reply, in CPU 1's own SRAM, for a command CPU 0 did not
