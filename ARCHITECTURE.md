@@ -199,7 +199,7 @@ DP's CTRL/STAT register over SWD, which a host polls while the target's debug do
 goes down the left to the wire, and its reply comes back up the right. Each step that reads or
 writes the packet has the bytes it handles underlined.
 
-![One DAP_Transfer that reads the DP's CTRL/STAT, bytes 05 00 01 06, followed down the left from the host through the USB controller, CPU 0, the mailbox and CPU 1 to the wire, and back up the right as the reply, 05 01 01 and the register's four bytes. Each step names its function and file and underlines the bytes it reads or writes: CPU 0's tud_vendor_rx_cb reads the first byte to rule out an abort and copies the packet into dap_stage; CPU 1's dap_task takes it; DAP_ProcessCommand reads 05, DAP_Transfer on SWD; SWD_TransferCommand reads the index, the count and the request, which swd_gen_packet makes 8D; the generated swd_gen_read drives the pins. Along the bottom, the SWD read in time: the probe sends 8D, a turnaround, then the target sends ACK OK, the 32-bit value and its parity. Back up the right, SWD_TransferCommand writes 01 01 and the value into dap_stage, dap_task publishes the reply, CPU 0's send_bulk_head copies it into the USB slot, and the controller sends it on EP1 IN.](docs/figures/architecture-packet.svg)
+![One DAP_Transfer that reads the DP's CTRL/STAT, bytes 05 00 01 06, followed down the left from the host through the USB controller, CPU 0, the mailbox and CPU 1 to the wire, and back up the right as the reply, 05 01 01 and the register's four bytes. Each step names its function and file and underlines the bytes it reads or writes: CPU 0's tud_vendor_rx_cb reads the first byte to rule out an abort and copies the packet into dap_stage; CPU 1's dap_task takes it; DAP_ProcessCommand reads 05, DAP_Transfer on SWD; SWD_TransferCommand reads the index, the count and the request, which swd_gen_packet makes 8D; the generated swd_gen_read drives the pins. Along the bottom, the SWD read in time: the probe sends 8D, a turnaround of two clocks follows, then the target sends ACK OK, the 32-bit value and its parity. Back up the right, SWD_TransferCommand writes 01 01 and the value into dap_stage, dap_task publishes the reply, CPU 0's send_bulk_head copies it into the USB slot, and the controller sends it on EP1 IN.](docs/figures/architecture-packet.svg)
 
 1. The host sends four bytes: the command, `05`; the DAP index, `00`; the number of transfers,
    `01`; and the request, `06`, a read of DP register 0x4.
@@ -237,7 +237,9 @@ writes the packet has the bytes it handles underlined.
 
 The wire along the bottom is that read in time. The probe changes SWDIO as SWCLK falls, and the
 target changes it as SWCLK rises, so the target's bits sit half a cycle later. A dashed stretch is
-a turnaround, where neither side drives the line. The middle of the data is cut out.
+a turnaround, where neither side drives the line. This read has a turnaround of two clocks. A host
+picks one to four: the probe's with `DAP_SWD_Configure`, and the target's in the DP's DLCR. Both
+start at one. The middle of the data is cut out.
 
 ## Verge Aux
 

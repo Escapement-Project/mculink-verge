@@ -484,13 +484,16 @@ def packet():
 
     # The wire, in time from left to right: SWCLK falls at each period's start and rises halfway.
     # The probe changes SWDIO as the clock falls; the target as it rises, so its bits sit half a
-    # period later. 46 periods: request 8, turnaround 1, ACK 3, data and parity 33, turnaround 1.
-    # The data's middle is cut out.
+    # period later. The read runs with a two-clock turnaround, as ARCHITECTURE.md says: one clock
+    # leaves only half a period undriven, which reads as a gap. 48 periods: request 8,
+    # turnaround 2, ACK 3, data and parity 33, turnaround 2. The data's middle is cut out.
     band(536, "Wire", 558)
-    P, X0 = 16, 112
+    P, X0, TRN = 20, 112, 2
     CK, DI = 576, 610           # the rows' middles
     hi_c, lo_c, hi, lo = CK - 7, CK + 7, DI - 7, DI + 7
-    cut0, cut1 = 448, 480
+    cut0 = X0 + 17 * P          # on a period's start, as is the last turnaround's end
+    cut1 = cut0 + 32
+    end = cut1 + 8 * P
     f.text(0, CK + 4, "SWCLK", size=13, kind="code", room=LX - 16)
     f.text(0, CK + 18, "P0_0", size=12, kind="code", tone=NOTE, room=LX - 16)
     f.text(0, DI + 4, "SWDIO", size=13, kind="code", room=LX - 16)
@@ -503,7 +506,7 @@ def packet():
         d += f"H{num(x1 + tail)}"
         f.path(d, tone="wire")
     clock(X0, cut0, lead=8)
-    clock(cut1, 640, tail=48)
+    clock(cut1, end, tail=688 - end)
 
     def levels(x0, bits, step):
         d, y = f"M{num(x0)},{num(hi if bits[0] else lo)}", hi if bits[0] else lo
@@ -516,21 +519,21 @@ def packet():
         f.path(d, tone="wire")
     request = [1, 0, 1, 1, 0, 0, 0, 1]  # 0x8D, least significant bit first
     levels(X0, request, P)
-    ack0 = X0 + 8 * P + P // 2      # the target's first bit, from the turnaround's rise
+    ack0 = X0 + (7 + TRN) * P + P // 2  # the target's first bit, from the turnaround's last rise
     levels(ack0, [1, 0, 0], P)       # OK
     for i, bit in enumerate(request):
         f.text(X0 + P * i + P / 2, DI - 12, str(bit), size=12, kind="code", tone=NOTE, anchor="middle", room=P)
     for i, bit in enumerate([1, 0, 0]):
         f.text(ack0 + P * i + P / 2, DI - 12, str(bit), size=12, kind="code", tone=NOTE, anchor="middle", room=P)
     # Neither drives the line in a turnaround, so it shows dashed.
-    f.path(f"M{num(X0 + 8 * P)},{num(hi)}H{num(ack0)}", tone="rule", dash="3 2")
-    d0, d1 = ack0 + 3 * P, 640 - P // 2
+    f.path(f"M{num(X0 + 8 * P)},{num(hi)}H{num(ack0)}", tone="rule", dash="2 1")
+    d0, d1 = ack0 + 3 * P, end - (TRN - 1) * P - P // 2
     f.path(f"M{num(d0)},{num(DI)}L{num(d0 + 5)},{num(hi)}H{num(cut0)}M{num(d0)},{num(DI)}L{num(d0 + 5)},{num(lo)}"
            f"H{num(cut0)}", tone="wire")
     f.path(f"M{num(cut1)},{num(hi)}H{num(d1 - 5)}L{num(d1)},{num(DI)}M{num(cut1)},{num(lo)}H{num(d1 - 5)}"
            f"L{num(d1)},{num(DI)}", tone="wire")
-    f.path(f"M{num(d1)},{num(hi)}H640", tone="rule", dash="3 2")
-    f.path(f"M640,{num(hi)}H688", tone="wire")
+    f.path(f"M{num(d1)},{num(hi)}H{num(end)}", tone="rule", dash="2 1")
+    f.path(f"M{num(end)},{num(hi)}H688", tone="wire")
     for x in (cut0 + 6, cut0 + 18):
         f.path(f"M{num(x - 4)},{num(lo + 6)}L{num(x + 4)},{num(hi_c - 6)}", tone="rule", width=1)
 

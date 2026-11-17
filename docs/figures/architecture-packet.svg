@@ -155,32 +155,32 @@
 <text x="0" y="594" font-size="12" fill="currentColor" class="vf-code vf-2">P0_0</text>
 <text x="0" y="614" font-size="13" fill="currentColor" class="vf-code">SWDIO</text>
 <text x="0" y="628" font-size="12" fill="currentColor" class="vf-code vf-2">P0_2</text>
-<path d="M104,569H112V583H120V569H128V583H136V569H144V583H152V569H160V583H168V569H176V583H184V569H192V583H200V569H208V583H216V569H224V583H232V569H240V583H248V569H256V583H264V569H272V583H280V569H288V583H296V569H304V583H312V569H320V583H328V569H336V583H344V569H352V583H360V569H368V583H376V569H384V583H392V569H400V583H408V569H416V583H424V569H432V583H440V569H448" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
-<path d="M480,569H480V583H488V569H496V583H504V569H512V583H520V569H528V583H536V569H544V583H552V569H560V583H568V569H576V583H584V569H592V583H600V569H608V583H616V569H624V583H632V569H688" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
-<path d="M112,603H128V617H144V603H160H176V617H192H208H224V603H240" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
-<path d="M248,603H264V617H280H296" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
-<text x="120" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">1</text>
-<text x="136" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">0</text>
-<text x="152" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">1</text>
-<text x="168" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">1</text>
-<text x="184" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">0</text>
-<text x="200" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">0</text>
-<text x="216" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">0</text>
-<text x="232" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">1</text>
-<text x="256" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">1</text>
-<text x="272" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">0</text>
-<text x="288" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">0</text>
-<path d="M240,603H248" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="3 2" class="vf-rule"/>
-<path d="M296,610L301,603H448M296,610L301,617H448" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
-<path d="M480,603H627L632,610M480,617H627L632,610" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
-<path d="M632,603H640" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="3 2" class="vf-rule"/>
-<path d="M640,603H688" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
-<path d="M450,623L458,563" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule"/>
-<path d="M462,623L470,563" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule"/>
-<path d="M112,629V634H240V629" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule"/>
-<text x="176" y="650" font-size="14" fill="currentColor" text-anchor="middle">8D, from the probe</text>
-<path d="M248,629V634H632V629" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule"/>
-<text x="440" y="650" font-size="14" fill="currentColor" text-anchor="middle">ACK OK, CTRL/STAT and parity, from the target</text>
+<path d="M104,569H112V583H122V569H132V583H142V569H152V583H162V569H172V583H182V569H192V583H202V569H212V583H222V569H232V583H242V569H252V583H262V569H272V583H282V569H292V583H302V569H312V583H322V569H332V583H342V569H352V583H362V569H372V583H382V569H392V583H402V569H412V583H422V569H432V583H442V569H452" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
+<path d="M484,569H484V583H494V569H504V583H514V569H524V583H534V569H544V583H554V569H564V583H574V569H584V583H594V569H604V583H614V569H624V583H634V569H688" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
+<path d="M112,603H132V617H152V603H172H192V617H212H232H252V603H272" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
+<path d="M302,603H322V617H342H362" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
+<text x="122" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">1</text>
+<text x="142" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">0</text>
+<text x="162" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">1</text>
+<text x="182" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">1</text>
+<text x="202" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">0</text>
+<text x="222" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">0</text>
+<text x="242" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">0</text>
+<text x="262" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">1</text>
+<text x="312" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">1</text>
+<text x="332" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">0</text>
+<text x="352" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">0</text>
+<path d="M272,603H302" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 1" class="vf-rule"/>
+<path d="M362,610L367,603H452M362,610L367,617H452" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
+<path d="M484,603H609L614,610M484,617H609L614,610" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
+<path d="M614,603H644" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 1" class="vf-rule"/>
+<path d="M644,603H688" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
+<path d="M454,623L462,563" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule"/>
+<path d="M466,623L474,563" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule"/>
+<path d="M112,629V634H272V629" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule"/>
+<text x="192" y="650" font-size="14" fill="currentColor" text-anchor="middle">8D, from the probe</text>
+<path d="M302,629V634H614V629" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule"/>
+<text x="458" y="650" font-size="14" fill="currentColor" text-anchor="middle">ACK OK, CTRL/STAT and parity, from the target</text>
 <path d="M96,473L96,603L105,603" fill="none" stroke="currentColor" stroke-width="1.5"/>
 <path d="M110,603L103,606.15L103,599.85Z" fill="currentColor"/>
 <path d="M692,603L704,603L704,478" fill="none" stroke="currentColor" stroke-width="1.5"/>
