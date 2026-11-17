@@ -236,10 +236,12 @@ writes the packet has the bytes it handles underlined.
 12. The host reads seven bytes: `05 01 01` and the register's value.
 
 The wire along the bottom is that read in time. The probe changes SWDIO as SWCLK falls, and the
-target changes it as SWCLK rises, so the target's bits sit half a cycle later. A dashed stretch is
-a turnaround, where neither side drives the line. This read has a turnaround of two clocks. A host
-picks one to four: the probe's with `DAP_SWD_Configure`, and the target's in the DP's DLCR. Both
-start at one. The middle of the data is cut out.
+target changes it as SWCLK rises, so the target's bits sit half a cycle later. A dashed stretch is a
+turnaround, where neither side drives the line. The probe lets go just after the request's last
+rising edge. It takes the line back after the last rising edge of the turnaround after the data.
+This read has a turnaround of two clocks. A host picks one to four: the probe's with
+`DAP_SWD_Configure`, and the target's in the DP's DLCR. Both start at one. The middle of the data is
+cut out.
 
 ## Verge Aux
 

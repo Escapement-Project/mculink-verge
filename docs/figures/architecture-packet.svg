@@ -157,7 +157,7 @@
 <text x="0" y="628" font-size="12" fill="currentColor" class="vf-code vf-2">P0_2</text>
 <path d="M104,569H112V583H122V569H132V583H142V569H152V583H162V569H172V583H182V569H192V583H202V569H212V583H222V569H232V583H242V569H252V583H262V569H272V583H282V569H292V583H302V569H312V583H322V569H332V583H342V569H352V583H362V569H372V583H382V569H392V583H402V569H412V583H422V569H432V583H442V569H452" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
 <path d="M484,569H484V583H494V569H504V583H514V569H524V583H534V569H544V583H554V569H564V583H574V569H584V583H594V569H604V583H614V569H624V583H634V569H688" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
-<path d="M112,603H132V617H152V603H172H192V617H212H232H252V603H272" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
+<path d="M112,603H132V617H152V603H172H192V617H212H232H252V603H262" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
 <path d="M302,603H322V617H342H362" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
 <text x="122" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">1</text>
 <text x="142" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">0</text>
@@ -170,17 +170,17 @@
 <text x="312" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">1</text>
 <text x="332" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">0</text>
 <text x="352" y="598" font-size="12" fill="currentColor" text-anchor="middle" class="vf-code vf-2">0</text>
-<path d="M272,603H302" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 1" class="vf-rule"/>
+<path d="M262,603H302" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 1" class="vf-rule"/>
 <path d="M362,610L367,603H452M362,610L367,617H452" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
-<path d="M484,603H609L614,610M484,617H609L614,610" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
-<path d="M614,603H644" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 1" class="vf-rule"/>
-<path d="M644,603H688" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
+<path d="M484,603H589L594,610M484,617H589L594,610" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
+<path d="M594,603H634" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 1" class="vf-rule"/>
+<path d="M634,603H688" fill="none" stroke="currentColor" stroke-width="1.5" class="vf-wire"/>
 <path d="M454,623L462,563" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule"/>
 <path d="M466,623L474,563" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule"/>
-<path d="M112,629V634H272V629" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule"/>
-<text x="192" y="650" font-size="14" fill="currentColor" text-anchor="middle">8D, from the probe</text>
-<path d="M302,629V634H614V629" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule"/>
-<text x="458" y="650" font-size="14" fill="currentColor" text-anchor="middle">ACK OK, CTRL/STAT and parity, from the target</text>
+<path d="M112,629V634H262V629" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule"/>
+<text x="187" y="650" font-size="14" fill="currentColor" text-anchor="middle">8D, from the probe</text>
+<path d="M302,629V634H594V629" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule"/>
+<text x="448" y="650" font-size="14" fill="currentColor" text-anchor="middle">ACK OK, CTRL/STAT and parity, from the target</text>
 <path d="M96,473L96,603L105,603" fill="none" stroke="currentColor" stroke-width="1.5"/>
 <path d="M110,603L103,606.15L103,599.85Z" fill="currentColor"/>
 <path d="M692,603L704,603L704,478" fill="none" stroke="currentColor" stroke-width="1.5"/>

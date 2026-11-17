@@ -484,9 +484,11 @@ def packet():
 
     # The wire, in time from left to right: SWCLK falls at each period's start and rises halfway.
     # The probe changes SWDIO as the clock falls; the target as it rises, so its bits sit half a
-    # period later. The read runs with a two-clock turnaround, as ARCHITECTURE.md says: one clock
-    # leaves only half a period undriven, which reads as a gap. 48 periods: request 8,
-    # turnaround 2, ACK 3, data and parity 33, turnaround 2. The data's middle is cut out.
+    # period later. The probe lets go just after the park bit's rise and takes the line back after
+    # the last rise of the turnaround after the data (swd_gen.c, release() and schedule_read()), so
+    # each turnaround leaves TRN whole periods undriven. The read runs with a two-clock turnaround,
+    # as ARCHITECTURE.md says. 48 periods: request 8, turnaround 2, ACK 3, data and parity 33,
+    # turnaround 2. The data's middle is cut out.
     band(536, "Wire", 558)
     P, X0, TRN = 20, 112, 2
     CK, DI = 576, 610           # the rows' middles
@@ -508,17 +510,19 @@ def packet():
     clock(X0, cut0, lead=8)
     clock(cut1, end, tail=688 - end)
 
-    def levels(x0, bits, step):
+    def levels(x0, bits, step, end=None):
+        """Bits from x0, each `step` wide, the last ending at `end` where the driver lets go."""
         d, y = f"M{num(x0)},{num(hi if bits[0] else lo)}", hi if bits[0] else lo
         for i, bit in enumerate(bits):
             ny = hi if bit else lo
             if ny != y:
                 d += f"V{num(ny)}"
                 y = ny
-            d += f"H{num(x0 + step * (i + 1))}"
+            d += f"H{num(end if end is not None and i == len(bits) - 1 else x0 + step * (i + 1))}"
         f.path(d, tone="wire")
     request = [1, 0, 1, 1, 0, 0, 0, 1]  # 0x8D, least significant bit first
-    levels(X0, request, P)
+    park = X0 + 7 * P + P // 2  # the park bit's rise, where the probe lets go
+    levels(X0, request, P, end=park)
     ack0 = X0 + (7 + TRN) * P + P // 2  # the target's first bit, from the turnaround's last rise
     levels(ack0, [1, 0, 0], P)       # OK
     for i, bit in enumerate(request):
@@ -526,14 +530,16 @@ def packet():
     for i, bit in enumerate([1, 0, 0]):
         f.text(ack0 + P * i + P / 2, DI - 12, str(bit), size=12, kind="code", tone=NOTE, anchor="middle", room=P)
     # Neither drives the line in a turnaround, so it shows dashed.
-    f.path(f"M{num(X0 + 8 * P)},{num(hi)}H{num(ack0)}", tone="rule", dash="2 1")
-    d0, d1 = ack0 + 3 * P, end - (TRN - 1) * P - P // 2
+    f.path(f"M{num(park)},{num(hi)}H{num(ack0)}", tone="rule", dash="2 1")
+    # The target lets go at the rise after its parity bit; the probe takes the line back after the
+    # turnaround's last rise, half a period before the end.
+    d0, d1, back = ack0 + 3 * P, end - TRN * P - P // 2, end - P // 2
     f.path(f"M{num(d0)},{num(DI)}L{num(d0 + 5)},{num(hi)}H{num(cut0)}M{num(d0)},{num(DI)}L{num(d0 + 5)},{num(lo)}"
            f"H{num(cut0)}", tone="wire")
     f.path(f"M{num(cut1)},{num(hi)}H{num(d1 - 5)}L{num(d1)},{num(DI)}M{num(cut1)},{num(lo)}H{num(d1 - 5)}"
            f"L{num(d1)},{num(DI)}", tone="wire")
-    f.path(f"M{num(d1)},{num(hi)}H{num(end)}", tone="rule", dash="2 1")
-    f.path(f"M{num(end)},{num(hi)}H688", tone="wire")
+    f.path(f"M{num(d1)},{num(hi)}H{num(back)}", tone="rule", dash="2 1")
+    f.path(f"M{num(back)},{num(hi)}H688", tone="wire")
     for x in (cut0 + 6, cut0 + 18):
         f.path(f"M{num(x - 4)},{num(lo + 6)}L{num(x + 4)},{num(hi_c - 6)}", tone="rule", width=1)
 
@@ -542,7 +548,7 @@ def packet():
         y = DI + 24
         f.path(f"M{num(x0)},{num(y - 5)}V{num(y)}H{num(x1)}V{num(y - 5)}", tone="rule", width=1)
         f.text((x0 + x1) / 2, y + 16, label, size=14, anchor="middle", room=x1 - x0 + 40)
-    drive(X0, X0 + 8 * P, "8D, from the probe")
+    drive(X0, park, "8D, from the probe")
     drive(ack0, d1, "ACK OK, CTRL/STAT and parity, from the target")
 
     # Down the left route into the wire, out of it and up the right route.
