@@ -1612,16 +1612,18 @@ COMMAND_PATH void jtag_gen_learn(uint32_t wire) {
     waited = false;
 }
 
-/** The configuration the host asked for, before pacing. */
+/** The configuration the host asked for, before pacing. ARM's handlers store a command's index
+ * before they refuse one past the chain, and nothing clears it: such an index builds for the
+ * chain's first position, since no command transfers or measures there and a sequence uses none. */
 static struct jtag_gen_config host_config(uint32_t wire) {
+    const uint32_t count = DAP_Data.jtag_dev.count;
+    const uint32_t index = DAP_Data.jtag_dev.index < count ? DAP_Data.jtag_dev.index : 0U;
     return (struct jtag_gen_config){
         .wire = wire,
         .period = period_for(jtag_gen_clock_hz),
         .latency = jtag_gen_latency[JTAG_GEN_PINS(wire)],
-        .before = DAP_Data.jtag_dev.index,
-        .after = DAP_Data.jtag_dev.index < DAP_Data.jtag_dev.count
-                     ? DAP_Data.jtag_dev.count - DAP_Data.jtag_dev.index - 1U
-                     : 0U,
+        .before = index,
+        .after = index < count ? count - index - 1U : 0U,
         .idle = DAP_Data.transfer.idle_cycles,
         .stall = wire == JTAG_GEN_FOUR_WIRE ? gen_stall : 0U,
     };

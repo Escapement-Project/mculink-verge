@@ -743,6 +743,37 @@ def check_jtag_chain(c: Checker, elf: str) -> None:
     c.note("zero-length JTAG IRs rejected without changing the prior chain, including long-IR chains")
 
 
+def check_stale_jtag_index(c: Checker, elf: str) -> None:
+    """A command that names a TAP past the chain is refused, and leaves its index behind: ARM's
+    handlers store it before they check it. A sequence uses no TAP and a transfer block sets its
+    own, so neither may depend on that index; both used to fail until a valid transfer reset it.
+    Vendor 0x8A's measurement scans at the index left, so it is refused there and keeps the latency
+    in use: it used to measure past the chain's arrays and set a latency that failed every read."""
+    from cycles import JTAG_DR_OK, JtagTap
+    word = 0x12345678
+    product = "jtag_gen_clock_hz" in symbols_with_size(elf)
+    for poison, refused in ((bytes([5, 40, 1, 0x02]), bytes([5, 0, 0])), (bytes([0x16, 40]), bytes([0x16, 0xFF]))):
+        probe = Machine(elf, Target([]), restart_at=set(), model=Model(), timed=False)
+        probe.tap = JtagTap(JTAG_DR_OK | (word << 3), 35)
+        for setup in (bytes([2, 2]), bytes([0x11]) + u32(10_000_000), bytes([4, 0]) + u16(0) + u16(0),
+                      bytes([0x15, 1, 4])):
+            probe.command(setup)
+        # The TAP model sees the wire only between begin() and end().
+        probe.begin()
+        what = f"after {poison.hex()}"
+        c.check(probe.command(poison) == refused, f"{what}: the out-of-range index was not refused")
+        if product:
+            latency = probe.command(bytes([0x8A, 0, 0, 0]))[3]
+            reply = probe.command(bytes([0x8A, 0, 0, 1]))
+            c.check(reply[1] == 0xFF and reply[3] == latency,
+                    f"{what}: a measurement at the index left answered {reply[1]:#04x}, latency {latency} -> {reply[3]}")
+        c.check(probe.command(bytes([0x14, 1, 8, 0xFF])) == bytes([0x14, 0]), f"{what}: a JTAG sequence failed")
+        reply = probe.command(bytes([6, 0]) + u16(1) + bytes([0x02]))
+        c.check(reply == bytes([6, 1, 0, 1]) + u32(word), f"{what}: a block at index 0 answered {reply.hex()}")
+        probe.end()
+    c.note("a refused out-of-range TAP index leaves JTAG sequences and transfer blocks working, and is not measured at")
+
+
 def check_energy_descriptors(c: Checker, elf: str, slots: int) -> None:
     sym = symbols_with_size(elf)
     if not c.check("capture_ring_init" in sym, "energy ring initialization missing"):
@@ -2968,6 +2999,7 @@ def main() -> int:
             campaign(c, args.core1, symbols_with_size(args.core1), seed=seed, steps=128, capacity=capacity)
     check_vendor_plans(c, args.core1, symbols_with_size(args.core1), vendor_boards(args.core1, slots))
     check_jtag_chain(c, args.core1)
+    check_stale_jtag_index(c, args.core1)
     check_energy_descriptors(c, args.core1, slots)
     check_stream_storage(c, args.elf, args.core1)
     check_energy_control(c, args.elf, args.core1, slots)

@@ -731,7 +731,9 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             } else if (mode == SWD_GEN_MODE_AUTOMATIC) {
                 jtag_sweep_automatic = true;
             } else if (mode == SWD_GEN_MODE_MEASURE) {
-                if (DAP_Data.debug_port == DAP_PORT_JTAG) {
+                // The measurement scans at the index the host's last transfer left, which ARM's
+                // handlers store before they refuse one past the chain.
+                if ((DAP_Data.debug_port == DAP_PORT_JTAG) && (DAP_Data.jtag_dev.index < DAP_Data.jtag_dev.count)) {
                     jtag_sweep();
                 } else {
                     response[1] = DAP_ERROR;
