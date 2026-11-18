@@ -18,7 +18,7 @@ Source: UM11126 rev 2.8 tables 4, 5 and 6.
 | Port | Addresses (non-secure; secure is +0x1000_0000) | What is there |
 | --- | --- | --- |
 | 0 | 0x0000_0000 flash, 0x0300_0000 boot ROM | Both cores' C code (CPU 0 from 0x200, CPU 1 from 0x4_0000) |
-| 1 | 0x0400_0000 SRAMX, 32 KB | Generated code (SWD, JTAG), code lab arena at 0x0400_4000 |
+| 1 | 0x0400_0000 SRAMX, 32 KB | Generated code: SWD's in the lower 16 KB, JTAG's in all of it. A lab build keeps JTAG's to the lower half and has the code lab's arena at 0x0400_4000 |
 | 2 | 0x2000_0000 SRAM0, 64 KB | CPU 0's data, stack (top 4 KB, see [STACK.md](STACK.md)) and `.ramfunc` (`vcom_task` and the energy integration among them); the consoles' receive rings, send buffers and ring descriptors, and the energy ring, its reload descriptors and its integration state (`energy_integration`), which DMA0 reaches |
 | 3 | 0x2001_0000 SRAM1, 64 KB | CPU 1's full 16 KiB stack in the bottom quarter. From 0x2001_4000, in this order: its `.ramfunc` (command processing around the generated code, and the sample probe's reads), the SWD generator and the JTAG generator's scans, `.data`, `.bss` and `.cold_bss`. They run on into SRAM2 |
 | 4 | 0x2002_0000 SRAM2, 64 KB | Where CPU 1's RAM code and data run on from SRAM1. How far into the list above the boundary falls depends on the compiler: GCC's product image crosses it at the end of `.data`, clang's inside the JTAG generator. In both, `.bss`, with `request_copy`, `response_copy` and the abort byte CPU 0 sets, is here. tools/image.py refuses a product image whose RAM code or data, `.cold_bss` aside, reaches SRAM3. In the ARM reference build, ARM's bit paths in `.ramfunc` and its `.bss`, which on GCC run on into SRAM3 |

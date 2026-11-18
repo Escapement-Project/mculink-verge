@@ -11,7 +11,7 @@
  *   GPIO stores go out on, which is where the bit paths in .ramfunc run today.
  * - **SRAMX**, the upper 16 KB of the 32 KB at 0x04000000. The core fetches it over C-AHB, so
  *   instruction fetch and GPIO traffic do not share a port. The lower half holds the generated
- *   SWD paths (src/swd_gen.c).
+ *   code, which a lab build keeps to it (src/jtag_gen.h).
  *
  * Request, after the id:
  *

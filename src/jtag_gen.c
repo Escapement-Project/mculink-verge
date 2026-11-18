@@ -1605,8 +1605,10 @@ struct jtag_gen_log_entry jtag_gen_log[JTAG_GEN_LOG_SIZE];
 // depends on its configuration alone, which regenerate already relies on when it keeps the code in
 // place. Its scans serve a scan-only request as well. Two, because a connect builds at the default
 // latency and again at the one its measurement leads to, which can differ from 25 MHz up; the
-// least recently used goes when a third comes.
+// least recently used goes when a third comes. A build past SAVED_BYTES, which only cJTAG
+// transfers on a long frame or chain make, is not kept and builds again.
 #define SAVED_BUILDS 2U
+#define SAVED_BYTES 0x4000U
 static COLD_BSS struct saved_build {
     bool valid;
     uint32_t used; // saved_uses when it was last saved or restored
@@ -1619,7 +1621,7 @@ static COLD_BSS struct saved_build {
     jtag_gen_scan_fn eot_pad;
     jtag_gen_xfer_fn read;
     jtag_gen_xfer_fn write;
-    uint32_t code[JTAG_GEN_SIZE / 4U];
+    uint32_t code[SAVED_BYTES / 4U];
 } saved[SAVED_BUILDS];
 static uint32_t saved_uses;
 
@@ -1756,7 +1758,7 @@ static __attribute__((noinline)) bool regenerate(uint32_t wire, bool transfers) 
     } else {
         jtag_gen_failures++;
     }
-    if (built_ok && transfers) {
+    if (built_ok && transfers && (jtag_gen_info.code_bytes <= SAVED_BYTES)) {
         struct saved_build* slot = &saved[0];
         for (uint32_t i = 1U; i < SAVED_BUILDS; i++) {
             if (!saved[i].valid || (slot->valid && (saved[i].used < slot->used))) {

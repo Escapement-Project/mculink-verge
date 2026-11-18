@@ -10,16 +10,21 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/** Where the generated code lives: the lower half of SRAMX, which it shares with src/swd_gen.c's
- * (see gen_owner). tools/gen_host builds the generator elsewhere and puts it at an address of its
+/** Where the generated code lives: SRAMX, whose lower half it shares with src/swd_gen.c's (see
+ * gen_owner). cJTAG's scans can take most of that half, OScan6's at every clock, so the transfers
+ * run on into the upper one; a code lab build keeps the upper half for the lab's arena
+ * (src/code_lab.c). tools/gen_host builds the generator elsewhere and puts it at an address of its
  * own. */
 #ifndef JTAG_GEN_BASE
 #define JTAG_GEN_BASE 0x04000000U
 #endif
+#ifdef CODE_LAB
 #define JTAG_GEN_SIZE 0x4000U
-/** Unrolled transfers longer than this loop their data bits instead, where a loop fits. A loop
- * costs JTAG blocks several percent at 25 and 50 MHz on the bench, and saves up to 6 KB
- * between 11 and 22 MHz. */
+#else
+#define JTAG_GEN_SIZE 0x8000U
+#endif
+/** Unrolled transfers have to end this far into the region, the scans before them included. Past
+ * it they loop their data bits instead, where a loop fits, which costs a few cycles a word. */
 #define JTAG_GEN_UNROLLED_MAX 0x3000U
 
 /** A cJTAG packet the probe drives is a falling edge, a data store and a rising edge. A

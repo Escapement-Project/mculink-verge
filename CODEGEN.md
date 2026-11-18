@@ -11,9 +11,10 @@ cJTAG wire, and the [measurement log](MEASUREMENTS.md) the evidence.
   on core cycles, sorted, at most one a cycle. The emitter writes a schedule out as code, with a
   filler or a counted loop in every gap. Each generator decides where its own instructions go. They
   run one at a time and share one event workspace.
-- SWD and JTAG share SRAMX's lower 16 KB, 0x0400_0000..0x0400_3FFF; the code lab's arena is the
-  upper 16 KB. The two are never in use at once, so each generates its code again when it finds the
-  other's there (`gen_owner`).
+- SWD and JTAG share SRAMX, from 0x0400_0000: SWD takes the lower 16 KB, and JTAG all 32 KB, since
+  cJTAG's transfers on a long frame or chain do not fit beside the scans in the lower half, OScan6's
+  at most clocks. A lab build keeps JTAG to the lower half too, for the code lab's arena. The two are never in use at once, so each generates its
+  code again when it finds the other's there (`gen_owner`).
 - When: most settings arrive in a command of their own: `DAP_SWJ_Clock`, `DAP_SWD_Configure`,
   `DAP_TransferConfigure`, `DAP_JTAG_Configure`, cJTAG's scan format (`0x95`), a read latency set or
   measured through `0x89` or `0x8A`, and pacing turned on or off through `0x8B`. CPU 1 generates the
@@ -246,8 +247,9 @@ One generator draws both JTAG and cJTAG; `src/jtag_gen.c`'s opening comment has 
   base + 32n + pin, W at base + 0x1000 + 128n + 4*pin, and SET, CLR and NOT 4n further on.
 - BOARDS.md has the pins. P0_28, SWDIO's TXEN, is high while the probe drives. J8's marker pins are
   port 1, pins 0-3.
-- SRAMX, 0x0400_0000-0x0400_7FFF, is executable and always clocked. The generated code takes the
-  lower 16 KB, and the code lab's arena, in a lab build, the upper 16 KB. Nothing else uses it.
+- SRAMX, 0x0400_0000-0x0400_7FFF, is executable and always clocked. The generated code takes all of
+  it, or the lower 16 KB in a lab build, whose code lab arena is the upper 16 KB. Nothing else uses
+  it.
   Data accesses to SRAMX go over C-AHB and would contend with fetch, so keep data in SRAM.
 - DWT->CYCCNT is at 0xE000_1004, enabled by `board_timestamp_init`.
 - Code executes from 0x2000_0000 and 0x0400_0000. The SAU is off, so every access is secure, at

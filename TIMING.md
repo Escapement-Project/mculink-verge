@@ -7,8 +7,9 @@ docs/wires.md and CJTAG.md.
 
 ## Where generated code runs
 
-Generated code runs in SRAMX's lower 16 KB, from 0x0400_0000. Nothing else in a product image uses
-SRAMX. The code lab's arena, in a lab build only, is its upper 16 KB.
+Generated code runs in SRAMX, from 0x0400_0000: SWD's in the lower 16 KB, and JTAG's in all 32 KB,
+or the lower 16 KB in a lab build, where the code lab's arena is the upper 16 KB. Nothing else
+uses SRAMX.
 
 The core fetches SRAMX over C-AHB and makes its data accesses over S-AHB, so the two never wait
 for each other. ARM's bit paths run from SRAM, which the core fetches over S-AHB. There every
