@@ -1,4 +1,4 @@
-/** What the run-time generators share: a schedule of instructions placed on core cycles, and the
+/** What the runtime generators share: a schedule of instructions placed on core cycles, and the
  * emitter that writes one out as code with the gaps filled.
  *
  * src/swd_gen.c and src/jtag_gen.c each decide where their own instructions go. TIMING.md has the

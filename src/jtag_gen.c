@@ -1,4 +1,4 @@
-/** Generate the JTAG and cJTAG wire paths at run time, placed to the cycle, with cJTAG in
+/** Generate the JTAG and cJTAG wire paths at runtime, placed to the cycle, with cJTAG in
  * IEEE 1149.7 OScan1, OScan2, OScan5 and OScan6.
  *
  * CJTAG.md has the wire this places by, measured on a CC1312R1. TIMING.md has the cycle rules,

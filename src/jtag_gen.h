@@ -1,5 +1,5 @@
 /** The JTAG and cJTAG wire paths (cJTAG in IEEE 1149.7 OScan1, OScan2, OScan5 and OScan6),
- * generated at run time for the clock the host asked for.
+ * generated at runtime for the clock the host asked for.
  *
  * src/jtag_gen.c writes them into SRAMX with every edge and sample placed to the core cycle, as
  * src/swd_gen.c does for SWD. src/jtag_gen_dp.c builds ARM's JTAG entry points on them.

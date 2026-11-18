@@ -79,11 +79,11 @@
  * The reply, after the echoed command id:
  *
  *     [0..4]  "CJTAG"                 magic
- *     [5]     format version          this layout is 7
+ *     [5]     format version          8; the fields are format 7's (below)
  *     [6]     capability flags        CJTAG_CAP_*
  *     [7]     build string length n
  *     [8..]   build string, n bytes, not terminated
- *     [8+n]   board                   BOARD_KIND_* (board_pins.h); format 3 on
+ *     [8+n]   board                   BOARD_KIND_* (board_straps.h); format 3 on
  *     [9+n]   0, u32                  format 4 to 6: the scan formats; see below
  *     [13+n]  extended capabilities   u32 LE; bit 0: energy capture; bit 2: accumulated energy;
  *                                     bits 3–4: SPI and I2C; bit 5: calibrated energy fields;
@@ -125,9 +125,9 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
 #define CJTAG_CAP_OSCAN1_ACTIVE (1U << 1)
 /// ID_VENDOR_TARGET is implemented.
 #define CJTAG_CAP_TARGET_SENSE (1U << 2)
-/// The SWD paths are generated at run time, and ID_VENDOR_SWD_GEN is implemented.
+/// The SWD paths are generated at runtime, and ID_VENDOR_SWD_GEN is implemented.
 #define CJTAG_CAP_SWD_CODEGEN (1U << 3)
-/// cJTAG frames are generated at run time, and ID_VENDOR_JTAG_GEN is implemented.
+/// cJTAG frames are generated at runtime, and ID_VENDOR_JTAG_GEN is implemented.
 #define CJTAG_CAP_JTAG_CODEGEN (1U << 5)
 /// ID_VENDOR_DIO acts: the plain board, and a Pro whose J15 (USB-SIO off) was not fitted when the
 /// probe started. The jumpers are read once at boot, so this describes the running image.

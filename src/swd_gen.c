@@ -1,4 +1,4 @@
-/** Generate the SWD transfer paths at run time, placed to the cycle.
+/** Generate the SWD transfer paths at runtime, placed to the cycle.
  *
  * TIMING.md has the rules this places by and CODEGEN.md the reasoning. In brief:
  *

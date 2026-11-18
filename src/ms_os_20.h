@@ -2,7 +2,7 @@
  *  interfaces the configuration has. Free of TinyUSB and hardware, so tools/ms_os_20_test.c runs it
  *  on the host.
  *
- * Its nested length fields have to agree with the bytes after them, and nothing at run time reports
+ * Its nested length fields have to agree with the bytes after them, and nothing at runtime reports
  * a mismatch: Windows just binds no driver. So they are computed here, never written by hand.
  */
 #ifndef MS_OS_20_H

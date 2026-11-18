@@ -49,11 +49,11 @@ option(MARKER "Mark command processing on the J8 header" ON)
 # Sample SWDIO just after the rising edge on the delayed SWD path, with each transfer masked. Off
 # until the bench has settled it; MEASUREMENTS.md has the measurements behind it.
 option(SWD_SAMPLE_AFTER_EDGE "Sample SWDIO after the rising edge on the delayed SWD path" OFF)
-# Generate the SWD transfer paths at run time into SRAMX, for the clock the host asks for. See
+# Generate the SWD transfer paths at runtime into SRAMX, for the clock the host asks for. See
 # src/swd_gen.c.
-option(SWD_CODEGEN "Generate the SWD transfer paths at run time" ON)
-# Generate the four-wire and two-pin JTAG paths at run time into SRAMX. See src/jtag_gen.c.
-option(JTAG_CODEGEN "Generate the JTAG transfer paths at run time" ON)
+option(SWD_CODEGEN "Generate the SWD transfer paths at runtime" ON)
+# Generate the four-wire and two-pin JTAG paths at runtime into SRAMX. See src/jtag_gen.c.
+option(JTAG_CODEGEN "Generate the JTAG transfer paths at runtime" ON)
 # A product image generates both and carries no ARM transfer path. Both off is the ARM reference,
 # the wire tools/equiv.py holds the generated paths to: a test build, marked +armwire.
 if((SWD_CODEGEN AND NOT JTAG_CODEGEN) OR (JTAG_CODEGEN AND NOT SWD_CODEGEN))

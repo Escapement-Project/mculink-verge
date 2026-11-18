@@ -3,8 +3,8 @@
  * CMSIS-DAP v2 is a vendor-class interface with one bulk OUT and one bulk IN endpoint, which the
  * host finds through a WinUSB descriptor rather than by class. The interface string must begin
  * with "CMSIS-DAP": that prefix is how host tools, probe-rs included, tell a DAP interface from
- * any other vendor interface on the same device. Verge Aux, on the Pro, is another such interface,
- * named so that nothing looking for CMSIS-DAP takes it.
+ * any other vendor interface on the same device. Verge Aux, on both boards, is another such
+ * interface, named so that nothing looking for CMSIS-DAP takes it.
  *
  * The MS OS 2.0 descriptor set comes from src/ms_os_20.h. Its request handling follows TinyUSB's
  * webusb_serial example (MIT, THIRD-PARTY-NOTICES.md).

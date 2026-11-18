@@ -1,4 +1,4 @@
-/** The SWD transfer paths, generated at run time for the clock the host asked for.
+/** The SWD transfer paths, generated at runtime for the clock the host asked for.
  *
  * src/swd_gen.c writes two functions into SRAMX, one for reads and one for writes, with every
  * store and every sample placed to the core cycle by the timing model in TIMING.md.
