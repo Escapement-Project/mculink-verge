@@ -5,10 +5,10 @@
 # ///
 """Talk to a CMSIS-DAP v2 probe over its bulk endpoints, without probe-rs in the way.
 
-The bench needs three things probe-rs cannot do: read every `DAP_Info` field including the ones it
-ignores, send vendor commands, and emit a bare clock burst with nothing wrapped around it. The
-third is what the clock calibration measures -- `DAP_SWJ_Sequence` is the only command on the wire
-whose cycles-per-bit is the quantity ARM's clock arithmetic is about.
+It does three things probe-rs cannot: read every `DAP_Info` field, including the ones probe-rs
+ignores; send vendor commands; and send a bare clock burst with nothing wrapped around it. The
+clock calibration measures that burst. `DAP_SWJ_Sequence` is the only command on the wire whose
+cycles per bit are the quantity ARM's clock arithmetic is about.
 
     uv run tools/dap.py list
     uv run tools/dap.py info --serial <serial>
@@ -360,7 +360,7 @@ def cmd_info(args) -> int:
     return 0
 
 
-# Vendor 0x82's board byte, as src/board_pins.h numbers it.
+# Vendor 0x82's board byte, as src/board_straps.h numbers it.
 BOARDS = {0: "standalone MCU-Link", 1: "MCU-Link Pro", 2: "on-board MCU-Link"}
 # Vendor 0x82's capability flags, by bit. Bit 1, cJTAG framing on now, is printed on its own line.
 IDENTIFY_FLAGS = {2: "target sense", 3: "SWD generated", 5: "JTAG and cJTAG generated", 6: "DIO",
@@ -572,8 +572,9 @@ def cmd_target(args) -> int:
 
     An empty connector reads about 3.3 V, because the probe holds pin 1 up through 33K, so the
     voltage alone does not say a target is there: pin 9 does, when the target header grounds it.
-    A target that is connected but unpowered reads well below its supply but not zero, wherever
-    the dead board pulls the 33K: about 1.1 V for the MSPM0 board on the bench.
+    A target that is connected but unpowered reads well below its supply but not zero: its board
+    pulls the 33K down to a level that differs from board to board (BENCH.md, "Target sense", has
+    one).
 
     `--sweep` converts every ADC0 channel on both sides instead, which is how the supply's channel
     is found: run it with the target powered and again unpowered, and the channel that moves is
@@ -649,7 +650,7 @@ def show_energy_sample(probe: Probe) -> str:
 def show_energy_total(probe: Probe) -> str:
     result, body = energy(probe, bytes([3]))
     nj, pairs = struct.unpack_from("<QQ", body)
-    return f"{energy_result(result)}: {nj} nJ over {pairs} pairs"
+    return f"{energy_result(result)}: {nj} nJ over {pairs} samples"
 
 
 def show_energy_calibration(probe: Probe) -> str:
@@ -684,7 +685,7 @@ def cmd_energy(args) -> int:
         if result != 0:
             raise RuntimeError(f"start: {energy_result(result)}")
         held = "holding the high range" if high else "switching ranges automatically"
-        print(f"started at {int.from_bytes(body[:4], 'little')} pairs/s, {held}")
+        print(f"started at {int.from_bytes(body[:4], 'little')} samples/s, {held}")
     if args.action == "latest":
         print(show_energy_sample(probe))
     elif args.action == "calibration":
@@ -1956,9 +1957,9 @@ def sweep_block_reads(probe: Probe, index: int, args) -> None:
 def cmd_cjtag(args) -> int:
     """Activate OScan1, by default with TI's sequence, then read the first TAP's IDCODE over cJTAG.
 
-    The TAP is reset with TMS high and walked straight to Shift-DR, which is how the working J-Link
-    read does it: a reset leaves IDCODE selected, so no instruction is shifted. With framing on,
-    every one of these clocks leaves the probe as a three-packet OScan1 frame.
+    The TAP is reset with TMS high and walked straight to Shift-DR. A reset leaves IDCODE
+    selected, so no instruction is shifted. With framing on, every one of these clocks leaves the
+    probe as a three-packet OScan1 frame. Returns 1 if any read's IDCODE is not `--expect`.
     """
     probe = one(args)
     print(f"{probe.serial}  {probe.vendor} / {probe.product}")
@@ -2021,6 +2022,7 @@ def cmd_cjtag(args) -> int:
             at += n
         probe.jtag_sequence(runs)
         print(f"  framed TMS {args.pre_tms} TDI {tdi_bits}")
+    wrong = 0
     for attempt in range(args.repeat):
         if args.nreset and attempt:
             # nRESET is bit 7; nothing else on the wire moves.
@@ -2044,6 +2046,7 @@ def cmd_cjtag(args) -> int:
             ]
         )
         idcode = tdo[0] | (tdo[1] << 31)
+        wrong += idcode != args.expect
         verdict = "matches" if idcode == args.expect else f"expected 0x{args.expect:08x}"
         if idcode == 1 << 31:
             verdict += "; TDO equals the TMS sent, so nothing drove the wire"
@@ -2057,7 +2060,7 @@ def cmd_cjtag(args) -> int:
     if not args.keep:
         probe.command(bytes([DAP_VENDOR_JTAG_FORMAT, 0]))
     probe.release()
-    return 0
+    return 1 if wrong else 0
 
 
 def number(text: str) -> int:
@@ -2102,7 +2105,7 @@ def main() -> int:
     sweep.add_argument("--gap", type=float, default=0.3, help="silent seconds between runs")
     sweep.set_defaults(run=cmd_sweep)
 
-    blink = subcommand("blink", help="flash one unit's LED to identify it by eye")
+    blink = subcommand("blink", help="flash one probe's LED, to tell it apart by eye")
     blink.add_argument("--seconds", type=float, default=10.0)
     blink.set_defaults(run=cmd_blink)
 
@@ -2120,11 +2123,11 @@ def main() -> int:
 
     energy_parser = subcommand("energy", help="the Pro's energy capture: start, read, stop")
     energy_parser.add_argument("action", choices=("start", "latest", "total", "stop", "watch", "calibration"))
-    energy_parser.add_argument("--rate", type=int, default=25_000, help="pairs per second to start at")
+    energy_parser.add_argument("--rate", type=int, default=25_000, help="samples per second to start at")
     energy_parser.add_argument("--range", choices=("auto", "high"), default="auto",
                                help="switch current ranges automatically, or hold the high range for this capture")
     energy_parser.add_argument("--seconds", type=float, default=5.0, help="how long `watch` runs")
-    energy_parser.add_argument("--every", type=float, default=0.5, help="seconds between `watch` samples")
+    energy_parser.add_argument("--every", type=float, default=0.5, help="seconds between the samples `watch` prints")
     energy_parser.set_defaults(run=cmd_energy)
 
     pins = subcommand("pins", help="read, and optionally drive, the probe's own pins")
@@ -2149,7 +2152,7 @@ def main() -> int:
     limit = subcommand("limit", help="sweep every achievable rate and check the data")
     limit.add_argument("--cpu-hz", type=int, default=150_000_000, help="the probe's core clock")
     limit.add_argument("--half-bit-cycles", type=float, default=2.5,
-                       help="measured non-delay cost of a half bit: 2.5 for ours, 6 for stock")
+                       help="measured non-delay cost of a half bit: 2.5 for Verge, 6 for NXP's firmware")
     limit.add_argument("--words", type=int, default=64, help="transfers per block command")
     limit.add_argument("--blocks", type=int, default=50, help="block commands per rate")
     limit.add_argument("--max-mhz", type=float, default=0.0, help="stop above this wire rate")
@@ -2159,7 +2162,7 @@ def main() -> int:
     core1.add_argument("--queues", action="store_true", help="also the shared queues' state")
     core1.add_argument("--swo", action="store_true", help="also SWO capture's DMA and USART registers")
     core1.add_argument("--sample", action="store_true",
-                       help="stop CPU 1 with an NMI to record where it is; reset the probe afterwards")
+                       help="stop CPU 1 with an NMI to record where it is; restart the probe afterwards")
     core1.set_defaults(run=cmd_core1)
 
     restart = subcommand("restart", help="restart the probe, into its firmware or the ROM bootloader")
@@ -2224,7 +2227,8 @@ def main() -> int:
     cjtag.add_argument("--ir-length", type=int, default=6, help="the first TAP's IR (ICEPick: 6)")
     cjtag.add_argument("--reset-clocks", type=int, default=9, help="TMS-high clocks in the reset")
     cjtag.add_argument("--repeat", type=int, default=1, help="IDCODE reads after one activation")
-    cjtag.add_argument("--expect", type=number, default=0x3BB4102F)
+    cjtag.add_argument("--expect", type=number, default=0x3BB4102F,
+                       help="the IDCODE every read must return; another makes the command exit 1")
     cjtag.add_argument("--no-activate", action="store_true", help="drive no activation and leave framing off")
     cjtag.add_argument("--keep", action="store_true", help="leave OScan1 framing on afterwards")
     cjtag.add_argument("--tlr-after", type=int, default=0, help="framed TMS-high clocks at the end of the run")
@@ -2250,9 +2254,9 @@ def main() -> int:
     cjtag.add_argument("--pre-tms", default="", help="TMS bits to send framed before the reads")
     cjtag.add_argument("--tdi", type=int, default=1, choices=(0, 1), help="TDI level for every frame")
     cjtag.add_argument("--pre-tdi", default="", help="TDI bit per --pre-tms bit")
-    cjtag.add_argument("--synth", action="store_true", help="drive the activation decoded from the J-Link's")
+    cjtag.add_argument("--synth", action="store_true", help="drive a J-Link's activation, as decoded from its wire")
     cjtag.add_argument("--ti", action="store_true",
-                       help="drive TI's XDS110 OScan1 sequence: the default, and taken over --synth, --replay "
+                       help="drive TI's XDS110 OScan1 sequence: the default, and it overrides --synth, --replay "
                             "and --no-activate")
     cjtag.add_argument("--ti-escape", default="", help="--ti: escapes to send first, e.g. 10 or 10,7")
     cjtag.add_argument("--ti-prefix", default="",

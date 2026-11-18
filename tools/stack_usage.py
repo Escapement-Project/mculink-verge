@@ -2,11 +2,11 @@
 # requires-python = ">=3.11"
 # dependencies = ["capstone", "unicorn"]
 # ///
-"""Inspect stack use in linked Thumb code, retaining unresolved control flow explicitly.
+"""Inspect stack use in linked Thumb code, and list the control flow it cannot follow.
 
-Reports synchronous bounds only where every reachable edge is understood. Indirect calls,
-jump tables, recursion and dynamic SP changes prevent a bound. Exception stacking and nesting
-must be added separately. No claim of a whole-firmware stack bound follows from this report.
+It reports a synchronous bound only where it understands every edge it can reach. An indirect
+call, a jump table, recursion or a dynamic SP change leaves no bound. Exception stacking and
+nesting are not in it: add them yourself. The report is not a stack bound for the whole firmware.
 """
 
 import argparse

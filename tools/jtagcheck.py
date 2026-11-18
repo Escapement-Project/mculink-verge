@@ -2,7 +2,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["unicorn", "capstone"]
 # ///
-"""Hold the JTAG and cJTAG (OScan1) paths to the wire's timing, on the timing engine.
+"""Hold the JTAG and cJTAG paths to the wire's timing, on the timing engine.
 
 For each clock asked for, run what a host sends against a target that answers by time
 (tools/cycles.py's TimedCjtagTarget or TimedJtagTarget, with the TDO windows measured on a

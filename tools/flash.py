@@ -95,10 +95,10 @@ def check() -> int:
                 flags = body[6]
                 print(f"{probe.serial}: ours, build {build}, flags 0x{flags:02x}")
             else:
-                print(f"{probe.serial}: stock V{firmware_version(probe)} -- {probe.product}")
+                print(f"{probe.serial}: NXP's firmware V{firmware_version(probe)} -- {probe.product}")
         except RuntimeError:
             # A firmware answering ID_DAP_Invalid lands here; stock echoes 0x82 and goes above.
-            print(f"{probe.serial}: stock V{firmware_version(probe)} -- {probe.product}")
+            print(f"{probe.serial}: NXP's firmware V{firmware_version(probe)} -- {probe.product}")
         except Exception as error:
             print(f"{probe.serial}: did not answer vendor 0x82 ({error})")
         probe.release()
@@ -164,10 +164,11 @@ def cycle(elf: pathlib.Path, serial: str | None) -> int:
         if number is None or number < STOCK_ISP_SINCE:
             probe.release()
             sys.exit(
-                f"{probe.serial}: stock V{version} has no jumper-free update before V3.122. "
+                f"{probe.serial}: NXP's firmware V{version} has no jumper-free update before V3.122. "
                 "Use the ISP jumper"
             )
-    print(f"{probe.serial}: asking {'our' if ours else 'the stock'} firmware for the ROM bootloader")
+    firmware = "Verge" if ours else "NXP's firmware"
+    print(f"{probe.serial}: asking {firmware} for the ROM bootloader")
     try:
         if ours:
             probe.restart(bootloader=True)
@@ -182,14 +183,14 @@ def cycle(elf: pathlib.Path, serial: str | None) -> int:
     probe.release()
 
     if not wait_for(ISP):
-        sys.exit("the unit never came back as 1fc9:0021. Use the ISP jumper")
+        sys.exit("the probe never came back as 1fc9:0021. Use the ISP jumper")
     if flash(elf) != 0:
         return 1
 
     print("resetting out of the bootloader")
     rblhost("reset")
     if not wait_for(PROBE):
-        sys.exit("the unit never came back as a probe. Fit the ISP jumper and flash by hand")
+        sys.exit("the probe never came back running a firmware. Fit the ISP jumper and flash by hand")
     time.sleep(1.0)
     return check()
 
@@ -207,11 +208,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--elf", "--image", dest="elf", type=pathlib.Path,
                         default=pathlib.Path("build/mculink_cjtag.elf"),
-                        help="our ELF, or an S-record such as LinkServer's stock image")
+                        help="Verge's ELF, or an S-record such as NXP's firmware image from LinkServer")
     parser.add_argument("--check", action="store_true", help="report, flash nothing")
     parser.add_argument("--cycle", action="store_true",
-                        help="restart a unit running ours or stock, flash it, reset it: no jumper")
-    parser.add_argument("--serial", help="pick one unit when several are attached")
+                        help="restart a probe running Verge or NXP's firmware into its bootloader, flash it and "
+                             "reset it, with no jumper")
+    parser.add_argument("--serial", help="pick one probe when several are attached")
     args = parser.parse_args()
 
     if args.check:
@@ -231,15 +233,15 @@ def main() -> int:
 def flash(elf: pathlib.Path) -> int:
     waiting = present(ISP)
     if present(MINI_ISP):
-        sys.exit("an MCU-Link mini is in ISP mode; this image is for the full MCU-Link")
+        sys.exit("an MCU-Link mini is in ISP mode; Verge's images are for the standalone MCU-Link and the Pro")
     if not waiting:
         sys.exit(
-            "no unit in ISP mode. Fit the ISP jumper, then plug the unit in -- the bootloader\n"
-            "samples the pin at reset, so a jumper fitted afterwards does nothing."
+            "no probe in ISP mode. Fit the ISP jumper, then plug the probe in: the bootloader\n"
+            "reads the pin as it starts, so a jumper fitted afterwards does nothing."
         )
     if len(waiting) > 1:
         names = ", ".join(device.name for device in waiting)
-        sys.exit(f"{len(waiting)} units in ISP mode ({names}); rblhost cannot tell them apart")
+        sys.exit(f"{len(waiting)} probes in ISP mode ({names}); rblhost cannot tell them apart")
     port = waiting[0].name
 
     # An S-record goes as it is, which is how LinkServer's stock image arrives.

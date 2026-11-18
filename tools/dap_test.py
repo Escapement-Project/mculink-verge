@@ -3,11 +3,16 @@
 # dependencies = ["libusb1", "pyusb"]
 # ///
 """Check dap.py's reading of replies: vendor 0x82 against the layout docs/host-interface.md gives
-each format, and the three ways a reply can be wrong."""
+each format, and the three ways a reply can be wrong. Check that `dap.py cjtag` exits 1 when an
+IDCODE it reads is not the one expected."""
 
+import contextlib
+import io
+import sys
 from unittest import mock
 
-from dap import Probe, UnknownCommand, parse_identify
+import dap
+from dap import DAP_VENDOR_JTAG_FORMAT, Probe, UnknownCommand, parse_identify
 
 
 def reply(format: int, flags: int, build: bytes, tail: bytes) -> bytes:
@@ -63,5 +68,40 @@ error = raised(bytes([0x89, 0, 0]), bytes([0x05, 0]))
 assert type(error) is RuntimeError and "out of step" in str(error), repr(error)
 assert answer(bytes([0x89, 0, 0]), bytes([0x89, 0])) == bytes([0x89, 0])
 
+
+def cjtag(idcodes: list[int], *flags: str) -> tuple[int, mock.Mock, str]:
+    """`dap.py cjtag --no-activate` through main(), against a probe whose reads return `idcodes`."""
+    probe = mock.Mock(serial="S", vendor="V", product="P")
+    probe.connect.return_value = 2
+    probe.swj_clock.return_value = 0
+    probe.command.return_value = bytes([0, 0])
+    # The 31 bits before Exit1-DR, then the last bit, as the command's sequence captures them.
+    probe.jtag_sequence.side_effect = [[idcode & 0x7FFF_FFFF, idcode >> 31] for idcode in idcodes]
+    argv = ["dap.py", "cjtag", "--no-activate", "--repeat", str(len(idcodes)), *flags]
+    out = io.StringIO()
+    with mock.patch.object(sys, "argv", argv), mock.patch.object(dap, "one", return_value=probe), \
+            contextlib.redirect_stdout(out):
+        status = dap.main()
+    return status, probe, out.getvalue()
+
+
+status, probe, out = cjtag([0x3BB4102F, 0x3BB4102F])
+assert status == 0, out
+status, probe, out = cjtag([0x3BB4102F, 0xFFFF_FFFF])
+assert status == 1, out
+assert "IDCODE 0xffffffff (expected 0x3bb4102f)" in out, out
+# A wrong read still turns framing off and releases the probe.
+last = probe.command.call_args
+assert last.args[0] == bytes([DAP_VENDOR_JTAG_FORMAT, 0]), last
+assert probe.release.called
+# A wrong read followed by a right one still fails.
+status, _, out = cjtag([0xFFFF_FFFF, 0x3BB4102F])
+assert status == 1, out
+status, _, out = cjtag([0x9234_5677], "--expect", "0x92345677")
+assert status == 0, out
+status, _, out = cjtag([0x9234_5677], "--expect", "0x92345676")
+assert status == 1, out
+
 print("dap.py reads vendor 0x82 at formats 2, 5, 6 and 8 as docs/host-interface.md lays them out, "
-      "and tells an unknown command from a missing or out-of-step reply")
+      "tells an unknown command from a missing or out-of-step reply, and `cjtag` exits 1 on a "
+      "wrong IDCODE")

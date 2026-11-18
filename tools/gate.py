@@ -3,21 +3,30 @@
 # ///
 """The whole gate: host checks and both compilers' images through the emulator.
 
-`ninja -C <build> check` holds one image to its baselines. This runs that for gcc and clang, each
-in the default configuration and with SWD_CODEGEN and JTAG_CODEGEN off, because an optimisation
-that holds under one compiler has been seen not to under the other. A generated image also runs its
-cJTAG and JTAG clocks against targets that answer by time, at every period up to 40 cycles
-and three longer ones, all of its clocks the same way built for energy capture's stall, and every
-one of tools/equiv.py's matrices against the same compiler's ARM paths. Two more gcc images, one
-with DAP_TIMING_DIAGNOSTICS and one with CODE_LAB, run tools/image.py alone: their checks need the
-option, and nothing else in them differs. It runs the host checks and image builds together, then
-runs image checks, timing sweeps and the equivalence matrices together. Each timing sweep simulates
-its independent clock points in parallel.
+`ninja -C <build> check` holds one image to its baselines. The gate runs that for gcc and clang,
+each in the default configuration and as the ARM reference, with SWD_CODEGEN and JTAG_CODEGEN off.
+An optimisation that holds under one compiler has been seen not to under the other.
 
-The parallel stages share a CPU budget across host checks, builds, emulator wire checks, timed
-sweeps and the equivalence matrices. Builds go to build-gate/.
+It runs in three stages, and the steps inside a stage run at once:
 
-CI can run the host checks separately. For firmware, it can select one compiler or one image
+1. The host checks and the image builds. With gcc's default image come two more gcc images, one
+   with DAP_TIMING_DIAGNOSTICS and one with CODE_LAB. A build fails if it compiles or links
+   anything with unaligned access allowed.
+2. The checks on the built images:
+   - each image's `ninja check`, and tools/image.py alone for the two extra gcc images: their
+     checks need the option, and nothing else in them differs;
+   - each generated image's cJTAG and JTAG clocks against targets that answer by time, at every
+     period up to 40 cycles and three longer ones, and all of its clocks the same way built for
+     energy capture's stall;
+   - the reference images' cJTAG frames, against tools/jtagcheck.py's wire rules;
+   - every one of tools/equiv.py's matrices, each generated image against the same compiler's ARM
+     paths.
+3. clang-tidy over the first-party C, on clang's default image.
+
+In each of the first two stages the steps divide the CPUs between them, and each timing sweep
+simulates its clock points in parallel. Builds go to build-gate/.
+
+CI can run the host checks on their own, and the firmware part for one compiler or one image
 configuration.
 
     uv run tools/gate.py
@@ -54,7 +63,7 @@ HOST_CHECKS = (
     ("MS OS 2.0 descriptor sets: sanitizers, both compilers", ["uv", "run", "tools/ms_os_20_test.py"]),
     ("ARCHITECTURE.md's figures as drawn, every label in its room", ["uv", "run", "tools/figures.py"]),
     ("CPU quota detection for container worker budgets", ["uv", "run", "tools/host_resources_test.py"]),
-    ("dap.py's reading of replies: vendor 0x82 at every format, unknown commands",
+    ("dap.py's reading of replies: vendor 0x82 at every format, unknown commands; cjtag's exit status",
      ["uv", "run", "tools/dap_test.py"]),
     ("Thumb-2 encoders against gas", ["uv", "run", "tools/thumb_test.py"]),
     ("memcpy at every length and offset", ["uv", "run", "tools/mem_test.py"]),

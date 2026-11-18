@@ -9,9 +9,9 @@ zeros. That is enough to catch a pin-layer mistake and not enough to let anyone 
 function, because the acknowledge, retry and back-off paths are where the hard-to-see mistakes
 live.
 
-This drives both builds over the same matrix -- every acknowledge a target can give, every
-turnaround length, with and without the data phase, with and without idle cycles -- and requires
-that they produce the same wire events and the same answer. Byte for byte, case for case.
+This drives both builds over the same matrix: every acknowledge a target can give, every
+turnaround length, with and without the data phase, with and without idle cycles. It requires the
+same wire events and the same answer from both, byte for byte and case for case.
 
 `--ignore-samples` leaves the loads of SWDIO and TDO out of the comparison. Generated code samples
 a bit up to two clocks after the edge that launched it, so its loads fall among different edges
@@ -455,7 +455,7 @@ def main() -> int:
                     help="all: every command's matrix for every wire")
     ap.add_argument("--command", choices=["block", "transfer", "sequence"], default="block")
     ap.add_argument("--verbose", action="store_true")
-    ap.add_argument("--ignore-samples", action="store_true", help="compare without the SWDIO loads")
+    ap.add_argument("--ignore-samples", action="store_true", help="compare without the SWDIO and TDO loads")
     ap.add_argument("--clock", type=float, default=10.0, help="SWD clock in MHz for the SWD cases")
     ap.add_argument("--jobs", type=int, default=available_cpus(), help="processes to run the cases in")
     args = ap.parse_args()

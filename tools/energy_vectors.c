@@ -1,4 +1,4 @@
-/* The energy converter's vectors (docs/host-interface.md, "Converting a pair"), written by the
+/* The energy converter's vectors (docs/host-interface.md, "Converting a sample"), written by the
  * firmware's own converter for host converters to check themselves against:
  * tools/energy_vectors.json.
  *

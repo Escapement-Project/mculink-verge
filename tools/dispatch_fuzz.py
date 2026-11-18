@@ -2,11 +2,11 @@
 # requires-python = ">=3.11"
 # dependencies = ["unicorn", "capstone"]
 # ///
-"""Reproducible stateful mutation fuzzing of the linked command dispatcher.
+"""Fuzz the linked command dispatcher with stateful mutations, reproducibly.
 
-Run directly for a longer campaign, or use the bounded seeds included in image.py. The corpus
-avoids target power, restart and calibration commands, and takes only the Pro commands that read;
-no USB device is opened.
+Run it directly for a longer campaign; image.py runs two bounded seeds. The corpus leaves out
+the target power, restart and calibration commands, and takes only the Pro commands that read. It
+opens no USB device.
 """
 
 import argparse

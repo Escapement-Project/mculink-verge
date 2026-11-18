@@ -6,15 +6,12 @@
 
 `cycles.py --explain` names the longest gap in a transfer. That one is the first word of a block
 and carries the command dispatch, so it is paid once and says nothing about the cost per word. The
-gap that costs is whichever one repeats, and the per-bit classes under it -- a read bit at five
-cycles against a write bit at four, a driven cJTAG bit at nine against a sampled one at six --
-are where a difference between two paths actually lives.
+gap that costs is whichever one repeats. A difference between two paths lives in the per-bit
+classes under it: a read bit at five cycles against a write bit at four, or a driven cJTAG bit at
+nine against a sampled one at six.
 
-So: group every gap by length, show the distribution, and print the instructions of one gap of the
-length asked for. Two changes to ARM's SWD path came straight off this output, a word
-rebuilt from its own bytes and a parity recomputed once a word, and neither was visible in a
-disassembly listing of the function, because both sit in code the optimiser hoisted to the top of
-a loop body that is thousands of instructions long.
+So this groups every gap by length, shows the distribution, and prints the instructions of one gap
+of the length asked for.
 
     uv run tools/window.py                       # the gap that repeats, on a SWD read
     uv run tools/window.py --wire cjtag --write --span 9

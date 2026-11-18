@@ -1,8 +1,8 @@
 # SWO trace source for a CC13x2/CC26x2 LaunchPad
 
 `itm_counter.c` streams an incrementing 32-bit counter through ITM port 0 on DIO16 (JTAG TDO).
-`itm_check.py` verifies each captured word. Use cJTAG for debugging; JTAG needs
-DIO16 for TDO.
+`itm_check.py` verifies each captured word. Debug the target over cJTAG: JTAG needs DIO16 for
+TDO.
 
 Build and load, from this directory, with probe-rs built from the cJTAG branch of
 https://github.com/CordlessCoder/probe-rs (`wip-cmsisdap-cjtag`):
@@ -12,7 +12,7 @@ https://github.com/CordlessCoder/probe-rs (`wip-cmsisdap-cjtag`):
     probe-rs reset --chip CC1312R --protocol cjtag
 
 After a reset over JTAG the boot ROM halts in boot (TRM 6.6) until a debugger halts and resumes the
-core; a gdb attach and detach does it:
+core. A gdb attach and detach does that:
 
     probe-rs gdb --chip CC1312R --protocol cjtag &
     arm-none-eabi-gdb -batch -ex 'target remote :1337' -ex detach
@@ -29,8 +29,8 @@ The image preserves the last flash sector and its existing CCFG.
 | 0x0C | `next` | the counter value of the next packet |
 | 0x10 | `configs` | times the trace path has been set up |
 
-A probe-rs detach clears DEMCR. The image detects this and reconfigures the trace path.
-A write to `acpr` therefore takes effect when `probe-rs write` detaches:
+A probe-rs detach clears DEMCR. The image notices and sets the trace path up again, so a write to
+`acpr` takes effect when `probe-rs write` detaches:
 
     probe-rs write --chip CC1312R --protocol cjtag b32 0x20000004 5    # 8 MHz
 
@@ -40,8 +40,8 @@ A write to `acpr` therefore takes effect when `probe-rs write` detaches:
     uv run itm_check.py bytes capture.bin     # bytes the probe returned
     uv run itm_check.py line digital_5.bin    # a Saleae binary export of the line
 
-`dap.py swo` needs no debug connection; the image streams independently. Set its baud rate to
-match the target's `acpr` value.
+`dap.py swo` needs no debug connection: the image streams on its own. Set `--baud` to match the
+target's `acpr` value.
 
-The checker reports bit time from back-to-back frames, framing errors and counter gaps with the
-number of missing words. The first and last frames of an export are usually incomplete.
+The checker reports the bit time from back-to-back frames, the framing errors, and each counter gap
+with the number of words missing. The first and last frames of an export are usually incomplete.

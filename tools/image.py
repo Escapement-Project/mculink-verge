@@ -4,20 +4,21 @@
 # ///
 """Check what a built image says about itself, without hardware.
 
-Four things that only show up at the bench, each of which looks like something else when it does.
+It checks four things that otherwise show up only on hardware, where each looks like something
+else.
 
 A malformed descriptor: the device does not appear, nothing reports why, and the first guess is
-the cable. The lengths are nested and hand-maintained -- a configuration states a total that has to
-match the bytes after it, an interface states how many endpoints follow, the BOS states the size of
-a descriptor stored elsewhere -- and nothing in the build checks them against each other.
+the cable. The lengths are nested and hand-maintained. A configuration states a total that has to
+match the bytes after it, an interface states how many endpoints follow, and the BOS states the
+size of a descriptor stored elsewhere. Nothing in the build checks them against each other.
 
-A clock that is not running: a Flexcomm with no clock reports no error, it simply never reaches a
-baud rate, and the console and SWO both look like wiring faults.
+A clock that is not running: a Flexcomm with no clock reports no error. It never reaches a baud
+rate, and the console and SWO both look like wiring faults.
 
-A command that does not answer, or that never returns. COMMANDS below is a claim until something
-sends all of them.
+A command that does not answer, or never returns. The command list in tools/image.py (COMMANDS) is
+a claim until something sends every command on it.
 
-And the serial number, which comes from a flash region this firmware has never touched.
+The serial number, which comes from a flash region this firmware has never touched.
 
 The firmware is two images: CPU 0's, which owns USB, and CPU 1's, which executes the commands and
 is embedded in CPU 0's. Each check runs against the image whose code it is about, and one more

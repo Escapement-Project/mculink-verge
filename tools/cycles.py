@@ -4,13 +4,13 @@
 # ///
 """Count what a debug-port transfer costs, by emulating the built image.
 
-Run the real image on an emulated Cortex-M33, drive it through the real DAP command layer, and
-count what executes between one clock edge and the next.
+It runs the real image on an emulated Cortex-M33, drives it through the real DAP command layer, and
+counts what executes between one clock edge and the next.
 
 What comes out is an instruction count per bit, broken down by class, and a cycle count. The
-counts are facts about the image. The cycles come from tools/m33.py, which models fetch and the bus
-and was fitted on hardware, for an image that generates its transfers, and for any image with
---engine. Otherwise ARM's paths are priced by per-class constants given as arguments.
+counts are facts about the image. For an image that generates its transfers, and for any image
+with --engine, the cycles come from tools/m33.py, which models fetch and the bus and was fitted on
+hardware. Otherwise ARM's paths are priced by per-class constants given as arguments.
 """
 
 import argparse
@@ -79,7 +79,7 @@ SWCLK_BIT = 1 << PIN_TCK
 SWDIO_BIT = 1 << PIN_SWDIO
 
 FLASH = (0x00000000, 0x00100000)
-# Fetched over C-AHB. The image leaves it empty; the SWD paths are generated into it at run time.
+# Fetched over C-AHB. The image leaves it empty; the SWD paths are generated into it at runtime.
 SRAMX = (0x04000000, 0x00008000)
 SRAM = (0x20000000, 0x00050000)
 USB_RAM = (0x40100000, 0x00004000)
@@ -2285,7 +2285,7 @@ def main() -> int:
         "--latency",
         type=int,
         help="with --engine, a SWD target readable this many cycles after the store that launched"
-        " each bit (7 against the U575 on the bench), and every read's margin reported",
+        " each bit (7 on every target measured, TIMING.md), and every read's margin reported",
     )
     ap.add_argument("--store-cycles", type=int, default=1)
     ap.add_argument("--gpio-store-cycles", type=int, default=1)
