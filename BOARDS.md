@@ -1,13 +1,13 @@
 # The boards
 
-One image runs on the plain MCU-Link and the MCU-Link Pro. It reads the board's straps at boot
+One image runs on the standalone MCU-Link and the MCU-Link Pro. It reads the board's straps at boot
 and starts what that board has. This file has both boards' pins and straps, then the Pro's own
 pins and circuits, and what the firmware does with them. docs/pro.md says what the firmware does on
 a Pro for its user, and docs/probes.md what each feature needs.
 
 ## Sources
 
-- The board header in ARM's CMSIS-DAP MCU-Link example, checked against the plain board's
+- The board header in ARM's CMSIS-DAP MCU-Link example, checked against the standalone MCU-Link's
   schematic net names: the debug pins both boards share.
 - NXP's UM11673, the Pro's user manual, Rev 1.2: features, jumpers (Table 1), the J19 pinout
   (Table 3), energy ranges and status LEDs (the two Tables 4).
@@ -46,15 +46,15 @@ The debug pins (the Pro's schematic, sheet 3):
 | TMS_SWDIO_TXEN | P0_28 | buffer direction, load-bearing for OScan1 |
 | VREF | P0_31 | |
 | target console RXD / TXD | P0_24 / P0_25 | Flexcomm 0 |
-| status LED | P0_5 | LED1 on the plain board, LED3 (red) on the Pro. Also `ISP1`: the pin the ROM bootloader samples at reset, and what the ISP jumper pulls |
+| status LED | P0_5 | LED1 on the standalone MCU-Link, LED3 (red) on the Pro. Also `ISP1`: the pin the ROM bootloader samples at reset, and what the ISP jumper pulls |
 
-The debug connector is J6 on the plain board and J7 on the Pro (sheet 5), in the standard 10-pin
-Cortex Debug layout: 1 VREF, 2 TMS, 4 TCK, 6 TDO, 8 TDI, 10 nRESET, 3 and 5 ground, and 9 detect,
-the standard's GNDDetect, which a target grounds. Pin 7 is ISP-EN, where the standard has a key;
-leave it unconnected at the target. There is no nTRST, so the TAP is reset through TMS. On the Pro,
-TCK and TDI share one 74LVC2T45 whose direction pin is HW_VER_7, so with J13 fitted neither is
-driven at all, whatever the firmware does. The reference-voltage follower is the plain board's, with
-a 30K1 pull-up for its 33K.
+The debug connector is J6 on the standalone MCU-Link and J7 on the Pro (sheet 5), in the standard
+10-pin Cortex Debug layout: 1 VREF, 2 TMS, 4 TCK, 6 TDO, 8 TDI, 10 nRESET, 3 and 5 ground, and 9
+detect, the standard's GNDDetect, which a target grounds. Pin 7 is ISP-EN, where the standard has a
+key; leave it unconnected at the target. There is no nTRST, so the TAP is reset through TMS. On the
+Pro, TCK and TDI share one 74LVC2T45 whose direction pin is HW_VER_7, so with J13 fitted neither is
+driven at all, whatever the firmware does. The reference-voltage follower is the standalone
+MCU-Link's, with a 30K1 pull-up for its 33K.
 
 The two TXEN pins are buffer direction controls. Releasing SWDIO means clearing `TMS_SWDIO_TXEN`
 as well as making the pin an input: the buffer keeps driving the wire otherwise. Releasing the wire
@@ -77,7 +77,7 @@ Strap pins, all inputs needing a pull-up (DAPLink `IO_Config.h`):
 | HW_VER_6 | PIO0_18 | VCOM off when low (plain J4, Pro J14) |
 | HW_VER_7 | PIO0_27 | SWD off when low (plain J5, Pro J13) |
 
-A Pro reads HW_VER_4 low and HW_VER_3 high. The plain board's 64-pin package (HTQFP64) bonds
+A Pro reads HW_VER_4 low and HW_VER_3 high. The standalone MCU-Link's 64-pin package (HTQFP64) bonds
 neither PIO1_4 nor PIO1_5 (`LPC55S6x.pdf` Table 3), so with their pull-ups both read high: not a
 Pro. HW_VER_4 low with HW_VER_3 low is an on-board MCU-Link. The firmware runs there without cJTAG,
 but the image does not declare that board, so verge does not install it there. Energy capture

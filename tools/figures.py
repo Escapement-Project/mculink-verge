@@ -278,7 +278,7 @@ def blocks():
     mid_x = c0x + col + gap
     y0 = top + 46
     c0 = core_rows(f, c0x, y0, col, "CPU 0", "Answers the host",
-                   ["USB, every endpoint", "The energy stream", "LEDs, reboots", "The serial consoles"], right=True)
+                   ["USB, every endpoint", "The energy stream", "LEDs, restarts", "The serial consoles"], right=True)
     c1 = core_rows(f, c1x, y0, col, "CPU 1", "Drives the target",
                    ["CMSIS-DAP commands", "Generated wire code", "SWO capture", "DIO, SPI and I2C",
                     "Supply, energy capture"])

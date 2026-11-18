@@ -28,7 +28,7 @@
 <path d="M82,116H236" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
 <text x="82" y="135" font-size="14" fill="currentColor">The energy stream</text>
 <path d="M82,144H236" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
-<text x="82" y="163" font-size="14" fill="currentColor">LEDs, reboots</text>
+<text x="82" y="163" font-size="14" fill="currentColor">LEDs, restarts</text>
 <path d="M82,172H236" fill="none" stroke="currentColor" stroke-width="1" class="vf-hair"/>
 <text x="82" y="191" font-size="14" fill="currentColor">The serial consoles</text>
 <text x="377" y="54" font-size="17" fill="currentColor" font-weight="500" class="vf-head">CPU 1</text>

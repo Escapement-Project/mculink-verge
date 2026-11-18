@@ -16,7 +16,7 @@ there.
 - **CPU 0's loop** (`main.c`, `serve`) runs TinyUSB's task, and every TinyUSB class callback with
   it: a packet received, a reply sent, a configuration set, a control request. It also runs the
   consoles, Verge Aux, the DIO edges' bookkeeping, the energy capture's range re-arm and the
-  reboot.
+  restart.
 - **CPU 0's interrupts** come in three levels. The DIO pin interrupts sit alone at the top
   (`DIO_EDGES_PRIORITY`). DMA0 and USB share the next (`CPU0_PRIORITY`). The LED tick (CTimer 3)
   and SysTick come last. TinyUSB's interrupt queues events for the loop, and also keeps its own
@@ -326,7 +326,7 @@ which change later as described above.
 ## Counts read without ordering
 
 SysTick counts milliseconds into `system_ticks` while CPU 0's loop runs. The loop's wait masks it,
-so while CPU 0 is idle the count moves once per wake, at least every 2.048 ms LED tick; the reboot's
+so while CPU 0 is idle the count moves once per wake, at least every 2.048 ms LED tick; the restart's
 wait and the full-speed retry that read it wait at least as long as they ask. CPU 1 counts the
 commands it runs and the stale ones it drops, and notes the one running, in `dap_shared.core1`. On
 a fault it writes the fault registers first and `exception` last. CPU 0 copies the record whole for

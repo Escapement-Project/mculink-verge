@@ -13,36 +13,59 @@ other docs.
 
 ## Build
 
+You need git, CMake 3.20 or later, Ninja, uv, and the Arm GNU toolchain: arm-none-eabi-gcc with its
+binutils and newlib. The gate also needs the host's gcc and clang, with lld, clang-tidy and LLVM's
+tools, and qemu-system-arm. Making a release by hand needs minisign.
+
+Clone with `--recurse-submodules`: TinyUSB supplies the toolchain file, startup code, linker script
+and USB driver, and ARM's CMSIS-DAP supplies the protocol. Then fetch the NXP SDK files TinyUSB's
+LPC55 support uses:
+
 ```
-cmake -B build -G Ninja -DBOARD=mcu_link -DTOOLCHAIN=gcc . && ninja -C build
+uv run python external/tinyusb/tools/get_deps.py lpc55
+```
+
+Then build:
+
+```
+cmake -B build -G Ninja -DBOARD=mcu_link -DTOOLCHAIN=gcc .
+ninja -C build
 ```
 
 Produces `build/mculink_cjtag.{elf,hex,bin}`. `-DLTO=OFF` and `-DCMAKE_BUILD_TYPE=MinSizeRel` exist
 for bisecting a miscompilation.
 
-Clone with `--recurse-submodules`: TinyUSB supplies the toolchain file, startup code, linker script
-and USB driver, and ARM's CMSIS-DAP supplies the protocol. Before the first build, fetch the NXP
-SDK files TinyUSB's LPC55 support uses:
+Build from a git checkout. The build string comes from `git describe`, and outside a checkout it is
+`unknown`.
 
-```
-uv run python external/tinyusb/tools/get_deps.py lpc55
-```
+As it configures, TinyUSB's board support prints CMake deprecation warnings and
+`IPO_SUPPORTED="NO"`. LTO is still on; `-DLTO=OFF` turns it off. The link warns that `_dvmd_tls.o`
+and `sbrk.o`, from the toolchain's own libraries, have no `.note.GNU-stack` section.
 
 ## Check
 
 These checks need no hardware. An emulated Cortex-M33 runs the image's DAP command layer against
 a modelled target. Hardware results are in `MEASUREMENTS.md`.
 
-```
-uv run tools/gate.py                      # the gate: host checks, then gcc and clang images
-ninja -C build check                      # one image's checks, against what was just built
-uv run tools/cycles.py --check            # the same thing by hand
-uv run tools/cycles.py --clock 10 50      # throughput, wire period, where the time goes
-uv run tools/cycles.py --explain          # name the code in the longest gap between edges
-uv run tools/equiv.py <ref.elf> <new.elf> # hold a rewrite to a reference build, case by case
-uv run tools/image.py               # the USB descriptors and the serial number
-uv run tools/cycles.py --table            # KiB/s on each wire for every rate a host can ask for
-uv run tools/window.py             # disassemble the gap that repeats once a word
+```text
+# The gate: host checks, then gcc and clang images
+uv run tools/gate.py
+# One image's checks, against what was just built
+ninja -C build check
+# The wire half of it, by hand
+uv run tools/cycles.py --check
+# Throughput, wire period, where the time goes
+uv run tools/cycles.py --clock 10 50
+# Name the code in the longest gap between edges
+uv run tools/cycles.py --explain
+# Hold a rewrite to a reference build, case by case
+uv run tools/equiv.py <ref.elf> <new.elf>
+# The USB descriptors and the serial number
+uv run tools/image.py
+# KiB/s on each wire for every rate a host can ask for
+uv run tools/cycles.py --table
+# Disassemble the gap that repeats once a word
+uv run tools/window.py
 ```
 
 `ninja check` also runs `tools/image.py` to check:
@@ -76,8 +99,10 @@ Also check Release and MinSizeRel with LTO on and off: inlining changes which wa
 
 ```
 for t in Release MinSizeRel; do for l in ON OFF; do
-  cmake -B build-$t-$l -G Ninja -DBOARD=mcu_link -DTOOLCHAIN=gcc -DCMAKE_BUILD_TYPE=$t -DLTO=$l .
-  ninja -C build-$t-$l && uv run tools/cycles.py build-$t-$l/mculink_cjtag_core1.elf --check
+  cmake -B build-$t-$l -G Ninja -DBOARD=mcu_link -DTOOLCHAIN=gcc \
+    -DCMAKE_BUILD_TYPE=$t -DLTO=$l .
+  ninja -C build-$t-$l && \
+    uv run tools/cycles.py build-$t-$l/mculink_cjtag_core1.elf --check
 done; done
 ```
 
@@ -159,9 +184,11 @@ The repository needs these settings before the first tag:
 To make the files by hand instead:
 
 ```
-arm-none-eabi-objcopy -O srec build/mculink_cjtag.elf mculink-verge-v0.3.0.s19
+arm-none-eabi-objcopy -O srec build/mculink_cjtag.elf \
+    mculink-verge-v0.3.0.s19
 sha256sum mculink-verge-v0.3.0.s19 > mculink-verge-v0.3.0.s19.sha256
-minisign -S -s verge.key -m mculink-verge-v0.3.0.s19 -t "file:mculink-verge-v0.3.0.s19 tag:v0.3.0"
+minisign -S -s verge.key -m mculink-verge-v0.3.0.s19 \
+    -t "file:mculink-verge-v0.3.0.s19 tag:v0.3.0"
 ```
 
 ### The board declaration

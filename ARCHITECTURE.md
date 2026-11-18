@@ -5,8 +5,8 @@ the target. This document says what each core runs, where its code and data live
 each USB interface takes to the code that serves it.
 
 BUSES.md says which bus port each access uses, and why the other core cannot move a wire edge.
-STACK.md covers the stacks. The host interface, docs/host-interface.md, is the protocol a host
-sees, and BOARDS.md the pins.
+STACK.md covers the stacks, docs/host-interface.md the protocol a host sees, and BOARDS.md the
+pins.
 
 ![The host's USB reaches CPU 0, which answers the host. CPU 1 drives the target. Between them are the mailbox each raises in the other and the memory both use: commands, replies, staged copies and stream messages. CPU 1 drives the target's SWD, JTAG and cJTAG wires, its DIO, SPI and I2C pins and its supply, and takes SWO in from it. CPU 0's consoles reach the target's serial lines.](docs/figures/architecture-blocks.svg)
 
@@ -56,7 +56,7 @@ answering can still be sent to the bootloader over USB, because CPU 0 answers th
 | DIO edges for the energy stream | CPU 0 | `dio_edges.c` |
 | The DMA controller: its reset, descriptor table and interrupt | CPU 0 | `main.c` |
 | LEDs | CPU 0 | `led.c` |
-| Reboot, and entering the bootloader | CPU 0 | `reboot.c` |
+| Restart, and entering the bootloader | CPU 0 | `reboot.c` |
 | Falling back to full speed | CPU 0 | `usb_speed.c` |
 | The core clock and the 96 MHz clock | CPU 0, before CPU 1 starts | `board_clocks.c` |
 
@@ -66,8 +66,8 @@ in flash from `0x4_0000`.
 
 ## Starting up
 
-CPU 0 boots first. It sets up the clocks: the core at 150 MHz, and the 96 MHz clock the consoles
-run from. It reads the board's straps, which say whether this is a plain MCU-Link or a Pro, which
+CPU 0 boots first. It sets up the clocks: the core at 150 MHz, and the 96 MHz clock the consoles run
+from. It reads the board's straps, which say whether this is a standalone MCU-Link or a Pro, which
 function jumpers are fitted, and whether the Pro can measure energy. Then it starts the LEDs, sets
 the chip's secure controller so that CPU 1 and DMA can reach USB SRAM, and starts the DMA
 controller, the consoles and the DIO edge interrupts. Then it starts CPU 1, and last of all USB.
@@ -111,7 +111,7 @@ itself.
 
 ### The configuration
 
-One endpoint layout serves both boards. The plain MCU-Link is a Pro with functions left out. A
+One endpoint layout serves both boards. The standalone MCU-Link is a Pro with functions left out. A
 function the board lacks, or a jumper turns off, is not in the configuration at all.
 
 | function | interface | endpoints | present |
@@ -142,8 +142,8 @@ CPU 0 answers every control request.
   coding reconfigures its UART. A HID SET_REPORT on endpoint 0 joins the CMSIS-DAP v1 queue, as a
   report on EP3 would.
 - Vendor request 2 returns the Microsoft OS 2.0 descriptor.
-- Vendor request `0x03` reboots the probe, into the firmware or the ROM bootloader
-  (docs/host-interface.md, "Reboot").
+- Vendor request `0x03` restarts the probe, into the firmware or the ROM bootloader
+  (docs/host-interface.md, "Restart").
 - Vendor requests `0x04` and `0x05` are diagnostics: `0x04` reads CPU 1's progress, fault record,
   queues or SWO registers for `tools/dap.py core1`, and `0x05` stops CPU 1 with an NMI that records
   where it was.
@@ -350,7 +350,7 @@ the status LED. On the Pro, CTimer 1 fades the FUNC LED, and the other LEDs are 
 1's part is a byte store for each thing it reports, which the next tick reads (`led.h`). BOARDS.md
 says what each LED means.
 
-## Reboot
+## Restart
 
 Vendor request `0x03` reaches CPU 0 on endpoint 0. CPU 0 leaves the bus, waits at least 20 ms, and
 resets the chip. For the bootloader it first writes the boot mode into an always-on register that

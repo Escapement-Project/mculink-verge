@@ -32,7 +32,9 @@ second port stays ([Probes and jumpers](probes.md#jumpers)).
 Each port takes rates up to 30 Mbaud, and the Pro's two run at 30 Mbaud at once. The console UART
 runs from a 96 MHz clock for any rate that clock makes within 3%, up to 19.2 Mbaud. For any other
 rate, such as 10 Mbaud, it runs from the 150 MHz main clock, up to 30 Mbaud. The probe stalls a
-request for a rate neither clock makes, and the port keeps its last rate. On Linux the program's
-call succeeds anyway: the cdc-acm driver does not pass the stall on. Rates above 10 Mbaud are past
-NXP's specification for the UART ([Past NXP's limits](wires.md#past-nxps-limits)). NXP's firmware
-V3.174 runs both of the Pro's ports at once without loss up to 4 Mbaud.
+request for a rate neither clock makes, and the port keeps its last rate. It takes 7 or 8 data
+bits, 1 or 2 stop bits, and no, odd or even parity. It stalls any other framing the same way, and
+the port keeps its last one. On Linux the program's call succeeds anyway: the cdc-acm driver does
+not pass the stall on. Rates above 10 Mbaud are past NXP's specification for the UART ([Past NXP's
+limits](wires.md#past-nxps-limits)). NXP's firmware V3.174 runs both of the Pro's ports at once
+without loss up to 4 Mbaud.

@@ -10,8 +10,10 @@ target up. The [measurement log](MEASUREMENTS.md) has the rates each format reac
 ARM's reference SWD bit path moves SWDIO while SWCLK is high:
 
 ```c
-#define SW_CLOCK_CYCLE()  PIN_SWCLK_CLR(); PIN_DELAY(); PIN_SWCLK_SET(); PIN_DELAY()
-#define SW_WRITE_BIT(bit) PIN_SWDIO_OUT(bit); PIN_SWCLK_CLR(); ...
+#define SW_CLOCK_CYCLE() \
+  PIN_SWCLK_CLR(); PIN_DELAY(); PIN_SWCLK_SET(); PIN_DELAY()
+#define SW_WRITE_BIT(bit) \
+  PIN_SWDIO_OUT(bit); PIN_SWCLK_CLR(); ...
 ```
 
 `SW_CLOCK_CYCLE` leaves the clock high, and `SW_WRITE_BIT` changes data before pulling it low. That

@@ -12,7 +12,7 @@ debugger holds the probe.
 The Pro can power the target, at 3.3 V, or at 1.8 V with J5 fitted, up to 400 mA. J6 connects the
 supply to the target. The supply is off whenever the Pro starts.
 
-```
+```text
 verge power on     # switch it on
 verge power        # read it
 verge power off
@@ -27,7 +27,7 @@ supply on, give the regulator and the target's rail time to settle before you ta
 Four general-purpose pins, DIO0 to DIO3, on J19 (pins 2 to 5). They run at the voltage on J19's pin
 14, or at 3.3 V with nothing there.
 
-```
+```text
 verge dio                # read them
 verge dio --high 0,1,2   # make DIO0 to DIO2 outputs, driven high
 verge dio --low all
@@ -85,5 +85,5 @@ The Pro measures the current a target draws, the voltage it sees and the energy 
 file, or as a running total. [Energy
 capture](https://github.com/Escapement-Project/verge/blob/HEAD/docs/energy.md) covers it with verge,
 and [The desktop
-app](https://github.com/Escapement-Project/verge/blob/HEAD/docs/desktop-app.md#recording-energy)
+app](https://github.com/Escapement-Project/verge/blob/HEAD/docs/desktop-app.md#recording)
 with verge-gui.

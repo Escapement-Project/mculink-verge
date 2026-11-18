@@ -16,7 +16,8 @@ by the image checks run with that trap active.
 Inspect synchronous stack paths in a linked image:
 
 ```sh
-uv run tools/stack_usage.py build/mculink_cjtag.elf build/mculink_cjtag_core1.elf --output stack-static.json
+uv run tools/stack_usage.py build/mculink_cjtag.elf \
+    build/mculink_cjtag_core1.elf --output stack-static.json
 ```
 
 The analyzer follows direct calls and branches in Thumb code. It includes assembly and linked
@@ -27,7 +28,9 @@ code needs separate execution coverage because it does not exist in the ELF.
 Record stack use during image checks:
 
 ```sh
-uv run tools/image.py build/mculink_cjtag.elf --core1 build/mculink_cjtag_core1.elf --packet-count 3 --stack-report stack-observed.json
+uv run tools/image.py build/mculink_cjtag.elf \
+    --core1 build/mculink_cjtag_core1.elf \
+    --stack-report stack-observed.json
 ```
 
 This samples SP at each executed instruction, including generated code. Each entry starts with

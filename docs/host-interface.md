@@ -2,8 +2,8 @@
 
 Verge speaks CMSIS-DAP, Arm's protocol between a debugger and its probe. Any host that speaks
 CMSIS-DAP, probe-rs for one, debugs through Verge unchanged. This doc is for a host that does more.
-It covers how to recognise Verge, the commands Verge adds to CMSIS-DAP, the Pro's second USB
-interface, Verge Aux, and the energy stream that interface carries.
+It covers how to recognise Verge, the commands Verge adds to CMSIS-DAP, Verge Aux (a second USB
+interface on both probes), and the energy and DIO streams it carries.
 
 ## Conventions
 
@@ -46,8 +46,7 @@ transfer code, to compare the generated code against, and takes any clock above 
 
 ## How the probe identifies itself
 
-In a USB listing, a Verge probe reads `Escapement Project Verge CMSIS-DAP (CJF2551AD5)`, with its
-serial number last.
+A host recognises a Verge probe by its USB descriptors and `DAP_Info` strings:
 
 | Where | What it holds |
 | --- | --- |
@@ -70,7 +69,9 @@ NXP's firmware reports.
 The build string tells two builds apart. Any CMSIS-DAP host can read it with `DAP_Info` 0x09, and
 `0x82` gives it beside the capability flags. It is the output of `git describe --always --dirty
 --tags`, made afresh on every build. A `-dirty` suffix means the build came from uncommitted work,
-and nothing in the repository identifies it.
+and nothing in the repository identifies it. A build outside a git checkout reports `unknown`. A
+build for measurement rather than release ends in a `+` suffix that names it, such as `+armwire`.
+The string holds at most 59 characters.
 
 ## Full speed
 
@@ -97,7 +98,7 @@ Send `[0x82]`. The reply's fields, counted from the byte after the ID:
 | 6 | Capability flags |
 | 7 | Length of the build string, `n` |
 | 8 to 7+n | The build string, `n` bytes, with no terminator |
-| 8+n | Board: 0 the standalone MCU-Link, 1 the MCU-Link Pro, 2 an on-board MCU-Link (one built onto an NXP evaluation board) |
+| 8+n | Board: 0 the standalone MCU-Link, 1 the MCU-Link Pro. 2 is reserved for an on-board MCU-Link, one built onto an NXP evaluation board, which Verge does not support |
 | 9+n to 12+n | 0, u32 |
 | 13+n to 16+n | Extended capabilities, u32 |
 
@@ -117,9 +118,6 @@ The capability flags, byte 6:
   ([Commands Verge's own tools use](#commands-verges-own-tools-use)).
 - **Bit 6:** the DIO pins, `0x8E`.
 - **Bit 7:** the Pro's target supply, `0x8F`.
-
-An on-board MCU-Link has no cJTAG. There `0x95` takes only 0, conventional JTAG, and `0x96`
-refuses every request.
 
 The Pro's J15 jumper, fitted as the probe boots, turns off USB-SIO: the Pro's DIO pins and its SPI
 and I2C bridges. Bit 6 is clear then.
@@ -164,10 +162,9 @@ Send `[0x95, format]`. The reply is `[0x95, status]`.
 | 0 | Conventional JTAG |
 | 1, 2, 5, 6 | OScan1, OScan2, OScan5, OScan6: 1149.7's SCNFMT 9, 10, 13 and 14 |
 
-Any other value answers `DAP_ERROR` and changes nothing. So does any value over SWD, and every
-value but 0 on an on-board MCU-Link, which has no cJTAG. A host finds which formats the probe has
-by trying them after `DAP_Disconnect`: the disconnect, OScan1, 2, 5 and 6, then 0, fit in one
-`DAP_ExecuteCommands`, and move no pin.
+Any other value answers `DAP_ERROR` and changes nothing. So does any value over SWD. A host finds
+which formats the probe has by trying them after `DAP_Disconnect`: the disconnect, OScan1, 2, 5
+and 6, then 0, fit in one `DAP_ExecuteCommands`, and move no pin.
 
 - **Selected while disconnected, a format waits for the connection.** `0x95` with no connection
   moves no pin, and the next `DAP_Connect(2)` starts in that format. Every `DAP_Connect` the probe
@@ -676,7 +673,7 @@ CMSIS-DAP and on Verge Aux. A marker sent through Verge Aux lands between two CM
 
 The probe keeps 16 markers waiting to be sent. A marker that finds them full gets result 3.
 
-## Reboot: vendor request `0x03` on endpoint 0
+## Restart: vendor request `0x03` on endpoint 0
 
 A host restarts the probe with a vendor control request to the device, not with a CMSIS-DAP
 command. Send bmRequestType `0x40`, bRequest `0x03`, wIndex 0 and wLength 0. wValue 0 restarts
@@ -685,6 +682,8 @@ request is acknowledged, the probe leaves the bus for at least 20 ms, then reset
 
 The probe answers the request on the core that runs USB. So it works while a CMSIS-DAP command is
 running, and when the jumpers leave no CMSIS-DAP interface. `verge restart` sends it with wValue 0.
+bRequest `0x04` and `0x05` are Verge's too ([Commands Verge's own tools
+use](#commands-verges-own-tools-use)).
 
 ## The auxiliary interface: Verge Aux
 
@@ -698,10 +697,9 @@ marker commands. A host can use it while a debugger holds the CMSIS-DAP interfac
 | Endpoints | EP5 OUT and EP5 IN, bulk, 512 bytes at high speed and 64 at full speed |
 | Windows | WinUSB, DeviceInterfaceGUID `{A297EA18-39D8-41BE-B2E8-884CEC8FE819}` |
 
-Every Pro and standalone MCU-Link has it, whatever its jumpers. An on-board MCU-Link does not. It is
-the last interface. Its
-number depends on which interfaces the jumpers leave before it, so find it by its class and string,
-or on Windows by its GUID. Its string does not contain `CMSIS-DAP`, so debuggers pass it by.
+Every Pro and standalone MCU-Link has it, whatever its jumpers. It is the last interface. Its number
+depends on which interfaces the jumpers leave before it, so find it by its class and string, or on
+Windows by its GUID. Its string does not contain `CMSIS-DAP`, so debuggers pass it by.
 
 **Requests and replies.** A request is one transfer on EP5 OUT, in the format of the CMSIS-DAP
 command it names. Its reply is one transfer on EP5 IN, in the format of that command's reply on
@@ -1059,3 +1057,8 @@ exist only in some builds: `0x84` needs `MARKER`, which is on by default, and `0
 | `0x8C` | Staging | Switches whether CPU 0 stages commands for CPU 1 |
 | `0x8D` | JTAG log | Reads back what each JTAG generation was for |
 | `0x93` | Timing | The command path's cycle counts |
+
+Two vendor requests on endpoint 0 serve `tools/dap.py core1`, in every build. bRequest `0x04`
+(device-to-host) reads CPU 1's progress and fault record, the shared queues, or SWO's registers.
+`0x05` (host-to-device) stops CPU 1 with an NMI, to record where it was. After `0x05` the probe
+answers no CMSIS-DAP command until it restarts.

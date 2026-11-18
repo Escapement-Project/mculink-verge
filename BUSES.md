@@ -96,7 +96,7 @@ contends with any other.
 | CPU 0 | 8 | Ordinary GPIO port 1 (the Pro's switched LEDs) | 488 times a second, on the Pro |
 | CPU 0 | 7 | SYSCON and IOCON through `vcom_start` (`USART_Init`, `CLOCK_*`) | Console initialization; line-coding changes touch only port 8 |
 | CPU 0 | 7 | SYSCON and IOCON reads for the SWO status request; SYSCON NMISRC for the CPU 1 wake | Those vendor control requests |
-| CPU 0 | 7 | SYSCON (CPU 1 start), PMC (reboot) | Boot and reboot only |
+| CPU 0 | 7 | SYSCON (CPU 1 start), PMC (restart) | Boot and restart only |
 | CPU 0 | 8 | Ordinary GPIO (the board straps) | Boot only |
 
 CONCURRENCY.md has how the cores, the interrupts and DMA order their accesses to this state.

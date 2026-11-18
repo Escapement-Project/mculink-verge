@@ -70,7 +70,9 @@ The target launches each bit on a rising SWCLK edge. The probe sees that bit fro
 the store that raised the clock until A cycles after the next rising-edge store. So a sample that
 issues d cycles after the store that launched its bit reads that bit when
 
-    A <= d <= P + A - 1
+```text
+A <= d <= P + A - 1
+```
 
 where P is the clock period in cycles. The window is P cycles wide at every rate.
 

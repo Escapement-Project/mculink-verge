@@ -6,7 +6,7 @@ bench measured. Flash and recover units with verge (its docs/updating.md, "ISP m
 mculink-stock-notes' `updating.md` has what the bootloader does with the ISP jumper and without it.
 BOARDS.md has both boards' pins.
 
-## Target sense, on the plain board's J6
+## Target sense, on the standalone MCU-Link's J6
 
 **The target needs its own supply; the probe cannot power it.** J6 pin 1 is a sense input. A voltage
 follower (U6) buffers it, and the buffered level becomes the reference for every level shifter on
@@ -43,19 +43,18 @@ board. Against a 1.2 V target a dead board and a live one could read the same.
 A 3.3 V target and an empty connector read the same voltage. Nothing loads the sense node but the
 buffer's input, so the pull-up delivers the probe's own 3V3 almost exactly, within the divider's
 tolerance of any real regulator. What differs is source impedance, 33 kOhm against well under an
-ohm, and the board has no switchable load to measure it with. SJ1 in its 2-3 position would put
-the divider straight on pin 1, and then an empty connector would read ~0.36 V. That is a solder
-change, and it loads every target with ~0.8 mA. So presence comes from pin 9, or from the target
-answering an IDCODE or DPIDR read. The connector standard names pin 9 GNDDetect and has the target
-ground it, so a board with the standard 10-pin header usually does it already; check continuity on
-an unfamiliar one. **With flying leads, ground pin 9 in the harness**, or the detect pin says
-nothing. **Ours reads both**: vendor 0x86, `tools/dap.py target`. The ADC
-channel was not in any document here and one third-party source contradicted the obvious guess,
-so it was found on the board: `dap.py target --sweep` with the target unpowered and then powered.
-ADC0 3A went 542 to 1634 mV at the pin, half the supply. No other channel moved by more than
-174 mV. Five repeat reads agree to 2 codes in 65536. On the plain board the reading is only as
-absolute as the probe's own 3V3, which VDDA and VREFP are tied to. The Pro's VREFP is a 3.0 V
-reference (BOARDS.md).
+ohm, and the board has no switchable load to measure it with. SJ1 in its 2-3 position would put the
+divider straight on pin 1, and then an empty connector would read ~0.36 V. That is a solder change,
+and it loads every target with ~0.8 mA. So presence comes from pin 9, or from the target answering
+an IDCODE or DPIDR read. The connector standard names pin 9 GNDDetect and has the target ground it,
+so a board with the standard 10-pin header usually does it already; check continuity on an
+unfamiliar one. **With flying leads, ground pin 9 in the harness**, or the detect pin says nothing.
+**Ours reads both**: vendor 0x86, `tools/dap.py target`. The ADC channel was not in any document
+here and one third-party source contradicted the obvious guess, so it was found on the board:
+`dap.py target --sweep` with the target unpowered and then powered. ADC0 3A went 542 to 1634 mV at
+the pin, half the supply. No other channel moved by more than 174 mV. Five repeat reads agree to 2
+codes in 65536. On the standalone MCU-Link the reading is only as absolute as the probe's own 3V3,
+which VDDA and VREFP are tied to. The Pro's VREFP is a 3.0 V reference (BOARDS.md).
 
 **Check the target before every attach**: `dap.py target` should say about 3.3 V with pin 9
 grounded. Well under that means the target is unpowered, and 3.3 V with pin 9 open means the
@@ -77,8 +76,8 @@ harness is not plugged in.
 
 ## J8, the marker header
 
-The plain board's four DIO pins: through-hole pads at 50-mil pitch beside the MCU, and the only
-pins on the board nothing else uses. No buffer, no series resistor and no ground pin, so the
+The standalone MCU-Link's four DIO pins: through-hole pads at 50-mil pitch beside the MCU, and the
+only pins on the board nothing else uses. No buffer, no series resistor and no ground pin, so the
 analyser takes its ground from the debug connector.
 
 | J8 pin | MCU pin | signal |
