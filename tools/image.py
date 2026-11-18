@@ -504,7 +504,7 @@ def check_commands(c: Checker, elf: str, code_lab: bool, swo: bool) -> None:
             c.problems.append(f"command {cmd:#04x} echoed {reply[0]:#04x}")
         else:
             answered += 1
-    # Anything we do not implement has to say so rather than echo itself back. 0x85 was a reboot;
+    # Anything we do not implement has to say so rather than echo itself back. 0x85 was a restart;
     # the EP0 request (src/reboot_usb.h) is the only one now, so a stray 0x85 must not reset.
     for cmd in (0x07, 0x85, 0x88, 0x9F):
         reply = probe.command(bytes([cmd, 0, 0, 0]))
@@ -2151,6 +2151,13 @@ CAPABILITY_BITS = {
 }
 
 
+def reported_packet_count(core1: str) -> int:
+    """The packet count CPU 1's image tells a host, DAP_Info 0xFE: the build's REQUEST_SLOTS, which
+    sizes dap_shared. 0 if the image does not answer."""
+    reply = Machine(core1, Target([0] * 64), restart_at=set(), model=Model()).command(bytes([0x00, 0xFE]))
+    return reply[2] if len(reply) > 2 and reply[1] == 1 else 0
+
+
 def check_info(c: Checker, elf: str, packet_size: int, packet_count: int, swo: bool) -> None:
     probe = Machine(elf, Target([0] * 64), restart_at=set(), model=Model())
 
@@ -2883,9 +2890,8 @@ def main() -> int:
     ap.add_argument("--prefix", default="CJ", help="what the serial should start with")
     ap.add_argument("--config", default="src/DAP_config.h")
     ap.add_argument("--packet-size", type=int, default=512)
-    # Two, not ARM's eight: TinyUSB's vendor class is a byte stream and a buffer of more than one
-    # packet hands two commands to one read. src/tusb_config.h has the measurement.
-    ap.add_argument("--packet-count", type=int, default=2)
+    ap.add_argument("--packet-count", type=int,
+                    help="the packet count the build asked for (REQUEST_SLOTS); the image's own when left out")
     ap.add_argument("--code-lab", action="store_true", help="check the optional vendor 0x88 code lab")
     ap.add_argument("--timing-diagnostics", action="store_true", help="include timing counters in the staged layout")
     ap.add_argument("--core-clock-mhz", type=int, default=150, help="the main clock, src/core_clock.h")
@@ -2899,10 +2905,20 @@ def main() -> int:
         observer.install()
 
     c = Checker()
+    # REQUEST_SLOTS is what the host is told as the packet count, and it sizes dap_shared. Every
+    # layout below is computed for it, and one computed for another count reads the wrong memory.
+    slots = reported_packet_count(args.core1)
+    if not slots or args.packet_count not in (None, slots):
+        print(f"{args.elf} with {args.core1}")
+        if not slots:
+            print("  FAIL  DAP_Info 0xFE, the packet count, does not answer, so no layout can be checked")
+        else:
+            print(f"  FAIL  --packet-count is {args.packet_count}, and the image tells a host {slots} (DAP_Info 0xFE);"
+                  " leave the flag out to check the image as it was built")
+        return 1
+    args.packet_count = slots
     check_allocator_trap(c, args.elf)
     check_allocator_trap(c, args.core1)
-    # REQUEST_SLOTS is what the host is told as the packet count, and it sizes dap_shared.
-    slots = args.packet_count
     swo = bool(config_value(args.config, "SWO_UART"))
     check_core1_image(c, args.elf, args.core1, slots, args.timing_diagnostics)
     check_stacks(c, args.elf, args.core1)
@@ -2912,7 +2928,7 @@ def main() -> int:
     check_sram_code(c, args.elf, "CPU 0 runs a command's USB work",
                     ("serve", "tud_vendor_rx_cb", "tud_vendor_tx_cb", "tud_hid_set_report_cb",
                      "tud_hid_report_complete_cb", "memcpy", "aux_task", "aux_has_work"),
-                    # The end of a reboot, which clang calls out of line, and a console taking a new line
+                    # The end of a restart, which clang calls out of line, and a console taking a new line
                     # coding, which a host sends when it opens the port.
                     allow=("__NVIC_SystemReset", "vcom_configure"))
     check_sram_code(c, args.core1, "CPU 1 waits for work", ("wait_for_mailbox",))

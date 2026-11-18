@@ -99,7 +99,7 @@ def check_idle(c, elf, symbols, code_lab=False):
         if wake == "aux-before-hammer":
             mailbox.irq[1] = SCRATCH | 2
             state["injected"] = True
-        # Startup initializes the reboot sentinels.
+        # Startup initializes the restart sentinels.
         for name in ("usb_pending", "active_mode"):
             if name in probe.sym:
                 probe.uc.mem_write(probe.sym[name], b"\xff")
@@ -245,10 +245,10 @@ SCB_AIRCR = 0xE000ED0C
 
 
 def check_reboot(c, elf, symbols):
-    """A host's reboot request on endpoint 0 takes the probe off the bus once its status stage is
+    """A host's restart request on endpoint 0 takes the probe off the bus once its status stage is
     done, keeps it off for 20 ticks and resets it, into the ROM bootloader when asked (src/reboot.c).
     Anything but the request src/reboot_usb.h defines is refused and does nothing."""
-    # The bits below AOREG1's boot mode field hold reset causes, which a reboot leaves alone.
+    # The bits below AOREG1's boot mode field hold reset causes, which a restart leaves alone.
     causes = 0x1234
     reboot = lambda mode, index=0, length=0, kind=0x40: bytes([kind, 0x03]) + bytes(
         [mode, 0, index, 0, length, 0])
@@ -314,15 +314,15 @@ def check_reboot(c, elf, symbols):
         reset = aircr >> 16 == 0x05FA and aircr & 4
         if mode is None:
             c.check(not accepted and state["status"] == 0 and not state["off"] and not reset and aoreg1 == causes,
-                    f"reboot with {name}: accepted {accepted}, status {state['status']}, off at {state['off']},"
+                    f"restart with {name}: accepted {accepted}, status {state['status']}, off at {state['off']},"
                     f" AIRCR {aircr:#x}, AOREG1 {aoreg1:#x}")
             continue
-        c.check(accepted and state["status"] == 1, f"reboot to {name}: setup accepted {accepted}, status {state['status']}")
-        c.check(not early, f"reboot to {name}: off the bus before the status stage, at {early}")
-        c.check(len(state["off"]) == 1, f"reboot to {name}: disconnected {len(state['off'])} times")
+        c.check(accepted and state["status"] == 1, f"restart to {name}: setup accepted {accepted}, status {state['status']}")
+        c.check(not early, f"restart to {name}: off the bus before the status stage, at {early}")
+        c.check(len(state["off"]) == 1, f"restart to {name}: disconnected {len(state['off'])} times")
         held = now(probe.uc) - state["off"][0] if state["off"] else None
         c.check(reset and held == 20,
-                f"reboot to {name}: reset {bool(reset)} (AIRCR {aircr:#x}) {held} ticks after leaving the bus, wanted 20")
-        c.check(aoreg1 == causes | (mode << 16), f"reboot to {name}: AOREG1 {aoreg1:#x}, wanted {causes | (mode << 16):#x}")
-    c.note("EP0 reboot: off the bus after the status stage, reset 20 ticks later, into ISP when asked;"
+                f"restart to {name}: reset {bool(reset)} (AIRCR {aircr:#x}) {held} ticks after leaving the bus, wanted 20")
+        c.check(aoreg1 == causes | (mode << 16), f"restart to {name}: AOREG1 {aoreg1:#x}, wanted {causes | (mode << 16):#x}")
+    c.note("EP0 restart: off the bus after the status stage, reset 20 ticks later, into ISP when asked;"
            " malformed requests refused")

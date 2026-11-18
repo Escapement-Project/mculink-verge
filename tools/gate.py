@@ -54,6 +54,8 @@ HOST_CHECKS = (
     ("MS OS 2.0 descriptor sets: sanitizers, both compilers", ["uv", "run", "tools/ms_os_20_test.py"]),
     ("ARCHITECTURE.md's figures as drawn, every label in its room", ["uv", "run", "tools/figures.py"]),
     ("CPU quota detection for container worker budgets", ["uv", "run", "tools/host_resources_test.py"]),
+    ("dap.py's reading of replies: vendor 0x82 at every format, unknown commands",
+     ["uv", "run", "tools/dap_test.py"]),
     ("Thumb-2 encoders against gas", ["uv", "run", "tools/thumb_test.py"]),
     ("memcpy at every length and offset", ["uv", "run", "tools/mem_test.py"]),
     ("CPU0-to-CPU1 DAP handoff simulator: sanitizers, both compilers", ["uv", "run", "tools/dap_usb_slots_test.py"]),
@@ -77,7 +79,10 @@ def name(toolchain: str, codegen: bool) -> str:
 
 def run(args: list[str]) -> tuple[bool, str, float]:
     started = time.monotonic()
-    done = subprocess.run(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        done = subprocess.run(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    except FileNotFoundError:
+        return False, f"{args[0]} is not on the PATH\n", 0.0
     return done.returncode == 0, done.stdout, time.monotonic() - started
 
 
@@ -132,8 +137,11 @@ def build_image(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--part", choices=("all", "host", "firmware"), default="all")
+    summary, _, rest = __doc__.partition("\n")
+    parser = argparse.ArgumentParser(description=summary, epilog=rest.strip("\n"),
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--part", choices=("all", "host", "firmware"), default="all",
+                        help="the host checks, the images, or both")
     parser.add_argument("--toolchain", choices=("gcc", "clang"),
                         help="limit the firmware part to one compiler")
     parser.add_argument("--codegen", choices=("on", "off"),
@@ -156,8 +164,6 @@ def main() -> int:
               and (not args.codegen or image[1] == (args.codegen == "on"))]
     if args.part == "host":
         images = []
-    elif args.part == "all" and not args.toolchain:
-        images = IMAGES
     variants = list(VARIANTS) if ("gcc", True) in images else []
     generated_images = sum(codegen for _, codegen in images)
     generator_jobs = 1

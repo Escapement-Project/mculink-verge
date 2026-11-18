@@ -5,7 +5,7 @@
 """Reproducible stateful mutation fuzzing of the linked command dispatcher.
 
 Run directly for a longer campaign, or use the bounded seeds included in image.py. The corpus
-avoids target power, reboot and calibration commands, and takes only the Pro commands that read;
+avoids target power, restart and calibration commands, and takes only the Pro commands that read;
 no USB device is opened.
 """
 

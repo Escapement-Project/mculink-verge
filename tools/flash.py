@@ -131,7 +131,7 @@ def wait_for(ids: tuple[str, str], seconds: float = 15.0) -> list[pathlib.Path]:
 
 
 def cycle(elf: pathlib.Path, serial: str | None) -> int:
-    """Reboot a unit running ours or stock into the bootloader, flash, reset, and say what came back.
+    """Restart a unit running ours or stock into the bootloader, flash, reset, and say what came back.
 
     No jumper and no hands. Ours takes a USB control request that asks CPU 0 to enter the ROM
     bootloader, without relying on CPU 1's DAP worker. Stock takes what LinkServer's own jumper-free
@@ -170,7 +170,7 @@ def cycle(elf: pathlib.Path, serial: str | None) -> int:
     print(f"{probe.serial}: asking {'our' if ours else 'the stock'} firmware for the ROM bootloader")
     try:
         if ours:
-            probe.reboot(bootloader=True)
+            probe.restart(bootloader=True)
         else:
             reply = probe.command(bytes([STOCK_ISP, 0x01]))
             if reply[:3] != STOCK_ISP_ACCEPTED:
@@ -210,7 +210,7 @@ def main() -> int:
                         help="our ELF, or an S-record such as LinkServer's stock image")
     parser.add_argument("--check", action="store_true", help="report, flash nothing")
     parser.add_argument("--cycle", action="store_true",
-                        help="reboot a unit running ours or stock, flash it, reset it: no jumper")
+                        help="restart a unit running ours or stock, flash it, reset it: no jumper")
     parser.add_argument("--serial", help="pick one unit when several are attached")
     args = parser.parse_args()
 

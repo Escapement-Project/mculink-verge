@@ -12,7 +12,7 @@ whose cycles-per-bit is the quantity ARM's clock arithmetic is about.
 
     uv run tools/dap.py list
     uv run tools/dap.py info --serial <serial>
-    uv run tools/dap.py identify
+    uv run tools/dap.py --serial <serial> identify
     uv run tools/dap.py clock --hz 10000000 --bursts 200
     uv run tools/dap.py sample --fill 24
 
@@ -56,7 +56,7 @@ SWO_ACTIVE, SWO_STREAM_ERROR, SWO_OVERRUN = 0x01, 0x40, 0x80
 DAP_VENDOR_JTAG_FORMAT = 0x95  # DAP_JTAG_Format as proposed for CMSIS-DAP
 DAP_VENDOR_JTAG_ESCAPE = 0x96  # DAP_JTAG_Escape
 DAP_VENDOR_J8 = 0x84
-USB_REBOOT_REQUEST = 0x03
+USB_RESTART_REQUEST = 0x03
 USB_CORE1_STATUS_REQUEST = 0x04  # DAP_SHARED_CORE1_STATUS_REQUEST
 USB_CORE1_SAMPLE_REQUEST = 0x05  # DAP_SHARED_CORE1_SAMPLE_REQUEST
 DAP_VENDOR_TARGET = 0x86
@@ -99,6 +99,10 @@ CAPABILITIES = [
 ]
 
 
+class UnknownCommand(RuntimeError):
+    """The probe answered 0xFF, CMSIS-DAP's reply to a command the firmware does not have."""
+
+
 class Probe:
     """One CMSIS-DAP v2 probe, held open on its bulk pair."""
 
@@ -129,10 +133,12 @@ class Probe:
     def command(self, request: bytes, timeout: int = 2000) -> bytes:
         self.out_ep.write(request, timeout)
         reply = bytes(self.in_ep.read(self.in_ep.wMaxPacketSize, timeout))
-        if not reply or reply[0] != request[0]:
-            raise RuntimeError(
-                f"asked for 0x{request[0]:02x}, got 0x{reply[0]:02x} -- the probe is out of step"
-            )
+        if not reply:
+            raise RuntimeError(f"0x{request[0]:02x}: no reply")
+        if reply[0] == 0xFF and request[0] != 0xFF:
+            raise UnknownCommand(f"0x{request[0]:02x}: the firmware does not have this command")
+        if reply[0] != request[0]:
+            raise RuntimeError(f"asked for 0x{request[0]:02x}, got 0x{reply[0]:02x}: the probe is out of step")
         return reply
 
     def info(self, field: int) -> bytes:
@@ -174,9 +180,9 @@ class Probe:
         names = ("commands", "command", "exception", "cfsr", "hfsr", "bfar", "pc", "lr", "xpsr", "stale")
         return dict(zip(names, struct.unpack(f"<{len(raw) // 4}I", raw)))
 
-    def reboot(self, bootloader: bool = False) -> None:
+    def restart(self, bootloader: bool = False) -> None:
         """Reset through CPU 0's USB control path, without waiting on DAP execution."""
-        self.device.ctrl_transfer(0x40, USB_REBOOT_REQUEST, int(bootloader), 0, 0, timeout=1000)
+        self.device.ctrl_transfer(0x40, USB_RESTART_REQUEST, int(bootloader), 0, 0, timeout=1000)
 
     def swj_clock(self, hz: int) -> int:
         return self.command(bytes([DAP_SWJ_CLOCK]) + hz.to_bytes(4, "little"))[1]
@@ -355,7 +361,40 @@ def cmd_info(args) -> int:
 
 
 # Vendor 0x82's board byte, as src/board_pins.h numbers it.
-BOARDS = {0: "MCU-Link", 1: "MCU-Link Pro", 2: "on-board MCU-Link"}
+BOARDS = {0: "standalone MCU-Link", 1: "MCU-Link Pro", 2: "on-board MCU-Link"}
+# Vendor 0x82's capability flags, by bit. Bit 1, cJTAG framing on now, is printed on its own line.
+IDENTIFY_FLAGS = {2: "target sense", 3: "SWD generated", 5: "JTAG and cJTAG generated", 6: "DIO",
+                  7: "target supply"}
+# Before format 7, bit 0 said vendor 0x83 framed OScan1 and bit 4 that it took mode 2. Format 7
+# cleared both and they stay reserved.
+IDENTIFY_FLAGS_BEFORE_7 = {0: "OScan1 by vendor 0x83", 4: "vendor 0x83 mode 2"}
+EXTENDED = {0: "energy capture", 2: "energy total", 3: "SPI", 4: "I2C", 5: "calibrated energy fields",
+            6: "DIO on Verge Aux", 7: "markers", 8: "capture identities", 9: "current ranges", 10: "DIO streams"}
+
+
+def parse_identify(body: bytes) -> dict | None:
+    """Vendor 0x82's reply after its ID, as docs/host-interface.md lays it out, or None if it is not
+    Verge's. Each field is read only from the format that added it: the board from format 3, vendor
+    0x83's scan formats in formats 4 to 6, the extended capabilities from format 6. The fields a
+    reply does not hold are None. A v1 HID reply is padded, so a field is never taken from length."""
+    if body[:5] != b"CJTAG" or len(body) < 8:
+        return None
+    version, flags, length = body[5], body[6], body[7]
+    tail = body[8 + length :]
+    out = {"format": version, "flags": flags, "build": body[8 : 8 + length].decode(errors="replace"),
+           "board": None, "scan_formats": None, "extended": None}
+    if version >= 3 and len(tail) >= 1:
+        out["board"] = tail[0]
+    if 4 <= version <= 6 and len(tail) >= 5:
+        formats = int.from_bytes(tail[1:5], "little")
+        out["scan_formats"] = [n for n in range(32) if formats >> n & 1]
+    if version >= 6 and len(tail) >= 9:
+        out["extended"] = int.from_bytes(tail[5:9], "little")
+    return out
+
+
+def bit_names(value: int, names: dict[int, str]) -> list[str]:
+    return [names.get(bit, f"bit {bit}") for bit in range(32) if value >> bit & 1]
 
 
 def cmd_identify(args) -> int:
@@ -363,31 +402,28 @@ def cmd_identify(args) -> int:
     print(f"{probe.serial}  {probe.vendor} / {probe.product}")
     try:
         reply = probe.command(bytes([0x82]))
-    except Exception as error:
-        print(f"  vendor 0x82 failed: {error}")
-        probe.release()
+    except UnknownCommand:
+        print("  no vendor 0x82: not Verge")
         return 1
-    body = reply[1:]
-    if body[:5] != b"CJTAG":
-        print(f"  vendor 0x82 answered {reply[:8].hex()} -- not our firmware")
+    finally:
         probe.release()
+    found = parse_identify(reply[1:])
+    if found is None:
+        print(f"  vendor 0x82 answered {reply[:8].hex()}: not Verge")
         return 1
-    version, flags, length = body[5], body[6], body[7]
-    build = body[8 : 8 + length].decode(errors="replace")
-    supported = "yes" if flags & 1 else "no"
-    active = "yes" if flags & 2 else "no"  # cJTAG framing, in whichever format
-    print(f"  magic CJTAG, format {version}, flags 0x{flags:02x}")
-    print(f"  OScan1 supported {supported}, cJTAG framing active now {active}")
-    print(f"  build {build!r}")
-    # Format 3 adds the board and 4 the scan formats. Read each at its format only: a v1 HID reply
-    # is padded.
-    if version >= 3 and len(body) > 8 + length:
-        board = body[8 + length]
-        print(f"  board {BOARDS.get(board, f'unknown ({board})')}")
-    if version >= 4 and len(body) >= 13 + length:
-        formats = int.from_bytes(body[9 + length : 13 + length], "little")
-        print(f"  cJTAG scan formats {[n for n in range(32) if formats >> n & 1]} (SCNFMT)")
-    probe.release()
+    version, flags = found["format"], found["flags"]
+    names = IDENTIFY_FLAGS | (IDENTIFY_FLAGS_BEFORE_7 if version < 7 else {})
+    named = bit_names(flags & ~0x02, names)
+    print(f"  magic CJTAG, format {version}, flags 0x{flags:02x}" + (f": {', '.join(named)}" if named else ""))
+    print(f"  cJTAG framing on now: {'yes' if flags & 0x02 else 'no'}")
+    print(f"  build {found['build']!r}")
+    if found["board"] is not None:
+        print(f"  board {BOARDS.get(found['board'], f'unknown ({found['board']})')}")
+    if found["scan_formats"] is not None:
+        print(f"  cJTAG scan formats for vendor 0x83: {found['scan_formats']} (SCNFMT)")
+    if found["extended"] is not None:
+        named = bit_names(found["extended"], EXTENDED)
+        print(f"  extended 0x{found['extended']:08x}" + (f": {', '.join(named)}" if named else ""))
     return 0
 
 
@@ -518,9 +554,12 @@ def cmd_led(args) -> int:
 
 def read_target(probe, mode: int, channel: int = 0) -> tuple[int, int, int]:
     """One vendor 0x86 reading: the ADC code, millivolts and J6 pin 9's detect bit."""
-    reply = probe.command(bytes([DAP_VENDOR_TARGET, mode, channel]))
-    if len(reply) < 7 or reply[0] != DAP_VENDOR_TARGET:
-        raise RuntimeError(f"vendor 0x86 answered {reply.hex()}; is this our firmware?")
+    try:
+        reply = probe.command(bytes([DAP_VENDOR_TARGET, mode, channel]))
+    except UnknownCommand:
+        raise RuntimeError("this firmware has no target sense (no vendor 0x86): it is not Verge") from None
+    if len(reply) < 7:
+        raise RuntimeError(f"vendor 0x86 answered {reply.hex()}, too short for a reading")
     if reply[1] != 0:
         # Images from before the step was reported answer 0 for every failure.
         step = {1: "offset calibration", 2: "gain calibration", 3: "conversion"}.get(reply[2])
@@ -561,26 +600,32 @@ def cmd_target_power(args) -> int:
     """Switch the Pro's target regulator or report the state last set since boot."""
     probe = one(args)
     modes = {"off": 0, "on": 1, "read": 2}
-    reply = probe.command(bytes([DAP_VENDOR_TARGET_POWER, modes[args.state]]))
-    if len(reply) < 3 or reply[0] != DAP_VENDOR_TARGET_POWER:
-        raise RuntimeError(f"vendor 0x8F answered {reply.hex()}; is this firmware new enough?")
+    try:
+        reply = probe.command(bytes([DAP_VENDOR_TARGET_POWER, modes[args.state]]))
+    except UnknownCommand:
+        raise RuntimeError("this firmware has no target supply control (no vendor 0x8F)") from None
+    if len(reply) < 3:
+        raise RuntimeError(f"vendor 0x8F answered {reply.hex()}, too short for a state")
     if reply[1] != 0:
-        raise RuntimeError("the target supply is unavailable on this board or the request was rejected")
+        raise RuntimeError("the probe refused: only an MCU-Link Pro has a target supply")
     print(f"target supply {'on' if reply[2] else 'off'}")
     probe.release()
     return 0
 
 
 ENERGY_RESULTS = ("ok", "stopped", "no sample", "unavailable", "bad rate", "bad argument", "ADC error",
-                  "DMA error")
+                  "DMA error", "identity mismatch", "no identity")
 ENERGY_RANGES = {0: "range unknown", 1: "350 mA setting, low range", 2: "350 mA setting, high range",
                  3: "50 mA setting, low range", 4: "50 mA setting, high range"}
 
 
 def energy(probe: Probe, request: bytes) -> tuple[int, bytes]:
-    reply = probe.command(bytes([DAP_VENDOR_ENERGY]) + request)
-    if len(reply) < 3 or reply[0] != DAP_VENDOR_ENERGY or reply[1] != 0:
-        raise RuntimeError(f"vendor 0x90 answered {reply.hex()}; is this a Pro with energy capture?")
+    try:
+        reply = probe.command(bytes([DAP_VENDOR_ENERGY]) + request)
+    except UnknownCommand:
+        raise RuntimeError("this firmware has no energy capture (no vendor 0x90)") from None
+    if len(reply) < 3 or reply[1] != 0:
+        raise RuntimeError(f"vendor 0x90 answered {reply.hex()}: the probe refused the request")
     return reply[2], reply[3:]
 
 
@@ -816,8 +861,8 @@ def cmd_core1(args) -> int:
     return 0
 
 
-def cmd_reboot(args) -> int:
-    """Reset the probe, optionally into the ROM bootloader, so a reflash costs no hands.
+def cmd_restart(args) -> int:
+    """Restart the probe, optionally into the ROM bootloader, so a reflash costs no hands.
 
     The probe answers, waits for the reply to leave the endpoint, drops off the bus and resets.
     So the command succeeding looks like the device disappearing, and there is nothing further to
@@ -830,7 +875,7 @@ def cmd_reboot(args) -> int:
     mode = 1 if args.bootloader else 0
     print(f"{probe.serial}  {probe.product}")
     try:
-        probe.reboot(bootloader=bool(mode))
+        probe.restart(bootloader=bool(mode))
     except usb.core.USBError as error:
         print(f"  refused: USB control request failed ({error})")
         probe.release()
@@ -893,20 +938,36 @@ def cmd_limit(args) -> int:
     No access port, no target memory and no target state, so nothing here can leave the part in a
     different condition than it found it, and a failure at a high rate does not spoil the next
     point. The debug port is reset and its sticky errors cleared between rates for the same reason.
+
+    The rates asked for are ARM's delay ladder's. Only an image without generated SWD paths (a
+    `+armwire` build, or NXP's firmware) runs at the ladder's rates. A generated image reports the
+    read period it clocks for each, with vendor 0x89, and that is the wire column there.
     """
     probe = one(args)
     print(f"{probe.serial}  {probe.product}")
     print(f"  DAP_Connect -> {probe.connect(1)}")
+    try:
+        swd_gen(probe)
+        generated = True
+    except RuntimeError:
+        generated = False
 
     ladder = clock_ladder(args.cpu_hz, args.half_bit_cycles)
     if args.max_mhz:
-        ladder = [row for row in ladder if row[2] <= args.max_mhz * 1e6]
+        ladder = [row for row in ladder if row[1 if generated else 2] <= args.max_mhz * 1e6]
 
+    if generated:
+        print("  wire: the read period vendor 0x89 reports for the clock asked")
+    else:
+        print("  wire: ARM's delay ladder, which an image without vendor 0x89 follows")
     print(f"\n  {'delay':>5}  {'asked':>9}  {'wire':>9}  {'transfers':>9}  {'bad words':>9}  {'short':>6}  verdict")
     worst_good = 0.0
     best_bad = None
     for delay, want, wire in ladder:
         probe.swj_clock(want)
+        if generated:
+            period = swd_gen(probe)["read_period"]
+            wire = args.cpu_hz / period if period else 0.0  # 0: the clock could not be generated
         try:
             reference = swd_reset(probe)
         except RuntimeError as exc:
@@ -1213,9 +1274,10 @@ LATENCY_OUTCOMES = ("never measured", "measured", "two latencies left, the later
 def swd_gen(probe: "Probe", latency: int = 0, mode: int = SWD_GEN_MODE_NONE) -> dict:
     """Vendor 0x89: the generated SWD paths' state, setting the read latency first unless 0, then
     measuring it, pinning it or letting the probe measure it on its own (src/dap_vendor.c)."""
-    reply = probe.command(bytes([DAP_VENDOR_SWD_GEN, latency, mode]))
-    if reply[0] != DAP_VENDOR_SWD_GEN:
-        raise RuntimeError("this image does not generate its SWD paths (no vendor 0x89)")
+    try:
+        reply = probe.command(bytes([DAP_VENDOR_SWD_GEN, latency, mode]))
+    except UnknownCommand:
+        raise RuntimeError("this image does not generate its SWD paths (no vendor 0x89)") from None
     fields = [int.from_bytes(reply[5 + 4 * i : 9 + 4 * i], "little") for i in range(6)]
     names = ("hz", "write_period", "read_period", "code_bytes", "builds", "failures")
     state = {"status": reply[1], "latency": reply[2], "masked": bool(reply[3]), "ok": bool(reply[4])} | dict(
@@ -1231,13 +1293,14 @@ def swd_gen(probe: "Probe", latency: int = 0, mode: int = SWD_GEN_MODE_NONE) -> 
     return state
 
 
-def jtag_gen(probe: "Probe", two_pin: int = 0, four_wire: int = 0, mode: int = SWD_GEN_MODE_NONE) -> dict:
+def jtag_gen(probe: "Probe", cjtag: int = 0, jtag: int = 0, mode: int = SWD_GEN_MODE_NONE) -> dict:
     """Vendor 0x8A: the generated JTAG paths' state, setting each wire's latency first unless 0,
     then measuring the wire in use, pinning the latencies or letting the probe measure them on its
     own (src/dap_vendor.c)."""
-    reply = probe.command(bytes([DAP_VENDOR_JTAG_GEN, two_pin, four_wire, mode]))
-    if reply[0] != DAP_VENDOR_JTAG_GEN:
-        raise RuntimeError("this image does not generate its JTAG paths (no vendor 0x8A)")
+    try:
+        reply = probe.command(bytes([DAP_VENDOR_JTAG_GEN, cjtag, jtag, mode]))
+    except UnknownCommand:
+        raise RuntimeError("this image does not generate its JTAG paths (no vendor 0x8A)") from None
     fields = [int.from_bytes(reply[6 + 4 * i : 10 + 4 * i], "little") for i in range(6)]
     names = ("hz", "period", "frame", "code_bytes", "builds", "failures")
     state = {"status": reply[1], "two_pin": reply[2], "four_wire": reply[3], "masked": bool(reply[4]),
@@ -1319,7 +1382,7 @@ def cmd_gen(args) -> int:
             if ok:
                 passing.append(latency)
         if not passing:
-            print("  no latency read DPIDR correctly; leaving the default")
+            print("  no latency read DPIDR correctly; pinning the default latency, 7")
             swd_gen(probe, 7)
             return 1
         if passing != list(range(passing[0], passing[-1] + 1)):
@@ -1363,9 +1426,9 @@ def cmd_jgen(args) -> int:
     print(f"{probe.serial}  {probe.product}")
     mode = (SWD_GEN_MODE_MEASURE if args.measure else SWD_GEN_MODE_PIN if args.pin
             else SWD_GEN_MODE_AUTOMATIC if args.automatic else SWD_GEN_MODE_NONE)
-    state = jtag_gen(probe, args.two_pin, args.four_wire, mode)
+    state = jtag_gen(probe, args.cjtag, args.jtag, mode)
     if state["status"] != 0:
-        print(f"  latencies {args.two_pin}/{args.four_wire}, mode {mode} refused")
+        print(f"  latencies cJTAG {args.cjtag}, JTAG {args.jtag}, mode {mode} refused")
     print(
         f"  clock asked {state['hz'] / 1e6:.3f} MHz: period {state['period']}, JTAG clock {state['frame']} cycles; "
         f"latency cJTAG {state['two_pin']}, JTAG {state['four_wire']}; "
@@ -1670,6 +1733,8 @@ TAP_NEXT = {
     "ex1ir": ("pauir", "updir"), "pauir": ("pauir", "ex2ir"), "ex2ir": ("shir", "updir"), "updir": ("rti", "seldr"),
 }
 OSCAN1 = 9
+# --format's names, as SCNFMT: vendor 0x95 takes them as SCNFMT - 8.
+SCAN_FORMATS = {"oscan1": 9, "oscan2": 10, "oscan5": 13, "oscan6": 14}
 
 
 def tap_walk(state: str, tms: str) -> str:
@@ -1920,9 +1985,10 @@ def cmd_cjtag(args) -> int:
                 escapes.append(("wait" if token[0] == "w" else "pause", n))
             else:
                 escapes.append(("escape", n) if token[0] == "e" else ("raw", ("1" if token[0] == "h" else "0") * n))
-        steps = (TI_OSCAN1[:1] + ti_steps(args.format, args.switch))[args.ti_from :]
+        scnfmt = SCAN_FORMATS[args.format]
+        steps = (TI_OSCAN1[:1] + ti_steps(scnfmt, args.switch))[args.ti_from :]
         run_ti_activation(probe, escapes + steps)
-        how = "" if args.format == OSCAN1 else f", then format {args.format} selected ({args.switch})"
+        how = "" if scnfmt == OSCAN1 else f", then {args.format} selected ({args.switch})"
         print(f"  TI's XDS110 OScan1 sequence (TI E2E 766675){how}")
     elif args.synth:
         program = PinProgram().escape(args.escape_a).clock("1" * args.tap_reset + "00")
@@ -1994,75 +2060,93 @@ def cmd_cjtag(args) -> int:
     return 0
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--serial", help="pick one probe when several are attached")
-    sub = parser.add_subparsers(dest="command", required=True)
+def number(text: str) -> int:
+    """An integer in any base Python reads: 15, 0x0f, 0b1111."""
+    return int(text, 0)
 
-    sub.add_parser("list", help="every attached CMSIS-DAP v2 probe").set_defaults(run=cmd_list)
-    sub.add_parser("info", help="every DAP_Info field").set_defaults(run=cmd_info)
-    sub.add_parser("identify", help="vendor 0x82, our firmware's identity").set_defaults(run=cmd_identify)
-    vendor = sub.add_parser("vendor", help="send one vendor command and show the reply")
-    vendor.add_argument("--id", type=lambda s: int(s, 0), required=True)
+
+def mhz_list(text: str) -> list[int]:
+    """Comma-separated MHz, as Hz."""
+    return [int(float(x) * 1e6) for x in text.split(",")]
+
+
+def main() -> int:
+    summary, _, rest = __doc__.partition("\n")
+    parser = argparse.ArgumentParser(description=summary, epilog=rest.strip("\n"),
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--serial", help="pick one probe when several are attached")
+    # Each subcommand takes --serial too, after its name. SUPPRESS keeps one given before the name.
+    serial = argparse.ArgumentParser(add_help=False)
+    serial.add_argument("--serial", default=argparse.SUPPRESS, help="pick one probe when several are attached")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    def subcommand(name: str, **kwargs) -> argparse.ArgumentParser:
+        return subparsers.add_parser(name, parents=[serial], **kwargs)
+
+    subcommand("list", help="every attached CMSIS-DAP v2 probe").set_defaults(run=cmd_list)
+    subcommand("info", help="every DAP_Info field").set_defaults(run=cmd_info)
+    subcommand("identify", help="vendor 0x82, our firmware's identity").set_defaults(run=cmd_identify)
+    vendor = subcommand("vendor", help="send one vendor command and show the reply")
+    vendor.add_argument("--id", type=number, required=True)
     vendor.add_argument("--payload", help="hex bytes after the id")
     vendor.set_defaults(run=cmd_vendor)
 
-    clock = sub.add_parser("clock", help="emit a bare SWCLK burst for the analyser")
+    clock = subcommand("clock", help="emit a bare SWCLK burst for the analyser")
     clock.add_argument("--hz", type=int, required=True, help="what to ask DAP_SWJ_Clock for")
     clock.add_argument("--bursts", type=int, default=200, help="256 clocks each")
     clock.set_defaults(run=cmd_clock)
 
-    sweep = sub.add_parser("sweep", help="one burst per rate, separated by a silent gap")
+    sweep = subcommand("sweep", help="one burst per rate, separated by a silent gap")
     sweep.add_argument("--rates", default="50000000,10000000,5000000", help="comma separated Hz")
     sweep.add_argument("--bursts", type=int, default=20, help="256 clocks each")
     sweep.add_argument("--gap", type=float, default=0.3, help="silent seconds between runs")
     sweep.set_defaults(run=cmd_sweep)
 
-    blink = sub.add_parser("blink", help="flash one unit's LED to identify it by eye")
+    blink = subcommand("blink", help="flash one unit's LED to identify it by eye")
     blink.add_argument("--seconds", type=float, default=10.0)
     blink.set_defaults(run=cmd_blink)
 
-    led = sub.add_parser("led", help="walk our LED through breathing, blinking and lit")
+    led = subcommand("led", help="walk our LED through breathing, blinking and lit")
     led.add_argument("--seconds", type=float, default=6.0, help="how long to hold each state")
     led.set_defaults(run=cmd_led)
 
-    target = sub.add_parser("target", help="the target's supply and pin 9 detect, from our firmware")
+    target = subcommand("target", help="the target's supply and pin 9 detect, from our firmware")
     target.add_argument("--sweep", action="store_true", help="read every ADC0 channel, in millivolts")
     target.set_defaults(run=cmd_target)
 
-    target_power = sub.add_parser("target-power", help="switch the Pro's target supply")
+    target_power = subcommand("target-power", help="switch the Pro's target supply")
     target_power.add_argument("state", choices=("off", "on", "read"))
     target_power.set_defaults(run=cmd_target_power)
 
-    energy_parser = sub.add_parser("energy", help="the Pro's energy capture: start, read, stop")
+    energy_parser = subcommand("energy", help="the Pro's energy capture: start, read, stop")
     energy_parser.add_argument("action", choices=("start", "latest", "total", "stop", "watch", "calibration"))
-    energy_parser.add_argument("--rate", type=int, default=1000, help="pairs per second to start at")
+    energy_parser.add_argument("--rate", type=int, default=25_000, help="pairs per second to start at")
     energy_parser.add_argument("--range", choices=("auto", "high"), default="auto",
                                help="switch current ranges automatically, or hold the high range for this capture")
     energy_parser.add_argument("--seconds", type=float, default=5.0, help="how long `watch` runs")
     energy_parser.add_argument("--every", type=float, default=0.5, help="seconds between `watch` samples")
     energy_parser.set_defaults(run=cmd_energy)
 
-    pins = sub.add_parser("pins", help="read, and optionally drive, the probe's own pins")
+    pins = subcommand("pins", help="read, and optionally drive, the probe's own pins")
     pins.add_argument("--connect", action="store_true", help="DAP_Connect first, so pins are outputs")
     pins.add_argument("--drive", action="store_true", default=None, help="toggle one pin and read back")
     pins.add_argument("--bit", type=int, default=0, help="which pin to drive, default SWCLK")
     pins.set_defaults(run=cmd_pins)
 
-    j8 = sub.add_parser("j8", help="give the plain board's J8 pins to the bench marker, or name its pads")
+    j8 = subcommand("j8", help="give the standalone MCU-Link's J8 pins to the bench marker, or name its pads")
     j8.add_argument("--walk", action="store_true", help="hold each pin high in turn, to name the pads")
     j8.add_argument("--seconds", type=float, default=3.0, help="how long to hold each one")
-    j8.add_argument("--marker", type=lambda s: int(s, 0), default=0x0F, help="pins the marker drives, bit n J8 pin n+1")
+    j8.add_argument("--marker", type=number, default=0x0F, help="pins the marker drives, bit n J8 pin n+1")
     j8.add_argument("--release", action="store_true", help="give all four back to DIO")
     j8.set_defaults(run=cmd_j8)
 
-    dio = sub.add_parser("dio", help="drive and read the DIO pins (the Pro's J19, the plain board's J8)")
-    dio.add_argument("--mask", type=lambda s: int(s, 0), default=0, help="pins to change, bit n DIOn; 0 only reads")
-    dio.add_argument("--outputs", type=lambda s: int(s, 0), default=0, help="which of them drive")
-    dio.add_argument("--levels", type=lambda s: int(s, 0), default=0, help="their output levels")
+    dio = subcommand("dio", help="drive and read the DIO pins (the Pro's J19, the standalone MCU-Link's J8)")
+    dio.add_argument("--mask", type=number, default=0, help="pins to change, bit n DIOn; 0 only reads")
+    dio.add_argument("--outputs", type=number, default=0, help="which of them drive")
+    dio.add_argument("--levels", type=number, default=0, help="their output levels")
     dio.set_defaults(run=cmd_dio)
 
-    limit = sub.add_parser("limit", help="sweep every achievable rate and check the data")
+    limit = subcommand("limit", help="sweep every achievable rate and check the data")
     limit.add_argument("--cpu-hz", type=int, default=150_000_000, help="the probe's core clock")
     limit.add_argument("--half-bit-cycles", type=float, default=2.5,
                        help="measured non-delay cost of a half bit: 2.5 for ours, 6 for stock")
@@ -2071,18 +2155,18 @@ def main() -> int:
     limit.add_argument("--max-mhz", type=float, default=0.0, help="stop above this wire rate")
     limit.set_defaults(run=cmd_limit)
 
-    core1 = sub.add_parser("core1", help="CPU 1's progress and last fault, from CPU 0")
+    core1 = subcommand("core1", help="CPU 1's progress and last fault, from CPU 0")
     core1.add_argument("--queues", action="store_true", help="also the shared queues' state")
     core1.add_argument("--swo", action="store_true", help="also SWO capture's DMA and USART registers")
     core1.add_argument("--sample", action="store_true",
                        help="stop CPU 1 with an NMI to record where it is; reset the probe afterwards")
     core1.set_defaults(run=cmd_core1)
 
-    reboot = sub.add_parser("reboot", help="reset the probe, optionally into the ROM bootloader")
-    reboot.add_argument("--bootloader", action="store_true", help="come back in ISP mode, not the firmware")
-    reboot.set_defaults(run=cmd_reboot)
+    restart = subcommand("restart", help="restart the probe, into its firmware or the ROM bootloader")
+    restart.add_argument("--bootloader", action="store_true", help="come back in ISP mode, not the firmware")
+    restart.set_defaults(run=cmd_restart)
 
-    block = sub.add_parser("block", help="repeat a DP read, or an ABORT write, with DAP_TransferBlock")
+    block = subcommand("block", help="repeat a DP read, or an ABORT write, with DAP_TransferBlock")
     block.add_argument("--hz", type=int, default=10000000)
     block.add_argument("--words", type=int, default=64, help="transfers per block command")
     block.add_argument("--blocks", type=int, default=200)
@@ -2096,14 +2180,14 @@ def main() -> int:
                        help="queue this many commands asynchronously instead, so the host never waits")
     block.set_defaults(run=cmd_block)
 
-    swo = sub.add_parser("swo", help="capture SWO through DAP_SWO_Data and save it")
+    swo = subcommand("swo", help="capture SWO through DAP_SWO_Data and save it")
     swo.add_argument("--baud", type=int, default=1_000_000)
     swo.add_argument("--seconds", type=float, default=2.0)
     swo.add_argument("--limit", type=int, default=508, help="bytes to ask for in each DAP_SWO_Data")
     swo.add_argument("--out", default="swo.bin")
     swo.set_defaults(run=cmd_swo)
 
-    sample = sub.add_parser("sample", help="sweep where a read samples SWDIO, with vendor 0x87")
+    sample = subcommand("sample", help="sweep where a read samples SWDIO, with vendor 0x87")
     sample.add_argument("--hz", type=int, default=1_000_000, help="clock for the line reset only")
     sample.add_argument("--cpu-hz", type=int, default=150_000_000, help="the probe's core clock")
     sample.add_argument("--low", type=int, default=0, help="extra delay-loop iterations in the low phase")
@@ -2113,7 +2197,7 @@ def main() -> int:
     sample.add_argument("--calibrate", action="store_true", help="time the filler instead of reading")
     sample.set_defaults(run=cmd_sample)
 
-    gen = sub.add_parser("gen", help="the generated SWD paths: state, latency, calibration")
+    gen = subcommand("gen", help="the generated SWD paths: state, latency, calibration")
     gen.add_argument("--latency", type=int, default=0, help="set the read latency, in core cycles")
     gen.add_argument("--calibrate", action="store_true", help="find the latency with DPIDR reads")
     gen.add_argument("--calibrate-hz", type=int, default=37_500_000, help="clock to calibrate at")
@@ -2124,28 +2208,28 @@ def main() -> int:
     gen.add_argument("--automatic", action="store_true", help="let the probe measure the latency on its own")
     gen.set_defaults(run=cmd_gen)
 
-    jgen = sub.add_parser("jgen", help="the generated JTAG paths: state, latencies, measurement")
-    jgen.add_argument("--two-pin", type=int, default=0, help="set the cJTAG latency, in core cycles")
-    jgen.add_argument("--four-wire", type=int, default=0, help="set the JTAG latency, in core cycles")
+    jgen = subcommand("jgen", help="the generated JTAG paths: state, latencies, measurement")
+    jgen.add_argument("--cjtag", type=int, default=0, metavar="LATENCY", help="set the cJTAG latency, in core cycles")
+    jgen.add_argument("--jtag", type=int, default=0, metavar="LATENCY", help="set the JTAG latency, in core cycles")
     jgen.add_argument("--measure", action="store_true", help="have the probe measure the wire in use")
     jgen.add_argument("--pin", action="store_true", help="stop the probe measuring the latencies on its own")
     jgen.add_argument("--automatic", action="store_true", help="let the probe measure the latencies on its own")
     jgen.set_defaults(run=cmd_jgen)
-    jlog = sub.add_parser("jlog", help="the JTAG generator's last generations and what each was for")
+    jlog = subcommand("jlog", help="the JTAG generator's last generations and what each was for")
     jlog.add_argument("--last", type=int, default=16, help="how many, newest back (the probe keeps 16)")
     jlog.set_defaults(run=cmd_jlog)
 
-    cjtag = sub.add_parser("cjtag", help="activate OScan1 and read an IDCODE over cJTAG")
+    cjtag = subcommand("cjtag", help="activate OScan1 and read an IDCODE over cJTAG")
     cjtag.add_argument("--hz", type=int, default=1_000_000, help="TCKC rate to ask for")
     cjtag.add_argument("--ir-length", type=int, default=6, help="the first TAP's IR (ICEPick: 6)")
     cjtag.add_argument("--reset-clocks", type=int, default=9, help="TMS-high clocks in the reset")
     cjtag.add_argument("--repeat", type=int, default=1, help="IDCODE reads after one activation")
-    cjtag.add_argument("--expect", type=lambda s: int(s, 0), default=0x3BB4102F)
+    cjtag.add_argument("--expect", type=number, default=0x3BB4102F)
     cjtag.add_argument("--no-activate", action="store_true", help="drive no activation and leave framing off")
     cjtag.add_argument("--keep", action="store_true", help="leave OScan1 framing on afterwards")
     cjtag.add_argument("--tlr-after", type=int, default=0, help="framed TMS-high clocks at the end of the run")
-    cjtag.add_argument("--read", type=lambda v: int(v, 0), action="append", default=[], help="--mem: a word to read, repeatable")
-    cjtag.add_argument("--sysctrl", type=lambda v: int(v, 0), default=0x81000080,
+    cjtag.add_argument("--read", type=number, action="append", default=[], help="--mem: a word to read, repeatable")
+    cjtag.add_argument("--sysctrl", type=number, default=0x81000080,
                        help="--mem: ICEPick SYSCTRL write; bit 7 is KeepPoweredinTLR (probe-rs sets it)")
     cjtag.add_argument("--nreset", action="store_true", help="pulse nRESET before every read after the first")
     cjtag.add_argument("--replay", help="drive the activation from this capture's CSV instead")
@@ -2157,9 +2241,9 @@ def main() -> int:
     cjtag.add_argument("--nreset-first", action="store_true", help="pulse nRESET before the activation")
     cjtag.add_argument("--settle", type=float, default=50, help="ms to wait after --nreset-first")
     cjtag.add_argument("--mem", action="store_true", help="route the ICEPick to the Cortex-M DAP and read CPUID")
-    cjtag.add_argument("--sweep", type=lambda v: [int(float(x) * 1e6) for x in v.split(",")], default=[],
+    cjtag.add_argument("--sweep", type=mhz_list, default=[],
                        help="--mem: MHz list to read a ROM block at, checked against 1 MHz")
-    cjtag.add_argument("--sweep-address", type=lambda v: int(v, 0), default=0x1000_0000)
+    cjtag.add_argument("--sweep-address", type=number, default=0x1000_0000)
     cjtag.add_argument("--sweep-words", type=int, default=64)
     cjtag.add_argument("--sweep-repeat", type=int, default=20)
     cjtag.add_argument("--join-idle", type=int, default=10, help="--mem: Run-Test/Idle clocks after the TAP selection")
@@ -2167,12 +2251,15 @@ def main() -> int:
     cjtag.add_argument("--tdi", type=int, default=1, choices=(0, 1), help="TDI level for every frame")
     cjtag.add_argument("--pre-tdi", default="", help="TDI bit per --pre-tms bit")
     cjtag.add_argument("--synth", action="store_true", help="drive the activation decoded from the J-Link's")
-    cjtag.add_argument("--ti", action="store_true", help="drive TI's XDS110 OScan1 sequence, the default")
+    cjtag.add_argument("--ti", action="store_true",
+                       help="drive TI's XDS110 OScan1 sequence: the default, and taken over --synth, --replay "
+                            "and --no-activate")
     cjtag.add_argument("--ti-escape", default="", help="--ti: escapes to send first, e.g. 10 or 10,7")
     cjtag.add_argument("--ti-prefix", default="",
                        help="--ti: steps first: eN escape, hN/lN TMS-high/low clocks; 'jlink' = e10,h200,l2,e7,l36")
     cjtag.add_argument("--ti-from", type=int, default=0, help="--ti: skip TI's first N steps")
-    cjtag.add_argument("--format", type=int, default=OSCAN1, help="--ti: scan format (SCNFMT) to end in: 9 OScan1, 10 OScan2, 13 OScan5, 14 OScan6")
+    cjtag.add_argument("--format", choices=tuple(SCAN_FORMATS), default="oscan1",
+                       help="--ti: the scan format to end in")
     cjtag.add_argument("--switch", choices=("command", "jscan"), default="command",
                        help="--format: select it with an OScan1 command before the window closes, or in JScan")
     cjtag.add_argument("--escape-a", type=int, default=10, help="synth: edges in the first escape")
@@ -2184,7 +2271,11 @@ def main() -> int:
     cjtag.set_defaults(run=cmd_cjtag)
 
     args = parser.parse_args()
-    return args.run(args)
+    try:
+        return args.run(args)
+    except (RuntimeError, usb.core.USBError) as error:
+        print(f"dap.py {args.command}: {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
