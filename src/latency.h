@@ -9,10 +9,10 @@
  * far agrees with, trying candidates outward from the one in use until both ends of the passing
  * band are found or one latency is left.
  *
- * A generator that takes the late side of the window as fixed reports ranges with no lower end: a
- * build reads right for every latency up to its range's end (latency_wire.open_below). There the
- * band only has a top, and the search walks one way from the latency in use: down while it reads
- * right, else up.
+ * A generator whose builds sample before the edge that ends their bit reports ranges with no lower
+ * end: a build reads right for every latency up to its range's end (latency_wire.open_below), as
+ * the JTAG and cJTAG measuring builds do. There the band only has a top, and the search walks one
+ * way from the latency in use: down while it reads right, else up.
  *
  * At SWD's shortest read period a sample can only go on every other cycle, so two neighbouring
  * latencies read right with the same generations there. Where one period leaves them apart it

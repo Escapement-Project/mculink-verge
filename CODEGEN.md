@@ -117,9 +117,12 @@ One generator draws both JTAG and cJTAG; `src/jtag_gen.c`'s opening comment has 
   cycles, so the entry is a multiply away and no clock pays for a loop. OScan5's and OScan6's EOT
   frames are functions of one block. A transfer function runs `count` transfers of one request.
 - JTAG: a clock is a store to the masked port register that lowers TCK and sets TDI together, then
-  a rising-edge store. TMS is set once for the call. TDO is readable from `latency` cycles after the
-  fall that launched it until a few cycles past the next fall, so a short clock samples it after
-  that next fall and runs masked.
+  a rising-edge store. TMS is set once for the call. TDO changes `latency` cycles after every fall,
+  so a bit is readable from then until one cycle less than the latency past the next fall. A short
+  clock samples after that next fall, no more than 5 cycles past it, and runs masked. A build that
+  measures the latency samples before the next fall, on as long a clock as that takes: a sample
+  after it reads right only while TDO holds the bit, so a target with a shorter latency would read
+  wrong there too, and the search would take it for a longer one.
 - cJTAG: a clock is a frame of three TCKC packets: nTDI and TMS from the probe, then TDO from the
   target. TMSC moves only while TCKC is low (CJTAG.md). The probe lets go right after the fall that
   starts the TDO packet, buffer first, and takes the wire back right after the next fall, pin first.
@@ -127,7 +130,8 @@ One generator draws both JTAG and cJTAG; `src/jtag_gen.c`'s opening comment has 
   whole call where a frame has no cycle to spare.
 - No clock or packet is shorter than the period, and neither phase is shorter than its share.
 - The JTAG generator honours the same stall on JTAG. A sample after the next fall keeps it clear of
-  TDO's hold (next fall + 6, less MARGIN), and the clock lengthens where nothing fits.
+  the end of TDO's hold (next fall + the latency less one, at most 6, less MARGIN), and the clock
+  lengthens where nothing fits.
   `jtag_gen_info.stall_moves` says a build may change. A JTAG connection starts from the default
   latency, where every such build already leaves under CONNECT_MARGIN, so it measures there
   (tools/jtag_latency_test.c, test_stall_connect). cJTAG layouts ignore the stall: their samples

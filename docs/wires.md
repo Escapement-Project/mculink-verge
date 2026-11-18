@@ -73,9 +73,9 @@ Past 16 cycles, each cycle of delay adds one core cycle to the clock. A CC1312R1
 pin reset, and 10 right after a system reset.
 
 On the Pro, energy capture can make these clocks up to two cycles longer while it runs: its DMA can
-delay the probe's read of TDO by two cycles. At 6 or 7 cycles of delay, `DAP_Transfer` and
+delay the probe's read of TDO by two cycles. At 7 cycles of delay, `DAP_Transfer` and
 `DAP_TransferBlock` keep 30 MHz with a few clocks at 25 MHz, and `DAP_JTAG_Sequence` scans at
-25 MHz. At 8 cycles both run at 21.4 MHz, and at 9 or 10 at 18.75 MHz.
+25 MHz. At 6 cycles both run at 25 MHz, at 8 at 21.4 MHz, and at 9 or 10 at 18.75 MHz.
 
 ## cJTAG
 

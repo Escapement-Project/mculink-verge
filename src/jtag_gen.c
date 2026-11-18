@@ -82,7 +82,8 @@ static_assert((TMSC < 256U) && (TDI < 256U), "R_PIN is loaded as an 8-bit immedi
 
 /** Cycles a sample keeps from either end of its window. The latencies were measured on one die. */
 #define MARGIN 1U
-/** JTAG: cycles past the next falling edge that TDO still holds the bit (measured). */
+/** JTAG: the most cycles past the next falling edge that TDO is taken to hold the bit, measured on
+ * a target whose latency is 7. A sample comes MARGIN short of it. */
 #define FOUR_WIRE_HOLD 6U
 /** JTAG: the acknowledge's last bit is loaded, folded in and compared, and the branch taken,
  * in this many cycles before the next falling edge. */
@@ -136,6 +137,11 @@ struct block {
 static struct gen_schedule layout;
 
 static uint32_t later(uint32_t a, uint32_t b) { return a > b ? a : b; }
+
+/** JTAG: cycles past the next falling edge that TDO holds the bit for `latency`. TDO changes as
+ * long after every fall as after the one that launched the bit, so it holds the bit one cycle less
+ * than the latency past the next one. */
+static uint32_t four_wire_hold(uint32_t latency) { return latency - 1U < FOUR_WIRE_HOLD ? latency - 1U : FOUR_WIRE_HOLD; }
 
 /** The cycles a TMSC store waits after a fall the target samples on: a quarter of the packet's
  * period, rounded up. A TAP.7 samples on the falling edge until STC1 says otherwise (1149.7
@@ -208,17 +214,19 @@ GEN_PATH static bool try_four_wire(struct block* b, uint32_t cycles, uint32_t at
 /** A JTAG clock. The shortest clock that fits wins. Within one, a sample before the next
  * fall, which no interrupt can overtake, as late as possible; failing that, a masked one after
  * it, as near the middle of the window as fits. The window is [fall + latency, next fall +
- * FOUR_WIRE_HOLD], less MARGIN at each end and `stall` more at its end: a sample after the next
- * fall that another master holds reads the next bit past it. With `earliest`, the sample goes as
- * early in it as fits. */
+ * four_wire_hold(latency)], less MARGIN at each end and `stall` more at its end: a sample after the
+ * next fall that another master holds reads the next bit past it. With `earliest`, the sample goes
+ * as early as fits before the next fall, on as short a clock as that takes: one after it reads
+ * right only while TDO holds the bit, so its range would have a lower end. */
 GEN_PATH static bool layout_four_wire(struct block* b, uint32_t period, uint32_t latency, uint32_t stall, bool earliest) {
     const uint32_t first = latency + MARGIN;
+    const uint32_t hold = four_wire_hold(latency);
     b->blocks = BLOCKS;
     // Only the first clock length's unmasked search, from the latest cycle down, is the same at a
     // lower latency.
     b->bound = true;
     for (uint32_t cycles = later(period, 5U); earliest && (cycles <= later(period, 5U) + first); cycles++) {
-        for (uint32_t at = first; at <= cycles + FOUR_WIRE_HOLD - MARGIN - stall; at++) {
+        for (uint32_t at = first; (at < cycles) && (at <= cycles + hold - MARGIN - stall); at++) {
             if (try_four_wire(b, cycles, at)) {
                 return true;
             }
@@ -232,7 +240,7 @@ GEN_PATH static bool layout_four_wire(struct block* b, uint32_t period, uint32_t
             }
         }
         const uint32_t lo = later(first, cycles);
-        const uint32_t hi = cycles + FOUR_WIRE_HOLD - MARGIN - stall;
+        const uint32_t hi = cycles + hold - MARGIN - stall;
         for (uint32_t d = 0U; lo + d <= hi; d++) {
             const uint32_t mid = (lo + hi) / 2U;
             if ((mid + d <= hi) && try_four_wire(b, cycles, mid + d)) {
@@ -607,7 +615,10 @@ struct xfer {
     uint32_t branch;
     uint32_t tdo_fall; // cJTAG: the fall that starts the last frame's TDO packet
     uint32_t offset;   // the fewest cycles any sample comes after the fall that launched its bit
-    bool bound;        // the latency decided where something went
+    // JTAG: one more than the most cycles any sample's load comes after the fall that ends its bit,
+    // a stall included: the lowest latency whose TDO still holds the bit then.
+    int32_t lowest;
+    bool bound; // the latency decided where something went
 };
 
 static struct xfer xs;
@@ -693,19 +704,29 @@ static uint32_t tdi_word(uint32_t rd, uint32_t rm, uint32_t bit) {
     return bit > TDI_PIN ? t_and(rd, X_PIN, rm, T_LSR, bit - TDI_PIN) : t_and(rd, X_PIN, rm, T_LSL, TDI_PIN - bit);
 }
 
+/** The pending sample on `at`, whose bit's window the fall at `next` ends. A stall holds a load
+ * before that fall and the fall's store behind it alike, so it moves only a sample after it. */
+static void fx_take(struct xfer* x, uint32_t at, uint32_t next) {
+    if (at > next) {
+        const int32_t lowest = (int32_t)(at + x->stall) - (int32_t)next + 1;
+        x->lowest = lowest > x->lowest ? lowest : x->lowest;
+    }
+    x_take(x, at);
+}
+
 /** The last clock's TDO, now that the fall that ends its window is known. */
 static void fx_sample(struct xfer* x, uint32_t next) {
     const uint32_t first = x->pend_at + x->latency + MARGIN;
     // Before the next fall, where no interrupt can make it late: as late as possible.
     for (uint32_t c = next; c-- > first;) {
         if (!gen_taken(&x->q, c)) {
-            x_take(x, c);
+            fx_take(x, c, next);
             return;
         }
     }
     // After it, in the middle of what is left of the window, off the clocks still to come, and the
     // stall short of its end. Only a masked function may sample there.
-    const uint32_t last = next + FOUR_WIRE_HOLD - MARGIN - x->stall;
+    const uint32_t last = next + four_wire_hold(x->latency) - MARGIN - x->stall;
     uint32_t best = 0U;
     uint32_t best_margin = 0U;
     bool found = false;
@@ -725,7 +746,7 @@ static void fx_sample(struct xfer* x, uint32_t next) {
         x->pend = false;
         return;
     }
-    x_take(x, best);
+    fx_take(x, best, next);
 }
 
 static void fx_clock(struct xfer* x, uint32_t data) {
@@ -1227,7 +1248,8 @@ static bool lay_xfer(const struct xfer_cfg* c, bool read, uint32_t p) {
                        .stall = c->stall,
                        .first = UINT32_MAX,
                        .uniform = c->loop,
-                       .offset = UINT32_MAX};
+                       .offset = UINT32_MAX,
+                       .lowest = 1};
     gen_schedule_reset(&x->q, gen_events, 1280U);
     x->p = p;
     if (c->two_pin) {
@@ -1403,7 +1425,7 @@ GEN_PATH __attribute__((noinline)) bool jtag_gen_build(const struct jtag_gen_con
                     jtag_gen_xfer_fn* write) {
     if ((config->period < JTAG_GEN_PERIOD_MIN) || (config->period > JTAG_GEN_PERIOD_MAX) || (config->latency == 0U) ||
         (config->latency > 64U) || (config->wire > JTAG_GEN_OSCAN6) || (config->before > 7U) ||
-        (config->after > 7U) || (config->idle > 255U)) {
+        (config->after > 7U) || (config->idle > 255U) || (config->stall > JTAG_GEN_STALL_MAX)) {
         return false;
     }
     const bool two_pin = config->wire != JTAG_GEN_FOUR_WIRE;
@@ -1433,6 +1455,11 @@ GEN_PATH __attribute__((noinline)) bool jtag_gen_build(const struct jtag_gen_con
     // OScan5's and OScan6's frames in Shift, the one that leaves it, and OScan6's one that leaves it
     // straight after entering, with a PAD. Their samples bound the latency too.
     int32_t scan_last = (int32_t)b.offset;
+    // A JTAG clock's sample may come after the next fall, and reads its bit only while TDO holds
+    // it. Every cJTAG sample comes before the fall that ends its packet.
+    const int32_t scan_lowest =
+        two_pin || (b.offset <= b.cycles) ? 1 : (int32_t)(b.offset + config->stall) - (int32_t)b.cycles + 1;
+    const int32_t scan_first = scan_lowest > 1 ? scan_lowest : 1;
     bool scan_bound = b.bound;
     const uint32_t shift_at = e.pos;
     uint32_t eot_at = e.pos;
@@ -1482,6 +1509,7 @@ GEN_PATH __attribute__((noinline)) bool jtag_gen_build(const struct jtag_gen_con
     uint32_t write_at = scan_end;
     bool transfers = false;
     uint32_t read_offset = 0U;
+    int32_t read_lowest = 1;
     bool read_bound = false;
     bool read_masked = false;
     // Unrolled where that fits in JTAG_GEN_UNROLLED_MAX, which leaves the fastest clocks the fewest
@@ -1495,6 +1523,7 @@ GEN_PATH __attribute__((noinline)) bool jtag_gen_build(const struct jtag_gen_con
         read_at = e.pos;
         transfers = emit_xfer(&e, &xc, true);
         read_offset = xs.offset;
+        read_lowest = xs.lowest;
         read_bound = xs.bound;
         read_masked = xs.masked;
         write_at = e.pos;
@@ -1516,8 +1545,11 @@ GEN_PATH __attribute__((noinline)) bool jtag_gen_build(const struct jtag_gen_con
         .looped = transfers && xc.loop,
         .stall_moves = !two_pin && (b.masked || (transfers && (read_masked || xs.masked))),
         // Without transfers, ARM's run as scans.
+        .scan_first = scan_first,
         .scan_last = scan_last,
+        .read_first = transfers ? read_lowest : scan_first,
         .read_last = transfers ? (int32_t)read_offset : scan_last,
+        .write_first = transfers ? xs.lowest : scan_first,
         .write_last = transfers ? (int32_t)xs.offset : scan_last,
         // Transfers that did not fit at this latency might at a lower one.
         .same_below =

@@ -59,9 +59,15 @@ struct jtag_gen_config {
     uint32_t before;   // the transfers' bypass bits before the DAP: its index in the chain
     uint32_t after;    // and after it
     uint32_t idle;     // Run-Test/Idle clocks after each transfer
-    uint32_t earliest; // 1: every sample as early as the latency allows, to measure it; scans only
+    uint32_t earliest; // 1: every sample as early as the latency allows and before the fall that ends
+                       // its bit, to measure it; scans only
     uint32_t stall;    // see gen_stall; JTAG only, since cJTAG samples precede their window's end
 };
+
+/** The longest stall a build takes. A sample's window past the next fall ends the stall short of
+ * TDO's hold, less a cycle's margin; with more, on the shortest clock, 5 cycles, it would end
+ * before the clock began. */
+#define JTAG_GEN_STALL_MAX 4U
 
 /** Clocks `count` JTAG clocks, 1 to JTAG_GEN_FRAMES_MAX, with TMS held at `tms` (0 or 1) and TDI
  * from `tdi`, least significant bit first. Returns TDO the same way.
@@ -196,13 +202,17 @@ struct jtag_gen_info {
     // JTAG: a sample may come after the fall that ends its bit's window, so a stall (gen_stall)
     // changes the code. cJTAG samples always come before it.
     bool stall_moves;
-    // The real latencies the scans, the read transfers and the write transfers read right for:
-    // every one up to these, the fewest cycles any of their samples comes after the fall that
-    // launched its bit. The other end of the window is taken as fixed: with JTAG, TDO holds at
-    // least FOUR_WIRE_HOLD cycles past the next fall, which no sample passes, and with cJTAG
-    // every sample comes before it.
+    // The real latencies the scans, the read transfers and the write transfers read right for,
+    // from first to last. The last is the fewest cycles any of their samples comes after the fall
+    // that launched its bit. TDO changes as long after every fall, so it holds a bit one cycle
+    // less than the latency past the next fall: the first is one more than the most cycles any
+    // sample, a stall included, comes after that fall, and 1 when every sample comes before it,
+    // as every cJTAG sample does.
+    int32_t scan_first;
     int32_t scan_last;
+    int32_t read_first;
     int32_t read_last;
+    int32_t write_first;
     int32_t write_last;
     // Every latency below this one generates the same code in this configuration, or 0 when the
     // latency decided where something went.

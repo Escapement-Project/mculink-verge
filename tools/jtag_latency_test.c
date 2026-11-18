@@ -28,14 +28,15 @@ struct target {
     uint32_t repeats; // generations of one already there
 };
 
-/** Whether a build whose claimed range ends between a boundary target's two latencies reads
- * right: 0 never, 1 always, 2 to 5 by its code, 6 to 9 afresh every generation, as a sample on the
- * edge of a bit does. */
-static bool edge_reads(const struct target* t, uint32_t period, int32_t last) {
+/** Whether a build whose claimed range ends or starts between a boundary target's two latencies
+ * reads right: 0 never, 1 always, 2 to 5 by its code, 6 to 9 afresh every generation, as a sample
+ * on the edge of a bit does. */
+static bool edge_reads(const struct target* t, uint32_t period, int32_t first, int32_t last) {
     if (t->edges < 2U) {
         return t->edges == 1U;
     }
-    uint32_t h = (t->edges * 2246822519U) ^ (period * 2654435761U) ^ ((uint32_t)last * 97U);
+    uint32_t h =
+        (t->edges * 2246822519U) ^ (period * 2654435761U) ^ ((uint32_t)first * 40503U) ^ ((uint32_t)last * 97U);
     if (t->edges >= 6U) {
         h ^= t->tries * 3266489917U;
     }
@@ -59,7 +60,7 @@ static void try_latency(uint32_t period, uint32_t latency, struct latency_try* o
         return;
     }
     out->generated = true;
-    out->first = 1;
+    out->first = jtag_gen_info.scan_first;
     out->last = jtag_gen_info.scan_last;
     out->same_below = jtag_gen_info.same_below;
     if (period == t->host) {
@@ -67,12 +68,16 @@ static void try_latency(uint32_t period, uint32_t latency, struct latency_try* o
         t->repeats += (t->ran & bit) != 0U ? 1U : 0U;
         t->ran |= bit;
     }
-    // Sampled early, the reads agree on the bits before: a word with bit 0 set as often as not.
+    // Sampled early, the reads agree on the bits before, and sampled late on the bits after: a
+    // word with bit 0 set as often as not, and here always, so only the word says it is wrong.
     out->passed = t->latency != 0U;
     const int32_t n = (int32_t)t->latency;
-    const bool early =
-        t->boundary ? (out->last < n) || ((out->last == n) && !edge_reads(t, period, out->last)) : out->last < n;
-    out->word = early ? (IDCODE << 1) | 1U : IDCODE;
+    bool right = (out->first <= n) && (n <= out->last);
+    if (t->boundary) {
+        right = ((out->first <= n) && (n + 1 <= out->last)) ||
+                (((out->last == n) || (out->first == n + 1)) && edge_reads(t, period, out->first, out->last));
+    }
+    out->word = right ? IDCODE : out->last < n ? (IDCODE << 1) | 1U : (IDCODE >> 1) | 0x80000000U;
     t->tries++;
 }
 
@@ -90,6 +95,16 @@ static int32_t fewest(void) {
     return jtag_gen_info.write_last < last ? jtag_gen_info.write_last : last;
 }
 
+/** The lowest latency every part of the last build reads right for. */
+static int32_t lowest(void) {
+    int32_t first = jtag_gen_info.scan_first;
+    first = jtag_gen_info.read_first > first ? jtag_gen_info.read_first : first;
+    return jtag_gen_info.write_first > first ? jtag_gen_info.write_first : first;
+}
+
+/** Whether the last build reads `latency` right everywhere, with `spare` cycles either side. */
+static bool serves(int32_t latency, int32_t spare) { return (lowest() <= latency - spare) && (latency + spare <= fewest()); }
+
 /** The safe read, the highest latency's build at the safe period, reads right for every latency
  * the search can find, on either wire. */
 static void test_safe_period(void) {
@@ -103,7 +118,7 @@ static void test_safe_period(void) {
 }
 
 /** What the search skips: a build that says every latency below a bound generates its code does.
- * Also that every build samples no earlier than one cycle past the latency it was built for, the
+ * Also that every build reads the latency it was built for with a cycle to spare either side, the
  * full builds, the scans alone and the scans that sample as early as that allows. */
 static void test_same_below(void) {
     static const uint32_t periods[] = {3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 12U, 15U, 20U, 30U, 72U, 150U};
@@ -124,9 +139,10 @@ static void test_same_below(void) {
                     if (!built) {
                         continue;
                     }
-                    assert(jtag_gen_info.scan_last > (int32_t)latency);
+                    const int32_t low_end = latency > 1U ? (int32_t)latency - 1 : 1;
+                    assert((jtag_gen_info.scan_last > (int32_t)latency) && (jtag_gen_info.scan_first <= low_end));
                     if (!scan_only && jtag_gen_info.transfers) {
-                        assert(fewest() > (int32_t)latency);
+                        assert((fewest() > (int32_t)latency) && (lowest() <= low_end));
                     }
                     hashes[latency] = code_hash();
                     below[latency] = jtag_gen_info.same_below;
@@ -144,7 +160,8 @@ static void test_same_below(void) {
 }
 
 /** A stall changes only the builds that say it moves them, all JTAG, and a build with one still
- * samples past the latency it was built for. cJTAG samples come before their window's end. */
+ * reads the latency it was built for with a cycle to spare either side. cJTAG samples come before
+ * their window's end. */
 static void test_stall(void) {
     static const uint32_t periods[] = {3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 12U, 15U, 20U, 30U, 72U};
     uint32_t moved = 0U;
@@ -166,8 +183,9 @@ static void test_stall(void) {
                 config.stall = 2U;
                 assert(jtag_gen_build(&config, &scan, &read, &write));
                 assert(jtag_gen_info.transfers == transfers);
-                assert(jtag_gen_info.scan_last > (int32_t)latency);
-                assert(!transfers || (fewest() > (int32_t)latency));
+                const int32_t low_end = latency > 1U ? (int32_t)latency - 1 : 1;
+                assert((jtag_gen_info.scan_last > (int32_t)latency) && (jtag_gen_info.scan_first <= low_end));
+                assert(!transfers || ((fewest() > (int32_t)latency) && (lowest() <= low_end)));
                 if (moves) {
                     moved++;
                 } else {
@@ -257,8 +275,7 @@ int main(void) {
                     jtag_gen_scan_fn scan;
                     jtag_gen_xfer_fn read;
                     jtag_gen_xfer_fn write;
-                    const bool served =
-                        jtag_gen_build(&production, &scan, &read, &write) && ((int32_t)latency <= fewest());
+                    const bool served = jtag_gen_build(&production, &scan, &read, &write) && serves((int32_t)latency, 0);
                     if (!right || !served || (r.word != IDCODE)) {
                         printf("  %s period %u, latency %u, from %u: outcome %u, latency %u, %u tries, "
                                "left 0x%016llx\n",
@@ -296,7 +313,7 @@ int main(void) {
                         jtag_gen_xfer_fn read;
                         jtag_gen_xfer_fn write;
                         const bool built = jtag_gen_build(&production, &scan, &read, &write);
-                        const bool served = built && ((int32_t)n + 1 <= fewest());
+                        const bool served = built && serves((int32_t)n, 0) && serves((int32_t)n + 1, 0);
                         const bool boundary_right =
                             (r.outcome != LATENCY_BOUNDARY) ||
                             (built && (t.repeats == 0U) && ((int32_t)n + 2 <= fewest()) &&

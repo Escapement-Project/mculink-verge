@@ -25,6 +25,9 @@
 #ifdef SWD_CODEGEN
 #include "swd_gen.h"
 #endif
+#ifdef JTAG_CODEGEN
+#include "jtag_gen.h"
+#endif
 
 #define ENERGY_DMA_SOURCE (&ADC0->RESFIFO[0])
 
@@ -53,6 +56,9 @@ static_assert(ENERGY_SEGMENTS == 2U, "a completion flag for each half");
 /** Cycles a DMA0 read of ADC0 can hold a load from the secure GPIO, which shares its AHB port
  *  (BUSES.md). Measured; no longer hold was seen. */
 #define ADC0_LOAD_STALL 2U
+#ifdef JTAG_CODEGEN
+static_assert(ADC0_LOAD_STALL <= JTAG_GEN_STALL_MAX, "the JTAG generator would refuse every build during a capture");
+#endif
 
 /** ADC clocks from a trigger to its pair's first conversion: an allowance, not measured. */
 #define ENERGY_TRIGGER_LATENCY_ADCK 4U

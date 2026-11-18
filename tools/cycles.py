@@ -662,13 +662,15 @@ class TimedJtagTarget:
     It reads TMS and TDI on each rising TCK edge and launches TDO on each falling one. The probe
     sees a bit from `latency` cycles after the falling-edge store that launched it until `hold`
     cycles after the next one; in between the two it reads the old bit, and the read's late margin
-    says so. A CC1312R1 switched to JTAG after a pin reset gives 7 and 6 (CJTAG.md); the default
-    latency, 8, is an earlier measurement's.
+    says so. TDO changes as long after every fall, so `hold` defaults to the latency less one, and
+    to no more than 6, the most the generator takes. A CC1312R1 switched to JTAG after a pin reset
+    gives 7 and 6 (CJTAG.md); the default latency, 8, is an earlier measurement's.
     """
 
-    def __init__(self, tap: "RecordingTap", latency: int = 8, hold: int = 6):
+    def __init__(self, tap: "RecordingTap", latency: int = 8, hold: int | None = None):
         self.tap = tap
-        self.latency, self.hold = latency, hold
+        self.latency = latency
+        self.hold = min(6, latency - 1) if hold is None else hold
         # (falling-edge store cycle, bit). Before the first clock TDO idles high, as a target that
         # is not shifting leaves it.
         self.launches: list[tuple[int, int]] = [(-(10**9), 1)]
@@ -2150,7 +2152,9 @@ def check(
     # The same with IDCODE reads, with JTAG, OScan1, and OScan5 and OScan6 in Shift.
     if "jtag_sweep_last" in symbols(elf):
         if "jtag" in wires:
-            for latency, hz in ((7, 30_000_000), (13, 25_000_000)):
+            # 3 to 5 hold TDO for less than the 6 cycles past the next fall a fast clock's sample
+            # may take, which a measuring build that sampled there would misread.
+            for latency, hz in ((3, 25_000_000), (4, 25_000_000), (5, 30_000_000), (7, 30_000_000), (13, 25_000_000)):
                 failures += jtag_measure_latency(elf, model, "jtag", latency, hz)
             failures += jtag_connect(elf, model, "jtag", 13, 30_000_000, rescued=False)
             failures += jtag_connect(elf, model, "jtag", 16, 10_000_000, rescued=True)

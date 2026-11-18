@@ -42,7 +42,7 @@ static void try_latency(uint32_t period, uint32_t latency, struct latency_try* o
         return;
     }
     out->generated = true;
-    out->first = 1;
+    out->first = jtag_gen_info.scan_first;
     out->last = jtag_gen_info.scan_last;
     out->same_below = jtag_gen_info.same_below;
     const uint32_t word = jgen_ReadIDCode();
@@ -79,7 +79,8 @@ void jtag_sweep_watch(const uint8_t* request) {
 /** Whether the code generated for the latency in use samples less than CONNECT_MARGIN cycles after
  * it anywhere. At the default latency every build a stall moves does, so a capture starting or
  * stopping never changes code a connection's read checked without measuring
- * (tools/jtag_latency_test.c). */
+ * (tools/jtag_latency_test.c). No build's range starts above 6, so at the default the side below
+ * always has margin. */
 static bool short_margin(uint32_t wire) {
     if (!jtag_gen_ready_transfers(wire)) {
         return false;
@@ -138,6 +139,7 @@ void jtag_sweep(void) {
     struct jtag_gen_config config = jtag_gen_inputs(wire);
     // The hold below keeps DMA0 off the port.
     config.stall = 0U;
+    // Every measuring build samples before the fall that ends its bit (jtag_gen.h, `earliest`).
     static const struct latency_wire search = {.safe_period = JTAG_GEN_SAFE_PERIOD, .open_below = true};
     const uint32_t pins = JTAG_GEN_PINS(wire);
     const bool held = energy_monitor_hold();
