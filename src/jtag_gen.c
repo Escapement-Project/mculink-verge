@@ -837,7 +837,8 @@ static void fx_transfer(struct xfer* x, bool read, uint32_t before, uint32_t aft
             used = x_op(x, later(x->fall + 1U, x->word_ready), tdi_word(X_DATA, X_WORD, x->uniform ? 0U : j));
         }
         if (exits) {
-            x_op(x, x->fall + 1U, t_orr_imm(X_ACK, X_DATA, TMS_WORD));
+            // After D31's level is in X_DATA, which a looped word can bring later than the fall.
+            x_op(x, read ? x->fall + 1U : used + 1U, t_orr_imm(X_ACK, X_DATA, TMS_WORD));
         }
         fx_clock(x, exits ? X_ACK : X_DATA);
         x->data_at[j] = x->start;

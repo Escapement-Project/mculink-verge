@@ -59,7 +59,8 @@
 #define LATENCY_NEVER 0U        // none has run
 #define LATENCY_MEASURED 1U     // one latency agrees with every read
 #define LATENCY_AMBIGUOUS 2U    // two neighbouring latencies do: the later is used
-#define LATENCY_UNRESOLVED 3U   // more do: the latest is used (see latency_measure)
+#define LATENCY_UNRESOLVED 3U   // more do: the latest, or the one in use if it read right and
+                                // ranges have a lower end (see latency_measure)
 #define LATENCY_NO_BAND 4U      // nothing read right at the host's period, or the safe read did not
 #define LATENCY_INCONSISTENT 5U // no latency agrees with every read, even a cycle off
 #define LATENCY_BOUNDARY 6U     // none agrees exactly, some a cycle off: see latency_widest

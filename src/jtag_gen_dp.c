@@ -247,8 +247,8 @@ void jgen_WriteAbort(uint32_t data) {
     set_tdi(1U);
 }
 
-/** Whether the generated transfers may run: they walk from Run-Test/Idle, and in OScan2 and OScan5
- * a frame's shape depends on where the TAP is, so a host that left it elsewhere gets the scans,
+/** Whether the generated transfers may run: they walk from Run-Test/Idle, and in OScan2, OScan5 and
+ * OScan6 a frame's shape depends on where the TAP is, so a host that left it elsewhere gets the scans,
  * which follow the tracked state. */
 static bool transfers_fit(void) {
     return (jtag_gen_read != nullptr) &&

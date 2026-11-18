@@ -89,7 +89,7 @@ static_assert(SWDIO < 256U, "R_FOUR is loaded as an 8-bit immediate");
 
 struct gen_cfg {
     // Clocks the target drives, and the turnarounds and idle clocks: a read clock is four
-    // instructions, so never shorter than SWD_GEN_PERIOD_MIN.
+    // instructions, so never shorter than SWD_GEN_READ_PERIOD_MIN.
     uint32_t period;
     uint32_t low; // cycles from a falling edge to the rising edge
     // Clocks the probe drives: an edge store each and the next bit's extraction, so three.
