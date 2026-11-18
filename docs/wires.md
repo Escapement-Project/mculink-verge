@@ -46,6 +46,13 @@ On the Pro, energy capture slows reads. While a capture runs, a read clock takes
 cycles, and a 4-cycle clock leaves no room for that. The DMA can delay a write's store too, so a few
 write clocks take 4 cycles instead of 3.
 
+After an acknowledge other than OK, the probe still clocks the transfer's data phase, as ARM's
+firmware does: always after a protocol error, and after WAIT or FAULT when the host has turned the
+data phase on (`DAP_SWD_Configure`). Those clocks run at 25 MHz at most. A
+[latency measurement](#when-the-probe-measures-the-target) reads at sample positions that can miss
+the acknowledge, so a recording of a connection at 50 MHz can show a few reads whose data runs at
+25 MHz.
+
 ## JTAG
 
 The probe has to sample TDO after the target drives it, so a slow target lengthens the clock. The
