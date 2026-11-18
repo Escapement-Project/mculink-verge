@@ -28,14 +28,14 @@
 <text x="124" y="68" font-size="14" fill="currentColor" font-weight="600" text-anchor="middle">CTimer 2</text>
 <path d="M124,76L124,105" fill="none" stroke="currentColor" stroke-width="1.5"/>
 <path d="M124,110L120.85,103L127.15,103Z" fill="currentColor"/>
-<text x="132" y="100" font-size="13" fill="currentColor" class="vf-2">triggers each pair</text>
+<text x="132" y="100" font-size="13" fill="currentColor" class="vf-2">triggers samples</text>
 <text x="0" y="129" font-size="14" fill="currentColor" font-weight="600">Target</text>
 <text x="0" y="146" font-size="14" fill="currentColor" font-weight="600">supply</text>
 <path d="M60,132L93,132" fill="none" stroke="currentColor" stroke-width="1.5"/>
 <path d="M98,132L91,135.15L91,128.85Z" fill="currentColor"/>
 <text x="124" y="137" font-size="14" fill="currentColor" font-weight="600" text-anchor="middle">ADC0</text>
 <text x="124" y="160" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">voltage and</text>
-<text x="124" y="178" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">current, a pair</text>
+<text x="124" y="178" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">current, a sample</text>
 <path d="M150,132L241,132" fill="none" stroke="currentColor" stroke-width="1.5"/>
 <path d="M246,132L239,135.15L239,128.85Z" fill="currentColor"/>
 <text x="197" y="125" font-size="14" fill="currentColor" text-anchor="middle">DMA</text>
@@ -50,7 +50,7 @@
 <text x="423" y="154" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">adds each segment to</text>
 <text x="423" y="172" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">the energy total; while</text>
 <text x="423" y="190" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">a stream runs, writes the</text>
-<text x="423" y="208" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">pairs into stream messages</text>
+<text x="423" y="208" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">samples into stream messages</text>
 <path d="M548,122H557V131H548Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule"/>
 <path d="M559,122H568V131H559Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule"/>
 <path d="M570,122H579V131H570Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule"/>
@@ -119,6 +119,6 @@
 <path d="M420,322V306" fill="none" stroke="currentColor" stroke-width="1.5"/>
 <path d="M420,306l9,3.5l-9,3.5Z" fill="currentColor"/>
 <text x="420" y="346" font-size="12" fill="currentColor" text-anchor="middle" class="vf-2">marker</text>
-<text x="240" y="346" font-size="12" fill="currentColor" text-anchor="middle" class="vf-2">pairs</text>
+<text x="240" y="346" font-size="12" fill="currentColor" text-anchor="middle" class="vf-2">samples</text>
 <text x="375" y="368" font-size="13" fill="currentColor" text-anchor="middle" class="vf-2">stamped on CTimer 4, the stream&#x27;s clock</text>
 </svg>

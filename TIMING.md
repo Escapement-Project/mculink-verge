@@ -2,13 +2,13 @@
 
 These are the rules the SWD generator places instructions by, and what the emulator models. Every
 rule comes from a measurement on the bench: the [measurement log](MEASUREMENTS.md) has them, under
-"The cost model times the bus". The JTAG and cJTAG generators sample TDO by the rules in
+"The cost model times the bus". The JTAG generator samples TDO, on JTAG and cJTAG, by the rules in
 docs/wires.md and CJTAG.md.
 
 ## Where generated code runs
 
-In SRAMX's lower 16 KB, from 0x0400_0000. Nothing else in a product image uses SRAMX; the code
-lab's arena, in a lab build only, is its upper 16 KB.
+Generated code runs in SRAMX's lower 16 KB, from 0x0400_0000. Nothing else in a product image uses
+SRAMX. The code lab's arena, in a lab build only, is its upper 16 KB.
 
 The core fetches SRAMX over C-AHB and makes its data accesses over S-AHB, so the two never wait
 for each other. ARM's bit paths run from SRAM, which the core fetches over S-AHB. There every
@@ -50,19 +50,21 @@ Use `mov.w rN, rN` as filler. It costs one cycle at every alignment. A NOP does 
 
 Prefer `movw` and `movt` for constants. A literal-pool load is a data access on the bus the code
 is fetched over, so it holds back the instruction behind it by a cycle unless a taken branch
-follows. The model has that, but it is a cost a generator need not pay. A counted loop of `subs.w` and `bne.w` costs 3 cycles an iteration plus
-its body when its first instruction is word-aligned, and 4 when it straddles a word. The last
-iteration, which falls through, costs 2 plus its body.
+follows. The model has that, but it is a cost a generator need not pay.
+
+A counted loop of `subs.w` and `bne.w` costs 3 cycles an iteration plus its body when its first
+instruction is word-aligned, and 4 when it straddles a word. The last iteration, which falls
+through, costs 2 plus its body.
 
 The PPB is the bus the cycle counter sits on. No bit path reads it, but every timing measurement
-does, so the last rule matters to anyone reading a count.
+does, so the table's PPB rule matters to anyone reading a count.
 
 ## When a store reaches the pin
 
 Every GPIO store form reaches the pin at the same delay after it issues: SET, CLR and NOT, a byte
-to the B register, a word to the W register, and the masked port register. Two edges are as many cycles apart on the wire as
-their stores are in issue order. Beyond that, a rising and a falling edge differ by about 1.7 ns at
-J6, an analog difference.
+to the B register, a word to the W register, and the masked port register. Two edges are as many
+cycles apart on the wire as their stores are in issue order. Beyond that, a rising and a falling
+edge differ by about 1.7 ns at J6, an analog difference.
 
 ## When a load sees the target's bit
 
@@ -102,7 +104,7 @@ rate asked for:
 
 The furthest a generated rate falls below the one asked is 20% between 20 and 37.5 MHz, 11%
 between 10 and 20, and 6% between 5 and 10. ARM's paced paths fall up to 56%, 33% and 24% short in
-the same bands, and it overshoots some requests: 16.67 MHz for 16, 7.14 for 7.
+the same bands, and they overshoot some requests: 16.67 MHz for 16, 7.14 for 7.
 
 A schedule placed from the model alone runs as the model says, cycle for cycle, with every sample
 in the middle of its window: that is how the generated transfers are placed.
@@ -112,7 +114,7 @@ cycles after its edge, which is two clocks later.
 
 A write clock needs three instructions, with the data bits held in registers, so writes run at
 P = 3, 50 MHz. On the MSPM0L1306 a write needs nothing more than its SWDIO store kept off the
-cycles of the edges: every placement between them took, at every period from 3 to 10 cycles.
+cycles of the edges: every placement between them worked, at every period from 3 to 10 cycles.
 
 ## What the generator does with it
 
@@ -155,8 +157,8 @@ it, and from the bus slots data has already taken. `tools/cycles.py --engine` ru
 `--latency 7` adds a SWD target that answers by time and reports every read's distance from both
 ends of its window.
 
-From SRAMX it matches 692 instruction sequences timed in isolation at four alignments, plus all 144
-covering calls, stack, masking, multiplies, divides, IT blocks and literal loads. It matches 29
+From SRAMX it matches 692 instruction sequences timed in isolation at four alignments, and all 144
+that cover calls, stack, masking, multiplies, divides, IT blocks and literal loads. It matches 29
 pulse trains, every generated read, and every scheduled sequence. It is a cycle slow on an
 unconditional branch straight after a read of the cycle counter, which no bit path does. It counts
 the prefetch buffer in halfwords, five of them, released at issue (`Params.queue_halfwords`).
@@ -164,7 +166,7 @@ Unicorn does not run an instruction an IT block skips, so `tools/cycles.py` issu
 
 From SRAM it is a cycle fast at the alignment where 32-bit instructions straddle words, from the
 cycle-counter read onwards. It reproduces every SWD result the bench has for the current
-firmware. Flash is not modelled, and part of the command layer still runs from there. The JTAG and
+firmware. Flash is not modelled, and part of the command layer runs from there. The JTAG and
 cJTAG paths have timed targets of their own (`TimedJtagTarget` and `TimedCjtagTarget` in
 `tools/cycles.py`, checked by `tools/jtagcheck.py`).
 

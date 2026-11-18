@@ -17,13 +17,13 @@ code, linker script, clock setup and the LPC55's `lpc_ip3511` device driver, all
 upstream. ARM's CMSIS-DAP sources compile as they ship, with no patches. Their one accommodation is
 `-Wno-unused-variable` on their files, since `DAP.c` leaves a variable unused when SWO is configured
 out and TinyUSB's example flags are `-Werror`. The code that is the project's own is board and
-protocol specific: the pin layer, the bit paths and the generators that write them at run time, the
+protocol specific: the pin layer, the bit paths and the generators that write them at runtime, the
 cJTAG framing, the USB descriptors, and the command path between the two cores.
 
 The MS OS 2.0 descriptor set is built at boot rather than written by hand. It has nested length
-fields that must agree with the bytes after them, nothing reports a mismatch at run time, and the
-device then fails to bind. Which vendor interfaces it binds, and at which interface numbers, follows
-the jumpers. `tools/ms_os_20_test.c` checks every length field under sanitizers, and
+fields that must agree with the bytes after them. Nothing reports a mismatch at runtime: the device
+fails to bind. Which vendor interfaces it binds, and at which interface numbers, follows the
+jumpers. `tools/ms_os_20_test.c` checks every length field under sanitizers, and
 `tools/image.py` checks each strap state's set against its configuration.
 
 ## The two cores
@@ -90,7 +90,7 @@ capture, and the SPI and I2C bridges.
 
 ## Memory
 
-![A memory map, high addresses at the top. USB SRAM, from 0x4010_0000, holds TinyUSB's buffers, Verge Aux's included, which CPU 0 and the USB controller write, and from 0x4010_1000 dap_shared: the request and reply slots, queues, DMA's channel table and the SWO ring, written by both cores, the USB controller and DMA. SRAM4, from 0x2004_0000, holds the stream messages, 16 slots of 512 bytes, written by the core that owns the capture state. SRAM3's top 8 KiB, from 0x2003_E000, hold dap_stage: staged commands and replies, the HID replies and Verge Aux's slot, written by both cores. SRAM1 starts with CPU 1's 16 KiB of stack. From 0x2001_4000 come CPU 1's command path, the SWD generator and the JTAG generator's scans, then its data, running on into SRAM2. How far depends on the compiler, and rarely used data may reach SRAM3. CPU 1's data holds the abort flag CPU 0 sets. SRAM0 holds CPU 0's stack in its top 4 KiB, then its data, its loop and the code a command passes through, the consoles' rings and the energy ring, which DMA fills, and energy capture's state. SRAMX holds the generated wire code, written at run time. Flash holds CPU 0's code from 0x200 and CPU 1's from 0x4_0000. Both link scripts place dap_shared, dap_stage and the stream messages at one address. CPU 0 reaches the abort flag, and CPU 1 the energy state, through a pointer in dap_shared.](docs/figures/architecture-memory.svg)
+![A memory map, high addresses at the top. USB SRAM, from 0x4010_0000, holds TinyUSB's buffers, Verge Aux's included, which CPU 0 and the USB controller write, and from 0x4010_1000 dap_shared: the request and reply slots, queues, DMA's channel table and the SWO ring, written by both cores, the USB controller and DMA. SRAM4, from 0x2004_0000, holds the stream messages, 16 slots of 512 bytes, written by the core that owns the capture state. SRAM3's top 8 KiB, from 0x2003_E000, hold dap_stage: staged commands and replies, the HID replies and Verge Aux's slot, written by both cores. SRAM1 starts with CPU 1's 16 KiB of stack. From 0x2001_4000 come CPU 1's command path, the SWD generator and the JTAG generator's scans, then its data, running on into SRAM2. How far depends on the compiler, and rarely used data may reach SRAM3. CPU 1's data holds the abort flag CPU 0 sets. SRAM0 holds CPU 0's stack in its top 4 KiB, then its data, its loop and the code a command passes through, the consoles' rings and the energy ring, which DMA fills, and energy capture's state. SRAMX holds the generated wire code, written at runtime. Flash holds CPU 0's code from 0x200 and CPU 1's from 0x4_0000. Both link scripts place dap_shared, dap_stage and the stream messages at one address. CPU 0 reaches the abort flag, and CPU 1 the energy state, through a pointer in dap_shared.](docs/figures/architecture-memory.svg)
 
 Nothing passes between the images by symbol. Each defines `dap_shared` in a section that both
 link scripts place at the same address, and `tools/image.py` checks that both images agree on
@@ -104,8 +104,7 @@ unaligned access faults. The generated code loads and stores words at any offset
 data starts at byte 5, and inside `DAP_ExecuteCommands` a reply can start anywhere. So CPU 1 never
 runs a command in place. It runs it from a copy in ordinary RAM. By default CPU 0 makes that copy
 as the command arrives, into `dap_stage`, and copies the reply back out as it sends it. That is
-staging, and vendor command `0x8C` turns it off, after which CPU 1 copies each command and reply
-itself.
+staging. Vendor command `0x8C` turns it off, and CPU 1 then copies each command and reply itself.
 
 ## USB
 
@@ -116,19 +115,19 @@ function the board lacks, or a jumper turns off, is not in the configuration at 
 
 | function | interface | endpoints | present |
 | --- | --- | --- | --- |
-| CMSIS-DAP v2 | vendor class, string starting `CMSIS-DAP` | EP1 OUT and IN, bulk | unless the SWD jumper is fitted (J5 plain, J13 Pro) |
-| VCOM | CDC ACM, two interfaces | EP2 OUT and IN, bulk; notification `0x86` | unless the VCOM jumper is fitted (J4 plain, J14 Pro) |
+| CMSIS-DAP v2 | vendor class, string starting `CMSIS-DAP` | EP1 OUT and IN, bulk | unless the SWD jumper is fitted (J5 standalone, J13 Pro) |
+| VCOM | CDC ACM, two interfaces | EP2 OUT and IN, bulk; notification `0x86` | unless the VCOM jumper is fitted (J4 standalone, J14 Pro) |
 | CMSIS-DAP v1 | HID, 64-byte reports | EP3 OUT and IN, interrupt | with CMSIS-DAP v2 |
 | VCOM2 | CDC ACM, two interfaces | EP4 OUT and IN, bulk; notification `0x87` | on the Pro |
 | Verge Aux | vendor class, string `Verge Aux` | EP5 OUT and IN, bulk | on the Pro and the standalone MCU-Link, whatever the jumpers |
 
 The interfaces come in this order, and those after a missing one number down. The endpoints keep
 their numbers. CMSIS-DAP v2 is interface 0 whenever it is there, and Verge Aux is always last, so
-the interfaces stock also has keep stock's numbers. The USB-SIO jumper (J15) changes nothing here:
-it turns off the DIO, SPI and I2C bridges, not an interface.
+the interfaces NXP's firmware also has keep the numbers it gives them. The USB-SIO jumper (J15)
+changes nothing here: it turns off the DIO, SPI and I2C bridges, not an interface.
 
 The controller has endpoints 0 to 5. The two notification endpoints are numbers it does not have,
-declared the way stock declares them on the Pro, and never opened: the firmware sends no
+declared the way NXP's firmware declares them on the Pro, and never opened: the firmware sends no
 notification, and the boards wire no modem lines.
 
 Bulk endpoints are 512 bytes at high speed and 64 at full speed. docs/host-interface.md covers the
@@ -156,7 +155,7 @@ A CMSIS-DAP v2 command goes like this:
 
 1. CPU 0 arms EP1 OUT into a free request slot in `dap_shared`. There are three. With none free, it
    leaves the endpoint unarmed, and the controller answers the host's next packet with NAK. A
-   command the probe cannot place waits on the host's side; none is dropped.
+   command the probe cannot place waits on the host's side, and none is dropped.
 2. A packet arrives. TinyUSB's task, in CPU 0's loop, hands it to `tud_vendor_rx_cb`. If it is
    `DAP_TransferAbort`, CPU 0 sets CPU 1's abort flag straight away and goes no further: an abort
    has to reach the transfer running now, not wait behind it.
@@ -253,7 +252,7 @@ mailbox. CPU 1 answers it before its next CMSIS-DAP command, with the same code 
 command on CMSIS-DAP, so a request waits for at most the command running now. CPU 0 sends the reply
 on EP5 IN. It arms EP5 OUT again only once the slot is free, so the interface takes one request at
 a time. A request from a host that has since gone still runs, since an Aux command needs no session
-state; only its reply is dropped.
+state. Only its reply is dropped.
 
 Four `0x90` modes never reach CPU 1: modes 6, 7, 10 and 13 attach a stream to a running capture or
 end it, without touching the capture. CPU 0 answers them itself, because it owns the capture state
@@ -294,16 +293,16 @@ GPIO for JTAG.
 
 Energy capture runs on the Pro, with HW_VER_5 fitted, and uses both cores.
 
-![CPU 1 starts, stops and reads a capture (0x90), and calibrates. CTimer 2 triggers each pair: ADC0 reads the target's voltage and current together. DMA moves the pairs into a ring in SRAM0, in segments of about 1 ms or longer. CPU 0 adds each segment to the energy total and, while a stream runs, writes the pairs into stream messages, 16 slots in SRAM4, which leave on Verge Aux's EP5 IN. CPU 0's loop switches the current range back to low. CPU 1 owns the capture state until a start, CPU 0 while the capture runs, and CPU 1 again after the stop. Pairs, DIO edges and markers are stamped on CTimer 4, the stream's clock.](docs/figures/architecture-energy.svg)
+![CPU 1 starts, stops and reads a capture (0x90), and calibrates. CTimer 2 triggers each sample: ADC0 reads the target's voltage and current together. DMA moves the samples into a ring in SRAM0, in segments of about 1 ms or longer. CPU 0 adds each segment to the energy total and, while a stream runs, writes the samples into stream messages, 16 slots in SRAM4, which leave on Verge Aux's EP5 IN. CPU 0's loop switches the current range back to low. CPU 1 owns the capture state until a start, CPU 0 while the capture runs, and CPU 1 again after the stop. Samples, DIO edges and markers are stamped on CTimer 4, the stream's clock.](docs/figures/architecture-energy.svg)
 
 - **CPU 1 controls it.** `0x90` starts, stops and reads a capture, from either interface. CPU 1
   calibrates at boot, and again at a start when the last calibration failed or the current range
   jumper changed.
 - **The hardware samples it.** A timer, CTimer 2, triggers each conversion of ADC0, which reads the
-  target's voltage and current together: a pair. A DMA channel moves the results into a ring in
-  SRAM0, in segments of about a millisecond, or longer below about 2,000 pairs a second.
+  target's voltage and current together: a sample. A DMA channel moves the results into a ring in
+  SRAM0, in segments of about a millisecond, or longer below about 2,000 samples a second.
 - **CPU 0 integrates it while it runs.** Its DMA interrupt takes each completed segment, adds it
-  to the energy total and, while a stream runs, writes the pairs into stream messages. Its loop
+  to the energy total and, while a stream runs, writes the samples into stream messages. Its loop
   switches the current range back to low when a segment shows the current has fallen, timed
   between samples where the rate leaves room. Where the low range keeps giving way, it waits
   longer each time. A capture can hold the high range instead (`0x90`
@@ -313,15 +312,15 @@ Energy capture runs on the Pro, with HW_VER_5 fitted, and uses both cores.
 - **A latency measurement holds it.** When CPU 1 measures the target's read latency, it stops the
   conversion timer for the measurement, so the capture's DMA cannot delay a sample on the wire.
 
-The stream's clock is another timer, CTimer 4. Pairs, DIO edges and markers are all stamped on it,
+The stream's clock is another timer, CTimer 4. Samples, DIO edges and markers are all stamped on it,
 so they share one timeline. Both timers and the ADC run from PLL0, at 150 MHz from the board's
 16 MHz crystal. DIO edges come from CPU 0's pin interrupts, the only interrupts above
-CPU 0's others. A marker (`0x94`) runs on CPU 1, like any command. It goes out with the next pairs
-message, or on its own after 10 ms.
+CPU 0's others. A marker (`0x94`) runs on CPU 1, like any command. It goes out with the next
+samples message, or on its own after 10 ms.
 
 ## The wire
 
-Every transfer runs on code CPU 1 generates at run time into SRAMX, for the clock, the turnaround,
+Every transfer runs on code CPU 1 generates at runtime into SRAMX, for the clock, the turnaround,
 the idle cycles and the target's read latency in use. The code is placed to the cycle. SWD and JTAG
 share one region of SRAMX, and each generates its code again when it finds the other's there.
 
@@ -330,15 +329,14 @@ changes it runs, or at the start of the next transfer command. Either way the wi
 code is generated. CODEGEN.md lists what triggers it.
 
 ARM's command logic stays in C around the generated code: posted reads, WAIT retries, value
-matching and timestamps. The sequence commands `DAP_SWJ_Sequence` and `DAP_SWD_Sequence` still run
+matching and timestamps. The sequence commands `DAP_SWJ_Sequence` and `DAP_SWD_Sequence` run
 ARM's C. So do vendor `0x96`'s escapes and a raw `DAP_SWJ_Sequence` sent with a cJTAG format
 selected (`cJTAG_Escape` and `cJTAG_Clock`, paced by the clock in use). `DAP_JTAG_Sequence` runs on
 the generated scans.
 
-A connection measures the target's read latency on the wire before it trusts a sample position: at a
-fast clock, when its first read fails, when the host changes the clock, and on a Pro when a capture
-changes which latencies the code serves. It measures only while the latency is automatic; `0x89` and
-`0x8A` can pin one, and report the generated code.
+A connection measures the target's read latency on the wire before it trusts a sample position
+([When the probe measures the target](docs/wires.md#when-the-probe-measures-the-target) says when).
+`0x89` and `0x8A` can pin one, and report the generated code.
 
 TIMING.md has the timing rules the code is placed by, CODEGEN.md the generators, and CJTAG.md the
 cJTAG wire.

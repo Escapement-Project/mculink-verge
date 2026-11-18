@@ -50,7 +50,7 @@ A host recognises a Verge probe by its USB descriptors and `DAP_Info` strings:
 
 | Where | What it holds |
 | --- | --- |
-| USB VID:PID | `0x1FC9:0x0143`, the pair NXP's firmware uses |
+| USB VID:PID | `0x1FC9:0x0143`, the IDs NXP's firmware uses |
 | bcdDevice | `0x0100`, plus a bit for each function the probe offers: debug bit 0, the console (VCOM) bit 1, the Pro's second console bit 2, Verge Aux bit 3 |
 | Manufacturer string, `DAP_Info` 0x01 | `Escapement Project` |
 | Product string, `DAP_Info` 0x02 | `Verge CMSIS-DAP`, or `Verge Pro CMSIS-DAP` on a Pro |
@@ -86,8 +86,8 @@ packets at either speed.
 `0x82` changes nothing on Verge or on NXP's firmware. Other firmware gives the vendor IDs meanings
 of its own: DAPLink's `0x82` sets its UART. So a host identifies the probe first, by `DAP_Info` 0x01
 reading `Escapement Project`, or by the USB ID `0x1FC9:0x0143`, which NXP's firmware shares. A reply
-without `CJTAG` after the ID is not from Verge. NXP's V3.172 echoes `0x82` alone, and V3.174 answers
-`82 00 01`.
+without `CJTAG` after the ID is not from Verge. NXP's firmware V3.172 echoes `0x82`
+alone, and V3.174 answers `82 00 01`.
 
 Send `[0x82]`. The reply's fields, counted from the byte after the ID:
 
@@ -109,7 +109,7 @@ raises the format version, so read the fields you know and ignore any after them
 The capability flags, byte 6:
 
 - **Bit 0:** reserved, always 0.
-- **Bit 1:** cJTAG framing is on now.
+- **Bit 1:** cJTAG framing is on as the probe answers.
 - **Bit 2:** [target sense](#target-sense-0x86), `0x86`.
 - **Bit 3:** the SWD transfers are generated, and `0x89` is there
   ([Commands Verge's own tools use](#commands-verges-own-tools-use)).
@@ -132,7 +132,7 @@ The extended capabilities:
 - **Bit 6:** `0x8E` on Verge Aux.
 - **Bit 7:** markers, `0x94`, and the stream's markers message.
 - **Bit 8:** capture identities and conditional stops, `0x90` modes 8 to 13.
-- **Bit 9:** the range setting, `0x90` mode 14, with the stream header's flag bit 2 and the pairs'
+- **Bit 9:** the range setting, `0x90` mode 14, with the stream header's flag bit 2 and the samples'
   under-range bit.
 - **Bit 10:** [DIO streams](#dio-streams), `0x90` mode 15 on Verge Aux.
 
@@ -193,9 +193,9 @@ and 6, then 0, fit in one `DAP_ExecuteCommands`, and move no pin.
   So before it stops framing, a host sends one more frame, and the move lands on a rise it chose:
   TMS 0 in Run-Test/Idle, Pause-DR or Pause-IR, or TMS 1 in Test-Logic-Reset. That frame's own move
   keeps the TAP where it is, so whichever rise completes it changes nothing.
-- **OScan2, 5 and 6** frame each JTAG clock by the state of the target's TAP, so the probe follows it
-  from Run-Test/Idle, starting where the format takes effect: at the connection, or at `0x95` on a
-  live one. Have the TAP in Run-Test/Idle then. Sending the same value again restates it. Only the
+- **OScan2, 5 and 6** frame each JTAG clock by the state of the target's TAP, so the probe follows
+  it from Run-Test/Idle, starting where the format takes effect: at the connection, or at `0x95` on
+  a live one. Have the TAP in Run-Test/Idle then. Sending the same value again restates it. Only the
   commands that go out as frames move the state the probe follows. Raw `DAP_SWJ_Sequence`, `0x96`,
   `DAP_SWD_Sequence` and `DAP_SWJ_Pins` can move the target's TAP, but never the probe's state.
   After one of them moves the target's TAP, as the activation does, bring the TAP to Run-Test/Idle
@@ -212,11 +212,11 @@ which leaves a target sampling on the falling edge almost no setup, and leaves S
 commands. `DAP_SWD_Sequence` and `DAP_SWJ_Pins` are Arm's, and keeping them off the cJTAG pins is
 the host's job.
 
-TCKC rests low between commands and between frames. After each fall on which the target samples a bit
-the probe drove, TMSC moves no sooner than a quarter period later, in frames and from one command to
-the next: a quarter of the clock the probe runs, rounded up to a whole core cycle. A target sampling
-on the falling edge gets that as hold. One sampling on the rising edge gets the rest of the low phase
-as setup, which at the fastest clocks comes down to one core cycle, 6.7 ns.
+TCKC rests low between commands and between frames. After each fall on which the target samples a
+bit the probe drove, TMSC moves no sooner than a quarter period later, in frames and from one
+command to the next: a quarter of the clock the probe runs, rounded up to a whole core cycle. A
+target sampling on the falling edge gets that as hold. One sampling on the rising edge gets the rest
+of the low phase as setup, which at the fastest clocks comes down to one core cycle, 6.7 ns.
 
 In each frame the probe lets go of TMSC just after the fall that starts the target's TDO bit, and
 drives it again just after the next fall. So the probe's TMS bit stays driven through both its
@@ -278,7 +278,7 @@ zero and `code` saying what failed: 1 or 2 for the ADC's calibration, 3 for no r
 running capture the probe could not pause or resume. `detect` is read either way.
 
 On a Pro with an energy capture running, a read pauses the capture for a moment, and the stream
-marks the gap ([Pairs](#pairs-0xa0)).
+marks the gap ([Samples](#samples-0xa0)).
 
 ## DIO: `0x8E`
 
@@ -332,25 +332,25 @@ time to settle before you talk to the target.
 ## Pro energy capture: `0x90`
 
 The Pro measures the current that flows from J9 pin 1 to pin 3, and the voltage on the target's
-side. It takes the two together, as a pair, at a steady rate of 1 to 100,000 pairs a second. It adds
-each pair's energy to a running total. Each pair is read on one of two current ranges, low and high
-([Current ranges](#current-ranges)). J16 to J18 pick the current setting: 350 mA or 50 mA at full
-scale. [Energy
-capture](https://github.com/Escapement-Project/verge/blob/HEAD/docs/energy.md)
-explains all this for users of verge.
+side. It takes the two together, as one sample, at a steady rate of 1 to 100,000 samples a second.
+It adds each sample's energy to a running total. Each sample is read on one of two current ranges,
+low and high ([Current ranges](#current-ranges)). J16 to J18 pick the current setting: 350 mA or
+50 mA at full scale. [Energy
+capture](https://github.com/Escapement-Project/verge/blob/HEAD/docs/energy.md) explains all this for
+users of verge.
 
 Energy capture is there when `0x82` sets extended capability bit 0. It is off when the probe
-boots. On CMSIS-DAP a host polls: it reads the newest pair and the total. On Verge Aux the probe
-can also send it every pair ([The energy stream](#the-energy-stream)).
+boots. On CMSIS-DAP a host polls: it reads the newest sample and the total. On Verge Aux the probe
+can also send it every sample ([The energy stream](#the-energy-stream)).
 
 ### Requests
 
 | Request | What it does |
 | --- | --- |
-| `[0x90, 0, rate:u32]` | Starts a capture at `rate` pairs a second |
-| `[0x90, 1]` | Reads the newest pair |
+| `[0x90, 0, rate:u32]` | Starts a capture at `rate` samples a second |
+| `[0x90, 1]` | Reads the newest sample |
 | `[0x90, 2]` | Stops the capture. Safe to repeat |
-| `[0x90, 3]` | Reads the total: the energy in nJ and the pairs counted |
+| `[0x90, 3]` | Reads the total: the energy in nJ and the samples counted |
 | `[0x90, 4, range]` | Reads the calibration points of the low range (0) or the high range (1) |
 | `[0x90, 14, ranges]` | Sets how the next start uses the current ranges: 0 switches automatically, 1 holds the high range |
 
@@ -361,16 +361,15 @@ Every mode answers `[0x90, DAP_OK, result, ...]` on an interface that carries it
 OK; the others are under [Results](#results).
 
 - **Start (mode 0):** `[0x90, DAP_OK, result, rate:u32]`. `rate` is the rate the probe's timer
-  runs at, to the nearest pair a second. A stream's header gives it exactly.
+  runs at, to the nearest sample a second. A stream's header gives it exactly.
 - **Latest (mode 1):** the voltage code (u16), the current code (u16) and the sequence number (u32),
   then the voltage in mV (u32), the current in nA (i32), the range (u8) and calibrated (u8): 21
-  bytes in all. When the result is not 0, every sample field
-  is zero.
+  bytes in all. When the result is not 0, every sample field is zero.
 - **Stop (mode 2):** the result alone.
 - **Total (mode 3):** `[0x90, DAP_OK, result, energy_nJ:u64, pairs:u64]`, 19 bytes.
 
-The sequence number counts the pairs since the capture started, from 1. It never goes back within a
-capture.
+The sequence number counts the samples since the capture started, from 1. It never goes back within
+a capture.
 
 The range is 1 for the low range in the 350 mA setting, 2 for its high range, 3 for the low range in
 the 50 mA setting, 4 for its high range, and 0 when the range is unknown. Calibrated is 1 when the
@@ -379,26 +378,26 @@ reference. The current is the target's: the probe takes off what its own voltage
 through the sense resistor. The raw codes stay at the front of the reply. Use the mV and nA fields
 when calibrated is 1.
 
-The probe converts a pair's voltage and current together. It averages as many conversions as the
+The probe converts a sample's voltage and current together. It averages as many conversions as the
 rate leaves time for ([Boards](../BOARDS.md#accuracy-limits), "Accuracy limits"). It reads the range
-with a single conversion, so a range change shows in the next pair.
+with a single conversion, so a range change shows in the next sample.
 
 ### The total
 
-The probe adds up every calibrated pair itself, whether or not a host reads them.
+The probe adds up every calibrated sample itself, whether or not a host reads them.
 
 - A start that succeeds clears the total. One that fails leaves it.
 - A stop keeps the total for later reads, and mode 3 reads it without clearing it.
 - Mode 3 returns 1 (stopped) before the first start that succeeds, and 2 (no sample) until the
-  probe has counted a calibrated pair.
-- Each pair adds its power over one period of the probe's timer. A negative current counts as
-  zero. The pair count includes pairs with no current.
-- Time without pairs adds nothing. The probe pauses a capture for a moment while it reads the
+  probe has counted a calibrated sample.
+- Each sample adds its power over one period of the probe's timer. A negative current counts as
+  zero. The sample count includes samples with no current.
+- Time without samples adds nothing. The probe pauses a capture for a moment while it reads the
   target's supply. It holds its conversions while it measures a target's read latency, how long
-  after a clock edge the target's data arrives: when a debugger connects at a fast clock or changes
-  to one, again when a measurement contradicts itself, and when Verge's own tools ask for one
-  ([Commands Verge's own tools use](#commands-verges-own-tools-use)).
-- A stop or a pause counts every complete pair the probe has converted. A part pair is dropped.
+  after a clock edge the target's data arrives ([When the probe measures the
+  target](wires.md#when-the-probe-measures-the-target)).
+- A stop or a pause counts every complete sample the probe has converted. A partly converted sample
+  is dropped.
 - The probe's own pauses do not restart the sequence numbers.
 - The total resets when the probe restarts.
 
@@ -424,8 +423,8 @@ The low range alone is not offered. Holding it would take away the switch up, an
 protects a target that draws more than the low range's full scale.
 
 Switching automatically reads small currents finely, but each switch disturbs the reading for a
-moment. Holding the high range disturbs nothing, but reads small currents unreliably, and the
-stream marks those pairs under range ([Pairs](#pairs-0xa0)). [Energy
+moment. Holding the high range disturbs nothing, but reads small currents unreliably, and the stream
+marks those samples under range ([Samples](#samples-0xa0)). [Energy
 capture](https://github.com/Escapement-Project/verge/blob/HEAD/docs/energy.md#the-two-current-ranges)
 says what each costs.
 
@@ -452,9 +451,9 @@ again. [Boards](../BOARDS.md#energy-measurement), "Energy measurement", has the 
 | --- | --- |
 | 0 | OK |
 | 1 | The capture is stopped. Mode 3 also returns it before the first start that succeeds |
-| 2 | No complete pair yet. Mode 3 returns it until it has counted a pair |
+| 2 | No complete sample yet. Mode 3 returns it until it has counted a sample |
 | 3 | This board has no energy capture |
-| 4 | The rate asked for is zero, or above 100,000 pairs a second |
+| 4 | The rate asked for is zero, or above 100,000 samples a second |
 | 5 | Invalid argument |
 | 6 | Calibration failed: the ADC did not answer, or a range kept fewer than two usable points |
 | 7 | The capture failed: a DMA fault, an ADC FIFO overflow, or the probe fell behind reading the samples |
@@ -526,7 +525,7 @@ Modes 8 and 9 return 31 bytes:
 | 0 | `0x90` |
 | 1 | `DAP_OK` |
 | 2 | Result |
-| 3 to 6 | The rate the timer runs at, to the nearest pair a second, u32 |
+| 3 to 6 | The rate the timer runs at, to the nearest sample a second, u32 |
 | 7 to 30 | The identity of the capture this start began |
 
 The rate and the identity are the ones this start chose, not a later reading. When the result is
@@ -550,13 +549,13 @@ Mode 12 returns 32 bytes:
 | 1 | `DAP_OK` |
 | 2 | Result: 0 running, 1 stopped, 3 unavailable, 7 failed, 9 no identity |
 | 3 | Running, 0 or 1. A capture paused or held for a moment still reports 1 |
-| 4 to 7 | The rate the timer runs at, to the nearest pair a second, u32. Zero with any result but 0 |
+| 4 to 7 | The rate the timer runs at, to the nearest sample a second, u32. Zero with any result but 0 |
 | 8 to 31 | The capture's identity, running or kept. Zero before the first start that succeeds, or when there is none |
 
-The state, rate and identity in one reply always describe the same capture. A reply never pairs one
-capture's identity with the state of the capture that replaced it.
+The state, rate and identity in one reply always describe the same capture. A reply never combines
+one capture's identity with the state of the capture that replaced it.
 
-- A capture that has taken no pair yet reports result 0 with its identity, and mode 1 can still
+- A capture that has taken no sample yet reports result 0 with its identity, and mode 1 can still
   report no sample (2).
 - Running is 1 only with result 0.
 - A probe that has never started a capture reports result 1, running 0, rate 0 and the zero
@@ -578,10 +577,10 @@ Mode 2 stops whatever capture runs, whatever its identity. Captures started with
 identities too.
 
 A host that stops a capture on its own, when it exits for instance, holds the identity from its
-start reply or the stream's header. It cleans up a capture it
-started with mode 11, and a stream it attached to with mode 13. It never reads the current identity
-with mode 12 and adopts it. That holds after result 8, and after a start reply that was lost or
-malformed. The host then holds no identity, and the capture it finds may be another host's.
+start reply or the stream's header. It cleans up a capture it started with mode 11, and a stream
+it attached to with mode 13. It never reads the current identity with mode 12 and adopts it. That
+holds after result 8, and after a start reply that was lost or malformed. The host then holds no
+identity, and the capture it finds may be another host's.
 
 ## Pro SPI: `0x91`
 
@@ -666,7 +665,7 @@ longer than 32 bytes, and on a board without energy capture. A request shorter t
 gets `[0xff]`, as any malformed command does. Verge Aux keeps the first 40 bytes of a request, so
 there a label longer than 34 bytes gets `[0xff]` too.
 
-The probe stamps the marker as it runs the command, on the clock that times the pairs and edges.
+The probe stamps the marker as it runs the command, on the clock that times the samples and edges.
 Inside a `DAP_ExecuteCommands` batch, the marker sits between the commands before and after it. So
 a host can mark exactly where a sequence of debug operations starts or ends. The command works on
 CMSIS-DAP and on Verge Aux. A marker sent through Verge Aux lands between two CMSIS-DAP commands.
@@ -730,14 +729,14 @@ same capture.
 
 ## The energy stream
 
-Through Verge Aux, a host can receive every pair the probe measures, with its time, to record how
+Through Verge Aux, a host can receive every sample the probe measures, with its time, to record how
 the target's power changes. These `0x90` modes control the stream. They exist on Verge Aux only.
 On CMSIS-DAP they answer `DAP_ERROR`.
 
 | Request | What it does |
 | --- | --- |
-| `[0x90, 5, rate:u32, dio_mask]` | Starts a capture at `rate` pairs a second, as mode 0, and streams it from its first pair |
-| `[0x90, 6, dio_mask]` | Streams the running capture, from its next pair. The capture and its total carry on |
+| `[0x90, 5, rate:u32, dio_mask]` | Starts a capture at `rate` samples a second, as mode 0, and streams it from its first sample |
+| `[0x90, 6, dio_mask]` | Streams the running capture, from its next sample. The capture and its total carry on |
 | `[0x90, 7]` | Stops streaming. The capture carries on |
 
 Modes 9, 10 and 13 do the same with capture identities ([Identity-aware
@@ -762,19 +761,19 @@ message says which. After a restart, a host that wants the new capture sends mod
 
 ### Header: `0xa1`
 
-The first message of every stream. It holds everything a host needs to convert the pairs that
+The first message of every stream. It holds everything a host needs to convert the samples that
 follow. Stream format 3 has 79 bytes, and stream format 4 has 103.
 
 | Offset | Field |
 | --- | --- |
 | 0 | `0xa1` |
 | 1 | The stream's format, 3 or 4 |
-| 2 to 5 | The clock the probe times pairs and edges by, in Hz, u32 |
-| 6 to 9 | The pair period, in counts of that clock, u32 |
+| 2 to 5 | The clock the probe times samples and edges by, in Hz, u32 |
+| 6 to 9 | The sample period, in counts of that clock, u32 |
 | 10 | The current setting the jumpers pick: 1 for 350 mA, 2 for 50 mA, 0 unknown |
 | 11 to 12 | The voltage's full scale in mV, u16 |
-| 13 to 16 | The sequence number of the first pair the stream sends, u32 |
-| 17 | The range of the pair before that one: 1 low, 0 high. At the start of a capture, 1 when it switches automatically and 0 when it holds the high range |
+| 13 to 16 | The sequence number of the first sample the stream sends, u32 |
+| 17 | The range of the sample before that one: 1 low, 0 high. At the start of a capture, 1 when it switches automatically and 0 when it holds the high range |
 | 18 | Low range: the point count `n`, up to 4 |
 | 19 to 42 | Low range: four points, lowest first, each a code (u16) and the current through the sense resistor in nA (u32). Points past `n` are zero |
 | 43 | High range: the point count |
@@ -782,13 +781,13 @@ follow. Stream format 3 has 79 bytes, and stream format 4 has 103.
 | 68 | The DIO pins that report edges, bit k for DIO k |
 | 69 | Their levels when the stream started. Pins not reporting read 0 |
 | 70 to 71 | The resolution of edge times in ns, u16. 0 when no pin reports |
-| 72 to 73 | The range-switch weight `w`, u16, 0 to 32,768 ([Converting a pair](#converting-a-pair), step 5) |
-| 74 | Range-switch flags. Bit 0: a pair that switched down keeps its own current. Bit 1: offsets 75 to 78 hold a current. Bit 2: the capture holds the high range (`0x90` mode 14) |
-| 75 to 78 | The current through the sense resistor of the pair before the first one sent, from step 3 of [Converting a pair](#converting-a-pair), in nA, u32. 0 without flag bit 1 |
+| 72 to 73 | The range-switch weight `w`, u16, 0 to 32,768 ([Converting a sample](#converting-a-sample), step 5) |
+| 74 | Range-switch flags. Bit 0: a sample that switched down keeps its own current. Bit 1: offsets 75 to 78 hold a current. Bit 2: the capture holds the high range (`0x90` mode 14) |
+| 75 to 78 | The current through the sense resistor of the sample before the first one sent, from step 3 of [Converting a sample](#converting-a-sample), in nA, u32. 0 without flag bit 1 |
 
-The capture's rate in pairs a second is the clock over the period. It is rarely a whole number:
-asked for 7 pairs a second, the timer runs at 6.99999987. Time pairs and weigh them by the period
-and the clock, never by a rounded rate.
+The capture's rate in samples a second is the clock over the period. It is rarely a whole number:
+asked for 7 samples a second, the timer runs at 6.99999987. Time samples and weigh them by the
+period and the clock, never by a rounded rate.
 
 The points are the ones `0x90` mode 4 reports.
 
@@ -797,8 +796,7 @@ offsets 0 to 71 as above, with 4 at offset 1. Offsets 72 to 95 hold the capture'
 whose counter is never zero, and the fields at 72 to 78 above move to 96 to 102.
 
 The header's identity, calibration, clock, period and first sequence number all describe the same
-capture.
-No other stream message carries the identity.
+capture. No other stream message carries the identity.
 
 A mode 9 or 10 that succeeds starts a new stream. The probe drops the messages it had queued, and
 the stream's header is the first stream message after the reply. One message already handed to USB
@@ -812,41 +810,40 @@ identity matches. A restart ends it too, with reason 3.
 
 A host holds the identity from its start reply or the stream's header so that it can clean up after
 a failure. It drops the identity once it has cleaned up, or when the probe disconnects. An identity
-read back from a saved recording, such as a verge capture file, belongs to that recording. Never
+read back from a saved recording, such as one verge wrote, belongs to that recording. Never
 use it to stop or end a live capture.
 
-### Pairs: `0xa0`
+### Samples: `0xa0`
 
 | Offset | Field |
 | --- | --- |
 | 0 | `0xa0` |
-| 1 | Flags. Bit 0: the capture paused before this message's first pair. Bit 1: its conversions were held. The other bits are zero |
-| 2 to 5 | The sequence number of this message's first pair, u32 |
-| 6 to 13 | The time of this message's first pair, in ns since the capture started, u64 |
-| 14 to 15 | The pair count `k`, u16, 1 to 99 |
-| 16 on | `k` pairs of 5 bytes: the voltage code (u16), the current code (u16), then a byte. Its bit 0 is set on the low range. Its bit 1 is set on a high-range pair under range, whose reading is unreliable |
+| 1 | Flags. Bit 0: the capture paused before this message's first sample. Bit 1: its conversions were held. The other bits are zero |
+| 2 to 5 | The sequence number of this message's first sample, u32 |
+| 6 to 13 | The time of this message's first sample, in ns since the capture started, u64 |
+| 14 to 15 | The sample count `k`, u16, 1 to 99 |
+| 16 on | `k` samples of 5 bytes: the voltage code (u16), the current code (u16), then a byte. Its bit 0 is set on the low range. Its bit 1 is set on a high-range sample under range, whose reading is unreliable |
 
-Pair i of a message, counting from 0, has the sequence number `first + i`. It was taken at
-`time + i × period × 1,000,000,000 / clock` ns, with the header's period and clock. Its voltage and current were converted together from then,
-averaged over the same stretch of at most one period. A message never spans a pause or a hold, so
-its pairs are evenly spaced.
+Sample i of a message, counting from 0, has the sequence number `first + i`. It was taken at
+`time + i × period × 1,000,000,000 / clock` ns, with the header's period and clock. Its voltage and
+current were converted together from then, averaged over the same stretch of at most one period. A
+message never spans a pause or a hold, so its samples are evenly spaced.
 
 The probe pauses the capture for a moment when it reads the target's supply voltage, and the next
 message sets flag bit 0. It holds its conversions while it measures a read latency, as when a
 debugger connects at a fast clock or changes to one, and the next message sets bit 1. Either way,
-the message's time shows how long the gap was. Only a pause ends a run of pairs for step 5 of
-[Converting a pair](#converting-a-pair).
+the message's time shows how long the gap was. Only a pause ends a run of samples for step 5 of
+[Converting a sample](#converting-a-sample).
 
-A pair read on the high range is under range when its current code is less than 64 codes above the
+A sample read on the high range is under range when its current code is less than 64 codes above the
 high range's no-load reading at the last calibration. The amplifier's output stops at that
-reading, so a reading there is unreliable. Both range settings
-mark these pairs. A capture that switches automatically reads some after the current falls, before
-it switches down. Nothing is marked under range without a calibration. Low-range pairs are never
-under range.
+reading, so a reading there is unreliable. Both range settings mark these samples. A capture that
+switches automatically reads some after the current falls, before it switches down. Nothing is
+marked under range without a calibration. Low-range samples are never under range.
 
-A message holds at most 99 pairs, which keeps it under 512 bytes, and less than 10 ms of them. The
-probe sends it once it is full, or once its pairs reach 10 ms. Below about 250 pairs a second, a
-message can wait longer for its pairs: up to 2.5 s at one pair a second.
+A message holds at most 99 samples, which keeps it under 512 bytes, and less than 10 ms of them. The
+probe sends it once it is full, or once its samples reach 10 ms. Below about 250 samples a second, a
+message can wait longer for its samples: up to 2.5 s at one sample a second.
 
 ### DIO edges: `0xa3`
 
@@ -859,8 +856,8 @@ message can wait longer for its pairs: up to 2.5 s at one pair a second.
 | 12 on | `e` edges of 5 bytes: the time after the first edge in ns (u32), then the levels after the edge, bit k for DIO k |
 
 Edges come in time order. Each one carries the levels of every reporting pin, so a host knows them
-all from any edge on. Pins not reporting read 0. Edge times share the pairs' clock, so edges and
-pairs lie on one timeline.
+all from any edge on. Pins not reporting read 0. Edge times share the samples' clock, so edges and
+samples lie on one timeline.
 
 The probe times an edge when its interrupt takes it, a little after the edge itself, to the
 resolution the header gives. The interrupt takes every edge since it last ran, on every pin. A
@@ -880,10 +877,10 @@ The probe starts timing a stream's edges a moment after its header. For modes 6 
 it answers the request, for mode 9 as the capture starts, and for mode 5 within a few milliseconds.
 A pin that moves in that moment shows the move when timing starts.
 
-All the edges and DIO lost messages up to a pairs message's last pair arrive before the next pairs
-message, or before the end. So a host that holds back one message's pairs until the next one
-arrives knows the levels across them. The probe sends edges with each pairs message, and on their
-own once they have waited 10 ms.
+All the edges and DIO lost messages up to a samples message's last sample arrive before the next
+samples message, or before the end. So a host that holds back one message's samples until the next
+one arrives knows the levels across them. The probe sends edges with each samples message, and on
+their own once they have waited 10 ms.
 
 ### DIO lost: `0xa5`
 
@@ -900,14 +897,15 @@ and when the host fell behind. Between the two times the levels are unknown. Fro
 they are known again, so a stop shows even when no edge follows it.
 
 The first time comes after every edge the stream has already sent, and before the second. For a
-rest, it is the interrupt run that started the rest. For SPI, it is when SPI took the pins. For edges
-the host fell behind on, it is just after the last run whose edges were sent, and the second time is
-the last run dropped. Every edge sent after a DIO lost message comes after its second time, and so
-does the next DIO lost message's first. Edges stamped together are sent or lost together. A stream
-that ends while edges are being lost sends one before its end, up to when its next pair was due.
+rest, it is the interrupt run that started the rest. For SPI, it is when SPI took the pins. For
+edges the host fell behind on, it is just after the last run whose edges were sent, and the second
+time is the last run dropped. Every edge sent after a DIO lost message comes after its second time,
+and so does the next DIO lost message's first. Edges stamped together are sent or lost together. A
+stream that ends while edges are being lost sends one before its end, up to when its next sample was
+due.
 
-Edges and DIO lost messages come in time order. Their times convert from counts of the header's clock
-as the pairs' and edges' do.
+Edges and DIO lost messages come in time order. Their times convert from counts of the header's
+clock as the samples' and edges' do.
 
 ### Markers: `0xa4`
 
@@ -918,10 +916,10 @@ as the pairs' and edges' do.
 | 2 | The marker count `m`, 1 to 11 |
 | 3 on | `m` markers, each its time in ns since the capture started (u64), its number (u32), its label's length (u8), then the label |
 
-Markers come in the order the probe ran them (`0x94`). Their times share the pairs' clock. A marker
-can arrive before or after the pairs around it, so place it by its time. The probe sends markers
-with each pairs message, and on their own once they have waited 10 ms. It sends only markers it ran
-while the stream ran, from its header to its end.
+Markers come in the order the probe ran them (`0x94`). Their times share the samples' clock. A
+marker can arrive before or after the samples around it, so place it by its time. The probe sends
+markers with each samples message, and on their own once they have waited 10 ms. It sends only
+markers it ran while the stream ran, from its header to its end.
 
 ### End: `0xa2`
 
@@ -929,16 +927,16 @@ while the stream ran, from its header to its end.
 | --- | --- |
 | 0 | `0xa2` |
 | 1 | Why the stream ended: 1 a host ended it (mode 7, mode 13, or a new mode 6); 2 the capture stopped; 3 a new start restarted the capture; 4 the capture failed (result 7) |
-| 2 to 5 | The sequence number of the last pair the capture took, u32 |
+| 2 to 5 | The sequence number of the last sample the capture took, u32 |
 
 A DIO stream's end is 14 bytes. Offsets 2 to 5 are zero, and 6 to 13 hold when the stream ended,
 in ns since it started, u64.
 
 ### DIO streams
 
-A board with DIO pins and no energy capture streams their edges alone: the standalone MCU-Link,
-and a Pro without its energy circuit. Identify sets extended bit 10 there. On a Pro that measures
-energy, the capture's stream reports the pins instead (`dio_mask` above).
+A board with DIO pins and no energy capture streams their edges alone: the standalone MCU-Link, and
+a Pro without its energy circuit. `0x82` sets extended capability bit 10 there. On a Pro that
+measures energy, the capture's stream reports the pins instead (`dio_mask` above).
 
 | Request | What it does |
 | --- | --- |
@@ -950,7 +948,7 @@ It ends a stream already running and drops what that stream had queued, its end 
 10 does. The reply comes before the header. On CMSIS-DAP it answers `DAP_ERROR`.
 
 The stream sends its header, then edges, DIO lost and DIO time messages, then its end. It has no
-pairs and no markers. Its times count from its header, in ns.
+samples and no markers. Its times count from its header, in ns.
 
 | Offset | Field |
 | --- | --- |
@@ -961,9 +959,9 @@ pairs and no markers. Its times count from its header, in ns.
 | 7 | Their levels when the stream started. Pins not reporting read 0 |
 | 8 to 9 | The resolution of edge times in ns, u16. 0 when no pin reports |
 
-The pins exclude any the bench marker holds on the standalone MCU-Link (`0x84`). Edges go out
-within 10 ms of the first of them, or sooner when many wait. A stream reports whatever drives the pins,
-the host's own drive included, as the energy stream's edges do.
+The pins exclude any the bench marker holds on the standalone MCU-Link (`0x84`). Edges go out within
+10 ms of the first of them, or sooner when many wait. A stream reports whatever drives the pins, the
+host's own drive included, as the energy stream's edges do.
 
 A stream that has sent nothing for 200 ms sends a DIO time message:
 
@@ -973,32 +971,32 @@ A stream that has sent nothing for 200 ms sends a DIO time message:
 | 1 | Flags, zero |
 | 2 to 9 | The stream's time, in ns since it started, u64 |
 
-Every edge stamped before that time has been sent, so the pins held their levels until then. The time
-comes after every edge and DIO lost message already sent. A later edge comes at or after it, and a
-later DIO lost message's first time comes after it. The probe holds the message back while edges
-wait to be sent, while a loss is under way or SPI has taken the pins, while the host has let the
-stream's messages pile up, and until timing starts. A stream with no pins sends none. The end comes
-no earlier than the last DIO time.
+Every edge stamped before that time has been sent, so the pins held their levels until then. The
+time comes after every edge and DIO lost message already sent. A later edge comes at or after it,
+and a later DIO lost message's first time comes after it. The probe holds the message back while
+edges wait to be sent, while a loss is under way or SPI has taken the pins, while the host has let
+the stream's messages pile up, and until timing starts. A stream with no pins sends none. The end
+comes no earlier than the last DIO time.
 
 ### When the host falls behind
 
-The probe keeps 16 messages a host has not read yet. When they fill, it drops new pairs, edges and
+The probe keeps 16 messages a host has not read yet. When they fill, it drops new samples, edges and
 markers messages until there is room again. It keeps the last two places for a header and an end.
-The capture and its total carry on regardless. A host sees lost pairs as a jump in sequence
+The capture and its total carry on regardless. A host sees lost samples as a jump in sequence
 numbers, lost edges as a DIO lost message, and lost markers as bit 0 on the next markers message.
 
-### Converting a pair
+### Converting a sample
 
 All the arithmetic is on integers. Shifts and divisions round toward zero. The probe's own
 converter, in [`src/energy_pairs.h`](../src/energy_pairs.h) and
 [`src/energy_samples.h`](../src/energy_samples.h), is the reference for this text. It writes
 [`tools/energy_vectors.json`](../tools/energy_vectors.json), which a host's converter can check
-itself against: samples and digests over whole ranges of the conversion, and runs of pairs with the
-totals they give.
+itself against: single samples' conversions and digests over whole ranges of the conversion, and
+runs of samples with the totals they give.
 
 1. **Voltage.** `mv = (voltage_code × 2 × full_scale_mv) >> 16`. The 2 undoes the divider that
    halves the target's voltage on its way to the converter.
-2. **Range.** The pair's bit 0 says which range's points convert the current.
+2. **Range.** The sample's bit 0 says which range's points convert the current.
 3. **Current through the sense resistor.** The range's points make a table of straight segments.
    - Each segment's slope is `((I[j+1] − I[j]) << 16) / (code[j+1] − code[j])`, with `I` in nA.
    - The segment is the last `j` with `code ≥ code[j]`, among the first `n − 1` segments. A code
@@ -1008,29 +1006,29 @@ totals they give.
 4. **The target's current.** The voltage divider draws current through the sense resistor too:
    `divider_na = (mv × 99,297) >> 16`. The target's current is the sense current less
    `divider_na`, or 0 if that would be negative.
-5. **Range switches.** A pair converted while the range switched can mix readings from both ranges.
-   So a pair whose range differs from the one before it may take another current from step 3 in
-   place of its own. Step 4 still uses its own voltage.
-   - A pair that switched up takes `(next × (65536 − w) + before × w + 32768) >> 16`, in 64-bit
-     arithmetic. `next` is the next pair's current from step 3, `before` the previous pair's, and
-     `w` the header's weight. Without a pair before it in the run, `w` counts as 0.
-   - A pair that switched down keeps its own current if the header's flag bit 0 is set. Otherwise
-     it takes the next pair's current.
-   - If the next pair switched too, the first one keeps its own current.
-   - A pair still waiting for the next one when the capture pauses keeps its own current: when the
+5. **Range switches.** A sample converted while the range switched can mix readings from both
+   ranges. So a sample whose range differs from the one before it may take another current from
+   step 3 in place of its own. Step 4 still uses its own voltage.
+   - A sample that switched up takes `(next × (65536 − w) + before × w + 32768) >> 16`, in 64-bit
+     arithmetic. `next` is the next sample's current from step 3, `before` the previous sample's,
+     and `w` the header's weight. Without a sample before it in the run, `w` counts as 0.
+   - A sample that switched down keeps its own current if the header's flag bit 0 is set. Otherwise
+     it takes the next sample's current.
+   - If the next sample switched too, the first one keeps its own current.
+   - A sample still waiting for the next one when the capture pauses keeps its own current: when the
      message after it sets flag bit 0, or when the stream ends. A hold, bit 1, does not end the
-     run, and the pair before stays the pair before.
-   - The header gives the range before the first pair a stream sends. With its flag bit 1, it also
-     gives the step 3 current of the pair before it. After a pause, in a capture that switches
+     run, and the sample before stays the sample before.
+   - The header gives the range before the first sample a stream sends. With its flag bit 1, it also
+     gives the step 3 current of the sample before it. After a pause, in a capture that switches
      automatically, the range before is the low range again, as at a start: the probe sets the
      range to low as it resumes. A capture that holds the high range stays on it. A pause, a start
-     and lost pairs leave no pair before.
+     and lost samples leave no sample before.
 
-A host that wants the probe's total adds `mv × target_na` picowatts for each pair, scaled by
-`floor(2^32 × period / clock)` in 32-bit fixed point, carrying the fraction from pair to pair. For a stream
-started with mode 5, once the capture stops, that sum equals the total `0x90` mode 3 reports, as
-long as no pairs were lost. A host that ignores the header's range-switch fields gets a total a
-little apart from the probe's.
+A host that wants the probe's total adds `mv × target_na` picowatts for each sample, scaled by
+`floor(2^32 × period / clock)` in 32-bit fixed point, carrying the fraction from sample to sample.
+For a stream started with mode 5, once the capture stops, that sum equals the total `0x90` mode 3
+reports, as long as no samples were lost. A host that ignores the header's range-switch fields gets
+a total a little apart from the probe's.
 
 ## Other vendor IDs
 
@@ -1049,7 +1047,7 @@ exist only in some builds: `0x84` needs `MARKER`, which is on by default, and `0
 | ID | Name | What it does |
 | --- | --- | --- |
 | `0x84` | J8 | Gives the standalone MCU-Link's J8 pins to a bench marker that drives them high while each command runs, and back to DIO |
-| `0x87` | Sample | Reads DPIDR with the SWDIO sample placed by the host; a measuring instrument |
+| `0x87` | Sample | Reads DPIDR, reading SWDIO at a point the host places; a measuring instrument |
 | `0x88` | Code lab | Runs code the host supplies from RAM |
 | `0x89` | SWD generation | Reports the generated SWD transfers, and sets or measures the read latency they are generated for |
 | `0x8A` | JTAG generation | The same for the generated JTAG and cJTAG transfers |

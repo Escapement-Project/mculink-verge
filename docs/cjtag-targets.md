@@ -2,10 +2,10 @@
 
 Verge frames cJTAG, and the host brings the target up: it activates the target's cJTAG adapter,
 switches its format, and leaves it in a known state ([Host
-interface](host-interface.md#cjtag-0x95-and-0x96)). This page is what that takes on TI's parts with
-an ICEPick and a cJTAG adapter, such as the CC13xx and CC26xx families. The CC1312R1 is the part it
-was worked out on. `tools/dap.py cjtag --ti`, in mculink-verge, runs the whole sequence against a
-probe running Verge.
+interface](host-interface.md#cjtag-0x95-and-0x96)). This page says what that takes on TI's parts
+with an ICEPick and a cJTAG adapter, such as the CC13xx and CC26xx families. We worked it out on a
+CC1312R1. `tools/dap.py cjtag --ti`, in mculink-verge, runs the whole sequence against a probe
+running Verge, and exits 1 if an IDCODE it reads is not the one expected.
 
 ## Power
 
@@ -127,4 +127,4 @@ halt-in-boot cleared (TRM 6.4, 6.6): clear KeepPoweredinTLR, or never set it in 
 Run-Test/Idle to Test-Logic-Reset with exactly three framed TMS-high clocks; then send no TCKC edge.
 In OScan2, send the trailing frame first ([Host interface](host-interface.md#select-a-format-0x95)).
 A host that sets KeepPoweredinTLR, and ends a JTAG session in Test-Logic-Reset, leaves the domain on
-and halt-in-boot armed: that follows from the TRM, and has not been measured over JTAG.
+and halt-in-boot armed. That follows from the TRM, and we have not measured it over JTAG.

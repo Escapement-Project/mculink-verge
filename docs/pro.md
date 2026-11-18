@@ -65,7 +65,7 @@ verge has no command for the bridges.
 The Pro has a second USB serial port, on J26. It is 3.3 V only: J26 has no level shifter. The VCOM
 jumper leaves it on. Wire the target's TXD to J26 pin 4, its RXD to pin 5, and its ground to pin 1.
 NXP's manual for the Pro gives pins 4 and 5 the other way round, but the probe transmits on pin 5.
-[Trace and serial ports](trace-and-serial.md#the-serial-ports).
+[Trace and serial ports](trace-and-serial.md#the-serial-ports) has the ports' rates and framing.
 
 ## Verge Aux
 
@@ -74,9 +74,10 @@ marker commands, so a tool can use them while a debugger holds the CMSIS-DAP int
 Debuggers pass it by: its name does not contain `CMSIS-DAP`.
 
 Every Pro has it, whatever its jumpers, and so does the standalone MCU-Link, for its DIO pins
-([Probes and jumpers](probes.md#the-mcu-links-dio-pins)). Both interfaces share one set of DIO pins, one target supply
-and one energy capture. `verge power`, `verge dio` and `verge energy` use Verge Aux wherever the
-probe has it, so they work beside a debugger, as the desktop app's supply, DIO and energy panels do.
+([Probes and jumpers](probes.md#the-standalone-mcu-links-dio-pins)). Both interfaces share one set of DIO
+pins, one target supply and one energy capture. `verge power`, `verge dio` and `verge energy` use
+Verge Aux wherever the probe has it, so they work beside a debugger. So do the desktop app's
+supply, DIO and energy panels.
 [Host interface](host-interface.md#the-auxiliary-interface-verge-aux) describes it for tool authors.
 
 ## Energy capture

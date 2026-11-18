@@ -1,15 +1,15 @@
 # mculink-verge
 
-Open CMSIS-DAP firmware for NXP's MCU-Link and MCU-Link Pro debug probes, named Verge. It speaks
-SWD, JTAG and cJTAG (IEEE 1149.7) in OScan1, OScan2, OScan5 and OScan6, captures SWO and runs the
+Verge is open CMSIS-DAP firmware for NXP's MCU-Link and MCU-Link Pro debug probes. It speaks SWD,
+JTAG and cJTAG (IEEE 1149.7) in OScan1, OScan2, OScan5 and OScan6, captures SWO and runs the
 probes' serial ports. Both probes get four DIO pins, and Verge Aux, a second interface for tools
-to use beside a debugger. On the Pro it adds SPI and I2C bridges, a switched target supply and
-energy capture. It runs on the standalone boards; an MCU-Link built into an evaluation board is not
+to use beside a debugger. On the Pro, Verge adds SPI and I2C bridges, a switched target supply and
+energy capture. It runs on the standalone boards. An MCU-Link built into an evaluation board is not
 supported.
 
 [Verge's page](https://escapement-project.github.io/verge/) covers using it. This file covers
-building, checking and releasing the firmware, and "Where to read next", at the end, lists the
-other docs.
+building, checking and releasing the firmware. "Where to read next", at the end, lists the other
+docs.
 
 ## Build
 
@@ -32,15 +32,15 @@ cmake -B build -G Ninja -DBOARD=mcu_link -DTOOLCHAIN=gcc .
 ninja -C build
 ```
 
-Produces `build/mculink_cjtag.{elf,hex,bin}`. `-DLTO=OFF` and `-DCMAKE_BUILD_TYPE=MinSizeRel` exist
-for bisecting a miscompilation.
+The build makes `build/mculink_cjtag.{elf,hex,bin}`. `-DLTO=OFF` and
+`-DCMAKE_BUILD_TYPE=MinSizeRel` are there for bisecting a miscompilation.
 
 Build from a git checkout. The build string comes from `git describe`, and outside a checkout it is
 `unknown`.
 
 As it configures, TinyUSB's board support prints CMake deprecation warnings and
-`IPO_SUPPORTED="NO"`. LTO is still on; `-DLTO=OFF` turns it off. The link warns that `_dvmd_tls.o`
-and `sbrk.o`, from the toolchain's own libraries, have no `.note.GNU-stack` section.
+`IPO_SUPPORTED="NO"`. LTO is on all the same, and `-DLTO=OFF` turns it off. The link warns that
+`_dvmd_tls.o` and `sbrk.o`, from the toolchain's own libraries, have no `.note.GNU-stack` section.
 
 ## Check
 
@@ -48,7 +48,7 @@ These checks need no hardware. An emulated Cortex-M33 runs the image's DAP comma
 a modelled target. Hardware results are in `MEASUREMENTS.md`.
 
 ```text
-# The gate: host checks, then gcc and clang images
+# The gate: host checks and both compilers' images
 uv run tools/gate.py
 # One image's checks, against what was just built
 ninja -C build check
@@ -90,10 +90,10 @@ The wire gate requires six things of a build:
 - line-reset and TAP sequence commands preserve their wire events;
 - the cJTAG path emits no unintended transition while the clock is high, which IEEE 1149.7
   interprets as an escape;
-- no wire clocks faster than requested, beyond what
+- no wire clocks faster than asked for, beyond what
   `tools/baseline/known-overshoot.txt` already records.
 
-`--bless` rewrites the baseline.
+`uv run tools/cycles.py --check --bless` rewrites the baseline from the build it checks.
 
 Also check Release and MinSizeRel with LTO on and off: inlining changes which warnings appear.
 
@@ -107,15 +107,15 @@ done; done
 ```
 
 The transfer paths are generated at runtime, and a product image carries no other transfer path.
-`-DSWD_CODEGEN=OFF -DJTAG_CODEGEN=OFF` builds ARM's paths alone, the reference the generated ones
-are held to, marked `+armwire`; CMake refuses one option off without the other. The check holds that
-build to `tools/baseline-armwire/` instead. It finds ARM's paths clocking SWD, JTAG and cJTAG faster
-than requested at 10 and 20 MHz, and JTAG at 50 MHz too. That directory's `known-overshoot.txt`
-records them. ARM's code computes one delay for every wire from a cost model of an SWD bit. A JTAG
-clock makes one store fewer and runs fast, most of all at 50 MHz, and SWD and the cJTAG frame land
-within a cycle of the request. The gate holds that build's cJTAG frames to `tools/jtagcheck.py`'s
-wire rules with `--no-clock-rules`. `tools/equiv.py` compares levels, and a frame that drives TMSC
-into the target's TDO packet still has the right ones.
+`-DSWD_CODEGEN=OFF -DJTAG_CODEGEN=OFF` builds ARM's paths alone, as the reference the generated
+ones are held to. That build is marked `+armwire`. CMake refuses one option off without the other.
+The check holds that build to `tools/baseline-armwire/` instead. It finds ARM's paths clocking SWD,
+JTAG and cJTAG faster than asked for at 10 and 20 MHz, and JTAG at 50 MHz too. That directory's
+`known-overshoot.txt` records them. ARM's code computes one delay for every wire from a cost model
+of an SWD bit. A JTAG clock makes one store fewer, and runs fast, most of all at 50 MHz. SWD and
+the cJTAG frame land within a cycle of the request. The gate holds that build's cJTAG frames to
+`tools/jtagcheck.py`'s wire rules with `--no-clock-rules`. `tools/equiv.py` compares levels, and a
+frame that drives TMSC into the target's TDO packet still has the right ones.
 
 Use `tools/equiv.py` to compare a replacement implementation with a reference build. It drives two
 builds over 536 SWD block cases, 188 JTAG cases, 128 cJTAG cases in each format and, with
@@ -139,8 +139,8 @@ from both. `--wire all` runs every matrix for every wire, and the gate runs that
 
 ## Releases
 
-`.github/workflows/release.yml` publishes a release when a tag starting with `v` is pushed. It
-attaches three files in the layout verge, the update tool, reads: the image as an S-record, its
+Pushing a tag that starts with `v` runs `.github/workflows/release.yml`, which publishes a release.
+It attaches three files in the layout verge, the update tool, reads: the image as an S-record, its
 checksum, and a minisign signature whose trusted comment names the file and the tag. verge's
 [Updating and
 recovery](https://github.com/Escapement-Project/verge/blob/HEAD/docs/updating.md#what-a-release-carries)
@@ -169,13 +169,13 @@ every repository. The second line of `verge.pub` is verge's `RELEASE_KEY`.
 
 The repository needs these settings before the first tag:
 
-- **The `release` environment** (Settings, Environments). At least one required reviewer, who
-  approves each signing. The environment secret `MINISIGN_SECRET_KEY`, holding the whole of
-  `verge.key`; keep it out of the repository's own secrets, where any job could read it. Without
-  it the workflow fails rather than publish an unsigned image. Optionally the variable
-  `MINISIGN_PUBLIC_KEY`, the second line of `verge.pub`; when it is set, the signature is checked
-  before it leaves the signing job. And deployments limited to tags matching `v*`, so that no
-  other ref reaches the key.
+- **The `release` environment** (Settings, Environments). Give it at least one required reviewer,
+  who approves each signing. Put the whole of `verge.key` in its environment secret
+  `MINISIGN_SECRET_KEY`. Keep the key out of the repository's own secrets, where any job could read
+  it. Without the secret, the workflow fails rather than publish an unsigned image. You can also
+  set the variable `MINISIGN_PUBLIC_KEY` to the second line of `verge.pub`, and then the signature
+  is checked before it leaves the signing job. Limit the environment's deployments to tags
+  matching `v*`, so that no other ref reaches the key.
 - **A tag ruleset** (Settings, Rules, Rulesets) on `refs/tags/v*`. Restrict creation, updates and
   deletion, with only the maintainers on the bypass list. A tag's own copy of the workflow decides
   what the signing job runs, so whoever can push a `v*` tag can change it. The reviewer is the last
@@ -222,8 +222,8 @@ NXP's SDK drivers (BSD-3-Clause) and newlib-nano: `THIRD-PARTY-NOTICES.md` has t
 
 - On the Pro: the analog trace input and the LPC804 (BOARDS.md).
 - SWO over a streaming endpoint, from the ring already in USB SRAM.
-- A cheaper read-latency measurement at connect. On a CC1312R1 it costs a JTAG connection 3.4 to
-  5.8 ms, and a cJTAG one 2.9 to 4.5 ms.
+- A cheaper read-latency measurement when a host connects. On a CC1312R1 it costs a JTAG
+  connection 3.4 to 5.8 ms, and a cJTAG one 2.9 to 4.5 ms.
 - The generated scan engine as a loop rather than 32 near-identical copies, which would shrink
   the generated code at slow clocks.
 
@@ -245,17 +245,17 @@ How the firmware works, in the order to read it:
 - `CONCURRENCY.md`: the state the cores, interrupts and DMA share, and what orders each access.
 - `BUSES.md`: which code uses which bus port, and when.
 - `TIMING.md`: the timing rules the SWD generator places instructions by.
-- `CODEGEN.md`: generating the SWD, JTAG and cJTAG transfers at run time.
+- `CODEGEN.md`: generating the SWD, JTAG and cJTAG transfers at runtime.
 - `CJTAG.md`: cJTAG as the firmware uses it.
 - `BOARDS.md`: both boards' pins and straps, and the Pro's circuits.
 - `STACK.md`: where each core's stack sits, and how an overflow is caught.
 
 And beside them:
 
+- `CONTRIBUTING.md`: the rules for changing the firmware.
 - `MEASUREMENTS.md`: the measurement log, newest first.
 - `BENCH.md`: the bench the firmware is checked on.
-- `AGENTS.md`: rules for changing this code.
 - [mculink-bench](https://github.com/Escapement-Project/mculink-bench) and
   [mculink-stock-notes](https://github.com/Escapement-Project/mculink-stock-notes): throughput and
-  the wire clock against stock, and what stock does as seen from outside.
+  the wire clock against NXP's firmware, and what NXP's firmware does as seen from outside.
 - [verge](https://github.com/Escapement-Project/verge): the CLI and GUI for firmware updates.

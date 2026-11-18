@@ -2,7 +2,7 @@
 
 How the firmware is checked on real hardware: reading the target's supply, the hazards, the marker
 header, what each failure looks like, and what the emulator predicts. MEASUREMENTS.md has what the
-bench measured. Flash and recover units with verge (its docs/updating.md, "ISP mode");
+bench measured. Flash and recover probes with verge (its docs/updating.md, "ISP mode");
 mculink-stock-notes' `updating.md` has what the bootloader does with the ISP jumper and without it.
 BOARDS.md has both boards' pins.
 
@@ -11,8 +11,8 @@ BOARDS.md has both boards' pins.
 **The target needs its own supply; the probe cannot power it.** J6 pin 1 is a sense input. A voltage
 follower (U6) buffers it, and the buffered level becomes the reference for every level shifter on
 the debug lines. The only path from the probe's 3V3 to pin 1 is R16, 33 kOhm, which gives the
-shifters a defined reference when nothing is plugged in and collapses under any real load. That is
-why a target hung off it stayed unpowered. No other connector carries power either: J7 is RX, TX and
+shifters a defined reference when nothing is plugged in, and collapses under any real load. So a
+target hung off it stays unpowered. No other connector carries power either: J7 is RX, TX and
 ground. The one path is a hand-wired mod from J2's unpopulated pad 1, which is the probe's own 3V3
 rail. That rail has a 700 mA regulator the probe's own MCU and USB PHY also draw on, with no current
 limit and no switch, so a target fault resets the probe. The MCU-Link Pro supplies a target by
@@ -49,8 +49,8 @@ and it loads every target with ~0.8 mA. So presence comes from pin 9, or from th
 an IDCODE or DPIDR read. The connector standard names pin 9 GNDDetect and has the target ground it,
 so a board with the standard 10-pin header usually does it already; check continuity on an
 unfamiliar one. **With flying leads, ground pin 9 in the harness**, or the detect pin says nothing.
-**Ours reads both**: vendor 0x86, `tools/dap.py target`. The ADC channel was not in any document
-here and one third-party source contradicted the obvious guess, so it was found on the board:
+**Verge reads both**: vendor 0x86, `tools/dap.py target`. No document here gave the ADC channel,
+and one third-party source contradicted the obvious guess, so it was found on the board:
 `dap.py target --sweep` with the target unpowered and then powered. ADC0 3A went 542 to 1634 mV at
 the pin, half the supply. No other channel moved by more than 174 mV. Five repeat reads agree to 2
 codes in 65536. On the standalone MCU-Link the reading is only as absolute as the probe's own 3V3,
@@ -76,9 +76,9 @@ harness is not plugged in.
 
 ## J8, the marker header
 
-The standalone MCU-Link's four DIO pins: through-hole pads at 50-mil pitch beside the MCU, and the
-only pins on the board nothing else uses. No buffer, no series resistor and no ground pin, so the
-analyser takes its ground from the debug connector.
+J8 holds the standalone MCU-Link's four DIO pins: through-hole pads at 50-mil pitch beside the MCU,
+and the only pins on the board nothing else uses. They have no buffer, no series resistor and no
+ground pin, so the analyser takes its ground from the debug connector.
 
 | J8 pin | MCU pin | signal |
 | --- | --- | --- |
@@ -88,8 +88,8 @@ analyser takes its ground from the debug connector.
 | 4 | 42 | `PIO1_3` |
 
 **Pin 1 is the leftmost pad with the board the right way up**, USB to the left and the 10-pin debug
-connector to the right. Settled by driving one pin at a time and watching the analyser, not by
-reading the silkscreen. `uv run tools/dap.py j8 --walk` repeats it in twelve seconds.
+connector to the right. That was settled by driving one pin at a time and watching the analyser,
+not by reading the silkscreen. `uv run tools/dap.py j8 --walk` repeats it in twelve seconds.
 
 The pins boot as DIO inputs, so a capture that wants the command marker gives it the pins first:
 `uv run tools/dap.py j8` gives it all four. They then go high together while a host command runs,
@@ -102,8 +102,8 @@ README.md, "When a build misbehaves", has what each failure looks like.
 
 ## What the emulator predicts, so you can check it
 
-KiB/s of wire time over a 64-word block, on the generated transfers, timed by the m33 model.
-Regenerate with `uv run tools/cycles.py --table --words 64`.
+The table gives KiB/s of wire time over a 64-word block, on the generated transfers, timed by the
+m33 model. Regenerate it with `uv run tools/cycles.py --table --words 64`.
 
 JTAG runs at the probe's default read latency, 10 cycles, which holds it to 25 MHz. A connection
 measures the target's latency, and a target that answers within 8 cycles runs at 30 MHz

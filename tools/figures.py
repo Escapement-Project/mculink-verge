@@ -654,7 +654,7 @@ def memory():
                                           ("how far depends on the compiler;", "text", NOTE),
                                           ("rarely used data may reach SRAM3", "text", NOTE)], dashed_to="sram3")
     note("right", "sram1_stack", "sram1_stack", ["16 KiB of stack"])
-    note("right", "sramx", "sramx", ["The generated wire code,", ("written at run time", "text", NOTE)])
+    note("right", "sramx", "sramx", ["The generated wire code,", ("written at runtime", "text", NOTE)])
     note("right", "flash1", "flash1", ["Code, from `0x4_0000`"])
     # What the shading and the dashes mean.
     ky = bar_bottom + 30
@@ -681,13 +681,13 @@ def energy():
     f.arrow([(adc_x, 28), (adc_x, 50)])
     f.text(adc_x, 68, "CTimer 2", size=14, kind="strong", anchor="middle")
     f.arrow([(adc_x, 76), (adc_x, y - 22)])
-    f.text(adc_x + 8, 100, "triggers each pair", size=13, tone=NOTE, room=ring_c - adc_x - 40)
+    f.text(adc_x + 8, 100, "triggers samples", size=13, tone=NOTE, room=ring_c - adc_x - 40)
     # The chain.
     f.text(0, y - 3, "Target", size=14, kind="strong", room=60)
     f.text(0, y + 14, "supply", size=14, kind="strong", room=60)
     f.arrow([(60, y), (adc_x - 26, y)])
     f.text(adc_x, y + 5, "ADC0", size=14, kind="strong", anchor="middle")
-    f.lines(adc_x, y + 28, [("voltage and", "text", NOTE), ("current, a pair", "text", NOTE)],
+    f.lines(adc_x, y + 28, [("voltage and", "text", NOTE), ("current, a sample", "text", NOTE)],
             anchor="middle", room=104)
     f.arrow([(adc_x + 26, y), (ring_c - 24, y)])
     f.text((adc_x + ring_c) / 2, y - 7, "DMA", size=14, anchor="middle", room=ring_c - adc_x - 60)
@@ -705,7 +705,7 @@ def energy():
     f.lines((ring_c + slots_x) / 2 + 14, y + 22, [("adds each segment to", "text", NOTE),
                                                   ("the energy total; while", "text", NOTE),
                                                   ("a stream runs, writes the", "text", NOTE),
-                                                  ("pairs into stream messages", "text", NOTE)],
+                                                  ("samples into stream messages", "text", NOTE)],
             anchor="middle", room=180)
     # The slots: sixteen cells, two rows of eight.
     cell, gap_ = 9, 2
@@ -750,7 +750,7 @@ def energy():
     f.path(f"M{mx},{ty}V{ty - 16}", width=1.5)
     f.parts.append(f'<path d="M{mx},{ty - 16}l9,3.5l-9,3.5Z" fill="currentColor"/>')
     f.text(mx, ty + 24, "marker", size=12, tone=NOTE, anchor="middle")
-    f.text(start_x + 50, ty + 24, "pairs", size=12, tone=NOTE, anchor="middle")
+    f.text(start_x + 50, ty + 24, "samples", size=12, tone=NOTE, anchor="middle")
     f.text((start_x + stop_x) / 2, ty + 46, "stamped on CTimer 4, the stream's clock", size=13, tone=NOTE,
            anchor="middle")
     return f, ty + 54

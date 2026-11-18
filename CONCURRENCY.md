@@ -5,7 +5,7 @@ interrupts, and the DMA and USB controllers writing memory on their own. This do
 state more than one of them touches, who writes it, and what keeps each access in order.
 
 ARCHITECTURE.md says what each core runs. BUSES.md says which bus port each access uses, and why
-the other core cannot move a wire edge; that is timing, not ordering, and this document leaves it
+the other core cannot move a wire edge. That is timing, not ordering, and this document leaves it
 there.
 
 ## What runs
@@ -25,7 +25,7 @@ there.
   controller** reads and writes the packet buffers in USB SRAM.
 
 CPU 0 has two ways to keep an interrupt out. `cpu0_mask_all_but_edges` raises BASEPRI over every
-interrupt but the DIO pins', which touch nothing else; the loop takes it where it changes the
+interrupt but the DIO pins', which touch nothing else. The loop takes it where it changes the
 energy capture's state, which the DMA interrupt also changes. A few short stretches turn every
 interrupt off (PRIMASK): in the DMA interrupt between reading SWO's completion and counting it, in
 the range re-arm between its timing check and its edge, and in the DIO edges' bookkeeping.
@@ -55,8 +55,8 @@ then the data. The flags are the lengths, states, counts and sequence numbers be
 ## Commands and replies
 
 `dap_shared` holds four rings of `REQUEST_SLOTS` slots each: a request ring and a reply ring for
-each transport. A slot is full while its length is non-zero. Whoever fills it writes the length last, and
-whoever empties it writes zero once it no longer needs the bytes (`dap_usb_slots.h`).
+each transport. A slot is full while its length is non-zero. Whoever fills it writes the length
+last, and whoever empties it writes zero once it no longer needs the bytes (`dap_usb_slots.h`).
 
 | ring | fills | empties | indices |
 | --- | --- | --- | --- |
@@ -89,11 +89,11 @@ flight are CPU 0's loop's alone, since TinyUSB's callbacks run in the loop too.
 ### Staged copies
 
 CPU 0 copies a staged command into `dap_stage` before it writes the command's length, so CPU 1
-sees it whole. CPU 1 releases the request slot as soon as it takes the command,
-so the next command can arrive while this one runs. The staged buffers therefore cannot be the
-slots: CPU 0 takes them in turn, one more of them than there are slots, so a buffer comes round
-again only after `REQUEST_SLOTS` more commands, and CPU 0 cannot receive that many while the
-command in it runs (`dap_stage_t`). A staged reply goes the other way: CPU 1 writes it before it
+sees it whole. CPU 1 releases the request slot as soon as it takes the command, so the next command
+can arrive while this one runs. So the staged buffers cannot be the slots. CPU 0 takes them in
+turn, and there is one more of them than there are slots. A buffer comes round again only after
+`REQUEST_SLOTS` more commands, and CPU 0 cannot receive that many while the command in it runs
+(`dap_stage_t`). A staged reply goes the other way: CPU 1 writes it before it
 publishes the reply's length, and CPU 0 copies it into the USB buffer before it starts sending.
 
 Vendor command `0x8C` switches staging: CPU 1 writes `stage_commands`, and CPU 0 reads it as each
@@ -116,8 +116,9 @@ Each time the host sets a configuration, which follows every bus reset, CPU 0 st
 numbering in `tud_mount_cb`. It sets `first_live_seq` to the next command's number, forgets each
 transport's reply in flight, and raises the abort flag. CPU 1 drops any command numbered before
 `first_live_seq` unrun, checking that as the last thing before it runs one, so the abort has the
-least room to miss. CPU 0 drops those commands' replies unsent (`send_bulk_head`, `send_hid_head`). The same callback
-sets `bulk_packet_size` for the new speed, before any command of that configuration can arrive.
+least room to miss. CPU 0 drops those commands' replies unsent (`send_bulk_head`,
+`send_hid_head`). The same callback sets `bulk_packet_size` for the new speed, before any command
+of that configuration can arrive.
 
 A bus reset's speed comes from TinyUSB's interrupt: `tud_event_hook_cb` records it in
 `reset_speed`, and the loop takes it with an atomic exchange (`usb_speed.c`).
@@ -167,7 +168,7 @@ the position and an unidentified stream's header. Then the start hands the state
 not finished: it goes on to write a new session's identity, reset the total and the decoder, write
 an identified stream's header, mark the capture running, and start the timeline. CPU 0 stays
 off all of that for three reasons. The DMA channel is still off, and enabled last, so no completion
-can reach the interrupt; the interrupt also integrates nothing while `running` is clear. The loop
+can reach the interrupt. The interrupt also integrates nothing while `running` is clear. The loop
 treats the stream as CPU 1's while `timeline_pending` is set. And the identity has its own
 sequence counter (below). From then on CPU 0's DMA interrupt advances the state, one segment at a
 time.
@@ -194,10 +195,10 @@ own written and read counts (`energy_stream.h`).
 
 - **Holds.** When CPU 1 measures a target's read latency, it stops the conversion timer, and on
   release records the gap (`holds_written`). CPU 0 picks the holds up as it integrates the next
-  batch of pairs. The hold's end time is written just after the count, which is safe only because
-  no pair after the hold exists until the timer starts again.
+  batch of samples. The hold's end time is written just after the count, which is safe only because
+  no sample after the hold exists until the timer starts again.
 - **A start's first trigger.** CPU 1 sets `timeline_pending` until it has published when the first
-  pair was triggered. CPU 0 waits for it before it times a batch, a bounded number of polls, and
+  sample was triggered. CPU 0 waits for it before it times a batch, a bounded number of polls, and
   until then treats the stream as CPU 1's.
 - **Markers.** A marker (`0x94`) runs on CPU 1, like any command, and CPU 1 records it whichever
   core owns the stream (`marks_written`). Ending a stream must not lose one half recorded, so the
@@ -224,14 +225,14 @@ end a capture that runs.
 ### The range re-arm
 
 The DMA interrupt sets `energy_range_retry_pending` when a segment shows the current has fallen
-below the low range's limit, after the backoff's hold just under it (`src/energy_pairs.h`). CPU 0's loop then clocks the range latch (P0_17), with every interrupt
-off from its last timing check to the edge, reading CTimer 2 to find a gap between pairs. CPU 1
-clears `energy_range_retry_enabled` and the pending flag before it pauses a capture, and a start
-that switches automatically sets enabled again. A re-arm already past its check of enabled can still
-clock the latch after that; the start's own edge, which it sends whatever P0_17 was left at, covers
-it. A start that holds the high range leaves enabled clear and holds U18's reset first, so a late
-edge cannot reach the latch. Once CPU 1 has
-the quiet acknowledgement, which comes from the same loop, no re-arm is under way.
+below the low range's limit, after the backoff's hold just under it (`src/energy_pairs.h`). CPU 0's
+loop then clocks the range latch (P0_17), with every interrupt off from its last timing check to
+the edge, reading CTimer 2 to find a gap between samples. CPU 1 clears `energy_range_retry_enabled`
+and the pending flag before it pauses a capture, and a start that switches automatically sets
+enabled again. A re-arm already past its check of enabled can still clock the latch after that. The
+start's own edge, which it sends whatever P0_17 was left at, covers it. A start that holds the high
+range leaves enabled clear and holds U18's reset first, so a late edge cannot reach the latch. Once
+CPU 1 has the quiet acknowledgement, which comes from the same loop, no re-arm is under way.
 
 ### A latency measurement
 
@@ -295,10 +296,10 @@ through `dio_spi_turns`, which is odd while SPI has the pins.
 The pin interrupt can also rest: past a rate of edges it turns itself off for a while and marks the
 edges lost (`resting`). The loop turns it back on once the rest is over.
 
-On a board without energy capture, Verge Aux's mode 15 starts a DIO stream, which has no pairs.
+On a board without energy capture, Verge Aux's mode 15 starts a DIO stream, which has no samples.
 CPU 1 never asks for the capture state there, as every capture path stops at `energy_available`,
 so CPU 0 owns the stream throughout. Its Aux path writes the header and the end
-(`stream_command`), and its loop sends the edges and moves the stream's origin, which no pair
+(`stream_command`), and its loop sends the edges and moves the stream's origin, which no sample
 moves (`dio_edges_task`). CPU 1 writes the pins the bench marker holds to `dio_marker_pins` as
 `0x84` gives or takes them; a stream reads them once, as it starts.
 
@@ -307,7 +308,7 @@ started (the sync run). With interrupts masked, it checks that the pin interrupt
 and no loss is waiting, reads the stamping timer, then reads SPI's count again. So the interrupt can
 stamp a later edge only after that time. CPU 1 counts before SPI moves the pins, so an unchanged
 count means the pins held until then. SPI's stamp, which CPU 1 reads just before it counts, can come
-just before the time; the loss it starts begins after `edge_known`, which the message raises to the
+just before the time. The loss it starts begins after `edge_known`, which the message raises to the
 time, and the pins had not moved.
 
 ## The LEDs
@@ -326,9 +327,9 @@ which change later as described above.
 ## Counts read without ordering
 
 SysTick counts milliseconds into `system_ticks` while CPU 0's loop runs. The loop's wait masks it,
-so while CPU 0 is idle the count moves once per wake, at least every 2.048 ms LED tick; the restart's
-wait and the full-speed retry that read it wait at least as long as they ask. CPU 1 counts the
-commands it runs and the stale ones it drops, and notes the one running, in `dap_shared.core1`. On
-a fault it writes the fault registers first and `exception` last. CPU 0 copies the record whole for
-vendor request `0x04`, so its counts can be from two moments, but a record with `exception` set is
-complete. Each of these has one writer.
+so while CPU 0 is idle the count moves once per wake, at least every 2.048 ms LED tick. The
+restart's wait and the full-speed retry that read it wait at least as long as they ask. CPU 1
+counts the commands it runs and the stale ones it drops, and notes the one running, in
+`dap_shared.core1`. On a fault it writes the fault registers first and `exception` last. CPU 0
+copies the record whole for vendor request `0x04`, so its counts can be from two moments, but a
+record with `exception` set is complete. Each of these has one writer.

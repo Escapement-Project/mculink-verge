@@ -99,7 +99,7 @@
 <text x="508" y="602" font-size="14" fill="currentColor">16 KiB of stack</text>
 <path d="M491,761H496V803H491" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule"/>
 <text x="508" y="778.5" font-size="14" fill="currentColor">The generated wire code,</text>
-<text x="508" y="795.5" font-size="13" fill="currentColor" class="vf-2">written at run time</text>
+<text x="508" y="795.5" font-size="13" fill="currentColor" class="vf-2">written at runtime</text>
 <path d="M491,821H496V853H491" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule"/>
 <text x="508" y="842" font-size="14" fill="currentColor">Code, from <tspan class="vf-code" font-size="12.6">0x4_0000</tspan></text>
 <path d="M236,907H258V921H236Z" fill="none" stroke="currentColor" stroke-width="1" class="vf-rule vf-surf"/>

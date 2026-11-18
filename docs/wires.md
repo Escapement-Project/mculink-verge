@@ -1,7 +1,7 @@
 # Wires and clocks
 
-Verge speaks SWD, JTAG, and cJTAG (IEEE 1149.7) in four scan formats: OScan1, OScan2, OScan5 and
-OScan6. NXP's firmware has no cJTAG.
+Verge speaks SWD, JTAG and cJTAG (IEEE 1149.7). It frames cJTAG in four scan formats: OScan1,
+OScan2, OScan5 and OScan6. NXP's firmware has no cJTAG.
 
 ## Hosts
 
@@ -11,23 +11,34 @@ cJTAG takes a host that knows it. The host selects a scan format with vendor com
 ([Host interface](host-interface.md#cjtag-0x95-and-0x96)) and connects over JTAG, and the probe
 frames in that format from the connection on. Then the host activates the target and switches it to
 the same format. `verge read --protocol cjtag` reads target memory over cJTAG, through a probe-rs
-branch that drives the commands proposed for CMSIS-DAP. A probe-rs release has no cJTAG for
+branch that drives the commands proposed for CMSIS-DAP. No probe-rs release has cJTAG for
 CMSIS-DAP probes.
 
 ## From the clock asked for to the clock on the wire
 
 The probe's core runs at 150 MHz, and every wire period is a whole number of its cycles. So the
-probe rounds a requested clock down to the next step it can make: 30 MHz is 5 cycles, 18.75 MHz is
-8. A request above the fastest clock gets the fastest. A request below 9 Hz gets `DAP_ERROR`, and
-the clock stays as it was: its period would be more than 2^24 core cycles, longer than the probe's
-transfer code can wait.
+probe rounds the clock a host asks for down to the next step it can make: 30 MHz is 5 cycles, 18.75
+MHz is 8. A request above the fastest clock gets the fastest. A request below 9 Hz gets `DAP_ERROR`,
+and the clock stays as it was: its period would be more than 2^24 core cycles, longer than the
+probe's transfer code can wait.
 
-Every transfer runs on code the probe generates at run time, for the clock and the settings in use
+Every transfer runs on code the probe generates at runtime, for the clock and the settings in use
 ([Code generation](../CODEGEN.md)).
+
+## When the probe measures the target
+
+The probe samples a target's reply at a fixed delay after the clock edge that asks for it: the
+target's read latency. It measures that latency on the wire before it trusts a sample position: when
+a host connects at a fast clock, when a connection's first read fails, and when the host changes the
+clock. On a board that can capture energy, a connection also measures at any clock where a capture
+starting or stopping would change which latencies the code serves. A measurement that contradicts
+itself runs again. Verge's own tools can ask for one, or pin the latency, and a pinned latency is
+never measured ([Host interface](host-interface.md#commands-verges-own-tools-use), `0x89` and
+`0x8A`).
 
 ## SWD
 
-A write clock takes 3 core cycles and a read clock 4. So at a requested 50 MHz, a transfer's request
+A write clock takes 3 core cycles and a read clock 4. So asked for 50 MHz, a transfer's request
 and write data run at 50 MHz, and its read data at 37.5 MHz. The target's reply delay slows neither.
 
 On the Pro, energy capture slows reads. While a capture runs, a read clock takes at least 5 cycles
@@ -38,7 +49,8 @@ write clocks take 4 cycles instead of 3.
 ## JTAG
 
 The probe has to sample TDO after the target drives it, so a slow target lengthens the clock. The
-probe measures that delay when a host connects, and again when the host changes the clock:
+probe measures that delay ([When the probe measures the target](#when-the-probe-measures-the-target)),
+and the delay sets the clock:
 
 | the target's TDO delay, in core cycles | the clock |
 | --- | --- |
@@ -80,20 +92,20 @@ The other formats send fewer packets for some clocks:
 verge connects in OScan1 unless asked for another format (`verge read --cjtag-format`). Ask only
 for a format the target has: the probe frames in the format the host selects, and neither verge nor
 probe-rs reads the target to check. The target's documentation, or its CNFG0 register, says which
-formats it has: [cJTAG targets](cjtag-targets.md#other-formats) says how to read it on TI's parts. A
-target without the asked format has not been tried. [cJTAG](../CJTAG.md) has the wire in detail.
+formats it has: [cJTAG targets](cjtag-targets.md#other-formats) says how to read it on TI's parts.
+We have not tried a target without the asked format. [cJTAG](../CJTAG.md) has the wire in detail.
 
 ## Limits
 
-The fastest each transport runs, Verge beside NXP's firmware V3.174, from runs between 2026-11-04
-and 2026-11-14. Verge's figures hold for the current firmware. The [measurement
+The table gives the fastest each transport runs, Verge beside NXP's firmware V3.174, from runs
+between 2026-11-04 and 2026-11-14. Verge's figures hold for the current firmware. The [measurement
 log](../MEASUREMENTS.md#where-the-limits-figures-come-from) says how and when each was taken.
 
 | Transport | Verge | Verge's rate depends on | NXP's firmware V3.174 |
 | --- | --- | --- | --- |
 | SWD writes | 50 MHz | The Pro's energy capture: a few clocks at 37.5 MHz while it runs | 10.7 MHz |
 | SWD reads | 37.5 MHz | The Pro's energy capture: 30 MHz while it runs | 10.0 MHz |
-| JTAG (reads and writes) | 30 MHz | The target's TDO delay; the Pro's energy capture | 5.4 MHz, at a requested 10 MHz; fails from 12.5 MHz |
+| JTAG (reads and writes) | 30 MHz | The target's TDO delay; the Pro's energy capture | 5.4 MHz when asked for 10 MHz; fails from 12.5 MHz |
 | cJTAG (reads and writes) | 50 MHz per wire packet; per JTAG clock in Shift, 7.9 MHz in OScan1 and OScan2, 9.4 MHz in OScan5 and OScan6 | The target's TDO delay | No cJTAG |
 | Console (VCOM) | 30 Mbaud | Nothing | 4 Mbaud |
 | SWO | 30 Mbaud, UART encoding only | Nothing | Not measured |

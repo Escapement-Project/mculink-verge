@@ -53,13 +53,13 @@ contends with any other.
 | CPU 1 | 11 | `dap_shared`: unstaged requests and bulk replies, the queues, the LED inputs | Between timed windows |
 | CPU 1 | 11 | `dap_shared`: SWO's ring, its descriptors and channel entry, its segment count, and `swo_lost`, which it clears as the ring starts | SWO commands only |
 | CPU 1 | 10 | ADC0 (target sense, `dap_vendor`, the Pro's energy calibration) and settled energy FIFO results | Own core, never during a window: at boot on the Pro, a host's sense reads, a start that calibrates; FIFO drain at capture pause/stop |
-| CPU 1 | 2 | CPU 0's `energy_integration` in SRAM0: ring reads for latest-pair replies and the unconsumed capture tail; each start's identity, publication sequence, tables, constants, descriptors and position; the running flag; the segment count a capture started at; the energy stream's timeline, and its message indices at a start, pause or stop; a hold's record after each read-latency measurement; a marker's record, and the stream's marking and busy flags, for each `0x94` | Host polls while capture runs; tail drain and capture setup around the quiet handshake; the running flag before each read-latency measurement and around each sense conversion; the DIO edges recorded since the last message, at a pause or stop. Never during a window |
+| CPU 1 | 2 | CPU 0's `energy_integration` in SRAM0: ring reads for latest-sample replies and the unconsumed capture tail; each start's identity, publication sequence, tables, constants, descriptors and position; the running flag; the segment count a capture started at; the energy stream's timeline, and its message indices at a start, pause or stop; a hold's record after each read-latency measurement; a marker's record, and the stream's marking and busy flags, for each `0x94` | Host polls while capture runs; tail drain and capture setup around the quiet handshake; the running flag before each read-latency measurement and around each sense conversion; the DIO edges recorded since the last message, at a pause or stop. Never during a window |
 | CPU 1 | 8 | Ordinary GPIO ports 0 and 1: the DIO pins, the Pro's with their translators' directions and the standalone board's J8 (`dio.c`), port 0 pin 8 for the target regulator (`target_power.c`), the energy circuit's latch and calibration pins (`energy_monitor.c`), and the bench marker's J8 pins (`marker.h`) | Vendor 0x8E, 0x8F, 0x90 and 0x84, the energy calibration at boot, and the marker's store before and after each command, made whether it holds pins or not; own core, never during a window |
 | CPU 1 | 7 | RNG registers, SYSCON clock/reset and PMC power control for the capture's 128-bit boot value | At a capture start, until one initialization succeeds; bounded entropy/health waits; own core, outside every wire window |
 | CPU 1 | 7 | CTimer 2 for the Pro's energy-capture trigger; SYSCON, IOCON and INPUTMUX for setup | Energy capture start/stop, and IOCON at boot on the Pro; CTimer 2 stopped and started around each read-latency measurement |
 | CPU 1 | 8, 10 | DMA0's busy bit and ADC0's status, polled until the held capture is idle | Before each read-latency measurement, while capture runs |
 | CPU 1 | 8, 10 | DMA0's error bits, channel 21's two completion flags and ADC0's status, to tell a failed capture (`energy_capture_failed`) | Energy commands and `0x94` while a capture runs; own core, never during a window |
-| CPU 1 | 8 | Channel 21's completion flags and XFERCFG, for the ring's position (`ring_written`) | The latest pair (`0x90` mode 1) while a capture runs, and a pause's drain; own core, never during a window |
+| CPU 1 | 8 | Channel 21's completion flags and XFERCFG, for the ring's position (`ring_written`) | The latest sample (`0x90` mode 1) while a capture runs, and a pause's drain; own core, never during a window |
 | CPU 1 | 7 | SYSCON clocks and IOCON for the DIO pins (`dio_init`) | Boot only, on the Pro and the standalone board |
 | CPU 1 | 7 | PINT's enables for the DIO pins, turned off as SPI takes them (`dio_spi_begin`) | Each `0x91` SPI command, on the Pro; own core, never during a window |
 | CPU 1 | 7 | CTimer 4's count, the stamp for SPI's edge gap, only once an energy capture has clocked it (`dio_spi_begin`) | Each `0x91` SPI command, on the Pro; own core, never during a window |
@@ -71,7 +71,7 @@ contends with any other.
 | DMA0 | 8 then 2 | Flexcomm 0 and 1 FIFOs to the consoles' receive rings | Whenever console bytes arrive |
 | DMA0 | 2 then 8 | The consoles' send buffers to Flexcomm 0 and 1 FIFOs | Each send from the host |
 | DMA0 | 11, 2 | Descriptors: channel entries and SWO's ring in `dap_shared`, the consoles' rings in SRAM0 | Each send, and each segment of a ring |
-| DMA0 | 10, 2, 11 | ADC0 RESFIFO to the energy ring in SRAM0, two segments of 16 to 512 words, about 1 ms each at the capture's rate; channel 21's table entry in `dap_shared`, its reload descriptors in SRAM0 | While energy capture runs, except during a read-latency measurement; about seven DMA reads per voltage/current/range sample from 10,000 samples/s and 6.4 below 3,000, measured: the voltage's and the current's results arrive together, and up to two reads after each burst find the FIFO empty; 1,000 to 2,000 interrupts/s from 2,286 pairs/s, about 1,370/s at 100 kpair/s, two fifths of the pair rate below 2,286 |
+| DMA0 | 10, 2, 11 | ADC0 RESFIFO to the energy ring in SRAM0, two segments of 16 to 512 words, about 1 ms each at the capture's rate; channel 21's table entry in `dap_shared`, its reload descriptors in SRAM0 | While energy capture runs, except during a read-latency measurement; about seven DMA reads per voltage/current/range sample from 10,000 samples/s and 6.4 below 3,000, measured: the voltage's and the current's results arrive together, and up to two reads after each burst find the FIFO empty; 1,000 to 2,000 interrupts/s from 2,286 samples/s, about 1,370/s at 100 ksamples/s, two fifths of the sample rate below 2,286 |
 | USB HS controller | 11 | Endpoint buffers in USB SRAM | Every USB transfer |
 | CPU 0 | 0, 2 | Code and data | Always |
 | CPU 0 | 3, 4 or 5 | `DAP_TransferAbort`, one byte in CPU 1's `.bss`, through `dap_shared.transfer_abort` | The moment an abort arrives, so possibly during a window |
@@ -111,7 +111,7 @@ CONCURRENCY.md has how the cores, the interrupts and DMA order their accesses to
   secure GPIO access up to 2 cycles. A held store holds every edge after it, which only stretches a
   phase. A held sample placed after the next rising edge reads the next bit. So with capture asked
   for, the generated SWD and JTAG paths keep 2 cycles at the late end of such a sample's window, and
-  their clocks lengthen where that leaves no room (`gen_stall`, CODEGEN.md); cJTAG samples come
+  their clocks lengthen where that leaves no room (`gen_stall`, CODEGEN.md). cJTAG samples come
   before that edge. Holding the conversion trigger for a measurement (`energy_monitor_hold`) stops
   the ADC reads, the ring writes and CPU 0's segment interrupts together, so latency measurements
   run without the stall. Capture is disabled by default. CPU 0's segment interrupt reads ADC0's
@@ -123,16 +123,16 @@ CONCURRENCY.md has how the cores, the interrupts and DMA order their accesses to
   port. The lab measurement below found no cycle lost to CPU 0 at that priority.
 
 No timed window uses port 7, so CPU 0's APB accesses (the LED, the DIO edge interrupt, the console
-initialization, the SWO status request) cannot move an edge. A timed path that touches an APB peripheral would bring all
-of them back as exposures.
+initialization, the SWO status request) cannot move an edge. A timed path that touches an APB
+peripheral would bring all of them back as exposures.
 
 ## What a port costs
 
 - **Port 7.** A CTimer store stalls the core about 4 cycles, two in a row about 10, and a load
-  about 9, none of which the emulator's timing model counts. So no timed window reaches an APB
+  about 9. The emulator's timing model counts none of these, so no timed window reaches an APB
   peripheral.
-- **CPU 0 on CPU 1's SRAM port.** At the reset priorities, CPU 0 copying within the bank CPU 1 is
-  using cost CPU 1 2 to 13 cycles in a body of 256 loads and stores, in 8 to 55% of bodies. With
+- **CPU 0 on CPU 1's SRAM port.** At the reset priorities, CPU 0 copying within the bank CPU 1 was
+  using cost CPU 1 cycles: 2 to 13 in a body of 256 loads and stores, in 8 to 55% of bodies. With
   CPU 1's data bus at the top priority, as `start_core1` sets it, it cost none.
 - **SRAM4** is slower than SRAM2 and SRAM3 with nothing else running: a load next to a store costs
   an extra cycle, 386 cycles against 259 for 128 load-store pairs. That is why `dap_stage` is in

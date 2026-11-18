@@ -20,10 +20,10 @@ ARM's reference SWD bit path moves SWDIO while SWCLK is high:
 is harmless for SWD, where the target samples on the rising edge. On a 1149.7 wire a TMSC
 transition while TCKC is high is an escape edge (10.4.2 e), so this path makes one on every bit
 change. One edge in a TCKC-high interval is still data, since an escape takes two or more (Table
-10-9), but the same order leaves a target that samples on the falling edge almost no setup, and
-SWCLK rests high between commands. A host cannot avoid it: the only command that releases the wire
-for the target's part of a frame, `DAP_SWD_Sequence`, runs on that bit path. So cJTAG needs a probe
-that moves TMSC only while TCKC is low, and that is a change inside the probe.
+10-9). But the same order leaves a target that samples on the falling edge almost no setup. And
+SWCLK rests high between commands. A host cannot avoid any of it: the only command that releases
+the wire for the target's part of a frame, `DAP_SWD_Sequence`, runs on that bit path. So cJTAG
+needs a probe that moves TMSC only while TCKC is low, and that takes a change inside the probe.
 
 ## What IEEE 1149.7-2022 says, as far as this code uses it
 
@@ -50,7 +50,7 @@ Clause 25 covers the OScan formats, 10.4 the escapes, and 9.10 the configuration
   TMSC with TCKC low, raise TCKC, lower TCKC. TMSC moves only while TCKC is low; a move with TCKC
   high is an escape edge (the gate's `moves_while_high` rule).
 - **The TDO packet.** The probe releases TMSC (TXEN, then the pin) right after the fall that
-  starts the packet. TDO is valid from a fixed latency after that fall, the cJTAG counterpart of
+  starts the packet. TDO is valid from a fixed latency after that fall: the cJTAG counterpart of
   SWD's A. The probe measures it when a host connects, and samples a cycle later (docs/wires.md,
   "cJTAG"). On a CC1312R1 TDO stays valid through the rise and at least 7 cycles past the next fall.
   The probe takes the wire back (pin direction, then TXEN, two stores) right after that next fall,
@@ -61,8 +61,8 @@ Clause 25 covers the OScan formats, 10.4 the escapes, and 9.10 the configuration
   the TDO packet, as the SWD generator stretches the clocks the target drives: uniform packets would
   each take the TDO packet's 8 cycles or more.
 - **The sampling edge.** A T4 TAP.7, such as the CC1312R1's, samples TMSC on the falling edge until
-  the host's STC1 sets SREDGE, as TI's activation does, and on the rising edge after it (1149.7
-  23.4.1.4.4; the TRM's Table 6-4 calls it SEDGE). The generator stores TMSC a quarter
+  the host's STC1 sets SREDGE, as TI's activation does. After that it samples on the rising edge
+  (1149.7 23.4.1.4.4; the TRM's Table 6-4 calls the bit SEDGE). The generator stores TMSC a quarter
   period after a fall the target samples, so the store has hold time on either edge. After a TDO
   packet's fall the target samples nothing, and nothing waits there.
 - **No Test-Logic-Reset inside a session.** On a CC1312R1 any entry drops OScan1, so the generated
@@ -92,8 +92,8 @@ expand, in order, to `PIN_TDI_OUT` (sometimes), `PIN_TCK_CLR`, `PIN_DELAY`, `PIN
 `PIN_TCK_CLR`, and sends it at whichever of `PIN_TDO_IN` or `PIN_TCK_SET` comes first. The
 submodule is pinned to a release, so the order cannot change unless someone moves the tag.
 
-A frame is entered and left with TCKC low and the wire driven, which is not where ARM's JTAG code
-rests. Taking the wire back after the TDO packet moves TMSC from whatever the target drove to what
+A frame is entered and left with TCKC low and the wire driven. ARM's JTAG code does not rest there.
+Taking the wire back after the TDO packet moves TMSC from whatever the target drove to what
 the probe's output latch holds, and doing that with TCKC high would put an escape edge in every
 frame. OpenOCD's OScan1 driver sequences the three packets the same way, with TCK resting low
 between them.

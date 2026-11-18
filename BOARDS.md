@@ -53,12 +53,12 @@ The debug connector is J6 on the standalone MCU-Link and J7 on the Pro (sheet 5)
 detect, the standard's GNDDetect, which a target grounds. Pin 7 is ISP-EN, where the standard has a
 key; leave it unconnected at the target. There is no nTRST, so the TAP is reset through TMS. On the
 Pro, TCK and TDI share one 74LVC2T45 whose direction pin is HW_VER_7, so with J13 fitted neither is
-driven at all, whatever the firmware does. The reference-voltage follower is the standalone
-MCU-Link's, with a 30K1 pull-up for its 33K.
+driven at all, whatever the firmware does. The Pro's reference-voltage follower is the standalone
+MCU-Link's circuit, with a 30K1 pull-up in place of its 33K.
 
 The two TXEN pins are buffer direction controls. Releasing SWDIO means clearing `TMS_SWDIO_TXEN`
 as well as making the pin an input: the buffer keeps driving the wire otherwise. Releasing the wire
-is exactly what OScan1 needs, so this pin is load-bearing for the whole project.
+is exactly what OScan1 needs, so the whole project depends on this pin.
 `board_debug_pins_init` brings both TXEN pins up low before the pins they gate, so connecting the
 probe to a running board disturbs nothing until the host asks for a port.
 
@@ -74,8 +74,8 @@ Strap pins, all inputs needing a pull-up (DAPLink `IO_Config.h`):
 | HW_VER_3 | PIO1_4 | on-board (0) or Pro (1) |
 | HW_VER_4 | PIO1_5 | board id code valid when low |
 | HW_VER_5 | PIO1_6 | energy measurement on when low |
-| HW_VER_6 | PIO0_18 | VCOM off when low (plain J4, Pro J14) |
-| HW_VER_7 | PIO0_27 | SWD off when low (plain J5, Pro J13) |
+| HW_VER_6 | PIO0_18 | VCOM off when low (standalone J4, Pro J14) |
+| HW_VER_7 | PIO0_27 | SWD off when low (standalone J5, Pro J13) |
 
 A Pro reads HW_VER_4 low and HW_VER_3 high. The standalone MCU-Link's 64-pin package (HTQFP64) bonds
 neither PIO1_4 nor PIO1_5 (`LPC55S6x.pdf` Table 3), so with their pull-ups both read high: not a
@@ -99,14 +99,14 @@ The rest of the Pro's pins, from schematic sheet 3:
 
 ## What the board support does not start
 
-Three clock facts from the manual and the board support, each of which shows only as a silent,
-dead peripheral.
+Three clock facts from the manual and the board support follow. Missing any one of them shows
+only as a silent, dead peripheral.
 
 - **The board support's 150 MHz clock is 144 MHz.** `BOARD_InitBootClocks` calls
   `BOARD_BootClockPLL150M`, whose name is wrong: it runs PLL1 at 16 MHz times 18 and attaches that
   to MAIN_CLK. `board_core_clock_init` then moves MAIN_CLK to PLL0 at 150 MHz (`src/core_clock.h`;
   `-DCORE_150MHZ=OFF` keeps 144). `CPU_CLOCK` and `TIMESTAMP_CLOCK` follow `CORE_CLOCK_HZ`, and
-  every requested SWD or JTAG clock is computed from that number.
+  every SWD or JTAG clock a host asks for is computed from that number.
 - **FRO_HF is off, and so is its divider.** The 96 MHz output of FRO192M is disabled out of reset
   (UM11126: `ENA_96MHZCLK` resets to 0), and the board support only asks for the 12 MHz one, because
   the core runs off PLL1. `FROHFDIV`'s HALT bit resets to 1 as well (UM11126 table 104). The console
@@ -133,9 +133,10 @@ Sources.
   two transistors that feed the sense resistors from the probe's own 3.3 V instead. That is the
   isolation UM11673 describes for calibration.
 - **The sense resistors.** In the low range one resistor carries the current: 50 Ω with J16 at
-  1-2, or 200 Ω at 2-3. In the high range, Q3 adds 0.24 Ω or 2.0 Ω in parallel, chosen by J17. Q3's on-resistance is part of the high range's resistance, and so is
-  J17's contact. Q3's gate is at 0 V while it conducts, and its source is at the supply, so its
-  on-resistance follows the supply: about 16.5 mΩ at 3.3 V (PMPB15XP, Figs. 8 and 9).
+  1-2, or 200 Ω at 2-3. In the high range, Q3 adds 0.24 Ω or 2.0 Ω in parallel, chosen by J17.
+  Q3's on-resistance is part of the high range's resistance, and so is J17's contact. Q3's gate is
+  at 0 V while it conducts, and its source is at the supply, so its on-resistance follows the
+  supply: about 16.5 mΩ at 3.3 V (PMPB15XP, Figs. 8 and 9).
 - **The drop across them.** The sense resistor is in series with the target, so on the low range
   the target's supply sits lower by its current times 50 Ω or 200 Ω: 54 mV at 1.08 mA, and up to
   about 90 mV just under the switch to the high range. The voltage the probe reports is the
@@ -147,11 +148,12 @@ Sources.
 - **The voltage.** Two 330 kΩ resistors halve the voltage on the target side of the sense
   resistors, and a buffer takes it to ADC0_0 on PIO0_23. C61, 1 nF across the lower resistor,
   filters it with a time constant of 165 µs, so the reading follows a step in the supply that much
-  late (sheet 7). The divider draws its current through the sense
-  resistor: 5.0 µA at 3.3 V and 2.7 µA at 1.8 V, as the sheet's note on bleeding resistors says.
+  late (sheet 7). The divider draws its current through the sense resistor: 5.0 µA at 3.3 V and
+  2.7 µA at 1.8 V, as the sheet's note on bleeding resistors says.
 - **The reference.** An LM4040 at 3.0 V drives the VREF net (sheet 2). VREF is the ADC's VREFP.
   It also reaches the comparator's ladder input, ACMPVREF on PIO1_19 (sheet 3). And it feeds a
-  divider from which J18 picks two thirds of VREF at 1-2 or one third at 2-3. That level, CURR_RANGE_SET on PIO1_8, is how the firmware reads the jumper setting.
+  divider from which J18 picks two thirds of VREF at 1-2 or one third at 2-3. That level,
+  CURR_RANGE_SET on PIO1_8, is how the firmware reads the jumper setting.
 
 ### Ranges
 
@@ -184,8 +186,8 @@ the probe's target supply can give.
 - **The ladder.** The ladder takes VREF through ACMPVREF (VREFINPUT 0). It picks one of 32 steps
   from ground to that voltage (UM11126 section 39.5.2 and Fig 145): 31 steps of 96.8 mV, which is
   3.23 mV across the sense resistor. PIO1_19's analog switch is open out of reset, which leaves the
-  ladder with no reference, so the firmware closes it (UM11126 section 15.4.2.5). The comparator runs in
-  its high-speed mode, without hysteresis, because the latch already holds the range.
+  ladder with no reference, so the firmware closes it (UM11126 section 15.4.2.5). The comparator
+  runs in its high-speed mode, without hysteresis, because the latch already holds the range.
 - **The threshold.** The firmware sets step 28: 2.71 V at the comparator, 90.3 mV across the sense
   resistor. UM11673 Table 4 puts the top of the low range at 400 µA in the 50 mA setting and 1.5 mA
   in the 350 mA setting. Those are 80 mV and 75 mV across the resistor. The ADC saturates at 100 mV.
@@ -200,45 +202,43 @@ the probe's target supply can give.
   threshold, a current stays on whichever range it is on. Just under the limit, the firmware can
   wait longer (the backoff, below).
 - **The re-arm's delay.** The firmware sizes the segments to about a millisecond of samples: the
-  most words that fit in 1 ms, as a power of two. Unless the backoff holds it, the first whole
-  segment under the limit re-arms the low range, so it comes back within about 2 ms of the current
-  falling at any rate from 2,286
-  samples a second. Below that rate a segment is its floor of 16 words, about two and a third
-  samples, and the low range comes back within five. From 2,286 samples a second up, segments of
-  about a millisecond keep that delay the same at every rate.
+  most words that fit in 1 ms, as a power of two. Unless the backoff delays it, the first whole
+  segment under the limit re-arms the low range. So from 2,286 samples a second up, the low range
+  comes back within about 2 ms of the current falling, and segments of about a millisecond keep
+  that delay the same at every rate. Below 2,286 samples a second a segment is its floor of 16
+  words, about two and a third samples, and the low range comes back within five samples.
 - **Between samples.** CPU 0 clocks the latch only while the ADC is between samples, in the first
   half of the time from one sample's end to the next one's trigger, so the sample after a switch
   down is the low range's alone. It tells where the ADC is from the conversion timer. Where the rate
   leaves under 2 µs between samples, just under each averaging step's limit, it clocks the latch
   whenever it gets to it.
-- **What a switch down does to the target.** The low range's resistor goes back in series, and
-  the target's supply falls by the drop above. The target's decoupling gives up part of its
-  current while the supply settles, so for about a millisecond the reading dips. On an MSPM0L1306
-  LaunchPad the reading falls from 1.08 mA to 0.26 mA and comes back with a time constant of
-  0.26 ms: 50 Ω times about 5 µF, the LaunchPad's decoupling. A debug session on the target moves
-  both, until its supply is cycled.
-  The current rises further on the low range before a switch up, as the decoupling feeds the
-  target, until it reaches the threshold. The switch up then recharges the decoupling in a spike of
-  a few microseconds. The energy total misses most of that spike (Accuracy limits).
+- **What a switch down does to the target.** The low range's resistor goes back in series, and the
+  target's supply falls by the drop above. The target's decoupling gives up part of its current
+  while the supply settles, so for about a millisecond the reading dips. The [measurement
+  log](MEASUREMENTS.md#energy-capture-on-d4c4c41-the-backoff-and-the-crystal-timebase-2026-11-13)
+  has one target's dip. The current rises further on the low range before a switch up, as the
+  decoupling feeds the target, until it reaches the threshold. The switch up then recharges the
+  decoupling in a spike of a few microseconds. The energy total misses most of that spike (Accuracy
+  limits).
 - **A target the low range cannot hold.** A target can reach the threshold on the low range
   alone, again and again: after a switch down its reading dips, then rises past its steady current
   as the decoupling refills, up to the threshold. Re-armed a segment after each switch up, such a
   target switches hundreds of times a second, and the dips, the rises and the recharges move its
-  reading with the rate. The backoff, below, holds it on the high range instead.
-- **The backoff.** Just under Table 4's limit, a re-arm waits for some number of segments in a row
-  under it, at first one. That band runs from half the limit up to it: 0.75 to 1.5 mA in the
-  350 mA setting and 0.2 to 0.4 mA in the 50 mA setting, where the drop is 37 to 90 mV. The
-  number doubles each time the low range gives way, up to about a second of segments: a low phase
-  shorter than 3 ms after a re-arm from the band, then the high range still reading the target
-  under the limit at least half a millisecond after the sample the switch up fell in, past the
-  recharge. At the slowest rates that reading is the next sample, and a low phase of one sample
-  still counts as short. No re-arm comes before that reading. A low phase of 3 ms sets the number
-  back to one. A target that switched up because it bursts still reads over the limit there while
-  the burst lasts, so a short low phase before such a burst doesn't double the number. At the
-  slowest rates the re-arm alone can take most of a short sleep. Under the band one segment is
-  still enough, so a target that falls asleep gets the low range back as before. A target that
-  reaches the switch up on the low range alone within 3 ms of each re-arm is held on the high
-  range.
+  reading with the rate. The backoff, below, keeps it on the high range instead.
+- **The backoff.** In a band just under Table 4's limit, a re-arm waits for a number of segments
+  in a row under the limit. The band runs from half the limit up to it: 0.75 to 1.5 mA in the
+  350 mA setting and 0.2 to 0.4 mA in the 50 mA setting, where the drop is 37 to 90 mV. The number
+  starts at one. It doubles each time the low range gives way, up to about a second of segments.
+  The low range gives way when a low phase after a re-arm from the band lasts under 3 ms, and the
+  high range then still reads the target under the limit. That reading comes at least half a
+  millisecond after the sample the switch up fell in, past the recharge. At the slowest rates it is
+  the next sample, and a low phase of one sample still counts as short. No re-arm comes before that
+  reading. A low phase of 3 ms sets the number back to one. A target that switched up because it
+  bursts still reads over the limit there while the burst lasts, so a short low phase before a
+  burst doesn't double the number. At the slowest rates the re-arm alone can take most of a short
+  sleep. Under the band one segment is still enough, so a target that falls asleep gets the low
+  range back as quickly as it would without the backoff. A target that reaches the switch up on
+  the low range alone within 3 ms of each re-arm stays on the high range.
 - **Holding the high range.** `0x90` mode 14 can hold the high range for a capture instead
   (docs/host-interface.md). The firmware drives U18's reset low from PIO0_29 as a GPIO output, as
   calibration does, so the latch stays clear whatever the comparator says, and CPU 0 never
@@ -246,6 +246,9 @@ the probe's target supply can give.
   currents read unreliably (Accuracy limits).
 
 ### Calibration
+
+Where this section and Accuracy limits give a figure measured on a probe, it comes from one Pro,
+and the [measurement log](MEASUREMENTS.md) has the runs.
 
 UM11673 says the circuit calibrates itself at power-on, with transistors isolating the sensing
 circuitry and a known voltage applied. The firmware calibrates as it boots, before it answers the
@@ -259,16 +262,15 @@ a flash.
 - **Isolation.** CTRL_CAL_DISC disconnects J9 and puts the probe's 3.3 V on the sense resistors.
 - **The loads.** Four switched resistors load the target side to ground: R1, 6.65 kΩ
   (CTRL_CAL_R1 on PIO1_22); R2, 66.5 Ω (PIO1_23); R3, 1.65 kΩ (PIO1_26); and R4, 16.5 Ω (PIO1_29);
-  all 0.5%. A load's current is the measured
-  target-side voltage over its resistance. Its switch, a PMF250XNE, adds about 0.25 Ω at the
-  probe's 3.3 V gate drive, and the firmware counts it.
+  all 0.5%. A load's current is the measured target-side voltage over its resistance. Its switch,
+  a PMF250XNE, adds about 0.25 Ω at the probe's 3.3 V gate drive, and the firmware counts it.
 - **Which loads calibrate which range.** Each range uses the loads that land inside its full
   scale (the table below).
 - **The point with no load.** With no load on, only the divider's 5 µA flows. The low ranges take
   that as a point too. The high ranges cannot: their sense resistors turn 5 µA into microvolts, and
-  the amplifier's output does not go that low: on the Pro measured it stops at 55 to 57 ADC codes.
-  The divider keeps the low ranges clear of that floor whenever the target is powered: 2.7 µA at 1.8
-  V is still 88 codes in the 350 mA setting and 355 in the 50 mA setting.
+  the amplifier's output does not go that low: it stops at 55 to 57 ADC codes. The divider keeps the
+  low ranges clear of that floor whenever the target is powered: 2.7 µA at 1.8 V is still 88 codes
+  in the 350 mA setting and 355 in the 50 mA setting.
 - **Below the lowest point.** A table extends its first segment below its lowest point. Extended
   down from R3, the 350 mA setting's high range reads currents under 2 mA a few percent high, so R1
   is a point there too where it clears the floor (below). With R1 out, each code R3's point moves
@@ -276,9 +278,9 @@ a flash.
 - **The floor.** Each high range first converts with no load, which reads the amplifier's floor. A
   point less than 24 codes above that reading is left out: one pinned at the floor would read the
   currents between it and the next point low. At the nominal resistance R1 gives about 84 codes less
-  the amplifier's offset, about 9 codes on the Pro measured, so it lands 18 to 27 codes over the
-  floor and is kept only on a unit with little offset. R1 counts on a unit whose high range has more
-  resistance, as J17's contact can add (Accuracy limits).
+  the amplifier's offset, about 9 codes, so it lands 18 to 27 codes over the floor and is kept only
+  on a probe with little offset. R1 counts on a probe whose high range has more resistance, as J17's
+  contact can add (Accuracy limits).
 
 | setting | range | points | across the resistor |
 | --- | --- | --- | --- |
@@ -296,12 +298,12 @@ a flash.
   before the firmware's limit, a point that reads above 99.8% of full scale, which it leaves out.
   The sheet gives no tolerance for the amplifier's resistors. A range left with fewer than two
   points fails calibration, and the capture does not start. The 50 mA setting's low range has only
-  R1, so it is the range a unit with too much gain would lose.
+  R1, so it is the range a probe with too much gain would lose.
 - **The conversion.** Each range's points make a piecewise-linear table from ADC code to the current
   through the sense resistor. From every sample the firmware then takes the divider's current, the
   target-side voltage over 660 kΩ. Each calibration conversion is averaged 128 times, whatever rate
-  the capture runs at. A host can read each range's points back
-  (docs/host-interface.md, `0x90` mode 4).
+  the capture runs at. A host can read each range's points back (docs/host-interface.md, `0x90`
+  mode 4).
 
 ### Accuracy limits
 
@@ -309,52 +311,51 @@ a flash.
   100 ppm/°C for the LM4040's C grade.
 - Q3's on-resistance follows the target's voltage, and calibration runs at 3.3 V. With a 1.8 V
   target, the 350 mA setting's high range reads 2.8% high: Q3 goes from 16.5 mΩ to 23.7 mΩ
-  (PMPB15XP Fig. 8) beside the 0.24 Ω resistor. In the 50 mA setting the same target reads 0.35% high.
-  UM11673 gives the 350 mA setting's high range 5% accuracy and the others 1%.
+  (PMPB15XP Fig. 8) beside the 0.24 Ω resistor. In the 50 mA setting the same target reads 0.35%
+  high. UM11673 gives the 350 mA setting's high range 5% accuracy and the others 1%.
 - In the 350 mA setting the high range reads currents under 2 mA high: 3 to 4% with R1 as a point
-  on the Pro measured (Calibration, "Below the lowest point"). A capture on auto reads them on the
-  low range. In the 50 mA setting the high range read a 1.08 mA load 0.9% over the 350 mA
-  setting's low range.
-- A boot can calibrate the 350 mA setting's high range high at every point, by 19% the one time
-  it was seen, in more than twenty boots. `verge energy calibration` shows the points: every
-  high-range code up by the same factor, with no jumper moved, marks such a boot. A restart
-  calibrates again.
-- The high range's resistance moves from boot to boot, and J17's contact is in that path: on the
-  Pro measured, the 350 mA setting's high range read 0.27 to 0.75 Ω at different boots, which
-  brought its full scale down to 133 mA. Calibration measures it, but moving the
-  jumpers away and back leaves the setting as it was, so only a reset calibrates again. Each boot
-  reads its own resistance right; a current past that boot's full scale saturates.
+  (Calibration, "Below the lowest point"). A capture that switches automatically reads them on the
+  low range. In the 50 mA setting the high range read a 1.08 mA load 0.9% over the 350 mA setting's
+  low range.
+- A boot can calibrate the 350 mA setting's high range high at every point, by 19% once in more than
+  twenty boots. `verge energy calibration` shows the points: every high-range code up by the same
+  factor, with no jumper moved, marks such a boot. A restart calibrates again.
+- The high range's resistance moves from boot to boot, and J17's contact is in that path: the 350 mA
+  setting's high range read 0.27 to 0.75 Ω at different boots, which brought its full scale down to
+  133 mA. Calibration measures it, but moving the jumpers away and back leaves the setting as it
+  was, so only a reset calibrates again. Each boot reads its own resistance right; a current past
+  that boot's full scale saturates.
 - The low range lowers the target's supply (the drop across the sense resistors), so a target
   whose current follows its supply draws differently on the two ranges, and is read that way. A
   target that reaches the switch up on the low range alone, again and again, is read mostly on the
-  high range once the backoff holds it there (Range switching).
+  high range once the backoff keeps it there (Range switching).
 - The high range reads unreliably within 64 codes of the amplifier's output floor (Calibration, "The
-  point with no load"). The stream marks a high-range pair there under range, in either range
-  setting. Through the calibration of the Pro measured, the mark starts at about 0.65 mA in the 350
-  mA setting. Scaled to the 50 mA setting's sense resistor it is about 90 µA, which has not been
-  measured. A capture that holds the high range reads every current under the mark this way. One
-  that switches automatically does so only between a fall and its switch down.
+  point with no load"). The stream marks a high-range sample there under range, in either range
+  setting. Through that Pro's calibration, the mark starts at about 0.65 mA in the 350 mA setting.
+  Scaled to the 50 mA setting's sense resistor it is about 90 µA, which we have not measured. A
+  capture that holds the high range reads every current under the mark this way. One that switches
+  automatically does so only between a fall and its switch down.
 - The calibration switches are counted at their typical on-resistance. Their spread moves the
   350 mA setting's high range by up to about 0.3%, through R4.
 - The sheet gives no tolerance for the divider. It moves the current taken off each sample, which
   matters in the low ranges.
 - Each sample converts the voltage and the current together, averaged over up to 128
-  conversions, and then the range. A switch up while the current converts mixes codes from both
-  ranges, and neither table reads the mix right. The comparator switches up at any moment, and
-  the range converted after the current cannot tell a sample that switched during its
+  conversions, and then converts the range. A switch up while the current converts mixes codes
+  from both ranges, and neither table reads the mix right. The comparator can switch up at any
+  moment. The range, converted after the current, cannot tell a sample that switched during its
   conversions from one that switched before them. So a sample that switched up takes a stand-in
   for its current in the energy total: the next sample's current, less a share of the difference
-  from the one before it. The share is half the part of the sample period its conversions span:
-  almost half just under each averaging step's limit, 34% at 100,000 samples a second, 11% at
-  1,000, and less below that. Over
-  many switches at moments the target sets, that is the right total on average. A sample that
-  switched down between samples keeps its own current; at a rate with too little time between
-  samples it takes the next sample's. Either keeps its own if the next sample switched too, and
-  keeps its own voltage. A start counts the sample before it as on the low range, because it
-  clocks the latch to the low range, and leaves no sample before it for the stand-in. That
-  includes each resume, and capture resumes after every target-sense read a host asks for. When
-  capture pauses after a switching sample, before the next one arrives, that sample keeps its own
-  current. The reply with the latest sample shows each sample as it was converted.
+  from the one before it. The share is half the fraction of the sample period that its conversions
+  span. That is almost half just under each averaging step's limit, 34% at 100,000 samples a
+  second, 11% at 1,000, and less below that. Over many switches at moments the target sets, that
+  gives the right total on average. A sample that switched down between samples keeps its own
+  current. At a rate with too little time between samples, it takes the next sample's instead.
+  Either kind keeps its own current if the next sample switched too, and keeps its own voltage. A
+  start counts the sample before it as on the low range, because it clocks the latch to the low
+  range. It also leaves no sample before it for the stand-in. Each resume counts as a start here,
+  and capture resumes after every target-sense read a host asks for. When capture pauses after a
+  switching sample, before the next one arrives, that sample keeps its own current. The reply with
+  the latest sample shows each sample as it was converted.
 - The stand-in leaves out what happens inside the switching sample. That is most of the
   decoupling's recharge at a switch up, about its capacitance times 90 mV in the 350 mA setting.
   From about 40,000 samples a second the samples after the switch catch part of it, so the total
@@ -363,8 +364,7 @@ a flash.
   1.1 mA idle stays on the high range and nothing switches, the same rates read within 0.1% of
   each other. The stand-in also leaves out a burst shorter than one sample period that starts on
   the low range: the same target with 200 µs bursts reads 7 to 8% low at 1,000 samples a second
-  against 20,000. Pick a rate whose sample period
-  is well under the shortest burst.
+  against 20,000. Pick a rate whose sample period is well under the shortest burst.
 - The voltage and the current are the A and B sides of channel 0, and one dual single-ended
   conversion takes both at once, so they average over the same stretch. Both results land in FIFO0,
   the voltage's first: with both FIFO selects alike, "the CH_A results will always be stored before
@@ -377,6 +377,6 @@ a flash.
   66,254, and 4 up to 100,000. The ADC and the timer that starts each sample both run from PLL0, so
   a sample's length in timer counts is exact.
 - While the probe measures the target's read latency, it stops the conversions, and the energy total
-  leaves that time out. It measures at a connection at fast clocks, when the host changes the clock,
-  again when a measurement contradicts itself, and when Verge's own tools ask. The capture's DMA
-  would otherwise delay the measurement's samples, and it would find later latencies, or none.
+  leaves that time out ([When the probe measures the
+  target](docs/wires.md#when-the-probe-measures-the-target) says when). The capture's DMA would
+  otherwise delay the measurement's reads of the wire, and it would find later latencies, or none.

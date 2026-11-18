@@ -1,10 +1,10 @@
 # Measurement log
 
 What the bench measured, newest first. Each entry gives the day it was measured and, where the
-record has it, the build it ran on, and is true of that build. Where a later entry changes a
+record has it, the build it ran on. An entry is true of that build. Where a later entry changes a
 finding, the earlier one keeps its text and points to it. The other pages give the current figures
 and point here for the evidence. Entries on ARM's paths describe what the `+armwire` reference build
-still runs. The comparisons with NXP's firmware are on the [measurements
+runs. The comparisons with NXP's firmware are on the [measurements
 page](https://escapement-project.github.io/verge/measurements/), and the bench itself is in
 BENCH.md.
 
@@ -14,7 +14,7 @@ The "Limits" table in docs/wires.md gives the fastest each transport runs. A cha
 of its figures updates this list in the same commit.
 
 - **SWD:** the wire on 2026-11-04, and under energy capture, in "The re-measurement on df11e14",
-  below. The SWD transfers have not changed since.
+  below. The current firmware's SWD transfers are the same as df11e14's.
 - **JTAG and cJTAG:** the emulator's timing of the generated transfers, at the latency a CC1312R1
   measures on the bench: "JTAG and cJTAG on a CC1312R1, on 3296b39", below. JTAG at 30 MHz is also
   on the 2026-11-04 wire.
@@ -22,9 +22,9 @@ of its figures updates this list in the same commit.
   d4c4c41", below.
 - **USB:** what the firmware's `DAP_Info` reports, at high speed and at full speed
   (docs/host-interface.md, "Full speed").
-- **NXP's V3.174:** mculink-stock-notes: its SWD and JTAG clocks in `wire.md`, its consoles in
-  `serial.md`, its `DAP_Info` in `identity.md`. Its reads at each clock, and JTAG's failure from
-  12.5 MHz, in mculink-bench's `results/throughput/2026-11-04.md`.
+- **NXP's firmware V3.174:** mculink-stock-notes: its SWD and JTAG clocks in `wire.md`, its
+  consoles in `serial.md`, its `DAP_Info` in `identity.md`. Its reads at each clock, and JTAG's
+  failure from 12.5 MHz, in mculink-bench's `results/throughput/2026-11-04.md`.
 
 ## J26's pin order, on 3296b39 (2026-11-14)
 
@@ -50,20 +50,20 @@ and every one read right.
   has nothing to measure. All as on 2026-11-04.
 - After a system reset through probe-rs, the first JTAG connection measured 10 and each later one 7.
   On 2026-11-04 every JTAG connection after the reset measured 10. The same verge against `df11e14`
-  gave one 10 and then 7, twice, so what changed is on the host's side. What it is was not looked
-  for.
+  gave one 10 and then 7, twice, so what changed is on the host's side. We did not look for what it
+  is.
 
 ### The frames, in the emulator
 
 A cJTAG build samples TDO one cycle past the latency it measured (`src/jtag_sweep.c`), so a target
-that measures 7 runs at 8. A 16-word block read at a requested 50 MHz, at a latency in use of 8,
-gives OScan1 and OScan2 frames of 19 cycles (7.9 MHz a JTAG clock) and OScan5 and OScan6 Shift
-frames of 16 (9.4 MHz). Each cycle of latency adds one: at every latency from 4 to 16 in OScan1 and
-OScan5, and at each one tried in OScan2 and OScan6 (7 to 9, 13 and 15). `df11e14` gives the same.
-These are the frames the 2026-11-04 wire showed, and they correct that section's emulator
-reading, below.
+that measures 7 runs at 8. A 16-word block read asked for 50 MHz, at a latency in use of 8, gives
+OScan1 and OScan2 frames of 19 cycles (7.9 MHz a JTAG clock) and OScan5 and OScan6 Shift frames of
+16 (9.4 MHz). Each cycle of latency adds one cycle to a frame. That holds at every latency from 4 to
+16 in OScan1 and OScan5, and at each one tried in OScan2 and OScan6 (7 to 9, 13 and 15). `df11e14`
+gives the same. These are the frames the 2026-11-04 wire showed, and they correct that section's
+emulator reading, below.
 
-JTAG DR scans at a requested 50 MHz (`tools/jtagcheck.py`), a clock in core cycles at each latency,
+JTAG DR scans asked for 50 MHz (`tools/jtagcheck.py`), a clock in core cycles at each latency,
 without and with the capture's 2-cycle stall:
 
 | latency | 4-5 | 6-7 | 8 | 9-10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 to 64 |
@@ -87,9 +87,9 @@ spread across them:
 | OScan5 | 420 (2.4%) | 551 (5.8%) | 599 (3.0%) |
 | OScan6 | 463 (0.9%) | 565 (8.1%) | 615 (7.6%) |
 
-OScan5 reads 27, 18 and 5% faster than OScan1, OScan2 6, 4 and 0%, and OScan6 10, 3 and 3% faster
-than OScan5. From 25 MHz, OScan6 against OScan5 sits inside the spread. docs/wires.md said OScan6
-read level with OScan5 at 12.5 MHz and slower from 25.
+At the three clocks, OScan5 reads 27, 18 and 5% faster than OScan1, and OScan2 6, 4 and 0% faster.
+OScan6 reads 10, 3 and 3% faster than OScan5. From 25 MHz, OScan6 against OScan5 sits inside the
+spread. docs/wires.md said OScan6 read level with OScan5 at 12.5 MHz and slower from 25.
 
 SWD under capture was not part of this run. docs/wires.md's stretched write clocks come from
 2026-11-04's wire, below, by the store hold BUSES.md describes.
@@ -99,8 +99,8 @@ SWD under capture was not part of this run. docs/wires.md's stretched write cloc
 957307c keeps R1, the 0.5 mA load, as a point of the 350 mA setting's high range wherever it reads
 24 codes over the amplifier's floor, down from 64. The Pro CJ8C2F60A3 ran the code of `957307c` in
 the 350 mA setting, with an MSPM0L1306 LaunchPad on its target supply running dio-marker: one flash,
-then three restarts. Each boot was read on auto and with the high range held, 6 s at 20,000 pairs a
-second each, and no pair was lost.
+then three restarts. Each boot was read on auto and with the high range held, 6 s at 20,000 samples
+a second each, and no sample was lost.
 
 | boot | high range's points (code at mA) | floor | R1 over the floor | idle, held high / low range |
 | --- | --- | --- | --- | --- |
@@ -122,33 +122,33 @@ second each, and no pair was lost.
 
 The Pro CJ8C2F60A3 in the 350 mA setting, with an MSPM0L1306 LaunchPad on its target supply
 running dio-marker: an idle of 1.08 mA, with bursts of 6.7 mA. Each run started from a power cycle
-of the target unless it says otherwise. No pair was lost in any run.
+of the target unless it says otherwise. No sample was lost in any run.
 
 ### On d4c4c41
 
-- **The low range came back** within 2.12 ms of a fall at every rate from 10,000 to 100,000 pairs a
-  second: 289 of 290 falls, medians 1.08 to 1.60 ms. At 1,000 it never came back after the first
-  0.2 s: dio-marker's idle sits in the backoff's band, and a re-arm at that rate takes most of the
-  8 ms idle, so every low phase counted as short. cdf3f6c fixed it (below).
+- **The low range came back** within 2.12 ms of a fall at every rate from 10,000 to 100,000
+  samples a second: 289 of 290 falls, medians 1.08 to 1.60 ms. At 1,000 it never came back after
+  the first 0.2 s: dio-marker's idle sits in the backoff's band, and a re-arm at that rate takes
+  most of the 8 ms idle, so every low phase counted as short. cdf3f6c fixed it (below).
 - **A switch down, with nothing else on the target:** the reading fell from 1.079 mA to 0.260 mA
   and came back with a time constant of 0.264 ms: 4.5 µF by the charge the dip missed, 5.3 µF by
   the time constant. 208e466 read the same. With SWD reads on the target, or after a probe-rs
   flash or reset, the target drew 1.13 to 1.22 mA, with time constants of 0.265 to 0.48 ms; a power
   cycle ended it. 2026-11-04's figure of 1.13 to 0.31 mA had the reads beside it.
 - **Under the mark:** a low-power dio-marker build read 166.45 µA (median) on auto. With the high
-  range held, the pairs under the mark read 149 to 346 µA, 180.8 µA median.
-- **The stand-in's share**, from the stream header the firmware writes: 23.3% at 100,000 pairs a
-  second, 14.9% at 1,000.
+  range held, the samples under the mark read 149 to 346 µA, 180.8 µA median.
+- **The stand-in's share**, from the stream header the firmware writes: 23.3% at 100,000 samples
+  a second, 14.9% at 1,000.
 
 ### The backoff, on cdf3f6c
 
-The low range came back after 290 of 290 falls at 1,000 pairs a second, in a median 4.00 ms (2.00
-to 6.00), and dio-marker's low phase spent 52% on the low range, as before the backoff existed.
-10,000 to 100,000 were unchanged.
+The low range came back after 290 of 290 falls at 1,000 samples a second, in a median 4.00 ms
+(2.00 to 6.00), and dio-marker's low phase spent 52% on the low range, as before the backoff
+existed. 10,000 to 100,000 were unchanged.
 
-The rate effect, the mean current against the same run at 20,000 pairs a second:
+The rate effect, the mean current against the same run at 20,000 samples a second:
 
-| pairs a second | 1,000 | 5,000 | 10,000 | 40,000 | 60,000 | 100,000 |
+| samples a second | 1,000 | 5,000 | 10,000 | 40,000 | 60,000 | 100,000 |
 | --- | --- | --- | --- | --- | --- | --- |
 | default build | +1.09% | -0.12% | -0.07% | +0.54% | +0.78% | +1.51% |
 
@@ -157,40 +157,39 @@ calibrated the high range 19% high at every point, and the high range read 10 to
 flashes alone calibrated normally, three times.
 
 The same rate twice in a row read 0.02% apart. On d4c4c41 a repeat after the 100,000 run read 0.68%
-apart, and a build whose dio-marker bursts last 200 µs read 6.81% low at 1,000 pairs a second.
+apart, and a build whose dio-marker bursts last 200 µs read 6.81% low at 1,000 samples a second.
 
 ### The crystal timebase (cdf3f6c with the change committed as 0a3392c)
 
-The timers that start each pair, stamp the edges and clock the ADC run from PLL0, on the board's
+The timers that start each sample, stamp the edges and clock the ADC run from PLL0, on the board's
 crystal.
 
-- **Every averaging limit holds:** at 4,546, 9,036, 17,840, 34,786, 66,254 and 100,000 pairs a
+- **Every averaging limit holds:** at 4,546, 9,036, 17,840, 34,786, 66,254 and 100,000 samples a
   second, 10 s each, the count came within 0.007% of the timer's rate by the host's clock, the same
-  at the limits as at 100,000 with room to spare. So 27 + 32 N ADC cycles a pair holds.
+  at the limits as at 100,000 with room to spare. So 27 + 32 N ADC cycles a sample holds.
 - **Against the MSO:** a marker pin recorded by both, 748 edges paired over 13 s. Verge ran 52.7 ppm
   slow against the MSO, with 0.006 µs rms left after the line (0.059 µs at most). On FRO_HF the same
   comparison gave 1,146 ppm the other way, and 58.7 µs rms. The host's clock agrees: the Pro's
   crystal runs about 50 ppm slow.
-- **The target's rail against the MSO's x10 probe**, four rounds of 20,000, 100,000 and 1,000 pairs
-  a second: Verge read about 10 mV (0.3%) above the MSO. Verge's own readings at one rate agreed
-  within 0.04 mV across the rounds, while the MSO's wandered 3 mV.
+- **The target's rail against the MSO's x10 probe**, four rounds of 20,000, 100,000 and 1,000
+  samples a second: Verge read about 10 mV (0.3%) above the MSO. Verge's own readings at one rate
+  agreed within 0.04 mV across the rounds, while the MSO's wandered 3 mV.
 - **Rate effect** on this build: +1.28%, -0.05, +0.01, +0.19, +0.81 and +1.41% at the rates of the
   table above. In the 50 mA setting, where dio-marker stays on the high range and nothing switches,
   the same rates read within 0.09 points of each other: the 350 mA setting's rate effect is the
   range switching. At 20,000 the two settings read the same load 0.1% apart (2.1732 and 2.1710 mA).
-  The
-50 mA setting's high range read dio-marker's 1.08 mA idle 0.9% over the 350 mA setting's low
-range.
+  The 50 mA setting's high range read dio-marker's 1.08 mA idle 0.9% over the 350 mA setting's low
+  range.
 - **The stand-in's share** follows the conversion time, so the faster ADC clock moves it: at
-  18.75 MHz it is 34% at 100,000 pairs a second and 11% at 1,000, against d4c4c41's 23.3% and
+  18.75 MHz it is 34% at 100,000 samples a second and 11% at 1,000, against d4c4c41's 23.3% and
   14.9%.
 
 ## SWO at 30 Mbaud, on d4c4c41 (2026-11-13)
 
-The Pro's own CPU 0 sent an ITM counter as the trace source, loaded through the plain MCU-Link on
-the Pro's J3, which captured it. At 10, 15, 21.4, 25 and 30 Mbaud, two 3 s captures each: every word
-in order, no break, no overrun reply, nothing left after the stop. At 30 Mbaud each capture held
-9,000,699 and 9,000,702 bytes. NXP's firmware was not run on this source.
+The Pro's own CPU 0 sent an ITM counter as the trace source, loaded through the standalone
+MCU-Link on the Pro's J3, which captured it. At 10, 15, 21.4, 25 and 30 Mbaud, two 3 s captures
+each: every word in order, no break, no overrun reply, nothing left after the stop. At 30 Mbaud the
+two captures held 9,000,699 and 9,000,702 bytes. NXP's firmware was not run on this source.
 
 ## The console past 19.2 Mbaud, on 8a6487d (2026-11-12)
 
@@ -198,9 +197,9 @@ in order, no break, no overrun reply, nothing left after the stop. At 30 Mbaud e
 rate within 3%, and refuses a rate neither can make. The Pro CJ8C2F60A3, both ports looped back and
 run at once (`tools/coverage.py console`):
 
-- From 9600 baud to 19.2 Mbaud, as on 2026-11-04.
-- 10 Mbaud, refused on 2026-11-04, ran at 9.86 Mbaud through; 21.4 Mbaud at 20.2, 25 at 22.7 and 30
-  at 26.5.
+- From 9600 baud to 19.2 Mbaud, the ports ran as they did on 2026-11-04.
+- 10 Mbaud, refused on 2026-11-04, ran with 9.86 Mbaud of throughput. 21.4 Mbaud ran with 20.2,
+  25 with 22.7 and 30 with 26.5.
 - A rate neither clock makes keeps the rate before it: 2 then 31 Mbaud ran at 2.00, 10 then 40 at
   9.96.
 - Linux's cdc-acm (kernel 7.3.3) does not pass the refusal on: a program setting 31 Mbaud gets
@@ -218,16 +217,16 @@ The Pro CJ8C2F60A3 in the 350 mA setting, on the build of each day.
   at the boots on those days, against 0.26 Ω nominal, so its full scale was 366, 133 and 205 mA.
   J17's contact is in that path; it was not inspected. At 0.49 Ω, R1 read 155 codes over a floor
   of 57.
-- **The capture's stall on the wire (2026-10-29):** with a capture at 100,000 pairs a second, SWD
+- **The capture's stall on the wire (2026-10-29):** with a capture at 100,000 samples a second, SWD
   reads at a 4-cycle clock read the next bit about once in 100 transfers, more often the more DMA0
   read, and in the emulator JTAG reads of a target that answers 10 to 13 cycles after a fall
-  failed. The generated transfers keep 2 cycles for the stall since.
+  failed. The generated transfers have kept 2 cycles for the stall since.
 - **The ADC's FIFO order (2026-10-30):** the voltage's result came before the current's in 1,600
   conversions of 1,600, with both FIFO selects alike.
 - **A target the low range could not hold (2026-11-05, before the backoff):** a CC1312R1 LaunchPad
   also powered from its own USB took a steady 1.05 mA from the probe on the high range. After each
   switch down its reading dipped to 0.23 mA, then rose past 1.05 mA to the threshold in 1.4 ms, and
-  the range switched about 590 times a second. The capture read 1.37 mA at 100,000 pairs a second
+  the range switched about 590 times a second. The capture read 1.37 mA at 100,000 samples a second
   and 1.19 mA at 1,000. On 2026-11-10 the same board did not do it again, on the probe's supply
   alone or with its USB as well; its second supply is the likely cause.
 
@@ -237,8 +236,8 @@ Before publishing, we retook every figure the other documents give for the curre
 compared JTAG and cJTAG as well as SWD. The Pro CJ8C2F60A3 ran `df11e14` built with gcc and with
 clang. A CC1312R1 LaunchPad was the target for JTAG, cJTAG, SWO and the consoles, and an MSPM0L1306
 LaunchPad for SWD. probe-rs 17beb8e80 was the host. mculink-bench's
-`results/throughput/2026-11-04.md` has the throughput and the comparison with stock. The energy
-figures and SWO at 30 Mbaud were not part of this run.
+`results/throughput/2026-11-04.md` has the throughput and the comparison with NXP's firmware. The
+energy figures and SWO at 30 Mbaud were not part of this run.
 
 Each run went twice. The first had nothing on the lines. The second had the logic analyser's
 digital leads on them, to record the wire at 1 GS/s. The leads load the lines, so the latencies
@@ -266,34 +265,36 @@ A phase's clock below is each transfer's mean period across the phase, then the 
 transfers. The analyser samples at 1 ns, which cannot time a single 20 ns period to better than
 about 15%, but a mean over a phase can.
 
-- SWD: at a requested 50 MHz, a transfer's request and write data run at 50 MHz, and its
-  acknowledge and read data at 37.5 MHz. Every other request gets its step exactly: 37.5, 30,
-  18.75 for 20, 10, 5, 2 and 1 MHz. gcc and clang drive the same wire. At 50 MHz a read has one
-  12-cycle period before its data, where the probe checks the acknowledge. A write has an 11-cycle
-  turnaround, and a 12-cycle period before its parity bit.
-- JTAG: TCK runs at 30 MHz (5 cycles) at requests of 30 and 50 MHz, with the CC1312R1's latency of
-  7. At 20 MHz it runs at 18.75, and slower requests get their step.
-- cJTAG at a requested 50 MHz: the packets run at 50 MHz. With the leads' latency of 8, an OScan1 or
+- SWD: asked for 50 MHz, a transfer's request and write data run at 50 MHz, and its acknowledge and
+  read data at 37.5 MHz. Every other clock asked for gets its step: 37.5 and 30 MHz exactly, 18.75
+  MHz for 20, and 10, 5, 2 and 1 MHz exactly. gcc and clang drive the same wire. At 50 MHz a read
+  has one 12-cycle period before its data, where the probe checks the acknowledge. A write has an
+  11-cycle turnaround, and a 12-cycle period before its parity bit.
+- JTAG: TCK runs at 30 MHz (5 cycles) when asked for 30 or 50 MHz, with the CC1312R1's latency of
+  7. Asked for 20 MHz it runs at 18.75, and slower clocks asked for get their step.
+- cJTAG asked for 50 MHz: the packets run at 50 MHz. With the leads' latency of 8, an OScan1 or
   OScan2 frame took 19 cycles, 7.9 MHz a JTAG clock. A two-packet OScan5 or OScan6 frame in Shift
-  took 15 or 16 cycles. Through probe-rs the leads moved the latency between two values: frames of
-  19 and 20 cycles appeared in OScan1, 15 and 16 in OScan5. In the emulator a frame takes one more
-  cycle for each cycle of latency, and every recorded frame matches one of the two. At the clean
-  latency of 7 it gives 18 cycles in OScan1 and OScan2 (8.3 MHz) and 15 in OScan5 and OScan6
-  (10.0 MHz). docs/wires.md's OScan5 frame, 16 cycles at a latency of 7, is a cycle long. In the
-  emulator, 51980d9's quarter-period hold (2026-11-11) leaves these 50 MHz frames as they were: it
-  adds a cycle to OScan1 and OScan2 frames only at a requested 30 MHz.
-  (Later: "JTAG and cJTAG on a CC1312R1, on 3296b39", above, corrects the emulator reading.)
+  took 15 or 16 cycles.
+  - Through probe-rs the leads moved the latency between two values: frames of 19 and 20 cycles
+    appeared in OScan1, and 15 and 16 in OScan5. In the emulator a frame takes one more cycle for
+    each cycle of latency, and every recorded frame matches one of the two.
+  - At the clean latency of 7 the emulator gives 18 cycles in OScan1 and OScan2 (8.3 MHz) and 15
+    in OScan5 and OScan6 (10.0 MHz). docs/wires.md's OScan5 frame, 16 cycles at a latency of 7, is
+    a cycle long.
+  - In the emulator, 51980d9's quarter-period hold (2026-11-11) leaves these 50 MHz frames as they
+    were. It adds a cycle to OScan1 and OScan2 frames only when asked for 30 MHz.
+  - (Later: "JTAG and cJTAG on a CC1312R1, on 3296b39", above, corrects the emulator reading.)
 
 ### Under energy capture
 
-The Pro captured at 10,000 and 100,000 pairs a second while the targets were read.
+The Pro captured at 10,000 and 100,000 samples a second while the targets were read.
 
 - Every read was right: 256 KiB five times in five over JTAG and cJTAG at 30 and 50 MHz, at both
   rates and without capture, and the L1306's 64 KiB of flash ten times in ten at 50, 37.5 and
-  30 MHz at 100,000 pairs a second.
+  30 MHz at 100,000 samples a second.
 - SWD read data runs at 30 MHz while capture runs, as docs/wires.md says. Writes stretch too, which
-  docs/wires.md does not say. In about 12% of write transfers at a requested 50 MHz, about three of
-  the 31 data periods take 4 cycles instead of 3. At slower clocks 3 to 4% of transfers take a few
+  docs/wires.md does not say. In about 12% of write transfers asked for 50 MHz, about three of the
+  31 data periods take 4 cycles instead of 3. At slower clocks 3 to 4% of transfers take a few
   cycles longer, and 17 to 19% at 1 MHz. The capture's DMA delays a store, and a longer period is
   the safe direction.
 - JTAG transfers keep 5-cycle clocks at a latency of 7, with a few periods of 6. The emulator
@@ -301,8 +302,8 @@ The Pro captured at 10,000 and 100,000 pairs a second while the targets were rea
   about 650, and a DR scan through DAP_JTAG_Sequence takes 6 cycles a clock (25 MHz). docs/wires.md
   says scans run at 25 MHz at a latency of 6 or 7 while capture runs. That holds for the sequence
   command, not for DAP_Transfer.
-- Through probe-rs at 100,000 pairs a second, a single-word read took 105 µs over JTAG against 81
-  without capture, and 145 µs in OScan5 against 103. SWD reads at 50 MHz were 23% slower.
+- Through probe-rs at 100,000 samples a second, a single-word read took 105 µs over JTAG against
+  81 without capture, and 145 µs in OScan5 against 103. SWD reads at 50 MHz were 23% slower.
 
 ### SWO
 
@@ -321,15 +322,15 @@ at 0.12 Mbaud. (Later: "The console past 19.2 Mbaud, on 8a6487d", above.)
 
 ## cJTAG bring-up on a CC1312R1 (2026-10-16 to 2026-10-22)
 
-The plain MCU-Link and the Pro on the builds of those days, through ARM's paths and `tools/dap.py
-cjtag --ti`, with a CC1312R1 LaunchPad as the target. docs/cjtag-targets.md states what a host does
-with it.
+The standalone MCU-Link and the Pro on the builds of those days, through ARM's paths and
+`tools/dap.py cjtag --ti`, with a CC1312R1 LaunchPad as the target. docs/cjtag-targets.md states
+what a host does with it.
 
 - **Escape edges on ARM's SWD path (2026-10-16):** TMSC moved while TCKC was high 0.348 times a
   clock in the activation and 0.418 in a read (59 in a 141-clock read), against 0.006 and 0.000 on
-  a J-Link. That this broke the reads was a strong candidate, not a proven cause: the activation's
-  command still landed at the same density, and a predicted 43 edges in the read against the 59
-  measured did not match.
+  a J-Link. These edges were a strong candidate for what broke the reads, not a proven cause. The
+  activation's command still landed at the same density, and the 43 edges predicted in the read
+  did not match the 59 measured.
 - **TDO (2026-10-17):** valid from 8 cycles (53 ns) after the fall that starts the TDO packet, at
   every period from 10 to 30 cycles, and through the rise to at least 7 cycles past the next fall.
   A high phase of one cycle was accepted. The shortest frame tried, 19 cycles a JTAG clock, read
@@ -353,9 +354,9 @@ with it.
 - **CNFG (2026-10-21):** CNFG0 read `0x03c00714` 3 times in 3, CNFG1 0 and CNFG2 0x120.
 - **Other formats (2026-10-21 and 22):** STFMT 10 as an OScan1 command read CPUID, and 64-word ROM
   blocks matched the 1 MHz read at 1, 2, 5 and 10 MHz and failed from 15, ARM's OScan1 boundary
-  too. In OScan5, 20 of 20 matched at every clock from 1 to 25 MHz on the plain MCU-Link. After
-  ECL, any count of raw clocks from 4 to 8 worked. ECL framed in OScan1 to a target already in
-  OScan2 still read CPUID.
+  too. In OScan5, 20 of 20 matched at every clock from 1 to 25 MHz on the standalone MCU-Link.
+  After ECL, any count of raw clocks from 4 to 8 worked. ECL framed in OScan1 to a target already
+  in OScan2 still read CPUID.
 - **Detach and attach in OScan2 (2026-10-22):** after a detach with KeepPoweredinTLR clear, commands
   without a wake failed 3 times in 3 and a wake without an escape attached 3 in 3; with the bit
   set, commands without a wake attached 2 in 2. A target left live in OScan2 was attached by the
@@ -368,29 +369,42 @@ generated ones. CJTAG.md has the wire these ran on, and CODEGEN.md the generator
 
 ### ARM's paths (2026-10-16 and 17)
 
-- **Rates seen through the firmware**: paced frames at 1 MHz clean; the unpaced fast path at
-  "25 MHz" runs an irregular ~11 MHz (period 50-160 ns) and is clean, 20/20 64-word ROM blocks;
-  at "37.5 MHz" every transfer fails (TDO sampled too early, below).
-- **Throughput on 2026-10-17**: ~230 KiB/s through `dap.py`, 64-word blocks, USB included, flat from
-  15 MHz up because the fast path is unpaced C.
-- **Why the fast path fails at 37.5 MHz requested**: its TDO sample comes a couple of cycles
-  after the release, inside the 8-cycle latency; at 25 MHz the C between packets happened to
-  delay it enough.
+- **Rates seen through the firmware:** paced frames ran clean at 1 MHz. The unpaced fast path,
+  asked for 25 MHz, runs an irregular ~11 MHz (periods of 50 to 160 ns) and reads clean: 20 of 20
+  64-word ROM blocks. Asked for 37.5 MHz, every transfer fails, because TDO is sampled too early
+  (below).
+- **Throughput on 2026-10-17:** ~230 KiB/s through `dap.py`, in 64-word blocks, USB included. It
+  was flat from 15 MHz up, because the fast path is unpaced C.
+- **Why the fast path fails when asked for 37.5 MHz:** it samples TDO a couple of cycles after the
+  release, inside the 8-cycle latency. At 25 MHz the C between packets happened to delay the sample
+  enough.
 
 ### Learned pacing (2026-10-17)
 
-- Bench, 400 queued 127-word reads, host idle 0, pacing off -> on (learned clocks): JTAG 50 MHz
-  156.9 -> 128.4 ms (5), 25 MHz 156.8 -> 128.5 (5), 10 MHz 294.1 -> 252.0 (2); cJTAG 50 MHz 350.7 ->
-  301.5 (2), 25 MHz 430.3 -> 367.7 (1), 15 MHz 530.6 -> 470.5 (1), 10 MHz 656.0 -> 657.8 (0: no
-  WAITs there). Fixed idle 6 JTAG 50 MHz was 129.7: pacing finds it. Data checked against the 1 MHz
-  read at every clock with JTAG and cJTAG.
-- probe-rs end to end, 256 KiB read at 50 MHz: JTAG 0.33 s, cJTAG 0.56 s (0.37 and 0.62
-  without pacing); 10 MHz 0.47 / 1.08 s. 64 KiB flash and verify 0.67 / 0.76 s.
+On the bench, 400 queued 127-word reads with the host's idle cycles at 0, timed with pacing off and
+on:
+
+| wire | clock | pacing off | pacing on | idle clocks learned |
+| --- | --- | --- | --- | --- |
+| JTAG | 50 MHz | 156.9 ms | 128.4 ms | 5 |
+| JTAG | 25 MHz | 156.8 | 128.5 | 5 |
+| JTAG | 10 MHz | 294.1 | 252.0 | 2 |
+| cJTAG | 50 MHz | 350.7 | 301.5 | 2 |
+| cJTAG | 25 MHz | 430.3 | 367.7 | 1 |
+| cJTAG | 15 MHz | 530.6 | 470.5 | 1 |
+| cJTAG | 10 MHz | 656.0 | 657.8 | 0: no WAITs there |
+
+With a fixed idle of 6, JTAG at 50 MHz took 129.7 ms, so pacing finds it. The data was checked
+against the 1 MHz read at every clock, over JTAG and cJTAG.
+
+Through probe-rs, end to end, a 256 KiB read at 50 MHz took 0.33 s over JTAG and 0.56 s over
+cJTAG, against 0.37 and 0.62 s without pacing. At 10 MHz it took 0.47 and 1.08 s. A 64 KiB flash
+and verify took 0.67 and 0.76 s.
 
 ### OScan2 (2026-10-21 and 22)
 
-- Bench (CC1312R1, plain probe, 127-word ROM blocks, dap.py, 300 per clock after 30 to let
-  pacing learn; two rounds agree within 1.5%):
+- On the bench, the standalone MCU-Link read 127-word ROM blocks from the CC1312R1 through dap.py,
+  300 a clock after 30 to let pacing learn. Two rounds agree within 1.5%:
 
   | MHz | OScan1 | OScan2 | OScan1 unpaced | OScan2 unpaced |
   | --- | --- | --- | --- | --- |
@@ -404,31 +418,44 @@ generated ones. CJTAG.md has the wire these ran on, and CODEGEN.md the generator
   those states in a third of the packets. Without pacing OScan2 is slower than OScan1, from the
   extra WAITs. Each learned clock regenerates the code, which costs a short run: 50 blocks right
   after a clock change put OScan2 at 323 KiB/s against OScan1's 423.
-- Attach cost (2026-10-22). probe-rs found an OScan2 attach 13-38 ms slower than
-  OScan1 (115-122 against 83 ms at 12.5 MHz) while its 256 KiB reads ran 1.5-3.3% faster. Every
-  framing switch regenerated scans and transfers: 16.2-17.5 ms at 12.5 MHz, 5.9-6.3 at 50. An
-  OScan2 attach frames OScan1 first and switches, and its learned idle clocks restarted with every
-  configuration change, so it relearned them each session, a regeneration a clock. Two changes:
-  `jtag_gen_ready` builds the scans alone, and `jtag_gen_ready_transfers` the transfers when a
-  transfer command needs them (a switch now costs 0.6-0.8 ms); learned clocks are kept per wire
-  for the configuration they were learned for, and come back when the host does. A dap.py attach
-  at 12.5 MHz now pays one generation in either format, at its first transfer (17.1 ms OScan2,
-  18.5 ms OScan1), where it paid four in OScan2 and two in OScan1 before; the first OScan2 session
-  after power-up still learns its clocks. Through probe-rs (its CLI, 256 KiB, 5 interleaved reps): attach OScan1/OScan2 78.2/73.7 ms at 12.5 MHz (was 79.9/117.8),
-  80.2/81.8 at 25, 81.7/80.7 at 50; reads 774/737, 563/540, 473/444 ms, OScan2 +5.1, +4.3 and
-  +6.7% (577 KiB/s at 50 MHz); all 30 reads matched JTAG. A session's first transfer still pays one
-  generation, in both formats.
-- Before generating OScan5/6: the clock sweep 2026-10-21 put OScan1 at 7.8 us a word at 50 MHz
-  and 9.2 at 25 (127-word blocks), so about 1.3 us of a word at 50 MHz scales with the clock.
+- **Attach cost (2026-10-22).** probe-rs found an OScan2 attach 13 to 38 ms slower than OScan1
+  (115 to 122 against 83 ms at 12.5 MHz), while its 256 KiB reads ran 1.5 to 3.3% faster. Every
+  framing switch regenerated scans and transfers: 16.2 to 17.5 ms at 12.5 MHz, 5.9 to 6.3 at 50.
+  An OScan2 attach frames OScan1 first and switches. Its learned idle clocks restarted with every
+  configuration change, so it relearned them each session, a regeneration a clock.
+
+  Two changes followed. `jtag_gen_ready` builds the scans alone, and `jtag_gen_ready_transfers`
+  builds the transfers when a transfer command needs them. With that, a switch costs 0.6 to
+  0.8 ms. And learned clocks are kept per wire for the configuration they were learned for, and
+  come back when the host does. A dap.py attach at 12.5 MHz pays one generation in either format,
+  at its first transfer (17.1 ms in OScan2, 18.5 ms in OScan1). Before the changes it paid four in
+  OScan2 and two in OScan1. The first OScan2 session after power-up still learns its clocks.
+
+  Through probe-rs's CLI, 256 KiB, 5 interleaved repeats, after the changes (the attach before
+  them in brackets):
+
+  | clock | attach, OScan1 | attach, OScan2 | read, OScan1 | read, OScan2 | OScan2 faster |
+  | --- | --- | --- | --- | --- | --- |
+  | 12.5 MHz | 78.2 ms (79.9) | 73.7 ms (117.8) | 774 ms | 737 ms | +5.1% |
+  | 25 MHz | 80.2 | 81.8 | 563 | 540 | +4.3% |
+  | 50 MHz | 81.7 | 80.7 | 473 | 444 (577 KiB/s) | +6.7% |
+
+  All 30 reads matched JTAG. A session's first transfer still pays one generation, in both
+  formats.
+- **Before OScan5 and OScan6 were generated,** the clock sweep of 2026-10-21 put OScan1 at 7.8 µs
+  a word at 50 MHz and 9.2 µs at 25 MHz, in 127-word blocks. So about 1.3 µs of a word at 50 MHz
+  scales with the clock.
 
 ### OScan5 (2026-10-22)
 
-- Decoded on the wire, on ARM's path (escape edges counted inside each TCKC high phase): every rise of the capture accounted for, 30 EOT escapes for
-  30 Shift exits, no TMSC edge with TCKC high anywhere else, the TAP back in Run-Test/Idle.
-- Bench (plain MCU-Link, CC1312R1, dap.py robust attach then STFMT 13): the capture decodes as
-  intended (926 frames, every rise used, 30 escapes for 30 Shift exits, no stray edge), CPUID,
-  64-word blocks 20/20 at 1 to 50 MHz. Rates, 127-word ROM blocks, 300 a clock after 300 to let
-  pacing learn, two rounds within 1%:
+- **Decoded on the wire, on ARM's path,** with escape edges counted inside each TCKC high phase:
+  every rise of the recording was accounted for, with 30 EOT escapes for 30 Shift exits, no TMSC
+  edge with TCKC high anywhere else, and the TAP back in Run-Test/Idle.
+- **On the bench,** the standalone MCU-Link attached to the CC1312R1 with dap.py's robust attach,
+  then sent STFMT 13. The recording decodes as intended: 926 frames, every rise used, 30 escapes
+  for 30 Shift exits and no stray edge. CPUID read, and 64-word blocks matched 20 of 20 at 1 to
+  50 MHz. Rates in 127-word ROM blocks, 300 a clock after 300 to let pacing learn, with two rounds
+  within 1%:
 
   | MHz | OScan1 | OScan2 | OScan5 |
   | --- | --- | --- | --- |
@@ -436,17 +463,18 @@ generated ones. CJTAG.md has the wire these ran on, and CODEGEN.md the generator
   | 25 | 471 | 477-482 | 542-546 |
   | 50 | 551-556 | 567-569 | 588-592 |
 
-  OScan5 is 27% faster than OScan1 at 12.5 MHz, where the packets set the rate (two a Shift clock
-  against three), and 6% at 50 MHz, where the TDO latency sets most of a Shift frame (16 core cycles
-  against OScan1's 18 at latency 8) and USB starts to bound the rest.
+  OScan5 is 27% faster than OScan1 at 12.5 MHz, where the packets set the rate: two a Shift clock
+  against three. It is 6% faster at 50 MHz, where the TDO latency sets most of a Shift frame (16
+  core cycles against OScan1's 18 at latency 8) and USB starts to bound the rest.
 
 ### OScan6, and the four formats in one run (2026-10-22)
 
-- Bench, on ARM's path (plain MCU-Link, robust attach): CPUID, the 96-bit DR pattern, 64-word blocks 20/20 at 1 to 50
-  MHz. Decoded: 927 frames using all 2125 rises,
-  30 EOT escapes for 30 Shift exits, 30 PAD packets for 30 Shift entries, no stray edge.
-- Rates, all four formats in one run on one image (127-word blocks, 300 after 300; two rounds within
-  1%):
+- **On the bench, on ARM's path,** the standalone MCU-Link with the robust attach read CPUID and
+  the 96-bit DR pattern, and 64-word blocks matched 20 of 20 at 1 to 50 MHz. Decoded: 927 frames
+  using all 2125 rises, 30 EOT escapes for 30 Shift exits, 30 PAD packets for 30 Shift entries and
+  no stray edge.
+- **Rates,** all four formats in one run on one image, in 127-word blocks, 300 after 300, with two
+  rounds within 1%:
 
   | MHz | OScan1 | OScan2 | OScan5 | OScan6 |
   | --- | --- | --- | --- | --- |
@@ -454,22 +482,22 @@ generated ones. CJTAG.md has the wire these ran on, and CODEGEN.md the generator
   | 25 | 454-456 | 427-433 | 510-514 | 438 |
   | 50 | 519-523 | 502-511 | 560 | 547-548 |
 
-  OScan5 is the fastest on this target from 25 MHz up and level with OScan6 at 12.5. OScan6 and
-  OScan2 send the clocks outside Shift as one packet, and the CC1312's AP answers WAIT when a
+  OScan5 is the fastest on this target from 25 MHz up, and level with OScan6 at 12.5. OScan6 and
+  OScan2 send the clocks outside Shift as one packet. The CC1312's AP answers WAIT when a
   Capture-DR comes too soon after an Update-DR, so pacing adds idle clocks there. Every figure here
-  is 5-12% below the afternoon's (OScan5 table): the afternoon's image, measured again in
-  this run, matched these within 2%, so the bench changed, not the firmware. OScan2 fell most, which
-  points at the target answering WAIT more (not measured).
+  is 5 to 12% below the afternoon's (the OScan5 table). The afternoon's image, measured again in
+  this run, matched these within 2%, so the bench changed, not the firmware. OScan2 fell most,
+  which points at the target answering WAIT more (not measured).
 
 ## SWO capture
 
 Measured 2026-10-19 to 2026-10-21, on the dual-core image's DMA capture.
 
-**Done 2026-10-19, on the dual-core image's DMA capture (`src/swo.c`).** Target:
-LAUNCHXL-CC1312R1 over cJTAG, running `tools/swo_target/itm_counter.c`, which sends a
-counter on ITM port 0 out of DIO16 (TDO) as fast as the port takes it, so every byte is checkable
-and the target drops nothing. The analyser on the line read 1.0000 and 7.9999 Mbaud from
-back-to-back frames, saturated, counter unbroken.
+**On 2026-10-19, on the dual-core image's DMA capture (`src/swo.c`).** The target was a
+LAUNCHXL-CC1312R1 over cJTAG, running `tools/swo_target/itm_counter.c`. It sends a counter on ITM
+port 0 out of DIO16 (TDO) as fast as the port takes it, so every byte is checkable and the target
+drops nothing. The analyser on the line read 1.0000 and 7.9999 Mbaud from back-to-back frames: the
+line was saturated and the counter unbroken.
 
 | through | rate | captured | counter |
 | --- | --- | --- | --- |
@@ -480,12 +508,13 @@ back-to-back frames, saturated, counter unbroken.
 
 `dap.py` polls with DAP_SWO_Data back to back: about 14,000 polls a second, each under the
 508-byte maximum, so the host keeps ahead of the line. probe-rs decodes and prints every packet,
-which in a debug build manages about 70 KB/s; behind that the probe overruns, says so, and the
-stream resumes after the gap. probe-rs ignores the overrun bit and fails a read on the stream-error
-bit, which a capture that starts mid-frame sets once.
+which a debug build does at about 70 KB/s. Behind that the probe overruns, says so, and the stream
+resumes after the gap. probe-rs ignores the overrun bit and fails a read on the stream-error bit,
+which a capture that starts mid-frame sets once.
 
-**Above 8 MHz, 2026-10-21, through the Pro** (sweep images with a raised cap). Same target and `dap.py swo`; the Pro at 8 MHz first matched the
-plain board's figures above (2,400,047 and 2,400,062 bytes, no break).
+**Above 8 MHz, 2026-10-21, through the Pro,** on sweep images with a raised cap. The target and
+`dap.py swo` were the same. At 8 MHz the Pro first matched the standalone board's figures above
+(2,400,047 and 2,400,062 bytes, no break).
 
 | Flexcomm 3 clock | rate | alone, 3 s twice | under console load, 15 s |
 | --- | --- | --- | --- |
@@ -501,37 +530,44 @@ Mbaud. The 24 MHz breaks all fall in the 2 and 3 Mbaud runs. The 120 MHz clock i
 fractional divider's 100 MHz limit (UM11126 4.5.49), and every rate above 10 MHz is over the data
 sheet's asynchronous USART maximum.
 
-**At 24 MHz in the shipped image, 2026-10-21** (cap 24 MHz; `swo_uart_clock` in `src/swo_ring.h`
-takes the 96 MHz clock when it makes the rate within 0.5%, otherwise the main clock through
-Flexcomm 3's fractional divider, so of these rates only 24 comes from the divider). The sweep and
-the rate switching below were repeated on the final image with the same results. Through the Pro: 24, 16, 12, 9.6, 8 and 1 MHz, 3 s twice each, every rate
-answered exactly and every capture unbroken. 24 MHz while both consoles looped back at 3, 12 and
-19.2 Mbaud, 12 s twice: 28,799,849 and 28,799,931 bytes, no break. One session moving 24, 8, 24,
-12 MHz without a mode change: all unbroken; 30 MHz asked answers 24. probe-rs (`itm swo`, release
-build, 3 s at 24 MHz from a 48 MHz trace clock): 76,278 packets decoded, its print loop the limit,
-and the one stream error a capture starting mid-frame raises.
+**At 24 MHz in the shipped image, 2026-10-21,** with the cap at 24 MHz. `swo_uart_clock` in
+`src/swo_ring.h` takes the 96 MHz clock when it makes the rate within 0.5%, and otherwise the main
+clock through Flexcomm 3's fractional divider. Of these rates, only 24 comes from the divider. The
+sweep and the rate switching below were repeated on the final image with the same results.
 
-Through the plain MCU-Link, the LaunchPad moved to its debug connector: 24, 16, 12 and 8 MHz,
-3 s twice each, unbroken; 24, 8, 24 MHz in one session, unbroken, and 30 MHz asked answers 24;
-24 MHz for 10 s while its console looped back at 3, 12 and 19.2 Mbaud, 23,999,973 bytes, no break.
+- Through the Pro, 24, 16, 12, 9.6, 8 and 1 MHz, 3 s twice each: every rate answered exactly and
+  every capture unbroken.
+- 24 MHz while both consoles looped back at 3, 12 and 19.2 Mbaud, 12 s twice: 28,799,849 and
+  28,799,931 bytes, no break.
+- One session moving 24, 8, 24, 12 MHz without a mode change: all unbroken. 30 MHz asked answers
+  24.
+- probe-rs (`itm swo`, release build, 3 s at 24 MHz from a 48 MHz trace clock) decoded 76,278
+  packets. Its print loop was the limit, and the one stream error was the one a capture starting
+  mid-frame raises.
+
+Through the standalone MCU-Link, with the LaunchPad moved to its debug connector:
+
+- 24, 16, 12 and 8 MHz, 3 s twice each, unbroken.
+- 24, 8, 24 MHz in one session, unbroken. 30 MHz asked answers 24.
+- 24 MHz for 10 s while its console looped back at 3, 12 and 19.2 Mbaud: 23,999,973 bytes, no
+  break.
+
 Its input buffer is the one part of the SWO path the two boards do not share.
 
 **At 30 MHz, 2026-10-21, the Pro as the source.** The CC1312 stops at 24 MHz, so the Pro's own
-CPU 0 sent the trace instead. The plain MCU-Link halted it through the Pro's J3 and ran an ITM
-counter from SRAM: the same stream
-as `itm_counter.c`, trace clock the 150 MHz main clock undivided, SWO on PIO0_10 to J3 pin 6, so
-150 MHz / (ACPR + 1). A reset of the Pro brings its firmware back. The plain MCU-Link captured with
-`dap.py swo`, 3 s twice each:
+CPU 0 sent the trace instead. The standalone MCU-Link halted it through the Pro's J3 and ran an ITM
+counter from SRAM: the same stream as `itm_counter.c`. The trace clock was the 150 MHz main clock
+undivided, with SWO on PIO0_10 to J3 pin 6, so the rate is 150 MHz / (ACPR + 1). A reset of the
+Pro brings its firmware back. The standalone MCU-Link captured with `dap.py swo`, 3 s twice each:
 
 - On the shipped 24 MHz image: 1, 12.5, 15, 18.75 and 21.4 MHz unbroken. 25 MHz asked answers 24,
   and the 4% between the ends breaks the stream on every reply.
-- On a sweep image with the cap at 30 MHz: 21.4, 25 and 30 MHz
-  unbroken, 30 MHz at 9,000,675 and 9,000,009 bytes (3000 KB/s). 30 MHz for 20 s: 59,997,323
-  bytes, 11,999,464 words, no break. 30 MHz for 20 s with the console looping back for 12 of them,
-  a second each at 3, 6 and 12 Mbaud and then 19.2: 59,997,409 bytes, no break, and every console
-  run identical. 37.5 MHz asked answers 30, with a stream error on every reply.
-- On the shipped image: 30 MHz for 3 s, 9,000,468 bytes, no break; 40 MHz asked
-  answers 30.
+- On a sweep image with the cap at 30 MHz: 21.4, 25 and 30 MHz unbroken, 30 MHz at 9,000,675 and
+  9,000,009 bytes (3000 KB/s). 30 MHz for 20 s: 59,997,323 bytes, 11,999,464 words, no break.
+  30 MHz for 20 s with the console looping back for 12 of them, a second each at 3, 6 and 12 Mbaud
+  and then 19.2: 59,997,409 bytes, no break, and every console run identical. 37.5 MHz asked
+  answers 30, with a stream error on every reply.
+- On the shipped image: 30 MHz for 3 s, 9,000,468 bytes, no break. 40 MHz asked answers 30.
 
 The analyser cannot resolve 30 MHz, about 3 samples a bit, so the evidence is the answered rate,
 an unbroken counter and 3.0 MB/s together. 30 MHz is the fastest the UART's clock makes, so this
@@ -545,34 +581,33 @@ ring and rate arithmetic is tested on the host instead (`tools/swo_ring_test.py`
 
 Measured 2026-10-19 to 2026-10-21.
 
-Done 2026-10-19, after a fix: it had never received a byte.
+The console passed its test on 2026-10-19, after a fix: until then it had never received a byte.
 
-Open the CDC port and talk to a target's UART at a few baud rates, including 921600 and above.
-
-Proves `vcom_init` took Flexcomm 0 back from the board support, and that the fractional divider
-reset actually fixed the 2.4% error at a megabaud.
+The test opens the CDC port and talks to a target's UART at a few baud rates, including 921600 and
+above. It shows that `vcom_init` took Flexcomm 0 back from the board support, and that the
+fractional divider reset fixed the 2.4% error at a megabaud.
 
 Loopback, 300,000 bytes a run, a jumper across TX and RX (`tools/coverage.py console`, then one
 console at a time):
 
-| unit | consoles | clean at | lost |
+| probe | consoles | clean at | lost |
 | --- | --- | --- | --- |
-| MCU-Link, 2026-10-19 | one (J7) | 9600, 115200, 921600, 1M, 2M baud | 18 to 62 bytes at 3 Mbaud |
+| standalone MCU-Link, 2026-10-19 | one (J7) | 9600, 115200, 921600, 1M, 2M baud | 18 to 62 bytes at 3 Mbaud |
 | MCU-Link Pro, 2026-10-20 | each alone | 115200, 1M, 2M baud; VCOM also 3M | VCOM2 one byte at 3 Mbaud |
 | MCU-Link Pro, 2026-10-20 | both at once | 1 Mbaud, twice | 2 to 4% at 2 Mbaud, 3 to 6% at 3 |
 
 The losses are RX FIFO overruns: CPU 0's loop moves console bytes one at a time, and two consoles
-share that loop. Stock V3.172 was clean with both of the Pro's at 3 Mbaud.
+share that loop. NXP's firmware V3.172 was clean with both of the Pro's consoles at 3 Mbaud.
 
-**On DMA, 2026-10-21:** each unit's consoles looped back at once, one
-second's worth each (`tools/coverage.py console`, which now runs every console of the probe
-together, sets any rate through Linux's termios2 where pyserial's path stops at 4 Mbaud, and times
-each run to its last byte, so a refused rate cannot pass as a slower one).
+**On DMA, 2026-10-21:** each probe's consoles looped back at once, one second's worth each. By then
+`tools/coverage.py console` ran every console of the probe together. It set any rate through
+Linux's termios2, where pyserial's path stops at 4 Mbaud, and it timed each run to its last byte,
+so a refused rate could not pass as a slower one.
 
-| unit | consoles | clean at | through |
+| probe | consoles | clean at | through |
 | --- | --- | --- | --- |
 | MCU-Link Pro | both at once | 115200, 1M, 2M, 3M, 4M, 6M, 8M, 12M, 16M, 19.2M baud | 11.7 Mbaud of 12, 18.2 of 19.2 |
-| MCU-Link | one (J7) | 115200, 3M, 12M, 19.2M baud | 12.0 Mbaud of 12, 18.9 of 19.2 |
+| standalone MCU-Link | one (J7) | 115200, 3M, 12M, 19.2M baud | 12.0 Mbaud of 12, 18.9 of 19.2 |
 
 19.2 Mbaud is the UART's fastest from its 96 MHz clock (oversampling 5). The same image started and
 stopped SWO capture 20 times at 8 MHz while both consoles streamed at 3 and 12 Mbaud: every console
@@ -624,8 +659,8 @@ probe and the link. 50 MHz, DP reads, queue 8, three runs each, identical to 0.1
 | + TinyUSB in SRAM | 30,399 | 1,618 | 2,351 |
 | clang, same, buffers aligned | 33,476 | 1,686 | 2,383 |
 
-The configuration that shipped then (ARM's C paths, 10 MHz) gains from TinyUSB in SRAM too: 25,235 to
-35,103 one-word commands a second, 717 to 729 KiB/s at 126 words.
+The configuration that shipped then (ARM's C paths, 10 MHz) gains from TinyUSB in SRAM too: 25,235
+to 35,103 one-word commands a second, 717 to 729 KiB/s at 126 words.
 
 **Where a command's time went, from the marker** (126-word blocks, before → after the two changes):
 
@@ -644,8 +679,7 @@ before its first clock, mostly those same interrupts.
 
 **newlib-nano's memcpy was 8 cycles a byte.** It is built for size and copies a byte per
 iteration, and every reply passes through it into the endpoint buffer: 26 µs for a 507-byte
-reply. Ours (`src/mem.S`) moves
-32 bytes per ldm/stm pair. It saved 18.5 µs of the predicted 24.
+reply. Ours (`src/mem.S`) moves 32 bytes per ldm/stm pair. It saved 18.5 µs of the predicted 24.
 
 **clang left the reply buffer on a halfword**, so its replies still went through the byte path
 and its 126-word figure was 7% under gcc's until the buffers were aligned.
@@ -665,13 +699,13 @@ script.
 
 ## The transfers are generated at runtime, and the wire runs at every period from three cycles
 
-Measured 2026-10-16, on the generated transfers, the default since 2026-10-20.
+Measured 2026-10-16, on the generated transfers. They became the default build on 2026-10-20.
 
-**What it is.** A build with `SWD_CODEGEN` on, the default since 2026-10-20, writes its SWD
-transfer code into SRAMX whenever the host changes the clock, the turnaround, the data phase or
-the idle cycles. Every edge, data store and sample sits at a cycle the timing model chose. ARM's
-command logic stays in C around it: posted reads, the RDBUFF reads and WAIT retries.
-`src/swd_gen.c` has the details and CODEGEN.md the reasoning.
+**What it is.** A build with `SWD_CODEGEN` on writes its SWD transfer code into SRAMX whenever the
+host changes the clock, the turnaround, the data phase or the idle cycles. Every edge, data store
+and sample sits at a cycle the timing model chose. ARM's command logic stays in C around it: posted
+reads, the RDBUFF reads and WAIT retries. `src/swd_gen.c` has the details and CODEGEN.md the
+reasoning.
 
 **The host now gets the rate it asks for, to one cycle.** The period is the shortest whole number
 of cycles that is no faster than the request. Clocks the probe drives go down to 3 cycles, 50 MHz.
@@ -822,7 +856,7 @@ the verdict and on the cycle count. The window's edges are included.
 edge to one cycle after the previous one, every write landed, at every period from 3 to 10
 cycles. Setup and hold at the target are each under a cycle.
 
-**The MSPM0L1306 runs at 37.5 MHz too: its ceiling was ours.** On the second unit, now running
+**The MSPM0L1306 runs at 37.5 MHz too: its ceiling was ours.** On the second probe, now running
 the lab build, the L1306 shows the same seven-cycle window start as the U575, at every period from
 8 to 30 cycles. The scheduler, placing samples with it, ran clean against the L1306 at every period
 from 4 to 40 cycles. "The last read of a block at 16.67 MHz", below, assumed the target set this
@@ -839,13 +873,14 @@ today, and nothing runs faster than asked.
 
 TIMING.md has the rules these give a generator. CODEGEN.md is the context for implementing it.
 
-Detail: the read-window prediction held at every non-colliding sample delay
-of `tools/lab.py swd_read_pipelined` at P = 4..8 on the U575. Soak: 200 reads each at P=4 d=9
-(margin 1), P=4 d=7 (margin 0, window edge), P=5 d=9, P=8 d=10: all clean, 7,200 target bits each.
-Writes (`tools/lab.py swd_write_asm`): AP TAR writes with the SWDIO store `lead` cycles before the
-rising edge, lead 1..P-1, P = 3,4,5,6,8,10, 10 writes each, read back at 1 MHz: all land. So setup
-and hold at the target are each under one cycle; any placement off the edge cycles works. 50 MHz
-writes (P = 3) work on this harness, request phase included.
+In detail, the read-window prediction held at every sample delay that did not collide, in
+`tools/lab.py swd_read_pipelined` at P = 4..8 on the U575. A soak of 200 reads each at P=4 d=9
+(margin 1), P=4 d=7 (margin 0, the window's edge), P=5 d=9 and P=8 d=10 ran all clean, 7,200
+target bits each. For writes, `tools/lab.py swd_write_asm` wrote the AP's TAR with the SWDIO
+store `lead` cycles before the rising edge, for lead 1..P-1 at P = 3, 4, 5, 6, 8 and 10, 10 writes
+each, and read them back at 1 MHz: all landed. So setup and hold at the target are each under one
+cycle, and any placement off the edge cycles works. 50 MHz writes (P = 3) work on this harness,
+request phase included.
 
 ## The last read of a block at 16.67 MHz
 
@@ -854,7 +889,7 @@ Measured 2026-10-16, on ARM's paths.
 The MSPM0L1306 on this bench connects at 1, 5 and 10 MHz and fails to connect at 20, 30 and 50 MHz
 with the compiled bit paths. (Later: "The cost model times the bus", above.)
 A throughput sweep could not go above 10 MHz on it, so the faster settings needed either a faster
-target or a capture with no target attached at all, which `tools/dap.py sweep` already does.
+target or a recording with no target attached at all, which `tools/dap.py sweep` already does.
 
 **The STM32U575 is that faster target.** Its datasheet (DS13737 Rev 10, Tables 152 and 153) gives
 SWCLK up to 66.5 MHz and TCK up to 38 MHz at 2.7 to 3.6 V. Both figures come from
@@ -868,13 +903,14 @@ own figure was not checked.
 `dap.py limit` checks every word at every rate the firmware has. Delay 2 (10.00 MHz on the wire)
 and below read 3,200 DPIDRs each with no bad word. Delay 1 (16.67 MHz) fails, and so does the
 delay-free path at 30 MHz. There is nothing between 10 and 16.67 on the ladder. The U575 does
-better than the MSPM0, which failed at 9.375 MHz under stock, but nowhere near its datasheet.
+better than the MSPM0, which failed at 9.375 MHz under NXP's firmware, but nowhere near its
+datasheet.
 
-**The wire is clean; the probe misreads it.** Captured at our J6 (SWDIO and SWCLK, 100 MS/s) and decoded by sampling at each
-rising edge, as the target does. Every read at both settings carries OK and `0x0BE12477`,
-including the one the probe reported as acknowledge 3. At the connector the target's bit
-arrives 15 ns after the rising edge that launched it (10 or 20 ns at this resolution, mean 15.3
-at 10 MHz and 14.9 at the faster setting), so the cable and the U575 together spend 15 ns.
+**The wire is clean; the probe misreads it.** Recorded at our J6 (SWDIO and SWCLK, 100 MS/s) and
+decoded by sampling at each rising edge, as the target does. Every read at both settings carries OK
+and `0x0BE12477`, including the one the probe reported as acknowledge 3. At the connector the
+target's bit arrives 15 ns after the rising edge that launched it (10 or 20 ns at this resolution,
+mean 15.3 at 10 MHz and 14.9 at the faster setting), so the cable and the U575 together spend 15 ns.
 
 The faster setting is not 16.67 MHz on the wire for a block: data bits run at 60 and 70 ns
 (mean 67.5), acknowledge bits at 60 and 80, and the period at 10 MHz is 100 ns throughout.
@@ -907,8 +943,9 @@ run through the same block-size test, 200 runs a size:
 
 So the failure goes with the block's last read, whatever code carries it.
 
-**On the wire the last read's clock is a cycle off.** Averaged over a capture of 14,977 one-word
-blocks and 4,025 sixty-four-word blocks, which washes out the analyser's 10 ns steps because its phase differs from read to read:
+**On the wire the last read's clock is a cycle off.** Averaged over a recording of 14,977 one-word
+blocks and 4,025 sixty-four-word blocks, which washes out the analyser's 10 ns steps because its
+phase differs from read to read:
 
 | | high after ack0's rise | low before ack1's rise | target's ack1 edge after the rise |
 | --- | --- | --- | --- |
@@ -979,31 +1016,31 @@ restoring PRIMASK costs. In `cycles.py --check` every SWD trace keeps its event 
 only change is that each sample now follows a rising edge rather than a falling one. Turning
 the option on by default means re-blessing those five traces.
 
-**What holds it back from the default.** A transfer stays masked for its whole length: 3 us at
-16.67 MHz, 46 us at 1 MHz, longer below. SWO receives by interrupt into a 16-entry FIFO
-(`RTE_USART3_DMA_EN 0`), which fills in about 20 us at its 8 MHz maximum. So SWO streamed fast
-alongside slow SWD would drop bytes, where today it does not. (Later: "SWO capture", above.) VCOM
-is polled from the main loop
-and is not affected. The right shape is after the edge with a mask at the fast settings and
-before the edge, unmasked, at the slow ones. That is a second copy of the delayed path, and as
-unrolled C it does not fit in SRAM. Generating the bit paths made it free (CODEGEN.md).
+**What holds it back from the default.** A transfer stays masked for its whole length: 3 µs at 16.67
+MHz, 46 µs at 1 MHz, longer below. SWO receives by interrupt into a 16-entry FIFO
+(`RTE_USART3_DMA_EN 0`), which fills in about 20 µs at its 8 MHz maximum. So SWO streamed fast
+alongside slow SWD would drop bytes, where today it does not. (Later: "SWO capture", above.) VCOM is
+polled from the main loop and is not affected. The right shape is after the edge with a mask at the
+fast settings and before the edge, unmasked, at the slow ones. That is a second copy of the delayed
+path, and as unrolled C it does not fit in SRAM. Generating the bit paths made it free (CODEGEN.md).
 
 JTAG reads TDO, which changes on the falling edge, before the rising one: half a period
 rather than a whole one.
 
 A failed connect still clocks the wire for five seconds while probe-rs retries, and those groups
-are not worth reading: the retry changes the requested rate, so the period in them is not the one
-asked for.
+are not worth reading: each retry changes the clock it asks for, so the period in them is not the
+one first asked for.
 
 ## The LED: a timer's job, and what it costs the wire
 
 Measured 2026-10-16, on ARM's paths at 10 MHz.
 
-**Ours fades the LED with CTIMER3 as a PWM, and adds activity.** Breathing when nothing is using the probe,
-blinking while commands arrive, fully lit when a host has said it is connected and is idle. The
-period interrupt runs the policy and a command pays one byte store. `tools/image.py` runs the
-interrupt against the image and checks all three, including that one command is visible whatever
-tick it lands on; two mutations of the policy were confirmed to fail it.
+**Ours fades the LED with CTIMER3 as a PWM, and adds activity.** The LED breathes when nothing is
+using the probe, blinks while commands arrive, and is fully lit when a host has said it is connected
+and is idle. The period interrupt runs the policy and a command pays one byte store.
+`tools/image.py` runs the interrupt against the image and checks all three, including that one
+command is visible whatever tick it lands on. Two mutations of the policy were confirmed to fail
+it.
 
 Measured with `dap.py block --words 126 --blocks 400 --pipeline 2` at 10 MHz, three runs a build,
 no spread within any build:
@@ -1016,7 +1053,7 @@ no spread within any build:
 | CTIMER3 PWM, 488 Hz tick, the one kept | 702.8 | -0.04% |
 | 488 Hz with the handler in `.ramfunc` | 701.9 | -0.17% |
 
-- **The polled version cost 1.5 us a command**, several times what its instructions explain. It
+- **The polled version cost 1.5 µs a command**, several times what its instructions explain. It
   ran on the path between one command and the next, which is exactly where the next one waits.
   Flash fetch misses are the likely reason and were not tested, because the timer design removes
   the call from that path whatever the cause.
@@ -1026,7 +1063,7 @@ no spread within any build:
 - **Moving the handler into SRAM made it worse.** It went in at the head of `.ramfunc`, shifted
   every bit path by 116 bytes and cost 0.11%. `src/hot.h` now says so.
 
-**Confirmed by eye** on the bench unit with `tools/dap.py led`, which walks it through breathing,
+**Confirmed by eye** on the bench probe with `tools/dap.py led`, which walks it through breathing,
 blinking and lit and says which is due.
 
 ## The command pipeline over USB
@@ -1075,10 +1112,10 @@ refused by NAK rather than dropped.
 ### Through probe-rs, which is the host that matters
 
 Everything above is `tools/dap.py`, which reads a DP register and touches no access port. The
-numbers a user sees come through probe-rs, and mculink-bench's `swd-throughput` measures those. At 10 MHz
-asked, fitted ceiling over 64 to 4096 byte transfers:
+numbers a user sees come through probe-rs, and mculink-bench's `swd-throughput` measures those.
+Asked for 10 MHz, the fitted ceiling over 64 to 4096 byte transfers:
 
-| | stock | ours |
+| | NXP's firmware | ours |
 | --- | --- | --- |
 | read32 | 469 KiB/s | 593 |
 | write32 | 503 | 612 |
@@ -1110,17 +1147,17 @@ and reported to the host as `DAP_PACKET_COUNT`. Built with 2, 4 and 8 slots and 
 | 8 | host times out | host times out | 667 |
 | 12 | | | host times out |
 
-**Throughput saturates at two in flight and stays there.** Four and eight slots measure the same 669 KiB/s
-as two. The wire is 92% of a block read, so the link only has to stay a little ahead of it, and
-two commands is enough for that.
+**Throughput saturates at two in flight and stays there.** Four and eight slots measure the same
+669 KiB/s as two. The wire is 92% of a block read, so the link only has to stay a little ahead of
+it, and two commands is enough for that.
 
 **Nothing above the slot count is the probe misbehaving.** With no free slot it NAKs, which is the
 correct thing to do and loses nothing. What fails is a host that blocks on a write while refusing
-to read replies, which deadlocks against its own backpressure -- `tools/dap.py` does exactly that,
+to read replies, which deadlocks against its own backpressure. `tools/dap.py` does exactly that,
 and so would anything using synchronous bulk transfers. The probe recovers the moment the host
 drains: a depth-8 run against two slots times out, and the next depth-2 run measures 669.5.
 
 So the knob stayed at two then, which was honest and saturating. (Later: "Through probe-rs, which
-is the host that matters", above.) It is worth re-measuring against a
-target that answers far above 10 MHz, where the wire would stop being 92% of a block read and the
-link could become the limit again.
+is the host that matters", above.) It is worth re-measuring against a target that answers far
+above 10 MHz, where the wire would stop being 92% of a block read and the link could become the
+limit again.
