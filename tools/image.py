@@ -1602,6 +1602,17 @@ def check_generation_refusals(c: Checker, elf: str) -> None:
         arm = sorted(n for n in sym if ARM_TRANSFER_PATHS.fullmatch(n.split(".")[0]))
         c.check(bool(arm), "the ARM reference carries no ARM transfer path")
         c.note("ARM reference: carries ARM's transfer paths, and is not held to the generation refusals")
+        # Its port answers DAP_JTAG_Format and DAP_JTAG_Escape at 0x24 and 0x25 too, so a batch
+        # that holds one has to find the command after it.
+        probe = build(elf, "jtag", True, Model())
+        dap_setup(probe)
+        probe.command(bytes([2, 2]))
+        info = probe.command(bytes([0x00, 0x01]))
+        for payload in (bytes([0x24, 1]), bytes([0x25, 3, 1])):
+            reply = probe.command(bytes([0x7F, 2]) + payload + bytes([0x00, 0x01]))
+            c.check(reply == bytes([0x7F, 2, payload[0], 0]) + info,
+                    f"a batch with 0x{payload[0]:02x} answered {reply.hex()}")
+        c.note("ARM reference: 0x24 and 0x25 sized in a batch")
         return
     arm = sorted(n for n in sym if ARM_TRANSFER_PATHS.fullmatch(n.split(".")[0]))
     c.check(not arm, f"a product image carries ARM transfer paths: {', '.join(arm[:6])}")

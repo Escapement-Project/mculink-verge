@@ -297,6 +297,16 @@ static inline bool dap_packet_plan(const uint8_t* p, uint32_t length, uint32_t c
     case 0x96:
         in = 3U;
         break;
+#ifdef ARM_CJTAG
+    // DAP_JTAG_Format and DAP_JTAG_Escape at the IDs proposed to Arm, which the ARM reference
+    // build's port answers as well as 0x95 and 0x96.
+    case 0x24:
+        in = 2U;
+        break;
+    case 0x25:
+        in = 3U;
+        break;
+#endif
     case 0x94:
         if (length < 6U) {
             return false;
