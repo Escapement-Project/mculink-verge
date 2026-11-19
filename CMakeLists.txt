@@ -31,13 +31,14 @@ if(LTO)
   set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 
-# Run the unrolled bit paths out of SRAM rather than flash. See src/hot.h for what the bench
-# measured; behind a switch so the two can be compared on one unit without editing a source file.
+# Run CPU 1's command code, the generators and the loops around the generated transfers, out of
+# SRAM rather than flash (src/hot.h). Behind a switch so the two can be compared on one unit
+# without editing a source file.
 #
-# Not available in a Debug build: unrolled at -O0 the four functions come to about 300 KB, and
-# m_data is 204 KB and also holds the stack. Refuse it here rather than leave the linker to report
-# a 119 KB overflow, since Debug exists only to bisect a miscompilation.
-option(RAMFUNC "Run the bit paths from SRAM" ON)
+# Not available in a Debug build: at -O0 that code no longer fits m_data, which also holds the
+# stack. Refuse it here rather than leave the linker to report the overflow, since Debug exists only
+# to bisect a miscompilation.
+option(RAMFUNC "Run CPU 1's command code from SRAM" ON)
 
 # Run the core at 150 MHz on PLL0 rather than the 144 MHz on PLL1 the board support leaves.
 # See src/core_clock.h for why the 144 does not bind this firmware.
@@ -46,18 +47,15 @@ option(CORE_150MHZ "Run the core at 150 MHz" ON)
 # Drive J8's four pins high while a host command runs, so an analyser sees the gap between
 # commands as well as the clock. src/marker.h says why that is worth a pin.
 option(MARKER "Mark command processing on the J8 header" ON)
-# Sample SWDIO just after the rising edge on the delayed SWD path, with each transfer masked. Off
-# until the bench has settled it; MEASUREMENTS.md has the measurements behind it.
-option(SWD_SAMPLE_AFTER_EDGE "Sample SWDIO after the rising edge on the delayed SWD path" OFF)
 # Generate the SWD transfer paths at runtime into SRAMX, for the clock the host asks for. See
 # src/swd_gen.c.
 option(SWD_CODEGEN "Generate the SWD transfer paths at runtime" ON)
 # Generate the four-wire and two-pin JTAG paths at runtime into SRAMX. See src/jtag_gen.c.
 option(JTAG_CODEGEN "Generate the JTAG transfer paths at runtime" ON)
 # A product image generates both and carries no ARM transfer path. Both off is the ARM reference,
-# the wire tools/equiv.py holds the generated paths to: a test build, marked +armwire. Its JTAG is
-# ARM's CMSIS-DAP as it ships, with cJTAG from external/cmsis-dap-cjtag.patch. Keep it simple:
-# anything that needs to be fast belongs on the generated paths.
+# the wire tools/equiv.py holds the generated paths to: a test build, marked +armwire. It runs ARM's
+# CMSIS-DAP as it ships, with cJTAG from external/cmsis-dap-cjtag.patch. Keep it simple: anything
+# that needs to be fast belongs on the generated paths.
 if((SWD_CODEGEN AND NOT JTAG_CODEGEN) OR (JTAG_CODEGEN AND NOT SWD_CODEGEN))
   message(FATAL_ERROR
     "SWD_CODEGEN and JTAG_CODEGEN go together: both on for a product image, both off for the ARM "
@@ -81,8 +79,8 @@ if(NOT USB_FULL_SPEED_TEST MATCHES "^(always|first)?$")
 endif()
 if(RAMFUNC AND CMAKE_BUILD_TYPE STREQUAL "Debug")
   message(FATAL_ERROR
-    "RAMFUNC does not fit a Debug build: the unrolled bit paths are about 300 KB at -O0 and SRAM "
-    "is 204 KB. Configure with -DRAMFUNC=OFF to bisect in Debug.")
+    "RAMFUNC does not fit a Debug build: at -O0 the code it puts in SRAM outgrows m_data. "
+    "Configure with -DRAMFUNC=OFF to bisect in Debug.")
 endif()
 
 family_initialize_project(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR})
@@ -95,9 +93,6 @@ add_executable(${PROJECT_NAME})
 # two images built from one commit answer alike.
 set(FW_VERSION_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/fw_version.h)
 set(FW_VARIANT "")
-if(SWD_SAMPLE_AFTER_EDGE)
-  string(APPEND FW_VARIANT "+after-edge")
-endif()
 if(NOT SWD_CODEGEN)
   string(APPEND FW_VARIANT "+armwire")
 endif()
@@ -204,8 +199,12 @@ target_sources(${CORE1} PRIVATE src/energy_identity.c)
 set(LPC55_DEVICE ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcux-devices-lpc/LPC5500)
 
 # ARM's JTAG_DP.c, cJTAG included, is the ARM reference build's alone, behind Verge's vendor IDs
-# (src/cjtag_arm_shim.c). It keeps its place in the list: link order moves GCC's LTO output.
+# (src/cjtag_arm_shim.c). Each keeps its place in the list: link order moves GCC's LTO output.
 set(ARM_JTAG_SOURCES "")
+set(SWD_DP_SOURCES "")
+if(SWD_CODEGEN)
+  set(SWD_DP_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_dp.c)
+endif()
 set(VERGE_CJTAG_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag.c ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_dp.c)
 if(NOT JTAG_CODEGEN)
   set(ARM_JTAG_SOURCES ${DAP_SRC}/JTAG_DP.c)
@@ -235,7 +234,7 @@ target_sources(${CORE1} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/sample_probe.c
   ${VERGE_CJTAG_SOURCES}
   ${DAP_SRC}/SW_DP.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_dp.c
+  ${SWD_DP_SOURCES}
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_dispatch.c
   ${ARM_JTAG_SOURCES}
   ${CMAKE_CURRENT_SOURCE_DIR}/src/swo.c
@@ -280,16 +279,17 @@ set_source_files_properties(
   PROPERTIES COMPILE_OPTIONS "${UPSTREAM_RELAX}"
   )
 
-# ARM's SWD_Transfer is renamed out of the way so src/swd_dp.c can own the name: the generated
-# route in a product image, ARM's transfer with a cheaper data phase in the ARM reference. The rest
-# of SW_DP.c -- SWJ_Sequence and SWD_Sequence -- is still ARM's and still linked, so this is a
-# replaced function rather than a replaced file.
-set_source_files_properties(${DAP_SRC}/SW_DP.c PROPERTIES COMPILE_DEFINITIONS
-  "SWD_Transfer=arm_SWD_Transfer"
-  )
+# In a product image ARM's SWD_Transfer is renamed out of the way so src/swd_dp.c can own the
+# name, for the generated route. The rest of SW_DP.c -- SWJ_Sequence and SWD_Sequence -- is still
+# ARM's and still linked, so this is a replaced function rather than a replaced file.
+if(SWD_CODEGEN)
+  set_source_files_properties(${DAP_SRC}/SW_DP.c PROPERTIES COMPILE_DEFINITIONS
+    "SWD_Transfer=arm_SWD_Transfer"
+    )
+endif()
 
-# The two command entry points are renamed the same way, so src/dap_dispatch.c can own them and
-# send a SWD transfer block down the shorter route in src/swd_dp.c. Everything else reaches ARM's
+# The two command entry points are renamed, so src/dap_dispatch.c can own them and, in a product
+# image, send SWD transfers down the generated route in src/swd_dp.c. Everything else reaches ARM's
 # processing unchanged.
 set_source_files_properties(${DAP_SRC}/DAP.c PROPERTIES COMPILE_DEFINITIONS
   "DAP_ProcessCommand=arm_DAP_ProcessCommand;DAP_ExecuteCommand=arm_DAP_ExecuteCommand"
@@ -360,10 +360,6 @@ set(DAP_PACKET_COUNT ${REQUEST_SLOTS})
 
 if(MARKER)
   target_compile_definitions(${CORE1} PRIVATE MARKER_PINS=1)
-endif()
-
-if(SWD_SAMPLE_AFTER_EDGE)
-  target_compile_definitions(${CORE1} PRIVATE SWD_SAMPLE_AFTER_EDGE=1)
 endif()
 
 if(SWD_CODEGEN OR JTAG_CODEGEN)
@@ -465,15 +461,14 @@ set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/core1_image.S PROPER
   OBJECT_DEPENDS ${CORE1_BIN}
   )
 
-# Unroll the bit paths. ARM unrolls the packet phases of a transfer by hand but leaves the 32-bit
-# data phases as loops, so the data bits carry a loop branch and an induction variable that the
-# packet bits do not: measured on the emulator, 22 cycles a bit against 16 at the same setting.
-# Only SW_DP.c: JTAG_DP.c is the ARM reference build's alone, which keeps it as ARM ships it, and
-# unrolling anything else is flash spent for nothing.
-set_source_files_properties(
-  ${DAP_SRC}/SW_DP.c
-  PROPERTIES COMPILE_OPTIONS "${UPSTREAM_RELAX};-funroll-loops"
-  )
+# Unroll SW_DP.c's sequence commands in a product image, which runs them as every image has. The
+# ARM reference build compiles SW_DP.c and JTAG_DP.c as ARM ships them.
+if(SWD_CODEGEN)
+  set_source_files_properties(
+    ${DAP_SRC}/SW_DP.c
+    PROPERTIES COMPILE_OPTIONS "${UPSTREAM_RELAX};-funroll-loops"
+    )
+endif()
 
 target_include_directories(${PROJECT_NAME} PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src

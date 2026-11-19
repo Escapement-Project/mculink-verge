@@ -11,16 +11,14 @@ Anything that sets the phase or the length of a wire cycle is written in assembl
 `.S` file, or generated at runtime by `src/swd_gen.c` and `src/jtag_gen.c` through `src/thumb.h`.
 It is never C left to a compiler. A compiler is free to reorder, reallocate and reschedule, and
 does so differently from one version or vendor to the next, so the timing of C belongs to one
-compiler build, not to the source. `src/hot.h` records a change that left the instruction stream
-identical and still cost a cycle on every data bit.
+compiler build, not to the source. MEASUREMENTS.md, "A register change cost a cycle on every data
+bit", is the case in point.
 
-Some C from before the rule still sets wire timing. It is the list of what to replace:
+The ARM reference build, with both generators off, sets wire timing in C on purpose. Its SWD, JTAG
+and cJTAG paths are ARM's as they ship, with cJTAG from `external/cmsis-dap-cjtag.patch`, and they
+are the wire `tools/equiv.py` holds the generated paths to. The rest of the C that still sets wire
+timing comes from before the rule, and is the list of what to replace:
 
-- ARM's SWD paths: the unrolled C in `.ramfunc` and the transfer in `SW_DP.c`. Only the ARM
-  reference build, with both generators off, carries them. It is the wire `tools/equiv.py` holds
-  the generated paths to.
-- ARM's JTAG and cJTAG paths in `JTAG_DP.c`, with cJTAG from `external/cmsis-dap-cjtag.patch`, and
-  their pacing. Again only the ARM reference build carries them.
 - The sequence commands `DAP_SWJ_Sequence` and `DAP_SWD_Sequence`, which every build runs on ARM's
   C. `DAP_JTAG_Sequence` runs on the generated scans.
 - `cJTAG_Escape` and `cJTAG_Clock` in `src/cjtag.c`, C paced by `DAP_Data.clock_delay`. They send

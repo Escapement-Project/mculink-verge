@@ -49,13 +49,12 @@ cJTAG wire, and the [measurement log](MEASUREMENTS.md) the evidence.
   stops at the first acknowledge that is not OK. It returns the acknowledge in r0 (ERROR for a read
   parity mismatch), and in r1 the transfers not completed, the failing one included. `packet` is
   `swd_gen_packet(request)`: bit n is clocked on clock n, from start to park.
-- C keeps ARM's command logic (`src/swd_dp.c`, its codegen section): posted AP reads, the RDBUFF
-  read that ends a block, the write block's RDBUFF check, WAIT retries and timestamps.
-  `transfer_words` retries the failing transfer with count 1, ARM's `retry--` semantics. A
-  timestamp is captured after the transfer, and only on OK. DAP_Transfer reuses the generated
-  `swd_transfer.h` macro, with `SWD_Transfer` as one generated transfer. When generation fails,
-  `refused_words` stands in under the same contract: no wire, and DAP_TRANSFER_ERROR. A product
-  image has no ARM transfer to fall back to.
+- C keeps ARM's command logic (`src/swd_dp.c`): posted AP reads, the RDBUFF read that ends a block,
+  the write block's RDBUFF check, WAIT retries and timestamps. `transfer_words` retries the failing
+  transfer with count 1, ARM's `retry--` semantics. A timestamp is captured after the transfer, and
+  only on OK. DAP_Transfer reuses the generated `swd_transfer.h` macro, with `SWD_Transfer` as one
+  generated transfer. When generation fails, `refused_words` stands in under the same contract: no
+  wire, and DAP_TRANSFER_ERROR. A product image has no ARM transfer to fall back to.
 - When: `swd_gen_ready()` compares (period, latency, turnaround, data_phase, idle, stall) with the
   last build. `dap_dispatch.c` captures DAP_SWJ_Clock's Hz (ARM keeps only a delay), and calls it
   after SWJ_Clock, SWD_Configure and TransferConfigure, so generation never lands inside a transfer.
@@ -200,15 +199,13 @@ One generator draws both JTAG and cJTAG; `src/jtag_gen.c`'s opening comment has 
 
 ## CMSIS-DAP semantics the generated paths must keep
 
-### SWD (from src/swd_dp.c, ARM's SW_DP.c/DAP.c)
+### SWD (ARM's SW_DP.c and DAP.c)
 
 - Request byte: bit0 APnDP, bit1 RnW, bit2 A2, bit3 A3, bit4 MATCH_VALUE, bit5 MATCH_MASK,
   bit7 TIMESTAMP. Packet: start 1, APnDP, RnW, A2, A3, parity(bits0-3), stop 0, park 1.
-  `SWD_WithParity` stores the packet parity in request bit 6.
 - After park: release SWDIO (`PIN_SWDIO_OUT_DISABLE`: TXEN P0_28 low through CLR, then DIRCLR
-  SWDIO). Then the turnaround, `DAP_Data.swd_conf.turnaround` clocks (1..4, from DAP_SWD_Configure;
-  `SWD_Turnaround()` asserts the range), then 3 acknowledge bits (ack0 first; OK=1, WAIT=2,
-  FAULT=4).
+  SWDIO). Then the turnaround, `DAP_Data.swd_conf.turnaround` clocks (1..4, from
+  DAP_SWD_Configure), then 3 acknowledge bits (ack0 first; OK=1, WAIT=2, FAULT=4).
 - OK and a read: 32 data bits LSB first and the parity, a turnaround, then `PIN_SWDIO_OUT_ENABLE`
   (DIRSET, then TXEN SET). A parity error answers `DAP_TRANSFER_ERROR` (0x08).
 - OK and a write: a turnaround, the enable, then 32 data bits and the parity, driven by the probe.
@@ -222,8 +219,8 @@ One generator draws both JTAG and cJTAG; `src/jtag_gen.c`'s opening comment has 
   Match retries: `DAP_Data.transfer.match_retry`, `match_mask`.
 - DAP_Transfer posts AP reads: the first AP read's data is discarded, and the value arrives with
   the next AP read or an RDBUFF read. In DAP_TransferBlock, a read block posts the AP read once,
-  loops, and reads the last word from RDBUFF (peeled into `SWD_TransferTail*`). A write block checks
-  the last write with an RDBUFF read.
+  loops, and reads the last word from RDBUFF. A write block checks the last write with an RDBUFF
+  read.
 - Equivalence: `tools/equiv.py` drives two builds over 536 SWD block cases (every acknowledge,
   turnaround, data phase and idle cycle count) and requires identical wire events and replies. A
   generated path must pass it against ARM's build.

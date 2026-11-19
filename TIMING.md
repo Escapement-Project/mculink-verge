@@ -12,12 +12,9 @@ or the lower 16 KB in a lab build, where the code lab's arena is the upper 16 KB
 uses SRAMX.
 
 The core fetches SRAMX over C-AHB and makes its data accesses over S-AHB, so the two never wait
-for each other. ARM's SWD bit paths run from SRAM, which the core fetches over S-AHB. There every
-bus cycle carries one instruction word or one data access. A GPIO store can then hold back the
-next instruction by a cycle, depending on where the code sits in memory. ARM's JTAG and cJTAG paths
-run from flash, where a fetch the prefetch buffer misses costs more. So ARM's paths, which the
-`+armwire` reference build keeps, can lose cycles to where their code lands. The generated code
-cannot.
+for each other. ARM's bit paths, which the `+armwire` reference build keeps, run from flash, where
+a fetch the prefetch buffer misses costs 12 cycles. So they can lose cycles to where their code
+lands. The generated code cannot.
 
 ## What an instruction costs from SRAMX
 
@@ -96,17 +93,18 @@ Finer steps at the top would need another core clock: USB has a clock of its own
 and the timers follow the core's. A generator picks the shortest period that does not exceed the
 rate asked for:
 
-| asked | ARM's paths, in the `+armwire` build | generated |
+| asked | ARM's paths, in the `+armwire` build: GCC, clang | generated |
 | --- | --- | --- |
-| 35 MHz | 16.67 | 30 |
-| 25 MHz | 16.67 | 25 |
-| 20 MHz | 16.67 | 18.75 |
-| 12 MHz | 10 | 11.54 |
-| 8 MHz | 7.14 | 7.89 |
+| 35 MHz | 10.71, 9.38 | 30 |
+| 25 MHz | 10.71, 9.38 | 25 |
+| 20 MHz | 10.71, 9.38 | 18.75 |
+| 12 MHz | 7.5, 6.82 | 11.54 |
+| 8 MHz | 5.77, 5.36 | 7.89 |
 
 The furthest a generated rate falls below the one asked is 20% between 20 and 37.5 MHz, 11%
-between 10 and 20, and 6% between 5 and 10. ARM's paced paths fall up to 56%, 33% and 24% short in
-the same bands, and they overshoot some requests: 16.67 MHz for 16, 7.14 for 7.
+between 10 and 20, and 6% between 5 and 10. ARM's paced paths fall up to 71%, 50% and 38% short in
+the same bands built with GCC, and 75%, 55% and 43% with clang. ARM's paths are C, so their rate
+depends on the compiler; the generated rate does not.
 
 A schedule placed from the model alone runs as the model says, cycle for cycle, with every sample
 in the middle of its window: that is how the generated transfers are placed.

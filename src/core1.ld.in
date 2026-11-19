@@ -29,7 +29,7 @@ SECTIONS
     *(.ARM.exidx* .gnu.linkonce.armexidx.*)
   } > m_text
 
-  /* The bit paths that run from RAM are .ramfunc, and core1_start.S copies them with the rest.
+  /* The transfer loops that run from RAM are .ramfunc, and core1_start.S copies them with the rest.
    * memcpy, which copies every request and reply, goes last so that it moves nothing else.
    * core1_start.S copies .data with a loop of its own, so nothing calls memcpy before it is there. */
   .data : ALIGN(4)

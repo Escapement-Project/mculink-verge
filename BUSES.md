@@ -21,7 +21,7 @@ Source: UM11126 rev 2.8 tables 4, 5 and 6.
 | 1 | 0x0400_0000 SRAMX, 32 KB | Generated code: SWD's in the lower 16 KB, JTAG's in all of it. A lab build keeps JTAG's to the lower half and has the code lab's arena at 0x0400_4000 |
 | 2 | 0x2000_0000 SRAM0, 64 KB | CPU 0's data, stack (top 4 KB, see [STACK.md](STACK.md)) and `.ramfunc` (`vcom_task` and the energy integration among them); the consoles' receive rings, send buffers and ring descriptors, and the energy ring, its reload descriptors and its integration state (`energy_integration`), which DMA0 reaches |
 | 3 | 0x2001_0000 SRAM1, 64 KB | CPU 1's full 16 KiB stack in the bottom quarter. From 0x2001_4000, in this order: its `.ramfunc` (command processing around the generated code, and the sample probe's reads), the SWD generator and the JTAG generator's scans, `.data`, `.bss` and `.cold_bss`. They run on into SRAM2 |
-| 4 | 0x2002_0000 SRAM2, 64 KB | Where CPU 1's RAM code and data run on from SRAM1. How far into the list above the boundary falls depends on the compiler: GCC's product image crosses it at the end of `.data`, clang's inside the JTAG generator. In both, `.bss`, with `request_copy`, `response_copy` and the abort byte CPU 0 sets, is here. tools/image.py refuses a product image whose RAM code or data, `.cold_bss` aside, reaches SRAM3. In the ARM reference build, ARM's SWD bit paths in `.ramfunc` and its `.bss` |
+| 4 | 0x2002_0000 SRAM2, 64 KB | Where CPU 1's RAM code and data run on from SRAM1. How far into the list above the boundary falls depends on the compiler: GCC's product image crosses it at the end of `.data`, clang's inside the JTAG generator. In both, `.bss`, with `request_copy`, `response_copy` and the abort byte CPU 0 sets, is here. tools/image.py refuses a product image whose RAM code or data, `.cold_bss` aside, reaches SRAM3. In the ARM reference build, its `.bss` |
 | 5 | 0x2003_0000 SRAM3, 64 KB | `dap_stage` in the top 8 KB from 0x2003_E000: packet-sized commands and replies CPU 0 stages for CPU 1, every HID reply, and Verge Aux's request slot. Below it, nothing of a product image's CPU 1. `.cold_bss` (the JTAG generator's two saved builds, 32 KB, touched only on a wire or configuration switch) comes after every other `.bss` and may reach here. |
 | 6 | 0x2004_0000 SRAM4, 16 KB | Stream message storage in the lower 8 KB from 0x2004_0000; upper 8 KB unused |
 | 7 | 0x4000_0000 APB bridge 0 **and** 0x4002_0000 APB bridge 1 | Every APB peripheral, both bridges on one port (below) |
@@ -43,8 +43,7 @@ contends with any other.
 | CPU 1 | 3, 4 | Shared generator event workspace, 1280 events with JTAG or 256 for SWD only | Builds run serially between timed windows; each schedule is consumed before reuse |
 | CPU 1 | 3, 4 | The SWD generator and the JTAG generator's scans (`src/gen.c`, `src/swd_gen.c`, `src/jtag_gen.c`) | Each build, between timed windows |
 | CPU 1 | 10 | Secure GPIO (`DBGIF_GPIO`): every SWDIO, SWCLK, TMS, TDI, TDO access | Inside every timed window |
-| CPU 1 | 3, 4 | The `.ramfunc` bit paths of the ARM reference build: ARM's SWD | Inside their timed windows |
-| CPU 1 | 0 | ARM's JTAG and cJTAG bit paths in the ARM reference build, run from flash | Inside their timed windows |
+| CPU 1 | 0 | ARM's bit paths in the ARM reference build, run from flash | Inside their timed windows |
 | CPU 1 | 5 | A staged command's request in `dap_stage`, and a staged bulk command's reply: the generated transfers load write data and store read data there | Inside timed windows |
 | CPU 1 | 4 | Its own `request_copy` and `response_copy`: an unstaged command's request and reply, and every HID command's reply. The generated transfers load write data and store read data there | Inside timed windows |
 | CPU 1 | 5 | Each HID reply's report, from `response_copy` into `dap_stage` | Between timed windows |
@@ -104,21 +103,20 @@ CONCURRENCY.md has how the cores, the interrupts and DMA order their accesses to
 
 ## Timed windows and their exposure
 
-- **Bit paths, all wires** (port 10 secure GPIO; code from port 1, or ports 3 and 4 for the
-  `.ramfunc` paths, and 0 for the ARM reference build's JTAG and cJTAG, which run from flash). The
-  ordinary GPIO on port 8 shares with Flexcomm 0 to 4 and the mailbox, which CPU 0 polls, so the bit
-  paths use the secure GPIO block instead. During energy capture, DMA0 reads ADC0 on port 10 and
-  writes the ring on port 2. CPU 1's data bus wins every tie, but a DMA0 read of ADC0 already under
-  way holds a secure GPIO access up to 2 cycles. A held store holds every edge after it, which only
-  stretches a phase. A held sample placed after the next rising edge reads the next bit. So with
-  capture asked for, the generated SWD and JTAG paths keep 2 cycles at the late end of such a
-  sample's window, and their clocks lengthen where that leaves no room (`gen_stall`, CODEGEN.md).
-  cJTAG samples come before that edge. Holding the conversion trigger for a measurement
-  (`energy_monitor_hold`) stops the ADC reads, the ring writes and CPU 0's segment interrupts
-  together, so latency measurements run without the stall. Capture is disabled by default. CPU 0's
-  segment interrupt reads ADC0's status once a segment, on port 10 too. Apart from CPU 0's abort
-  byte, no other master accesses SRAMX, SRAM1 or SRAM2. During capture, DMA0 writes SRAM0 and CPU 1
-  reads it, between windows.
+- **Bit paths, all wires** (port 10 secure GPIO; code from port 1, or 0 in the ARM reference build,
+  whose bit paths run from flash). The ordinary GPIO on port 8 shares with Flexcomm 0 to 4 and the
+  mailbox, which CPU 0 polls, so the bit paths use the secure GPIO block instead. During energy
+  capture, DMA0 reads ADC0 on port 10 and writes the ring on port 2. CPU 1's data bus wins every
+  tie, but a DMA0 read of ADC0 already under way holds a secure GPIO access up to 2 cycles. A held
+  store holds every edge after it, which only stretches a phase. A held sample placed after the next
+  rising edge reads the next bit. So with capture asked for, the generated SWD and JTAG paths keep 2
+  cycles at the late end of such a sample's window, and their clocks lengthen where that leaves no
+  room (`gen_stall`, CODEGEN.md). cJTAG samples come before that edge. Holding the conversion
+  trigger for a measurement (`energy_monitor_hold`) stops the ADC reads, the ring writes and CPU 0's
+  segment interrupts together, so latency measurements run without the stall. Capture is disabled by
+  default. CPU 0's segment interrupt reads ADC0's status once a segment, on port 10 too. Apart from
+  CPU 0's abort byte, no other master accesses SRAMX, SRAM1 or SRAM2. During capture, DMA0 writes
+  SRAM0 and CPU 1 reads it, between windows.
 - **A staged command's buffers** (port 5). CPU 0 copies the next command in and the last reply out
   while CPU 1's transfer runs. CPU 0 boots with CPU 1's data bus at the top AHB matrix priority
   (SYSCON AHBMATPRIO, set in `start_core1`), so CPU 1 wins every tie there and on every other

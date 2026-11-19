@@ -882,6 +882,29 @@ each, and read them back at 1 MHz: all landed. So setup and hold at the target a
 cycle, and any placement off the edge cycles works. 50 MHz writes (P = 3) work on this harness,
 request phase included.
 
+## A register change cost a cycle on every data bit (2026-10-16)
+
+Measured on ARM's SWD paths with the data phase rewritten (`src/swd_dp.c` then), running from
+SRAM. Peeling the last read out of the block loop, with the peeled transfer inlined a second time,
+left the data phase's instruction stream identical: the same opcodes, in the same order and
+number, in different registers. It cost exactly one cycle on every one of the 32 data bits on
+hardware, 32 cycles a word against the 24.8 the change saved. Out of line the same peel won,
+because the extra transfer then needed no register in the block function.
+
+Nothing upstream predicted it. The emulator counts instructions and saw no change, the gate passed
+it, and so did all 1,212 differential cases. Forcing the functions to a 16-byte boundary moved the
+figure by 0.00 cycles, which rules out alignment. Only a capture folded by position in the transfer
+caught it.
+
+## Bit paths in flash paid the prefetcher (2026-10-16)
+
+ARM's SWD data phases, unrolled and run from flash. Flash runs at 11 wait states from 130 MHz up,
+so a fetch the prefetcher has not covered costs 12 core cycles. A compact loop sits behind the
+prefetch buffer and never pays; the unrolled data phases are straight-line code it cannot stay
+ahead of, and two of every four data bits paid exactly one and exactly two of those fetches. The
+result was 33 cycles a bit against the stock firmware's uniform 22. Run from SRAM (`.ramfunc`),
+the same code paid none.
+
 ## The last read of a block at 16.67 MHz
 
 Measured 2026-10-16, on ARM's paths.

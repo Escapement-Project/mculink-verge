@@ -65,10 +65,10 @@ static_assert(FILL_REPT == SAMPLE_FILL_MAX, "the asm filler and SAMPLE_FILL_MAX 
 // A DP read of DPIDR, start bit first: start, APnDP 0, RnW 1, A2 0, A3 0, parity 1, stop, park.
 #define DPIDR_READ_REQUEST 0xA5U
 
-/** In SRAM like the bit paths, so no fetch pays flash wait states, but after all of them.
+/** In SRAM like the transfer loops, so no fetch pays flash wait states, but after all of them.
  *
- * The linker takes every .ramfunc section before any .data one, so this cannot move a bit path.
- * Marked .ramfunc it could land ahead of them, which src/hot.h measured costing throughput.
+ * The linker takes every .ramfunc section before any .data one, so this cannot move a transfer
+ * loop. Marked .ramfunc it could land ahead of them, which costs throughput (src/hot.h).
  */
 #define PROBE_CODE __attribute__((noinline, section(".data_sample_probe")))
 

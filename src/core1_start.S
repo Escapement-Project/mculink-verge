@@ -34,7 +34,7 @@ core1_reset:
     ldr r0, =__core1_stack_bottom
     msr msplim, r0
 
-    /* .data holds the bit paths that run from RAM as well as initialised variables. */
+    /* .data holds the code that runs from RAM as well as initialised variables. */
     ldr r0, =__data_load__
     ldr r1, =__data_start__
     ldr r2, =__data_end__

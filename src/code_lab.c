@@ -8,7 +8,7 @@
  * Two arenas, because where code runs from is one of the things being measured:
  *
  * - **SRAM**, a buffer in .bss at 0x2000xxxx. The core fetches it over S-AHB, the same port the
- *   GPIO stores go out on, which is where the bit paths in .ramfunc run today.
+ *   GPIO stores go out on, which is where the transfer loops in .ramfunc run.
  * - **SRAMX**, the upper 16 KB of the 32 KB at 0x04000000. The core fetches it over C-AHB, so
  *   instruction fetch and GPIO traffic do not share a port. The lower half holds the generated
  *   code, which a lab build keeps to it (src/jtag_gen.h).

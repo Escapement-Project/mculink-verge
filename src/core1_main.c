@@ -247,7 +247,7 @@ COMMAND_PATH static bool dap_task(void) {
  * its last check had found nothing. Why the pend made no event was not found. A level cannot be
  * missed. The interrupt stays disabled: the generated transfers clear PRIMASK.
  *
- * In SRAM after the bit paths (src/sample_probe.c says why there), so the spin fetches nothing
+ * In SRAM after the transfer loops (src/sample_probe.c says why there), so the spin fetches nothing
  * from flash.
  */
 __attribute__((noinline, section(".data_core1_wait"))) static void wait_for_mailbox(void) {

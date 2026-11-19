@@ -109,18 +109,18 @@ done; done
 The transfer paths are generated at runtime, and a product image carries no other transfer path.
 `-DSWD_CODEGEN=OFF -DJTAG_CODEGEN=OFF` builds ARM's paths alone, as the reference the generated
 ones are held to. That build is marked `+armwire`. CMake refuses one option off without the other.
-Its JTAG is ARM's code as it ships, and its cJTAG the port proposed for ARM's CMSIS-DAP,
-`external/cmsis-dap-cjtag.patch`, which CMake applies to a copy of the submodule's sources. Its SWD
-still runs the faster transfer in `src/swd_dp.c`. The reference is kept simple: anything where
-speed matters belongs on the generated paths.
-The check holds that build to `tools/baseline-armwire/` instead. It finds ARM's paths clocking SWD,
-JTAG and cJTAG faster than asked for at 10 and 20 MHz, and JTAG at 50 MHz too. That directory's
-`known-overshoot.txt` records them. ARM's code computes one delay for every wire from a cost model
-of an SWD bit. A JTAG clock makes one store fewer, and runs fast, most of all at 50 MHz. SWD and
-the cJTAG frame land within a cycle of the request. The gate holds that build's cJTAG frames to
-`tools/jtagcheck.py`'s wire rules with `--no-clock-rules`, at 1, 5 and 6 MHz. `tools/equiv.py`
-compares levels, and a frame that drives TMSC into the target's TDO packet still has the right
-ones. From 9.375 MHz up, ARM's JTAG and cJTAG sample a modelled target's TDO too early.
+It runs ARM's code as it ships, with cJTAG from the port proposed for ARM's CMSIS-DAP,
+`external/cmsis-dap-cjtag.patch`, which CMake applies to a copy of the submodule's sources. The
+reference is kept simple: anything where speed matters belongs on the generated paths.
+The check holds that build to `tools/baseline-armwire/` instead. Built with GCC, ARM's paths clock
+SWD, JTAG and cJTAG faster than asked for at 10 and 20 MHz, and JTAG at 50 MHz too; built with
+clang, only JTAG, at 10 and 50 MHz. That directory's `known-overshoot.txt` records them. ARM's code
+computes one delay for every wire from a cost model of an SWD bit. A JTAG clock makes one store
+fewer, and runs fast, most of all at 50 MHz. SWD and the cJTAG frame land within a cycle of the
+request. The gate holds that build's cJTAG frames to `tools/jtagcheck.py`'s wire rules with
+`--no-clock-rules`, at 1, 5 and 6 MHz. `tools/equiv.py` compares levels, and a frame that drives
+TMSC into the target's TDO packet still has the right ones. From 9.375 MHz up, ARM's JTAG and cJTAG
+sample a modelled target's TDO too early.
 
 Use `tools/equiv.py` to compare a replacement implementation with a reference build. It drives two
 builds over 536 SWD block cases, 188 JTAG cases, 128 cJTAG cases in each format and, with

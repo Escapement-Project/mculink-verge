@@ -20,8 +20,8 @@
 #include "hot.h"
 #include "byte_io.h"
 
-/** ARM's DAP_JTAG_TransferBlock, with the transfer inlined into the loop. A bit path, so it runs
- * from SRAM (src/hot.h). */
+/** ARM's DAP_JTAG_TransferBlock, with the transfer inlined into the loop. A transfer loop, so it
+ * runs from SRAM (src/hot.h). */
 #define JTAG_BLOCK_FUNCTION(block_name, xfer, set_ir)                                             \
     HOT_PATH static uint32_t block_name(const uint8_t* request, uint8_t* response) {              \
         uint32_t request_count;                                                                   \

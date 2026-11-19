@@ -3,24 +3,24 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * From CMSIS-DAP, DAP.c's DAP_ExecuteCommand and DAP_ProcessCommand. Changed by the Escapement
- * Project: a shorter route for SWD and JTAG transfer blocks, each request's length checked
- * against the packet before it runs, and DAP_ERROR for commands the generated paths cannot run.
+ * Project: SWD and JTAG transfers on the generated paths, each request's length checked against
+ * the packet before it runs, and DAP_ERROR for commands the generated paths cannot run.
  */
-/** The two command entry points, so a SWD transfer block can take a shorter route.
+/** The two command entry points, so transfers can take the generated route.
  *
- * `DAP_SWD_TransferBlock` in ARM's DAP.c calls `SWD_Transfer` once per word, and a transfer saves
- * eight registers on entry, restores them on exit and reloads the GPIO addresses and pin masks
- * each time. At the delay-free setting that is about 30 cycles of dead wire between one transfer
- * and the next, a tenth of a read. `SWD_TransferBlock` in src/swd_dp.c inlines the transfer into
- * its loop and pays for all of that once per block.
+ * In a product image SWD and JTAG transfers run on generated code (src/swd_dp.c,
+ * src/jtag_gen_dp.c), a block at a time. `DAP_SWD_TransferBlock` in ARM's DAP.c calls
+ * `SWD_Transfer` once per word, and each call saves and restores registers and reloads the GPIO
+ * addresses: dead wire between one transfer and the next. The ARM reference build sends them to
+ * ARM's processing.
  *
  * Everything else goes to ARM's command processing unchanged, which CMakeLists.txt renames out of
  * the way. `DAP_ExecuteCommand` is transcribed because it calls `DAP_ProcessCommand` by name and
  * has to reach ours.
  *
- * `tools/equiv.py` drives this entry point and a build of ARM's against 528 cases and requires
- * identical wire events and identical replies, so the shorter route has to behave like the long
- * one.
+ * `tools/equiv.py` drives a product image and the ARM reference build over the same cases and
+ * requires identical wire events and identical replies, so the generated route has to behave like
+ * ARM's.
  */
 #include <stdbool.h>
 
@@ -97,9 +97,11 @@ __attribute__((noinline)) static uint32_t arm_command(const uint8_t* request, ui
 }
 
 COMMAND_PATH static uint32_t transfer_block(const uint8_t* request, uint8_t* response) {
+#ifdef SWD_CODEGEN
     if (DAP_Data.debug_port == DAP_PORT_SWD) {
         return SWD_TransferBlock(request, response);
     }
+#endif
 #ifdef JTAG_CODEGEN
     const uint32_t wire = jtag_gen_wire();
     if (!jtag_gen_ready_transfers(wire)) {
@@ -113,7 +115,7 @@ COMMAND_PATH static uint32_t transfer_block(const uint8_t* request, uint8_t* res
     jtag_gen_learn(wire);
     return length;
 #else
-    // ARM's DAP_TransferBlock, framed by ARM's JTAG_DP.c.
+    // ARM's DAP_TransferBlock, on ARM's SW_DP.c or JTAG_DP.c.
     return arm_DAP_ProcessCommand(request - 1, response - 1) - (1U << 16) - 1U;
 #endif
 }
@@ -188,15 +190,15 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
         return ((2U + ((count + 7U) / 8U)) << 16) | 2U;
     }
 #endif
-    if ((*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_SWD)) {
 #ifdef SWD_CODEGEN
+    if ((*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_SWD)) {
         if (swd_sweep_pending()) {
             return swd_sweep_connect(request, response);
         }
-#endif
         *response = *request;
         return (1U << 16) + 1U + SWD_TransferCommand(request + 1, response + 1);
     }
+#endif
 #ifdef JTAG_CODEGEN
     if ((*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {
         if (jtag_sweep_pending()) {
