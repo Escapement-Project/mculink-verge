@@ -16,6 +16,9 @@ same wire events and the same answer from both, byte for byte and case for case.
 `--ignore-samples` leaves the loads of SWDIO and TDO out of the comparison. Generated code samples
 a bit up to two clocks after the edge that launched it, so its loads fall among different edges
 than ARM's; the edges, the levels and the answer still have to match.
+
+In cJTAG a frame may let go of TMSC earlier than Verge's frames do, as the port for ARM's CMSIS-DAP
+does (1149.7 14.2.3). Both hand-offs are compared as one (`handoff`).
 """
 
 import argparse
@@ -58,9 +61,9 @@ IGNORE_SAMPLES = False
 CLOCK_HZ = 10_000_000
 
 
-def wire(trace: list[str]) -> list[str]:
+def wire(trace: list[str], two_pin: bool = False) -> list[str]:
     """The trace with TMS and TDI changes put in one order between clock edges, where a TAP cannot
-    see which came first."""
+    see which came first. A cJTAG trace also gets its hand-offs in one place (`handoff`)."""
     events = [event for event in trace if event not in ("S", "T")] if IGNORE_SAMPLES else list(trace)
     i = 0
     while i < len(events):
@@ -69,7 +72,45 @@ def wire(trace: list[str]) -> list[str]:
             j += 1
         events[i:j] = sorted(events[i:j], key=lambda event: event[0] == "I")
         i = j + 1
-    return events
+    return handoff(events) if two_pin else events
+
+
+def handoff(events: list[str]) -> list[str]:
+    """A cJTAG trace with each TMSC release moved to just after the fall that starts the TDO packet,
+    where Verge's frames let go.
+
+    The port for ARM's CMSIS-DAP lets go earlier, as 1149.7 14.2.3 has it: before the rise of the
+    packet ahead of the TDO packet, or with TCKC high after an EOT escape's edges. TMSC's keeper
+    holds the level, so the target clocks in the same bits either way, and the packets in between
+    take the keeper's level here. The TDO packet is the last rise before the probe drives again.
+    """
+    out: list[str] = []
+    keeper = None
+    i = 0
+    while i < len(events):
+        event = events[i]
+        if event != "Wz":
+            if event in ("W0", "W1") or event[:2] in ("^0", "^1"):
+                keeper = event[1]
+            out.append(event)
+            i += 1
+            continue
+        end = i + 1
+        while end < len(events) and events[end] not in ("W0", "W1"):
+            end += 1
+        released = events[i + 1 : end]
+        rises = [k for k, e in enumerate(released) if e[0] == "^"]
+        falls = [k for k, e in enumerate(released[: rises[-1]]) if e == "v"] if rises else []
+        if falls and keeper is not None:
+            cut = falls[-1] + 1
+            out += [f"^{keeper}{e[2:]}" if e.startswith("^z") else e for e in released[:cut]]
+            out.append("Wz")
+            out += released[cut:]
+        else:
+            out.append(event)
+            out += released
+        i = end
+    return out
 
 # The acknowledge, in the order SW_READ_BIT reads it: bit 0 first.
 ACKS = {
@@ -160,8 +201,8 @@ def run_cjtag(
 
     Three TMSC packets carry one JTAG clock, so the TAP underneath is the same one the JTAG
     comparison drives; only the way TMS and TDO reach it differs. The model finds the framing from
-    the wire -- a frame releases the line exactly once, before its third packet -- rather than from
-    anything in the firmware, so it stays in step with either compiled copy.
+    the wire -- a frame releases the line exactly once, for its TDO packet -- rather than from
+    anything in the firmware, so it stays in step with any build.
     """
     dr = ((ack >> 1) & 1) | ((ack & 1) << 1) | (((ack >> 2) & 1) << 2) | (word << 3)
     probe = Machine(elf, Target([]), restart_at=set(), model=Model(), timed=False)
@@ -184,7 +225,7 @@ def run_cjtag(
         payload += u32(word) * words
     probe.begin()
     reply = probe.command(payload)
-    return wire(probe.end().trace), reply
+    return wire(probe.end().trace, two_pin=True), reply
 
 
 def run_jtag_commands(
@@ -223,7 +264,7 @@ def run_jtag_commands(
         probe.tap = JtagTap(dr, 35 + index)
     probe.begin()
     replies = b"".join(probe.command(c) for c in commands)
-    return wire(probe.end().trace), replies
+    return wire(probe.end().trace, two_pin), replies
 
 
 def jtag_sequence(*seqs: tuple[int, bool, bool, int]) -> bytes:
