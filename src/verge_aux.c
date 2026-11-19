@@ -1,4 +1,4 @@
-#include "aux.h"
+#include "verge_aux.h"
 
 #include <string.h>
 

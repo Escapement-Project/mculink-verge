@@ -159,7 +159,7 @@ set(DAP_SRC ${DAP_TREE}/Firmware/Source)
 # CPU 1's image, which is built below and embedded here by src/core1_image.S.
 target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/main.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/aux.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/verge_aux.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dio_edges.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/energy_stream.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/core1_image.S

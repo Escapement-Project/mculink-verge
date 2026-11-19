@@ -23,8 +23,8 @@ SPI_LEVELS = ((1 << 20) | (1 << 26), (1 << 2) | (1 << 3))
 
 
 def edge_statics(symbols):
-    """dio_edges.c's statics. LTO renames `present`, and aux.c has one too: take the one beside
-    `resting`."""
+    """dio_edges.c's statics. LTO renames `present`, and verge_aux.c has one too: take the one
+    beside `resting`."""
     found = {name: symbols[name][0] for name in STATICS}
     candidates = [address for name, (address, _) in symbols.items() if name == "present" or name.startswith("present.")]
     found["present"] = min(candidates, key=lambda address: abs(address - found["resting"]))

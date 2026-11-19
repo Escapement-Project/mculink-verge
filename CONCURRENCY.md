@@ -154,8 +154,8 @@ whole of it when it needs it (`energy_integration.h`):
    while holding it already: inside a start, calibrating at boot, or reading the supply after a
    stop. So a request for the state that timed out is withdrawn by a new one that leaves the state
    with CPU 0, and a loop that comes back late keeps it and ends the stream (`stream_fault` in
-   `aux.c`). At boot, on a Pro that can measure energy, CPU 1 waits without a bound, so it cannot
-   finish starting until CPU 0's loop runs.
+   `verge_aux.c`). At boot, on a Pro that can measure energy, CPU 1 waits without a bound, so it
+   cannot finish starting until CPU 0's loop runs.
 
 The acknowledgement comes from the loop, so the DMA interrupt is not running when CPU 0 gives the
 state away. While the quiet flag stands, the interrupt leaves energy completions alone
@@ -218,9 +218,9 @@ its messages back until the start's reply has gone (`stream_held`).
 `energy_dma_error` records that a capture failed: a DMA error, an ADC overflow, a segment not
 taken in time, or a handover that timed out. CPU 0's DMA interrupt and CPU 1 both set it; only a
 new session's start clears it, on CPU 1. CPU 0's loop reads it to answer stream commands and to end
-a stream whose capture failed (`stream_fault` in `aux.c`). So the start clears it before it hands
-the state back. Cleared any later, the loop could find the old failure beside the new stream, and
-end a capture that runs.
+a stream whose capture failed (`stream_fault` in `verge_aux.c`). So the start clears it before it
+hands the state back. Cleared any later, the loop could find the old failure beside the new stream,
+and end a capture that runs.
 
 ### The range re-arm
 

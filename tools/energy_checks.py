@@ -492,7 +492,8 @@ def check_control(c, elf0, elf1, symbols0, symbols1, offsets0, offsets1, layout)
         c.check(bytes(cpu1.uc.mem_read(base + offsets1["energy_dma_error"], 1)) == b"\x01",
                 f"{label}: failure not latched")
         # A loop that comes back late echoes the last request (energy_control_task). That has to
-        # leave the state with CPU 0, whose loop then ends the stream (stream_fault, src/aux.c).
+        # leave the state with CPU 0, whose loop then ends the stream (stream_fault,
+        # src/verge_aux.c).
         last = int.from_bytes(cpu1.uc.mem_read(base + offsets1["energy_control_request"], 4), "little")
         c.check(last & 1 == 0, f"{label}: a failed pause left quiet asked for ({last:#x}); a late loop would hand"
                                " the state, and its open stream, to a core that has given up")
@@ -1971,7 +1972,8 @@ def check_stream(c, setup, result, offsets, local_symbols):
     got = messages(probe)
     c.check(got == [bytes([0xA2, 4]) + u32(0)], f"stream: fault sent {[m.hex() for m in got]}")
     # A start after that failure. Once it hands the state back, CPU 0's loop ends a stream it finds
-    # with a failure recorded (stream_fault, src/aux.c), so the failure has to be gone by then.
+    # with a failure recorded (stream_fault, src/verge_aux.c), so the failure has to be gone by
+    # then.
     released = []
 
     def release(uc, access, at, size, value, data):
@@ -1990,7 +1992,7 @@ def check_stream(c, setup, result, offsets, local_symbols):
             f"stream: a start after a fault sent {[m[:2].hex() for m in got]}")
     # A start whose handback and retake both time out, as when CPU 0's loop stalls through both.
     # When the loop comes back it echoes the last request (energy_control_task); it has to keep the
-    # state then, so that its loop ends the stream the start began (stream_fault, src/aux.c).
+    # state then, so that its loop ends the stream the start began (stream_fault, src/verge_aux.c).
     stalled, _, _, stalled_put, stalled_get, stalled_local, _, _, _, _, stalled_hook = setup()
     stalled.uc.hook_del(stalled_hook)
     stalled.uc.ctl_flush_tb()

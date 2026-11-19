@@ -644,7 +644,7 @@ static bool capture_quiet(bool quiet) {
     if (quiet) {
         // Withdrawn: a loop that comes back late would echo it and leave the state, and any stream
         // open in it, to this core, which has given up. CPU 0 keeps the state it had, and its loop
-        // ends the stream (src/aux.c).
+        // ends the stream (src/verge_aux.c).
         (void)control_request(false);
     }
     return false;
@@ -754,7 +754,7 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
 
     if (!capture_quiet(false)) {
         // The release stays asked for, so CPU 0 may take the state at any moment: take it back
-        // first. If that fails too, CPU 0 keeps it, and its loop ends the stream (src/aux.c).
+        // first. If that fails too, CPU 0 keeps it, and its loop ends the stream (src/verge_aux.c).
         if (capture_quiet(true)) {
             stream->timeline_pending = false;
             // The capture never ran, so its edges have no times.

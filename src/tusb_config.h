@@ -40,7 +40,7 @@
 // endpoint. 64 is the size every v1 host expects.
 #define CFG_TUD_HID_EP_BUFSIZE 64
 #define CFG_TUD_MIDI 0
-// CMSIS-DAP v2, and Verge Aux on the Pro (src/aux.c).
+// CMSIS-DAP v2, and Verge Aux on the Pro (src/verge_aux.c).
 #define CFG_TUD_VENDOR 2
 
 // One DAP packet each way, so a full packet never has to be split across FIFO wraps.

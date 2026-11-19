@@ -14,7 +14,7 @@
 #include "fsl_reset.h"
 #include "tusb.h"
 
-#include "aux.h"
+#include "verge_aux.h"
 #include "board_pins.h"
 #include "board_straps.h"
 #include "core_clock.h"

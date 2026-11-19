@@ -166,7 +166,7 @@ __attribute__((section(".ramfunc"))) void PIN_INT0_IRQHandler(void) {
     stream->edge_entries_written = at + 1U;
 }
 
-/** Whether CPU 0 owns the stream's state (src/aux.c, stream_owned_by_cpu1). */
+/** Whether CPU 0 owns the stream's state (src/verge_aux.c, stream_owned_by_cpu1). */
 __attribute__((section(".ramfunc"))) static bool owned(struct energy_stream const* stream) {
     return ((dap_shared.energy_control_ack & DAP_ENERGY_QUIET_FLAG) == 0U) && !stream->timeline_pending;
 }
