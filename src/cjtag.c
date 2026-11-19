@@ -5,6 +5,7 @@
 #include "DAP.h"
 #include "cjtag.h"
 #include "hot.h"
+#include "jtag_dp.h"
 
 static bool active;
 static uint8_t selected = CJTAG_SELECT_JTAG; // DAP_JTAG_Format's value while disconnected
@@ -65,10 +66,6 @@ COMMAND_PATH bool cJTAG_TapEntered(void) { return entered; }
  * clock delay comes short: Set_Clock_Delay takes the port write out of the half period, and ARM's
  * loop runs a cycle short on its last pass, so at 10 MHz it gave 2 cycles where a quarter is 4. */
 #define CJTAG_QUARTER() PIN_DELAY_SLOW((DAP_Data.clock_delay + 3U) / 2U)
-/** The same for the delay-free frame, which runs as fast as its stores. */
-#define CJTAG_QUARTER_FAST() \
-    __NOP();                 \
-    __NOP()
 
 bool cJTAG_Enter(uint32_t scan_format, uint32_t tap_state) {
     if ((scan_format >= 32U) || ((CJTAG_FORMATS & (1UL << scan_format)) == 0U) || (tap_state >= CJTAG_TAP_STATES)) {
@@ -78,6 +75,7 @@ bool cJTAG_Enter(uint32_t scan_format, uint32_t tap_state) {
     PIN_SWDIO_OUT_ENABLE();
     format = (uint8_t)scan_format;
     tap = (uint8_t)tap_state;
+    jgen_RestateTdi();
     // A host that leaves the TAP in a Shift state was clocking it there.
     last_shift = cJTAG_TapShift();
     active = true;
@@ -123,19 +121,9 @@ void cJTAG_Connect(uint32_t value) {
     (void)cJTAG_Enter(8U + value, CJTAG_TAP_IDLE);
 }
 
-/** Drive one TMSC packet: set the level while the clock is low, then clock it in.
- *
- * Entered and left with the clock low, so the level only ever moves in the low half of a cycle.
- */
-#define CJTAG_PACKET(level, delay) \
-    PIN_SWDIO_OUT(level);          \
-    delay;                         \
-    PIN_SWCLK_TCK_SET();           \
-    delay;                         \
-    PIN_SWCLK_TCK_CLR()
-
-/** The same after a packet the target samples: the level moves a quarter period after that fall,
- * and the low phase is two of them. */
+/** One TMSC packet after a fall the target may sample: the level moves a quarter period after that
+ * fall, and the low phase is two of them. Entered and left with the clock low, so the level only
+ * ever moves in the low half of a cycle. */
 #define CJTAG_SAMPLED_PACKET(level, quarter, delay) \
     quarter;                                        \
     PIN_SWDIO_OUT(level);                           \
@@ -144,174 +132,9 @@ void cJTAG_Connect(uint32_t value) {
     delay;                                          \
     PIN_SWCLK_TCK_CLR()
 
-/** One OScan1 frame: the three TMSC packets that carry one JTAG clock.
- *
- * Packet 1 carries the inverse of TDI, which is what the format specifies. Packet 2 carries TMS.
- * Packet 3 is the target's: release the wire -- both the pin and the buffer that drives it, or the
- * buffer keeps driving whatever the pin does -- and sample what comes back.
- *
- * Taking the wire back afterwards is a TMSC move like any other: it jumps from whatever the target
- * drove to whatever our output latch holds. So it happens after the falling edge, not before it.
- * Doing it while TCKC was still high put one escape edge in every frame, which is the exact fault
- * this path exists to avoid. OpenOCD's OScan1 driver sequences it the same way, with TCK resting
- * low between frames.
- *
- * Two copies, paced and not, for the reason ARM splits each of its own transfers the same way:
- * above the switch point the pacing loop is longer than the clock the host asked for. The choice
- * is made once per transfer rather than once per frame -- putting the branch inside the frame
- * costs a cycle in the paced copy, which is enough to take a 10 MHz request over the line.
- */
-#ifdef CJTAG_ZERO_HOLD
-/** Lab only (CMake CJTAG_ZERO_HOLD, version "+zero-hold-lab"): the fall that ends the nTDI packet
- * and the TMS packet's level go out in one store through the masked port, so a target sampling on
- * the falling edge gets no hold at all. It measures whether the quarter period is needed; a real
- * build never moves TMSC in the store of a TCKC edge. */
-__attribute__((noinline)) static void cjtag_fall_with(uint32_t level) {
-    const uint32_t mask = DBGIF_TCK_SWCLK_GPIO->MASK[DBGIF_TCK_SWCLK_PORT];
-    DBGIF_TCK_SWCLK_GPIO->MASK[DBGIF_TCK_SWCLK_PORT] =
-        ~((1U << DBGIF_TCK_SWCLK_PIN) | (1U << DBGIF_TMS_SWDIO_PIN));
-    DBGIF_TCK_SWCLK_GPIO->MPIN[DBGIF_TCK_SWCLK_PORT] = (level & 1U) << DBGIF_TMS_SWDIO_PIN;
-    DBGIF_TCK_SWCLK_GPIO->MASK[DBGIF_TCK_SWCLK_PORT] = mask;
-}
-static_assert(DBGIF_TMS_SWDIO_PORT == DBGIF_TCK_SWCLK_PORT, "one masked store moves TCKC and TMSC together");
-#define CJTAG_NTDI_THEN_TMS(ntdi, tms, quarter, delay) \
-    PIN_SWDIO_OUT(ntdi);                               \
-    delay;                                             \
-    PIN_SWCLK_TCK_SET();                               \
-    delay;                                             \
-    cjtag_fall_with(tms);                              \
-    delay;                                             \
-    PIN_SWCLK_TCK_SET();                               \
-    delay;                                             \
-    PIN_SWCLK_TCK_CLR()
-#elif defined(CJTAG_ZERO_SETUP)
-/** Lab only (CMake CJTAG_ZERO_SETUP, version "+zero-setup-lab"), the mirror of CJTAG_ZERO_HOLD: the
- * TMS packet's level and the rise that clocks it go out in one store through the masked port, so a
- * target sampling on the rising edge gets no setup, and one sampling on the falling edge a whole high
- * phase. It tells the two sampling edges apart on a target that cannot report SREDGE. */
-__attribute__((noinline)) static void cjtag_rise_with(uint32_t level) {
-    const uint32_t mask = DBGIF_TCK_SWCLK_GPIO->MASK[DBGIF_TCK_SWCLK_PORT];
-    DBGIF_TCK_SWCLK_GPIO->MASK[DBGIF_TCK_SWCLK_PORT] =
-        ~((1U << DBGIF_TCK_SWCLK_PIN) | (1U << DBGIF_TMS_SWDIO_PIN));
-    DBGIF_TCK_SWCLK_GPIO->MPIN[DBGIF_TCK_SWCLK_PORT] =
-        (1U << DBGIF_TCK_SWCLK_PIN) | ((level & 1U) << DBGIF_TMS_SWDIO_PIN);
-    DBGIF_TCK_SWCLK_GPIO->MASK[DBGIF_TCK_SWCLK_PORT] = mask;
-}
-static_assert(DBGIF_TMS_SWDIO_PORT == DBGIF_TCK_SWCLK_PORT, "one masked store moves TCKC and TMSC together");
-#define CJTAG_NTDI_THEN_TMS(ntdi, tms, quarter, delay) \
-    CJTAG_PACKET(ntdi, delay);                         \
-    quarter;                                           \
-    quarter;                                           \
-    cjtag_rise_with(tms);                              \
-    delay;                                             \
-    PIN_SWCLK_TCK_CLR()
-#else
-#define CJTAG_NTDI_THEN_TMS(ntdi, tms, quarter, delay) \
-    CJTAG_PACKET(ntdi, delay);                         \
-    CJTAG_SAMPLED_PACKET(tms, quarter, delay)
-#endif
-
-#define CJTAG_FRAME_FUNCTION(speed, delay, quarter)           \
-    uint32_t cJTAG_Frame##speed(uint32_t tms, uint32_t tdi) { \
-        uint32_t tdo;                                         \
-                                                              \
-        CJTAG_NTDI_THEN_TMS(tdi ^ 1U, tms, quarter, delay);   \
-                                                              \
-        PIN_SWDIO_OUT_DISABLE();                              \
-        delay;                                                \
-        tdo = PIN_SWDIO_IN();                                 \
-        PIN_SWCLK_TCK_SET();                                  \
-        delay;                                                \
-        PIN_SWCLK_TCK_CLR();                                  \
-        PIN_SWDIO_OUT_ENABLE();                               \
-                                                              \
-        return tdo;                                           \
-    }
-
-CJTAG_FRAME_FUNCTION(Slow, CJTAG_DELAY(), CJTAG_QUARTER())
-CJTAG_FRAME_FUNCTION(Fast, PIN_DELAY_FAST(), CJTAG_QUARTER_FAST())
-
-/** The TDO packet, entered with TCKC high. The target drives TMSC from the fall that starts it, and
- * tools/jtagcheck.py wants the wire let go within 3 cycles of that fall. That is a most time, which
- * C cannot promise: inlined in the frame, a branch and the compiler's reloads of the pin addresses
- * landed there. So the fall and the release are one asm block, the stores PIN_SWCLK_TCK_CLR and
- * PIN_SWDIO_OUT_DISABLE make. The function sits in SRAM with the bit paths, since a flash miss
- * between them would cost 12 cycles. The rest are least times, which ARM's delay loop only
- * lengthens. */
-__attribute__((noinline)) HOT_PATH static uint32_t cjtag_tdo_packet(void) {
-    __asm volatile("str %[tck], [%[tck_clr]]\n\t"
-                   "str %[txen], [%[txen_clr]]\n\t"
-                   "str %[tms], [%[tms_dirclr]]"
-                   :
-                   : [tck] "r"(1U << DBGIF_TCK_SWCLK_PIN),
-                     [tck_clr] "r"(&DBGIF_TCK_SWCLK_GPIO->CLR[DBGIF_TCK_SWCLK_PORT]),
-                     [txen] "r"(1U << DBGIF_TMS_SWDIO_TXEN_PIN),
-                     [txen_clr] "r"(&DBGIF_TMS_SWDIO_TXEN_GPIO->CLR[DBGIF_TMS_SWDIO_TXEN_PORT]),
-                     [tms] "r"(1U << DBGIF_TMS_SWDIO_PIN),
-                     [tms_dirclr] "r"(&DBGIF_TMS_SWDIO_GPIO->DIRCLR[DBGIF_TMS_SWDIO_PORT])
-                   : "memory");
-    CJTAG_DELAY();
-    const uint32_t tdo = PIN_SWDIO_IN();
-    PIN_SWCLK_TCK_SET();
-    CJTAG_DELAY();
-    PIN_SWCLK_TCK_CLR();
-    PIN_SWDIO_OUT_ENABLE();
-    return tdo;
-}
-
-uint32_t cJTAG_FrameTap(uint32_t tms, uint32_t tdi) {
-    const bool shift = cJTAG_TapClock(tms);
-    if (((format == CJTAG_OSCAN2) || (format == CJTAG_OSCAN6)) && !shift) {
-        CJTAG_SAMPLED_PACKET(tms, CJTAG_QUARTER(), CJTAG_DELAY());
-        return 1U;
-    }
-    // The last frame may have been OScan2's single TMS packet, which the target sampled on its
-    // fall; this paced copy waits whatever came before.
-    CJTAG_QUARTER();
-    if (((format == CJTAG_OSCAN5) || (format == CJTAG_OSCAN6)) && shift) {
-        const bool pad = (format == CJTAG_OSCAN6) && entered;
-        PIN_SWDIO_OUT(tdi ^ 1U);
-        CJTAG_DELAY();
-        PIN_SWCLK_TCK_SET();
-        CJTAG_DELAY();
-        if (tms != 0U) {
-            // Each escape edge, and the fall after the last, a whole period after the one before:
-            // the standard's minimum is the target's shortest TCKC period, and the host's clock is
-            // no shorter. Three half-period delays, not two: from 10 MHz up a delay is shorter
-            // than the half period it is for, which a packet's stores make up and a gap does not.
-            CJTAG_DELAY();
-            CJTAG_DELAY();
-            PIN_SWDIO_OUT(tdi);
-            CJTAG_DELAY();
-            CJTAG_DELAY();
-            CJTAG_DELAY();
-            PIN_SWDIO_OUT(tdi ^ 1U);
-            CJTAG_DELAY();
-            CJTAG_DELAY();
-            CJTAG_DELAY();
-        }
-        if (pad) {
-            // The PAD packet, at nTDI's level, so that it moves nothing.
-            PIN_SWCLK_TCK_CLR();
-            PIN_SWDIO_OUT(tdi ^ 1U);
-            CJTAG_DELAY();
-            PIN_SWCLK_TCK_SET();
-            CJTAG_DELAY();
-        }
-    } else {
-        CJTAG_PACKET(tdi ^ 1U, CJTAG_DELAY());
-        CJTAG_QUARTER();
-        PIN_SWDIO_OUT(tms);
-        CJTAG_QUARTER();
-        PIN_SWCLK_TCK_SET();
-        CJTAG_DELAY();
-    }
-    return cjtag_tdo_packet();
-}
-
-/* Paced C, as cJTAG_FrameTap is: every constraint below is a least time, which ARM's delay loop only
- * lengthens, and tools/jtagcheck.py holds both compilers to them at every clock. Each waits a quarter
- * period before its first store too, since the fall before may be one the target samples. */
+/* Paced C: every constraint below is a least time, which ARM's delay loop only lengthens, and
+ * tools/jtagcheck.py holds both compilers to them at every clock. Each waits a quarter period
+ * before its first store too, since the fall before may be one the target samples. */
 
 void cJTAG_Escape(uint32_t edges, uint32_t tms) {
     // At least a whole period of the clock the host set, however long: the count and the clock are

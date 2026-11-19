@@ -1,57 +1,20 @@
-/** The compiled copies of ARM's JTAG_DP entry points, in the ARM reference build alone.
- *
- * JTAG_DP.c is built four times with its five entry points renamed each time: jtag4_* drives four
- * wires, cjtag_* drives paced OScan1 frames, cjtagf_* drives them without pacing, and cjtagt_*
- * drives OScan2, OScan5 and OScan6 frames, which follow the TAP. cjtag_dp.c
- * owns the names ARM's DAP.c calls and picks a copy per call.
- *
- * Every set is declared here so the dispatcher and the copies cannot drift: a prototype that
- * disagreed with the definition would link and then pass arguments wrongly.
- */
+/** The JTAG entry points behind the generated code, product images only (src/cjtag_dp.c). */
 #ifndef JTAG_DP_H
 #define JTAG_DP_H
 
 #include <stdint.h>
 
-/** ARM's DAP_JTAG_TransferBlock with the transfer inlined; JTAG only. */
-uint32_t JTAG_TransferBlock(const uint8_t* request, uint8_t* response);
 uint32_t JTAG_TransferCommand(const uint8_t* request, uint8_t* response);
 
-void jtag4_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo);
-void jtag4_IR(uint32_t ir);
-uint32_t jtag4_ReadIDCode(void);
-void jtag4_WriteAbort(uint32_t data);
-uint8_t jtag4_Transfer(uint32_t request, uint32_t* data);
-
-void cjtag_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo);
-void cjtag_IR(uint32_t ir);
-uint32_t cjtag_ReadIDCode(void);
-void cjtag_WriteAbort(uint32_t data);
-uint8_t cjtag_Transfer(uint32_t request, uint32_t* data);
-uint32_t cjtag_TransferBlock(const uint8_t* request, uint8_t* response);
-
-// The same copy again without the pacing, for requests above the switch point.
-void cjtagf_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo);
-void cjtagf_IR(uint32_t ir);
-uint32_t cjtagf_ReadIDCode(void);
-void cjtagf_WriteAbort(uint32_t data);
-uint8_t cjtagf_Transfer(uint32_t request, uint32_t* data);
-uint32_t cjtagf_TransferBlock(const uint8_t* request, uint8_t* response);
-
-// OScan2, OScan5 and OScan6, paced, src/cjtag_jtag_dp_tracked.c.
-void cjtagt_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo);
-void cjtagt_IR(uint32_t ir);
-uint32_t cjtagt_ReadIDCode(void);
-void cjtagt_WriteAbort(uint32_t data);
-uint8_t cjtagt_Transfer(uint32_t request, uint32_t* data);
-uint32_t cjtagt_TransferBlock(const uint8_t* request, uint8_t* response);
-
-// cJTAG over the generated frames, src/jtag_gen_dp.c, when JTAG_CODEGEN is on.
+// The generated paths for the wire in use, src/jtag_gen_dp.c.
 void jgen_Sequence(uint32_t info, const uint8_t* tdi, uint8_t* tdo);
 void jgen_IR(uint32_t ir);
 uint32_t jgen_ReadIDCode(void);
 void jgen_WriteAbort(uint32_t data);
 uint8_t jgen_Transfer(uint32_t request, uint32_t* data);
 uint32_t jgen_TransferBlock(const uint8_t* request, uint8_t* response);
+/** Entering a format starts the TDI that frames carry over at 1, as ARM's cJTAG restates it and as
+ * PORT_JTAG_SETUP leaves the conventional pin. */
+void jgen_RestateTdi(void);
 
 #endif

@@ -459,8 +459,9 @@ __STATIC_INLINE void PORT_CJTAG_CONNECT (void) {
   DBGIF_TDO_SWO_GPIO->DIRCLR[PIN_SWO_TDO_PORT] = (1U << PIN_SWO_TDO_PIN);
 }
 
-#ifdef ARM_CJTAG_TEST
-/** The test build of ARM's cJTAG (CMake ARM_CJTAG): its three hooks are the ones above. */
+#ifdef ARM_CJTAG
+/** The ARM reference build's cJTAG, external/cmsis-dap-cjtag.patch: its three hooks are the ones
+above. */
 #define DAP_CJTAG 1
 __STATIC_INLINE void PORT_CJTAG_SETUP (void) {
   PORT_CJTAG_CONNECT();

@@ -52,8 +52,9 @@ extern uint32_t arm_DAP_ProcessCommand(const uint8_t* request, uint8_t* response
  *  the SRAM dispatch below it would take all of DAP.c into SRAM with it.
  *
  * The wire changes only here, in DAP_Connect, DAP_Disconnect and vendor 0x95 (DAP_JTAG_Format), so
- * this is where the FUNC LED learns it. DAP_Connect(2) with an OScan format selected is Verge's: ARM's
- * handler would drive TDI and leave TCK high. */
+ * this is where the FUNC LED learns it. In a product image, DAP_Connect(2) with an OScan format
+ * selected is Verge's: ARM's handler would drive TDI and leave TCK high. The ARM reference build's
+ * port connects into the format itself. */
 __attribute__((noinline)) static uint32_t arm_command(const uint8_t* request, uint8_t* response) {
 #ifdef SWD_CODEGEN
     swd_sweep_watch(request);
@@ -111,20 +112,9 @@ COMMAND_PATH static uint32_t transfer_block(const uint8_t* request, uint8_t* res
     const uint32_t length = jgen_TransferBlock(request, response);
     jtag_gen_learn(wire);
     return length;
-#elif defined(ARM_CJTAG_TEST)
+#else
     // ARM's DAP_TransferBlock, framed by ARM's JTAG_DP.c.
     return arm_DAP_ProcessCommand(request - 1, response - 1) - (1U << 16) - 1U;
-#else
-    if (!cJTAG_Active()) {
-        return JTAG_TransferBlock(request, response);
-    }
-    if (cJTAG_Format() != CJTAG_OSCAN1) {
-        return cjtagt_TransferBlock(request, response);
-    }
-    if (DAP_Data.fast_clock) {
-        return cjtagf_TransferBlock(request, response);
-    }
-    return cjtag_TransferBlock(request, response);
 #endif
 }
 
@@ -187,7 +177,7 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
         return refuse(request, response);
     }
 #endif
-#ifndef ARM_CJTAG_TEST
+#ifdef JTAG_CODEGEN
     if ((*request == ID_DAP_SWJ_Sequence) && cJTAG_Active()) {
         // Raw output in an OScan format: one TCKC period a bit, as ARM's, but TMSC moves only while
         // TCKC is low, where ARM's moves it with SWCLK still high: on two pins that is an escape edge.
@@ -207,20 +197,16 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
         *response = *request;
         return (1U << 16) + 1U + SWD_TransferCommand(request + 1, response + 1);
     }
-#ifndef ARM_CJTAG_TEST
-    if ((*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {
 #ifdef JTAG_CODEGEN
+    if ((*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {
         if (jtag_sweep_pending()) {
             uint32_t const result = jtag_sweep_connect(request, response);
             jtag_gen_learn(jtag_gen_wire());
             return result;
         }
-#endif
         *response = *request;
         uint32_t const result = (1U << 16) + 1U + JTAG_TransferCommand(request + 1, response + 1);
-#ifdef JTAG_CODEGEN
         jtag_gen_learn(jtag_gen_wire());
-#endif
         return result;
     }
 #endif

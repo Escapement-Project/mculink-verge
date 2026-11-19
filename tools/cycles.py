@@ -2062,7 +2062,7 @@ def check(
 
     # The sequence commands are how a host resets a line, switches protocol and walks a TAP by
     # hand, so they run on every attach -- and no transfer reaches the code that serves them. In
-    # particular the cJTAG copy's JTAG_Sequence entry point has nothing else exercising it.
+    # particular nothing else exercises JTAG_Sequence's cJTAG framing.
     for wire, name, payload in (
         (
             "swd",

@@ -12,10 +12,11 @@ or the lower 16 KB in a lab build, where the code lab's arena is the upper 16 KB
 uses SRAMX.
 
 The core fetches SRAMX over C-AHB and makes its data accesses over S-AHB, so the two never wait
-for each other. ARM's bit paths run from SRAM, which the core fetches over S-AHB. There every
+for each other. ARM's SWD bit paths run from SRAM, which the core fetches over S-AHB. There every
 bus cycle carries one instruction word or one data access. A GPIO store can then hold back the
-next instruction by a cycle, depending on where the code sits in memory. So ARM's paths, which the
-`+armwire` reference build keeps, can lose a cycle to where their code lands. The generated code
+next instruction by a cycle, depending on where the code sits in memory. ARM's JTAG and cJTAG paths
+run from flash, where a fetch the prefetch buffer misses costs more. So ARM's paths, which the
+`+armwire` reference build keeps, can lose cycles to where their code lands. The generated code
 cannot.
 
 ## What an instruction costs from SRAMX

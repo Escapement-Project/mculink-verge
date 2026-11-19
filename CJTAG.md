@@ -70,30 +70,21 @@ Clause 25 covers the OScan formats, 10.4 the escapes, and 9.10 the configuration
 
 ## ARM's paths
 
-The `+armwire` reference build frames cJTAG through ARM's C, which the gate holds the generated
-frames to with `tools/equiv.py`. It compiles ARM's `JTAG_DP.c` four times, and only the wire
-framing differs:
+The `+armwire` reference build runs the port of cJTAG proposed for ARM's CMSIS-DAP, kept in
+`external/cmsis-dap-cjtag.patch`. CMake applies the patch to a copy of the submodule's sources.
+ARM's `JTAG_DP.c` then frames every JTAG command itself, in all four formats, and
+`src/cjtag_arm_shim.c` maps Verge's vendor commands onto its `DAP_JTAG_Format` and
+`DAP_JTAG_Escape`. So the host tools drive both builds the same way. The gate holds the generated
+frames to that build's with `tools/equiv.py`.
 
-- as it ships, with its five entry points renamed `jtag4_*`, for conventional JTAG;
-- through `src/cjtag_jtag_dp.c`, renamed `cjtag_*`, with the pin layer shadowed so that each JTAG
-  clock becomes one OScan1 frame;
-- through `src/cjtag_jtag_dp_fast.c`, renamed `cjtagf_*`, which drives that frame without its
-  pacing loop for requests above the switch point;
-- through `src/cjtag_jtag_dp_tracked.c`, renamed `cjtagt_*`, which follows the TAP from the TMS it
-  sends and frames each clock in OScan2, OScan5 or OScan6 by the TAP's state (`cJTAG_FrameTap`).
+The two differ in one thing on the wire, and it is deliberate. The port lets go of TMSC earlier in
+a frame, as 1149.7 14.2.3 has it: before the rise of the packet ahead of the TDO packet, or with
+TCKC still high once an EOT escape's edges are done. Verge's frames let go just after the fall that
+starts the TDO packet. TMSC's keeper holds the level in between, so the target clocks in the same
+bits either way, and `tools/equiv.py` compares the two hand-offs as one.
 
-`src/cjtag_dp.c` owns the real names and picks a path per call. No path carries a per-bit branch,
-and none duplicates the others' TAP walking, `ir_before` and `ir_length` accounting or transfer
-retry logic.
-
-The copies rest on one contract: `JTAG_DP.c` expresses every clock through four macros, which
-expand, in order, to `PIN_TDI_OUT` (sometimes), `PIN_TCK_CLR`, `PIN_DELAY`, `PIN_TDO_IN`
-(sometimes), `PIN_TCK_SET`, `PIN_DELAY`. Shadowing those names stages TMS and TDI, opens a frame on
-`PIN_TCK_CLR`, and sends it at whichever of `PIN_TDO_IN` or `PIN_TCK_SET` comes first. The
-submodule is pinned to a release, so the order cannot change unless someone moves the tag.
-
-A frame is entered and left with TCKC low and the wire driven. ARM's JTAG code does not rest there.
-Taking the wire back after the TDO packet moves TMSC from whatever the target drove to what
+A frame is entered and left with TCKC low and the wire driven, where conventional JTAG rests TCK
+high. Taking the wire back after the TDO packet moves TMSC from whatever the target drove to what
 the probe's output latch holds, and doing that with TCKC high would put an escape edge in every
 frame. OpenOCD's OScan1 driver sequences the three packets the same way, with TCK resting low
 between them.

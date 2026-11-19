@@ -16,14 +16,20 @@ Code that predates the rule and breaks it, which is the work list:
 
 - ARM's SWD paths: the unrolled C in `.ramfunc` and SW_DP.c's transfer. Only the ARM reference
   build (both generators off) carries them, as the wire tools/equiv.py holds the generated paths to.
-- The JTAG and cJTAG paths (`JTAG_DP.c`, compiled four times) and their pacing:
-  likewise the ARM reference build's alone.
+- The JTAG and cJTAG paths (`JTAG_DP.c`, with cJTAG from `external/cmsis-dap-cjtag.patch`) and
+  their pacing: likewise the ARM reference build's alone.
 - The sequence commands `DAP_SWJ_Sequence` and `DAP_SWD_Sequence`, which every build runs on ARM's
   C. `DAP_JTAG_Sequence` runs on the generated scans.
 - `cJTAG_Escape` and `cJTAG_Clock` (`src/cjtag.c`), C paced by `DAP_Data.clock_delay`: vendor
-  0x96's escapes and raw `DAP_SWJ_Sequence` with an OScan format selected, in every build (user,
-  2026-11-11). Every constraint on them is a least time; `tools/jtagcheck.py --wire raw` holds both
-  compilers to them.
+  0x96's escapes and raw `DAP_SWJ_Sequence` with an OScan format selected, in product images (user,
+  2026-11-11). The ARM reference build sends the port's. Every constraint on them is a least time;
+  `tools/jtagcheck.py --wire raw` holds both compilers to them.
+
+**Keep the ARM reference build plain.** It tests what a typical ARM-reference probe does: ARM's
+CMSIS-DAP, with cJTAG from the port in `external/cmsis-dap-cjtag.patch`. Add no speed-ups to it:
+anything where speed matters belongs on the generated paths (user, 2026-11-19). Its SWD still
+carries older ones (`src/swd_dp.c`'s transfer and block loop, `.ramfunc`, `-funroll-loops` on
+SW_DP.c). Refresh the patch from the port with the command in its header when the port changes.
 
 **Gate on both compilers.** `uv run tools/gate.py` before committing firmware or tool changes. It
 runs the host checks and builds gcc and clang together, each in the default configuration and as

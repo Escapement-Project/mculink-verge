@@ -19,14 +19,14 @@ Some C from before the rule still sets wire timing. It is the list of what to re
 - ARM's SWD paths: the unrolled C in `.ramfunc` and the transfer in `SW_DP.c`. Only the ARM
   reference build, with both generators off, carries them. It is the wire `tools/equiv.py` holds
   the generated paths to.
-- ARM's JTAG and cJTAG paths in `JTAG_DP.c`, compiled four times, and their pacing. Again only the
-  ARM reference build carries them.
+- ARM's JTAG and cJTAG paths in `JTAG_DP.c`, with cJTAG from `external/cmsis-dap-cjtag.patch`, and
+  their pacing. Again only the ARM reference build carries them.
 - The sequence commands `DAP_SWJ_Sequence` and `DAP_SWD_Sequence`, which every build runs on ARM's
   C. `DAP_JTAG_Sequence` runs on the generated scans.
 - `cJTAG_Escape` and `cJTAG_Clock` in `src/cjtag.c`, C paced by `DAP_Data.clock_delay`. They send
   vendor command `0x96`'s escapes, and a raw `DAP_SWJ_Sequence` while an OScan format is
-  selected, in every build. Every constraint on them is a least time, and
-  `tools/jtagcheck.py --wire raw` holds both compilers to them.
+  selected, in product images. The ARM reference build sends the port's. Every constraint on them
+  is a least time, and `tools/jtagcheck.py --wire raw` holds both compilers to them.
 
 ## Keep the Limits table current
 

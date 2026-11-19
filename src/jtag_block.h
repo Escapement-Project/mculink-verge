@@ -12,8 +12,7 @@
  * addresses each time. Expanding the loop next to a particular transfer lets all of that happen
  * once per block instead.
  *
- * Three expansions use it: JTAG in src/jtag_dp_block.c, and the two OScan1 copies in
- * src/cjtag_jtag_dp.c. The logic is ARM's, transcribed once here rather than three times.
+ * The generated path in src/jtag_gen_dp.c expands it. The logic is ARM's, transcribed.
  */
 #ifndef JTAG_BLOCK_H
 #define JTAG_BLOCK_H
@@ -21,26 +20,10 @@
 #include "hot.h"
 #include "byte_io.h"
 
-/** Attributes on the generated block function.
- *
- * Every expansion is a bit path, so every expansion gets `HOT_PATH` and runs from SRAM. The
- * reasoning is in src/hot.h; the four SWD entry points were measured paying one and two flash
- * accesses on two of every four data bits, and these have the same straight-line shape.
- *
- * The cJTAG copies add `flatten`. Their transfer is larger than the SWD and JTAG ones, so
- * the compiler leaves it out of line and the block loop calls it: a nine-register prologue and
- * epilogue once a word, which is the exact cost this header exists to pay once a block. A
- * per-file `-finline-limit` cannot reach it, because link-time optimisation decides inlining at
- * link time and never sees a compile flag. `flatten` also decides whether the move is worth
- * anything, since an out-of-line transfer would leave the per-bit code in flash.
- */
-#ifndef JTAG_BLOCK_ATTRS
-#define JTAG_BLOCK_ATTRS HOT_PATH
-#endif
-
-/** ARM's DAP_JTAG_TransferBlock, with the transfer inlined into the loop. */
+/** ARM's DAP_JTAG_TransferBlock, with the transfer inlined into the loop. A bit path, so it runs
+ * from SRAM (src/hot.h). */
 #define JTAG_BLOCK_FUNCTION(block_name, xfer, set_ir)                                             \
-    JTAG_BLOCK_ATTRS static uint32_t block_name(const uint8_t* request, uint8_t* response) {      \
+    HOT_PATH static uint32_t block_name(const uint8_t* request, uint8_t* response) {              \
         uint32_t request_count;                                                                   \
         uint32_t request_value;                                                                   \
         uint32_t response_count = 0U;                                                             \

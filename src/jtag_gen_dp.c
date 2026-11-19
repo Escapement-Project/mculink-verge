@@ -31,6 +31,8 @@ static_assert(DAP_JTAG_DEV_CNT + 4U <= JTAG_GEN_FRAMES_MAX, "JTAG transfer heade
  * it. With JTAG the pin itself is the state, as it is for ARM. */
 static uint32_t tdi_level;
 
+void jgen_RestateTdi(void) { tdi_level = 1U; }
+
 static uint32_t tdi_now(void) { return cJTAG_Active() ? tdi_level : PIN_TDI_IN(); }
 
 static uint32_t held(void) { return tdi_now() != 0U ? 0xFFFFFFFFU : 0U; }

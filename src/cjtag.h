@@ -120,29 +120,4 @@ bool cJTAG_Enter(uint32_t format, uint32_t tap);
  */
 void cJTAG_Deactivate(void);
 
-/** One OScan1 frame: the three TMSC packets that carry one JTAG clock.
- *
- * nTDI then TMS driven by us, then TDO with the wire released. Returns the TDO bit.
- *
- * Entered and left with TCKC low and the wire driven, which is what cJTAG_Enter leaves behind.
- *
- * Two copies, paced and not. The caller picks once per transfer; see the note in cjtag.c for why
- * it cannot be picked per frame.
- */
-uint32_t cJTAG_FrameSlow(uint32_t tms, uint32_t tdi);
-uint32_t cJTAG_FrameFast(uint32_t tms, uint32_t tdi);
-
-/** One frame in OScan2, OScan5 or OScan6, paced, by the tracked TAP state, which it moves.
- *
- * OScan2: OScan1's three packets in a Shift state, and outside one a single TMS packet, for which
- * the target sends nothing back and this returns 1, the level a released wire reads there.
- *
- * OScan5: OScan1's three packets outside a Shift state, and in one nTDI and TDO alone, the TMS of
- * which is 0 unless the nTDI packet carries an EOT escape, two TMSC edges with TCKC high (1149.7
- * Figure 25-11). So TMS 1 in Shift, the move to Exit1, is that escape.
- *
- * OScan6: OScan2's frames outside a Shift state and OScan5's in one, with a PAD packet between nTDI
- * and TDO in the first frame after entering it. */
-uint32_t cJTAG_FrameTap(uint32_t tms, uint32_t tdi);
-
 #endif

@@ -55,7 +55,9 @@ option(SWD_CODEGEN "Generate the SWD transfer paths at runtime" ON)
 # Generate the four-wire and two-pin JTAG paths at runtime into SRAMX. See src/jtag_gen.c.
 option(JTAG_CODEGEN "Generate the JTAG transfer paths at runtime" ON)
 # A product image generates both and carries no ARM transfer path. Both off is the ARM reference,
-# the wire tools/equiv.py holds the generated paths to: a test build, marked +armwire.
+# the wire tools/equiv.py holds the generated paths to: a test build, marked +armwire. Its JTAG is
+# ARM's CMSIS-DAP as it ships, with cJTAG from external/cmsis-dap-cjtag.patch. Keep it simple:
+# anything that needs to be fast belongs on the generated paths.
 if((SWD_CODEGEN AND NOT JTAG_CODEGEN) OR (JTAG_CODEGEN AND NOT SWD_CODEGEN))
   message(FATAL_ERROR
     "SWD_CODEGEN and JTAG_CODEGEN go together: both on for a product image, both off for the ARM "
@@ -67,21 +69,6 @@ option(USB_RAM "Run TinyUSB from SRAM" ON)
 # Vendor 0x88, which runs code the host sends. A bench instrument for the emulator's cost model;
 # src/code_lab.c says what it measures.
 option(CODE_LAB "Build the vendor 0x88 code lab" OFF)
-option(CJTAG_ZERO_HOLD "Lab: move TMSC in the store that ends the nTDI packet, to measure a target's hold" OFF)
-option(CJTAG_ZERO_SETUP "Lab: move TMSC in the store of the rise that clocks the TMS packet, to tell sampling edges apart" OFF)
-if((CJTAG_ZERO_HOLD OR CJTAG_ZERO_SETUP) AND (SWD_CODEGEN OR JTAG_CODEGEN))
-  message(FATAL_ERROR "CJTAG_ZERO_HOLD and CJTAG_ZERO_SETUP change ARM's cJTAG frames only: build them with SWD_CODEGEN and JTAG_CODEGEN off")
-endif()
-# A test of ARM's cJTAG for CMSIS-DAP: the CMSIS-DAP tree at this path, with DAP_JTAG_Format and
-# DAP_JTAG_Escape, in place of Verge's cJTAG layer, behind Verge's vendor IDs (src/cjtag_arm_shim.c).
-# The ARM reference build only. Never shipped; the version string carries it.
-set(ARM_CJTAG "" CACHE PATH "A CMSIS-DAP tree with cJTAG to test in place of Verge's, ARM reference build only")
-if(ARM_CJTAG AND (SWD_CODEGEN OR JTAG_CODEGEN))
-  message(FATAL_ERROR "ARM_CJTAG replaces ARM's own JTAG paths: build it with SWD_CODEGEN and JTAG_CODEGEN off")
-endif()
-if(CJTAG_ZERO_HOLD AND CJTAG_ZERO_SETUP)
-  message(FATAL_ERROR "CJTAG_ZERO_HOLD and CJTAG_ZERO_SETUP are two different measurements: build one")
-endif()
 # Add shared-timer counters for the USB and two-core command path. Bench-only; off in shipped images.
 option(DAP_TIMING_DIAGNOSTICS "Measure command handoff stages" OFF)
 # A test build that attaches at full speed, which needs no full-speed hub: `always` never chirps,
@@ -117,15 +104,6 @@ endif()
 if(CODE_LAB)
   string(APPEND FW_VARIANT "+lab")
 endif()
-if(CJTAG_ZERO_HOLD)
-  string(APPEND FW_VARIANT "+zero-hold-lab")
-endif()
-if(CJTAG_ZERO_SETUP)
-  string(APPEND FW_VARIANT "+zero-setup-lab")
-endif()
-if(ARM_CJTAG)
-  string(APPEND FW_VARIANT "+arm-cjtag")
-endif()
 if(DAP_TIMING_DIAGNOSTICS)
   string(APPEND FW_VARIANT "+timing")
 endif()
@@ -147,8 +125,38 @@ add_dependencies(${PROJECT_NAME} fw_version)
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 
 set(DAP_TREE ${CMAKE_CURRENT_SOURCE_DIR}/external/CMSIS-DAP)
-if(ARM_CJTAG)
-  set(DAP_TREE ${ARM_CJTAG})
+if(NOT JTAG_CODEGEN)
+  # The ARM reference build's cJTAG is the port proposed for ARM's CMSIS-DAP, applied to a staging
+  # copy of the submodule's sources. Git must not find this repository from there: inside one, or
+  # with GIT_DIR set, `git apply` takes its paths from elsewhere and patches nothing without a word,
+  # so the result is checked too. A file then reaches the tree the build reads only when its content
+  # changed: a reconfigure rebuilds nothing it need not, and a file the patch stops changing comes
+  # back with a new time.
+  find_package(Git REQUIRED)
+  set(DAP_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/external/cmsis-dap-cjtag.patch)
+  set(DAP_STAGE ${CMAKE_CURRENT_BINARY_DIR}/cmsis-dap-cjtag-stage)
+  set(DAP_PATCHED ${CMAKE_CURRENT_BINARY_DIR}/cmsis-dap-cjtag)
+  file(GLOB DAP_FILES RELATIVE ${DAP_TREE} CONFIGURE_DEPENDS
+       ${DAP_TREE}/Firmware/Include/* ${DAP_TREE}/Firmware/Source/*)
+  file(REMOVE_RECURSE ${DAP_STAGE})
+  file(COPY ${DAP_TREE}/Firmware/Include ${DAP_TREE}/Firmware/Source DESTINATION ${DAP_STAGE}/Firmware)
+  execute_process(
+    COMMAND ${CMAKE_COMMAND} -E env --unset=GIT_DIR --unset=GIT_WORK_TREE
+            GIT_CEILING_DIRECTORIES=${CMAKE_CURRENT_BINARY_DIR}
+            ${GIT_EXECUTABLE} apply --whitespace=nowarn ${DAP_PATCH}
+    WORKING_DIRECTORY ${DAP_STAGE}
+    RESULT_VARIABLE _applied
+    ERROR_VARIABLE _apply_error)
+  file(READ ${DAP_STAGE}/Firmware/Include/DAP.h _dap_h)
+  if(NOT _applied EQUAL 0 OR NOT _dap_h MATCHES "ID_DAP_JTAG_Format")
+    message(FATAL_ERROR "external/cmsis-dap-cjtag.patch does not apply to external/CMSIS-DAP:\n${_apply_error}")
+  endif()
+  foreach(_file ${DAP_FILES})
+    configure_file(${DAP_STAGE}/${_file} ${DAP_PATCHED}/${_file} COPYONLY)
+  endforeach()
+  list(TRANSFORM DAP_FILES PREPEND ${DAP_TREE}/ OUTPUT_VARIABLE _dap_sources)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${DAP_PATCH} ${_dap_sources})
+  set(DAP_TREE ${DAP_PATCHED})
 endif()
 set(DAP_SRC ${DAP_TREE}/Firmware/Source)
 
@@ -195,23 +203,14 @@ set(MCUX_DRIVERS ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcuxsdk
 target_sources(${CORE1} PRIVATE src/energy_identity.c)
 set(LPC55_DEVICE ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcux-devices-lpc/LPC5500)
 
-# ARM's JTAG paths, four-wire and the cJTAG copies with the wire layer replaced, are the ARM
-# reference build's alone. They keep their places in the list: link order moves GCC's LTO output.
-set(ARM_CJTAG_SOURCES "")
+# ARM's JTAG_DP.c, cJTAG included, is the ARM reference build's alone, behind Verge's vendor IDs
+# (src/cjtag_arm_shim.c). It keeps its place in the list: link order moves GCC's LTO output.
 set(ARM_JTAG_SOURCES "")
-if(NOT JTAG_CODEGEN)
-  set(ARM_CJTAG_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp.c
-                        ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp_fast.c
-                        ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp_tracked.c)
-  set(ARM_JTAG_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_dp_block.c ${DAP_SRC}/JTAG_DP.c)
-endif()
 set(VERGE_CJTAG_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag.c ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_dp.c)
-if(ARM_CJTAG)
-  # ARM's JTAG_DP.c owns the JTAG names and frames OScan1 itself.
-  set(ARM_CJTAG_SOURCES "")
+if(NOT JTAG_CODEGEN)
   set(ARM_JTAG_SOURCES ${DAP_SRC}/JTAG_DP.c)
   set(VERGE_CJTAG_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_arm_shim.c)
-  target_compile_definitions(${CORE1} PRIVATE ARM_CJTAG_TEST=1)
+  target_compile_definitions(${CORE1} PRIVATE ARM_CJTAG=1)
 endif()
 target_sources(${CORE1} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/core1_start.S
@@ -235,7 +234,6 @@ target_sources(${CORE1} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_vendor.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/sample_probe.c
   ${VERGE_CJTAG_SOURCES}
-  ${ARM_CJTAG_SOURCES}
   ${DAP_SRC}/SW_DP.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_dp.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_dispatch.c
@@ -299,7 +297,6 @@ set_source_files_properties(${DAP_SRC}/DAP.c PROPERTIES COMPILE_DEFINITIONS
 set_source_files_properties(
   ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_dp.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_dispatch.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_dp_block.c
   PROPERTIES COMPILE_OPTIONS "-funroll-loops"
   )
 
@@ -382,13 +379,6 @@ if(JTAG_CODEGEN)
                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_gen_dp.c
                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_sweep.c)
   target_compile_definitions(${CORE1} PRIVATE JTAG_CODEGEN=1)
-endif()
-
-if(CJTAG_ZERO_HOLD)
-  target_compile_definitions(${CORE1} PRIVATE CJTAG_ZERO_HOLD=1)
-endif()
-if(CJTAG_ZERO_SETUP)
-  target_compile_definitions(${CORE1} PRIVATE CJTAG_ZERO_SETUP=1)
 endif()
 
 if(CODE_LAB)
@@ -475,27 +465,14 @@ set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/core1_image.S PROPER
   OBJECT_DEPENDS ${CORE1_BIN}
   )
 
-# ARM's JTAG entry points are renamed here so src/cjtag_dp.c can own the real names and dispatch
-# between four-wire and OScan1. Renaming at compile time rather than patching keeps the submodule
-# at a released tag.
-if(NOT ARM_CJTAG)
-  set_source_files_properties(${DAP_SRC}/JTAG_DP.c PROPERTIES COMPILE_DEFINITIONS
-    "JTAG_Sequence=jtag4_Sequence;JTAG_IR=jtag4_IR;JTAG_ReadIDCode=jtag4_ReadIDCode;JTAG_WriteAbort=jtag4_WriteAbort;JTAG_Transfer=arm_jtag4_Transfer"
-    )
-endif()
-
 # Unroll the bit paths. ARM unrolls the packet phases of a transfer by hand but leaves the 32-bit
 # data phases as loops, so the data bits carry a loop branch and an induction variable that the
 # packet bits do not: measured on the emulator, 22 cycles a bit against 16 at the same setting.
-# Only these three files, because unrolling anything else is flash spent for nothing.
+# Only SW_DP.c: JTAG_DP.c is the ARM reference build's alone, which keeps it as ARM ships it, and
+# unrolling anything else is flash spent for nothing.
 set_source_files_properties(
-  ${DAP_SRC}/SW_DP.c ${DAP_SRC}/JTAG_DP.c
+  ${DAP_SRC}/SW_DP.c
   PROPERTIES COMPILE_OPTIONS "${UPSTREAM_RELAX};-funroll-loops"
-  )
-set_source_files_properties(
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_jtag_dp_fast.c
-  PROPERTIES COMPILE_OPTIONS "-funroll-loops"
   )
 
 target_include_directories(${PROJECT_NAME} PUBLIC

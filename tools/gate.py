@@ -257,13 +257,16 @@ def main() -> int:
     )
     # The reference images' cJTAG frames, held to the wire rules alone: their ARM paths run phases
     # shorter than asked (README.md, "Check"), and equiv compares levels, which a late release passes.
+    # 1, 5 and 6 MHz are three of ARM's paced settings, each sampling a modelled target's TDO with
+    # room. The fastest, 7 to 8.8 MHz, samples OScan5 and OScan6 at the window's edge under GCC, and
+    # from 9.375 MHz ARM's paths, JTAG and cJTAG alike, sample it early.
     reference_images = [directory for _, codegen, directory in built if not codegen]
     if reference_images:
         timed_checks.append((
             "cJTAG wire rules reference images",
             ["uv", "run", "tools/jtagcheck.py",
              *(os.path.join(directory, "mculink_cjtag_core1.elf") for directory in reference_images),
-             "--wire", "cjtag", "cjtag2", "cjtag5", "cjtag6", "--mhz", "1", "5", "10", "--no-clock-rules"],
+             "--wire", "cjtag", "cjtag2", "cjtag5", "cjtag6", "--mhz", "1", "5", "6", "--no-clock-rules"],
         ))
     image_jobs = sum(cycles_jobs if codegen else min(2, cycles_jobs) for _, codegen, _ in built)
     jobs_per_timed_check = max(

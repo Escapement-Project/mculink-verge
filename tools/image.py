@@ -1572,8 +1572,8 @@ def check_image_boards(c: Checker, elf: str) -> None:
 
 
 # ARM's transfer paths, which only the reference build (both generators off) may carry.
-ARM_TRANSFER_PATHS = re.compile(r"(arm_SWD_Transfer|arm_jtag4_Transfer|jtag4_[A-Za-z]+|cjtag[ft]?_[A-Z][A-Za-z]*|cJTAG_Frame(Slow|Fast)"
-                                r"|JTAG_TransferBlock(Fast|Slow)?|SWD_Transfer(Block|Command)?(Fast|Slow))")
+ARM_TRANSFER_PATHS = re.compile(r"(arm_SWD_Transfer|JTAG_Transfer(Fast|Slow|OScan)|OScan1?_Frame"
+                                r"|SWD_Transfer(Block|Command)?(Fast|Slow))")
 
 
 def check_core1_placement(c: Checker, elf: str) -> None:
@@ -2968,13 +2968,13 @@ def main() -> int:
     # the transfers when an input changed, and the first DAP_Transfer after a line reset or a
     # DAP_JTAG_Configure, which may measure the read latency. The generated JTAG path only where it
     # is built.
-    jtag_gen = ("jgen_TransferBlock", "block_whole", "jgen_IR", "jtag_gen_ready", "jtag_gen_ready_transfers",
-                "jtag_gen_learn", "jgen_Transfer")
+    jtag_gen = ("JTAG_TransferCommand", "jgen_TransferBlock", "block_whole", "jgen_IR", "jtag_gen_ready",
+                "jtag_gen_ready_transfers", "jtag_gen_learn", "jgen_Transfer")
     if not any(name.split(".")[0] == "jtag_gen_ready" for name in symbols_with_size(args.core1)):
         jtag_gen = ()
     check_sram_code(c, args.core1, "CPU 1 runs a command's dispatch",
                     ("serve", "DAP_ExecuteCommandSized", "execute_one", "DAP_ProcessCommand", "transfer_block", "SWD_TransferBlock",
-                     "SWD_TransferCommand", "JTAG_TransferCommand", "memcpy") + jtag_gen,
+                     "SWD_TransferCommand", "memcpy") + jtag_gen,
                     allow=("arm_command", "arm_DAP_ProcessCommand", "regenerate", "swd_sweep_connect", "jtag_sweep_connect"))
     # The generators, where they are built: every connect-time latency search runs one many times
     # (src/hot.h, GEN_PATH). Allowed: what each compiler calls to zero a struct.
