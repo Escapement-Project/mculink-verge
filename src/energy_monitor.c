@@ -619,6 +619,8 @@ __attribute__((noinline)) static void capture_ring_init(uint32_t words) {
 static uint32_t control_request(bool quiet) {
     uint32_t const requested = ((dap_shared.energy_control_request & ~DAP_ENERGY_QUIET_FLAG) + 2U) |
                                (quiet ? DAP_ENERGY_QUIET_FLAG : 0U);
+    // A handback publishes everything this core wrote to the state.
+    __DMB();
     dap_shared.energy_control_request = requested;
     __DMB();
     MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQSET = DAP_CORE_MAILBOX_WAKE_MASK;

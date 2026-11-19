@@ -288,8 +288,14 @@ typedef struct {
     bool high_range_only;
 } energy_stream_header_t;
 
+/** A full barrier. On Arm, DMB SY by hand: gcc's fence emits DMB ISH, which Armv8-M reserves
+ *  (DDI0553B C2.4.58). The host tests take the fence. */
 ENERGY_STREAM_INLINE void energy_stream_barrier(void) {
+#if defined(__arm__)
+    __asm__ volatile("dmb sy" ::: "memory");
+#else
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
+#endif
 }
 
 ENERGY_STREAM_INLINE uint8_t* energy_stream_u16(uint8_t* out, uint16_t value) {
@@ -719,6 +725,8 @@ ENERGY_STREAM_INLINE uint64_t energy_stream_time(struct energy_stream* stream, u
         }
         stream->next_counts += hold.came - stream->next_raw;
         stream->next_raw = hold.came;
+        // The entry is read before CPU 1 may record the next hold over it.
+        energy_stream_barrier();
         stream->holds_read++;
         stream->gap |= ENERGY_STREAM_FLAG_HELD;
     }

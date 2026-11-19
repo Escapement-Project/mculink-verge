@@ -401,9 +401,13 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
             swo[17] = dap_shared.swo_lost;
             return tud_control_xfer(rhport, request, swo, (uint16_t)TU_MIN(sizeof(swo), request->wLength));
         }
-        // A snapshot, so the reply is one consistent read of what CPU 1 last wrote.
+        // A snapshot, so the reply is one consistent read of what CPU 1 last wrote. CPU 1 writes
+        // `exception` last, so read it first: set, the fault fields read after it are complete.
         static dap_core1_status_t status;
+        uint32_t const exception = dap_shared.core1.exception;
+        __DMB();
         status = dap_shared.core1;
+        status.exception = exception;
         return tud_control_xfer(rhport, request, &status, (uint16_t)TU_MIN(sizeof(status), request->wLength));
     }
 

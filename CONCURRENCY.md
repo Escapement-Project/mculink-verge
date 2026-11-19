@@ -49,8 +49,13 @@ is part of the look (`serve`). It then checks for work still queued, the interru
 
 Every handover between the cores follows one rule. The writer writes the data, then a memory
 barrier (`__DMB`), then the flag that says it is there. The reader reads the flag, then a barrier,
-then the data. The flags are the lengths, states, counts and sequence numbers below. All of them are
+then the data. Handing a slot back is a handover too: the last read of its data, a barrier, then
+the flag. The flags are the lengths, states, counts and sequence numbers below. All of them are
 `volatile`. Several have more than one writer, but each change of state has exactly one.
+
+`dap_shared` is Device memory, and nothing relies on that to keep accesses in order. Armv8-M keeps
+Device accesses in program order only within one peripheral, and never against Normal memory, where
+`dap_stage`, the energy state and the stream's slots are.
 
 ## Commands and replies
 

@@ -141,12 +141,13 @@ __attribute__((section(".ramfunc"))) void tud_vendor_rx_cb(uint8_t index, const 
     uint32_t const publish_start = record_timing ? dap_timing_now() : 0U;
 #endif
     dap_shared.request_seq[tail] = dap_shared.next_request_seq++;
+#ifdef DAP_TIMING_DIAGNOSTICS
+    // Before the length: CPU 1 can take the command the moment that lands.
+    dap_stage.request_tick[tail] = dap_timing_now();
+#endif
     __DMB();
     dap_shared.request_len[tail] = (uint16_t)length;
     __DMB();
-#ifdef DAP_TIMING_DIAGNOSTICS
-    dap_stage.request_tick[tail] = dap_timing_now();
-#endif
     dap_shared.request_tail = dap_usb_next_slot(dap_shared.request_tail, REQUEST_SLOTS);
 #ifdef DAP_TIMING_DIAGNOSTICS
     if (record_timing) {
@@ -197,6 +198,8 @@ __attribute__((section(".ramfunc"))) static void bulk_reply_sent(void) {
     }
     dap_stage.response_timing_excluded[head] = 0U;
 #endif
+    // The slot's bytes are read before CPU 1 can write the next reply into it.
+    __DMB();
     dap_shared.response_head = dap_usb_slot_release(dap_shared.response_len, dap_shared.response_head, REQUEST_SLOTS);
     bulk_reply_in_flight = false;
     __DMB();
@@ -205,6 +208,7 @@ __attribute__((section(".ramfunc"))) static void bulk_reply_sent(void) {
 
 /** The same for the head HID reply. */
 __attribute__((section(".ramfunc"))) static void hid_reply_sent(void) {
+    __DMB();
     dap_shared.hid_response_head =
         dap_usb_slot_release(dap_shared.hid_response_len, dap_shared.hid_response_head, REQUEST_SLOTS);
     hid_reply_in_flight = false;
