@@ -18,7 +18,7 @@
 #define UUID_ADDRESS 0x0009FC70UL
 #define UUID_BYTES 16U
 
-/** Distinguishes our firmware from the stock image at a glance.
+/** Distinguishes our firmware from the stock image at a glance: EV, for Escapement Verge.
  *
  * The serial is what every host tool addresses a probe by, and the bench runs two MCU-Links side
  * by side with different firmware. A prefix means the one running this image is obvious in
@@ -28,7 +28,7 @@
  * stock serial -- a udev rule, a saved probe selector -- has to be updated. NXP's encoding is not
  * reproducible from ARM's reference sources, which derive a different string entirely.
  */
-#define SERIAL_PREFIX "CJ"
+#define SERIAL_PREFIX "EV"
 
 static char serial[16];
 

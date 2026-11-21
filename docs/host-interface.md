@@ -54,7 +54,7 @@ A host recognises a Verge probe by its USB descriptors and `DAP_Info` strings:
 | bcdDevice | `0x0100`, plus a bit for each function the probe offers: debug bit 0, the console (VCOM) bit 1, the Pro's second console bit 2, Verge Aux bit 3 |
 | Manufacturer string, `DAP_Info` 0x01 | `Escapement Project` |
 | Product string, `DAP_Info` 0x02 | `Verge CMSIS-DAP`, or `Verge Pro CMSIS-DAP` on a Pro |
-| Serial number, `DAP_Info` 0x03 | `CJ` and 8 hex digits of a CRC32 over the chip's unique ID, or `CJNOUUID` without one |
+| Serial number, `DAP_Info` 0x03 | `EV` and 8 hex digits of a CRC32 over the chip's unique ID, or `EVNOUUID` without one |
 | `DAP_Info` 0x04 | `2.1.2`, the version of Arm's CMSIS-DAP that Verge is built on |
 | `DAP_Info` 0x05 to 0x08 | Empty. These four strings name a target, for a probe built onto one |
 | `DAP_Info` 0x09 | The build string, below |

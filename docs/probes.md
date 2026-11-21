@@ -61,9 +61,9 @@ recording ([DIO streams](host-interface.md#dio-streams)).
 
 ## How the probe shows up
 
-In a listing, a probe running Verge reads `Escapement Project Verge CMSIS-DAP (CJF2551AD5)`, or
+In a listing, a probe running Verge reads `Escapement Project Verge CMSIS-DAP (EVF2551AD5)`, or
 `Verge Pro CMSIS-DAP` on a Pro. It keeps the USB vendor and product IDs NXP's firmware uses,
-`0x1FC9:0x0143`. Its serial number is `CJ` and eight hex digits worked out from the chip's unique
+`0x1FC9:0x0143`. Its serial number is `EV` and eight hex digits worked out from the chip's unique
 ID. [Host interface](host-interface.md#how-the-probe-identifies-itself) has every field.
 
 ## The Pro's LEDs

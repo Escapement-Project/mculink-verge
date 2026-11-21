@@ -2929,7 +2929,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("elf", nargs="?", default="build/mculink_cjtag.elf", help="CPU 0's image")
     ap.add_argument("--core1", default="build/mculink_cjtag_core1.elf", help="CPU 1's image")
-    ap.add_argument("--prefix", default="CJ", help="what the serial should start with")
+    ap.add_argument("--prefix", default="EV", help="what the serial should start with")
     ap.add_argument("--config", default="src/DAP_config.h")
     ap.add_argument("--packet-size", type=int, default=512)
     ap.add_argument("--packet-count", type=int,
