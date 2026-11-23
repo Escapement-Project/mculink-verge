@@ -56,4 +56,7 @@ uint32_t swd_sweep_connect(const uint8_t* request, uint8_t* response);
  * TARGETSEL. */
 void swd_sweep(void);
 
+/** A vendor command's handler (src/dap_vendor.c): the reply's length. */
+uint32_t swd_sweep_command(const uint8_t* request, uint8_t* response);
+
 #endif

@@ -6,7 +6,11 @@
 #include "fsl_lpadc.h"
 #include "fsl_power.h"
 
+#include "DAP_config.h"
+
+#include "DAP.h"
 #include "board_pins.h"
+#include "byte_io.h"
 #include "core_clock.h"
 #include "dap_shared.h"
 #include "energy_monitor.h"
@@ -283,4 +287,56 @@ target_sense_status_t target_sense_convert_pair_for_calibration(uint16_t* voltag
 
 bool target_sense_detected(void) {
     return GPIO->B[SENSE_DETECT_PORT][SENSE_DETECT_PIN] == 0U;
+}
+
+#define TARGET_MODE_SUPPLY 0U
+#define TARGET_MODE_CHANNEL 1U
+#define TARGET_CHANNEL_SIDE_B 0x80U
+#define TARGET_CHANNEL_MASK 0x1FU
+
+/** The ADC0 channel DBGIF_VREF, PIO0_31, lands on. Found by sweeping every channel with the
+ *  target powered and unpowered: see BENCH.md. */
+#define TARGET_SUPPLY_CHANNEL 3U
+#define TARGET_SUPPLY_SIDE_B false
+
+/** R22/R23 halve pin 1 on its way to the ADC. */
+#define TARGET_DIVIDER 2U
+
+/** Vendor 0x86 takes `mode, channel` and answers `status, code, millivolts, detect`, the two
+ * middle fields little-endian u16.
+ *
+ * Mode 0 is the target's supply as J6 pin 1 presents it, and channel is ignored. Mode 1 converts
+ * any ADC0 channel, low five bits the channel and bit 7 for side B, and reports the millivolts at
+ * the pin; it is how the supply's channel was found, and how to check it again. Detect is 1 while
+ * something grounds J6 pin 9.
+ *
+ * Millivolts are against VREFP: the probe's own 3.3 V supply on the plain board, so a reading
+ * there is only as absolute as that regulator, and a 3.0 V reference on the Pro. Status is
+ * DAP_ERROR if the converter could not be brought up or did not answer, and the other fields are
+ * then zero.
+ */
+uint32_t target_sense_command(const uint8_t* request, uint8_t* response) {
+    const bool supply = (request[1] == TARGET_MODE_SUPPLY);
+    const uint8_t channel = supply ? TARGET_SUPPLY_CHANNEL : (uint8_t)(request[2] & TARGET_CHANNEL_MASK);
+    const bool side_b = supply ? TARGET_SUPPLY_SIDE_B : ((request[2] & TARGET_CHANNEL_SIDE_B) != 0U);
+    uint16_t code = 0U;
+    uint32_t mv = 0U;
+    target_sense_status_t status = TARGET_SENSE_OK;
+    if (request[1] <= TARGET_MODE_CHANNEL) {
+        status = target_sense_convert(channel, side_b, &code);
+    }
+    if (request[1] > TARGET_MODE_CHANNEL || status != TARGET_SENSE_OK) {
+        response[1] = DAP_ERROR;
+        code = (uint16_t)status;
+    } else {
+        response[1] = DAP_OK;
+        mv = ((uint32_t)code * target_sense_full_scale_mv()) >> 16;
+        if (supply) {
+            mv *= TARGET_DIVIDER;
+        }
+    }
+    put_u16_le(response + 2, code);
+    put_u16_le(response + 4, (uint16_t)mv);
+    response[6] = target_sense_detected() ? 1U : 0U;
+    return 7U;
 }

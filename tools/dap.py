@@ -1274,7 +1274,7 @@ LATENCY_OUTCOMES = ("never measured", "measured", "two latencies left, the later
 
 def swd_gen(probe: "Probe", latency: int = 0, mode: int = SWD_GEN_MODE_NONE) -> dict:
     """Vendor 0x89: the generated SWD paths' state, setting the read latency first unless 0, then
-    measuring it, pinning it or letting the probe measure it on its own (src/dap_vendor.c)."""
+    measuring it, pinning it or letting the probe measure it on its own (src/swd_sweep.c)."""
     try:
         reply = probe.command(bytes([DAP_VENDOR_SWD_GEN, latency, mode]))
     except UnknownCommand:
@@ -1297,7 +1297,7 @@ def swd_gen(probe: "Probe", latency: int = 0, mode: int = SWD_GEN_MODE_NONE) -> 
 def jtag_gen(probe: "Probe", cjtag: int = 0, jtag: int = 0, mode: int = SWD_GEN_MODE_NONE) -> dict:
     """Vendor 0x8A: the generated JTAG paths' state, setting each wire's latency first unless 0,
     then measuring the wire in use, pinning the latencies or letting the probe measure them on its
-    own (src/dap_vendor.c)."""
+    own (src/jtag_sweep.c)."""
     try:
         reply = probe.command(bytes([DAP_VENDOR_JTAG_GEN, cjtag, jtag, mode]))
     except UnknownCommand:

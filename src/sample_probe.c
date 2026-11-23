@@ -60,7 +60,6 @@ static_assert(FILL_REPT == SAMPLE_FILL_MAX, "the asm filler and SAMPLE_FILL_MAX 
 #define STR_(x) #x
 #define STR(x) STR_(x)
 
-#define SAMPLE_REQUEST_LEN 10U
 #define SAMPLE_REPLY_LEN 17U
 
 // A DP read of DPIDR, start bit first: start, APnDP 0, RnW 1, A2 0, A3 0, parity 1, stop, park.
@@ -301,7 +300,7 @@ uint32_t sample_probe_command(const uint8_t* request, uint8_t* response) {
     memset(response + 1, 0, SAMPLE_REPLY_LEN - 1U);
     if (fill > SAMPLE_FILL_MAX || first > fill || DAP_Data.debug_port != DAP_PORT_SWD || cJTAG_Active()) {
         response[1] = DAP_ERROR;
-        return (SAMPLE_REQUEST_LEN << 16) | SAMPLE_REPLY_LEN;
+        return SAMPLE_REPLY_LEN;
     }
 
     struct timing t = {
@@ -344,5 +343,5 @@ uint32_t sample_probe_command(const uint8_t* request, uint8_t* response) {
     response[8] = (uint8_t)last_ack;
     put_u32_le(response + 9, last_word);
     put_u32_le(response + 13, cycles);
-    return (SAMPLE_REQUEST_LEN << 16) | SAMPLE_REPLY_LEN;
+    return SAMPLE_REPLY_LEN;
 }

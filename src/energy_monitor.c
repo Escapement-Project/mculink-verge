@@ -14,6 +14,9 @@
 #include "dap_core.h"
 #include "dio.h"
 #include "DAP_config.h"
+#include "byte_io.h"
+#include "dap_dispatch.h"
+#include "DAP.h"
 #include "board_pins.h"
 #include "core_clock.h"
 #include "dma_ring.h"
@@ -1183,4 +1186,119 @@ energy_monitor_status_t energy_monitor_accumulated(uint64_t* energy_nj, uint64_t
     return (*pairs == 0U) ? ENERGY_MONITOR_NO_SAMPLE : ENERGY_MONITOR_OK;
 }
 
+/** Vendor 0x90, energy capture's modes (docs/host-interface.md). */
+uint32_t energy_command(const uint8_t* request, uint8_t* response) {
+    uint8_t const mode = request[1];
+    response[1] = DAP_OK;
+    if ((mode == 0U) || (mode == 5U) || (mode == 8U) || (mode == 9U)) {
+        bool const streaming = (mode == 5U) || (mode == 9U);
+        bool const identified = (mode == 8U) || (mode == 9U);
+        uint32_t const rate = read_u32_le(request + 2);
+        // Mode 5 starts a stream with the capture, and only Verge Aux carries a stream. Its last
+        // byte is the DIO pins whose edges the stream reports.
+        if (streaming && !dap_vendor_on_aux) {
+            response[1] = DAP_ERROR;
+            return 2U;
+        }
+        energy_monitor_status_t const status =
+            identified  ? energy_monitor_start_identified(rate, streaming, streaming ? request[6] : 0U)
+            : streaming ? energy_monitor_start_stream(rate, request[6])
+                        : energy_monitor_start(rate);
+        uint32_t const actual_rate = identified && (status != ENERGY_MONITOR_OK) ? 0U : energy_monitor_rate();
+        response[2] = (uint8_t)status;
+        put_u32_le(response + 3, actual_rate);
+        if (identified) {
+            energy_capture_id_t capture_id = {0};
+            if (status == ENERGY_MONITOR_OK) {
+                uint32_t unused = 0U;
+                (void)energy_monitor_identity(&capture_id, &unused);
+            }
+            memcpy(response + 7U, capture_id.bytes, ENERGY_IDENTITY_BYTES);
+        }
+        return identified ? 31U : 7U;
+    }
+    if (mode == 11U) {
+        response[2] = (uint8_t)energy_monitor_stop_identified(request + 2U);
+        return 3U;
+    }
+    if (mode == 14U) {
+        response[2] = (uint8_t)energy_monitor_set_ranges(request[2]);
+        return 3U;
+    }
+    if (mode == 12U) {
+        energy_capture_id_t capture_id = {0};
+        uint32_t rate = 0U;
+        energy_monitor_status_t const status = energy_monitor_identity(&capture_id, &rate);
+        response[2] = (uint8_t)status;
+        response[3] = status == ENERGY_MONITOR_OK ? 1U : 0U;
+        put_u32_le(response + 4, rate);
+        memcpy(response + 8U, capture_id.bytes, ENERGY_IDENTITY_BYTES);
+        return 32U;
+    }
+    if ((mode == 10U) || (mode == 13U)) {
+        response[1] = DAP_ERROR;
+        return 2U;
+    }
+    if (mode == 1U) {
+        energy_monitor_sample_t sample = {0};
+        energy_monitor_status_t const status = energy_monitor_latest(&sample);
+        response[2] = (uint8_t)status;
+        put_u16_le(response + 3, sample.voltage_code);
+        put_u16_le(response + 5, sample.current_code);
+        put_u32_le(response + 7, sample.sequence);
+        put_u32_le(response + 11, sample.voltage_mv);
+        put_u32_le(response + 15, (uint32_t)sample.current_na);
+        response[19] = sample.range_id;
+        response[20] = sample.calibrated ? 1U : 0U;
+        return 21U;
+    }
+    if (mode == 2U) {
+        energy_monitor_status_t const status =
+            dap_shared.energy_available ? energy_monitor_stop() : ENERGY_MONITOR_UNAVAILABLE;
+        response[2] = (uint8_t)status;
+        return 3U;
+    }
+    if (mode == 3U) {
+        uint64_t energy_nj = 0U;
+        uint64_t pairs = 0U;
+        energy_monitor_status_t const status = energy_monitor_accumulated(&energy_nj, &pairs);
+        response[2] = (uint8_t)status;
+        put_u64_le(response + 3, energy_nj);
+        put_u64_le(response + 11, pairs);
+        return 19U;
+    }
+    if (mode == 4U) {
+        energy_calibration_t table = {0};
+        energy_monitor_status_t const status =
+            request[2] > 1U ? ENERGY_MONITOR_BAD_ARGUMENT : energy_monitor_calibration(request[2] == 1U, &table);
+        response[2] = (uint8_t)status;
+        response[3] = table.count;
+        for (uint32_t i = 0U; i < 4U; i++) {
+            uint8_t* const point = response + 4U + (6U * i);
+            put_u32_le(put_u16_le(point, table.code[i]), table.current_na[i]);
+        }
+        return 28U;
+    }
+    // Modes 6 and 15 are Aux's alone, but their DIO mask is still part of the request in a
+    // batch.
+    response[1] = DAP_ERROR;
+    return 2U;
+}
 
+/** Vendor 0x94, a marker in Verge Aux's energy stream (docs/host-interface.md). */
+uint32_t energy_mark_command(const uint8_t* request, uint8_t* response) {
+    // dap_packet.h's plan has checked that the label is all there.
+    uint8_t const length = request[5];
+    bool available = false;
+    uint8_t result = 0U;
+    if (length <= ENERGY_STREAM_LABEL_MAX) {
+        result = energy_monitor_mark(read_u32_le(request + 1), request + 6, length, &available);
+    }
+    if (!available) {
+        response[1] = DAP_ERROR;
+        return 2U;
+    }
+    response[1] = DAP_OK;
+    response[2] = result;
+    return 3U;
+}

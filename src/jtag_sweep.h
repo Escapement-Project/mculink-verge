@@ -60,4 +60,9 @@ uint32_t jtag_sweep_connect(const uint8_t* request, uint8_t* response);
  * leaves that TAP's IR at IDCODE, which the next DAP_Transfer sets again. */
 void jtag_sweep(void);
 
+/** A vendor command's handler (src/dap_vendor.c): the reply's length. */
+uint32_t jtag_sweep_command(const uint8_t* request, uint8_t* response);
+uint32_t jtag_pacing_command(const uint8_t* request, uint8_t* response);
+uint32_t jtag_log_command(const uint8_t* request, uint8_t* response);
+
 #endif

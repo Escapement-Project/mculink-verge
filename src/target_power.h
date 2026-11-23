@@ -3,6 +3,7 @@
 #define TARGET_POWER_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #define TARGET_POWER_MODE_OFF 0U
 #define TARGET_POWER_MODE_ON 1U
@@ -19,5 +20,8 @@ bool target_power_enabled(void);
 
 /** Whether this image has an MCU-Link Pro supply control. */
 bool target_power_available(void);
+
+/** A vendor command's handler (src/dap_vendor.c): the reply's length. */
+uint32_t target_power_command(const uint8_t* request, uint8_t* response);
 
 #endif

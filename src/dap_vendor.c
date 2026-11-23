@@ -24,15 +24,14 @@
 #include "code_lab.h"
 #endif
 #ifdef GENERATED_WIRE
-#include "swd_gen.h"
-#include "swd_sweep.h"
 #include "jtag_gen.h"
 #include "jtag_sweep.h"
+#include "swd_sweep.h"
 #endif
-#include "target_sense.h"
-#include "target_power.h"
 #include "energy_monitor.h"
 #include "pro_bus.h"
+#include "target_power.h"
+#include "target_sense.h"
 
 /// Identifies this firmware and says what it can do. Read-only, so a host may send it blindly.
 #define ID_VENDOR_CJTAG_INFO ID_DAP_Vendor2
@@ -160,597 +159,192 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
 #define CJTAG_CAPS_BUILT 0U
 #endif
 
-/** ID_VENDOR_SWD_GEN takes `latency, mode`. `latency` is the cycles from a rising-edge store to
- * the first load that sees the bit it launched, 1 to 64, or 0 to leave it as it is; setting it
- * regenerates and pins it, as mode 2 does. `mode` then:
- *
- *     0  nothing more
- *     1  measure the latency now, at the current clock, with DPIDR reads (src/swd_sweep.h)
- *     2  pin the latency: the probe stops measuring it on its own
- *     3  let the probe measure it on its own again
- *
- * It answers `status, latency, masked, ok`, then little-endian u32s: the clock asked for in Hz,
- * the write period and the read period in core cycles, the generated code's size in bytes, and
- * how many configurations were generated and how many could not be. Then the last measurement:
- *
- *     [29]      1 while the probe measures on its own, 0 once pinned
- *     [30]      what it found, LATENCY_* (latency.h)
- *     [31]      the latency it set, or 0 if it kept the one in use
- *     [32]      generations it ran reads with, at most 255
- *     [33]      read periods it measured at, the host's included
- *     [34..37]  the DPIDR value that read right
- *     [38..41]  core cycles it took
- *     [42..45]  measurements since the probe started
- *     [46..53]  u64: the latencies every read agrees with, bit n - 1 for latency n
- *     [54..57]  connections whose DPIDR read failed and read right once measured
- *
- * A measurement that ends LATENCY_INCONSISTENT runs again, up to LATENCY_ATTEMPTS in all; [32]
- * and [33] count every attempt's. One that ends LATENCY_BOUNDARY leaves [46..53] empty.
- *
- * Status is DAP_ERROR for a latency or a mode out of range, which change nothing, and for a
- * measurement asked for while the port is not plain SWD, which does not run. `ok` is 0 when the
- * current configuration could not be generated and transfers fail without touching the wire.
- */
-#define SWD_GEN_MODE_NONE 0U
-#define SWD_GEN_MODE_MEASURE 1U
-#define SWD_GEN_MODE_PIN 2U
-#define SWD_GEN_MODE_AUTOMATIC 3U
+static uint32_t info_command(const uint8_t* request, uint8_t* response) {
+    (void)request;
+    uint8_t* out = response + 1;
+    memcpy(out, CJTAG_INFO_MAGIC, sizeof(CJTAG_INFO_MAGIC) - 1U);
+    out += sizeof(CJTAG_INFO_MAGIC) - 1U;
+    *out++ = (uint8_t)CJTAG_INFO_VERSION;
+    *out++ = (uint8_t)(CJTAG_CAP_TARGET_SENSE | CJTAG_CAPS_BUILT |
+                       (cJTAG_Active() ? CJTAG_CAP_OSCAN1_ACTIVE : 0U) | (dio_available() ? CJTAG_CAP_DIO : 0U) |
+                       (target_power_available() ? CJTAG_CAP_TARGET_POWER : 0U));
+    // The same string DAP_Info's product firmware version reports, so a host that knows
+    // nothing about this command can still tell two builds apart.
+    *out++ = (uint8_t)(sizeof(FIRMWARE_VERSION) - 1U);
+    memcpy(out, FIRMWARE_VERSION, sizeof(FIRMWARE_VERSION) - 1U);
+    out += sizeof(FIRMWARE_VERSION) - 1U;
+    *out++ = board_kind;
+    // Format 4 to 6's scan formats, which an older host would take as a reason to frame.
+    for (uint32_t i = 0U; i < 4U; i++) {
+        *out++ = 0U;
+    }
+    uint32_t const extended = (dap_shared.energy_available
+                                   ? CJTAG_EXT_CAP_ENERGY | CJTAG_EXT_CAP_ENERGY_CALIBRATED |
+                                         CJTAG_EXT_CAP_ENERGY_ACCUMULATED | CJTAG_EXT_CAP_MARKS |
+                                         CJTAG_EXT_CAP_CAPTURE_ID | CJTAG_EXT_CAP_ENERGY_RANGES
+                                   : 0U) |
+                              (pro_bus_available() ? CJTAG_EXT_CAP_SPI | CJTAG_EXT_CAP_I2C : 0U) |
+                              (dio_available() ? CJTAG_EXT_CAP_DIO_AUX : 0U) |
+                              ((dio_available() && !dap_shared.energy_available) ? CJTAG_EXT_CAP_DIO_STREAM : 0U);
+    out = put_u32_le(out, extended);
+    return (uint32_t)(out - response);
+}
 
-/** ID_VENDOR_JTAG_GEN takes `two_pin, four_wire, mode`: each wire's cycles from the falling edge
- * that launches TDO to the first load that sees it, 1 to 64, or 0 to leave it as it is. Setting
- * either regenerates the wire in use and pins both, as mode 2 does. `mode` is ID_VENDOR_SWD_GEN's,
- * for the wire in use: 1 measures it now with IDCODE reads of the TAP at the last transfer's chain
- * index (src/jtag_sweep.h), which leaves that TAP's IR at IDCODE.
- *
- * It answers `status, two_pin, four_wire, masked, ok`, then little-endian u32s: the clock asked for
- * in Hz, the period (a JTAG clock, or a cJTAG packet) and a JTAG clock in core cycles, the
- * generated code's size in bytes, and how many configurations were generated and how many could
- * not be. Then the last measurement:
- *
- *     [30]      1 while the probe measures on its own, 0 once pinned
- *     [31]      what it found, LATENCY_* (latency.h)
- *     [32]      the wire it measured, JTAG_GEN_* (jtag_gen.h)
- *     [33]      the latency it measured, or 0 if it kept the one in use; cJTAG uses one more, at
- *               most 64 (src/jtag_sweep.c)
- *     [34]      generations it ran reads with, at most 255, every attempt's (as ID_VENDOR_SWD_GEN)
- *     [35]      periods it measured at, the host's included, every attempt's
- *     [36..39]  the IDCODE that read right
- *     [40..43]  core cycles it took
- *     [44..47]  measurements since the probe started
- *     [48..55]  u64: the latencies every read agrees with, bit n - 1 for latency n; empty after
- *               LATENCY_BOUNDARY
- *     [56..59]  connections whose first transfer failed and ran right once measured
- *     [60..63]  configurations copied back from a kept build with transfers, not generated
- *
- * Status is DAP_ERROR for a latency or a mode out of range, which change nothing, and for a
- * measurement asked for while the port is not JTAG, which does not run. `ok` is 0 when the current
- * configuration could not be generated and commands fail without touching the wire; its bit 1 says whole
- * transfers were generated too, rather than run as scans, and bit 2 that their data bits are a
- * loop.
- */
+static uint32_t jtag_format_command(const uint8_t* request, uint8_t* response) {
+    // An on-board MCU-Link has no cJTAG, but takes 0 as every probe that reports the commands does.
+    response[1] =
+        (((board_kind != BOARD_KIND_ON_BOARD) || (request[1] == CJTAG_SELECT_JTAG)) && cJTAG_Select(request[1]))
+            ? DAP_OK
+            : DAP_ERROR;
+#ifdef GENERATED_WIRE
+    // The wire changed: generate for it now rather than in the next command.
+    if ((response[1] == DAP_OK) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {
+        (void)jtag_gen_ready(jtag_gen_wire());
+    }
+#endif
+    return 2U;
+}
 
-/** ID_VENDOR_JTAG_PACING takes `mode`: 0 turns the learned idle clocks off, so the generated wire
- * is ARM's exactly, 1 turns them on (the default), anything else leaves them. It answers `status,
- * on, paced`: whether pacing is on and the idle clocks learned so far (jtag_gen_paced).
- */
+static uint32_t jtag_escape_command(const uint8_t* request, uint8_t* response) {
+    // Two or more edges from level 0 or 1, on a JTAG connection in any format: the host picks the
+    // context.
+    if ((board_kind == BOARD_KIND_ON_BOARD) || (DAP_Data.debug_port != DAP_PORT_JTAG) || (request[1] < 2U) ||
+        (request[2] > 1U)) {
+        response[1] = DAP_ERROR;
+    } else {
+        cJTAG_Escape(request[1], request[2]);
+        response[1] = DAP_OK;
+    }
+    return 2U;
+}
 
-/** ID_VENDOR_JTAG_LOG takes `n` and answers `status`, then generation n back from the newest, 0
- * the newest: the count of generations so far as a little-endian u32, then struct
- * jtag_gen_log_entry's fields in order, the last three little-endian (jtag_gen.h). Status is
- * DAP_ERROR, and nothing follows, for an n the log no longer holds.
- */
-
-/** ID_VENDOR_DIO takes `mask, outputs, levels`, always all three, so that it can sit inside
- * DAP_ExecuteCommands. It sets the direction (1 an output) and the output level of each DIO pin in
- * `mask`, bit n for DIOn, and leaves the rest. A mask of 0 only reads. It answers:
- *
- *     [1]      status
- *     [2]      the pins the probe drives
- *     [3]      each pin's output latch: what it drives, or will once it is an output
- *     [4]      the levels on the probe's side of the translators, sampled as the command ends; an
- *              output reads our own drive
- *     [5]      the pins there are: 0 on a board without them or with J15 fitted
- *     [6]      the number of groups g
- *     [7..]    g masks, the pins that change direction together (Pro: 0x07, 0x08)
- *
- * Status is DAP_ERROR, and nothing changes, where there are no pins, for a pin that does not
- * exist, and for a result that would split a group. [2..] are the state as it stands either way.
- * The state outlives sessions and hosts, so a host that starts by reading with mask 0 sees what
- * one before it left driving. Each pin's header level moves at most once per command.
- */
-#define DIO_REPLY_FIXED 7U
+#ifdef MARKER_PINS
+static uint32_t j8_command(const uint8_t* request, uint8_t* response) {
+    // request[1] names the J8 pins the marker drives; the rest are DIO pins. Zero, as at boot,
+    // gives all four to DIO.
+    response[1] = dio_marker(request[1]) ? DAP_OK : DAP_ERROR;
+    response[2] = (uint8_t)marker_mask;
+    return 3U;
+}
+#endif
 
 /** ID_VENDOR_STAGE takes `mode`: 0 has CPU 1 copy each command and reply itself, 1 has CPU 0 stage
  * them (the default), anything else leaves it. It answers `status, on`. Commands already received
  * keep the way they arrived, so the change reaches the ones after them.
  */
+static uint32_t stage_command(const uint8_t* request, uint8_t* response) {
+    if (request[1] <= 1U) {
+        dap_shared.stage_commands = request[1];
+    }
+    response[1] = DAP_OK;
+    response[2] = dap_shared.stage_commands;
+    return 3U;
+}
 
-/** ID_VENDOR_TARGET takes `mode, channel` and answers `status, code, millivolts, detect`, the two
- * middle fields little-endian u16.
- *
- * Mode 0 is the target's supply as J6 pin 1 presents it, and channel is ignored. Mode 1 converts
- * any ADC0 channel, low five bits the channel and bit 7 for side B, and reports the millivolts at
- * the pin; it is how the supply's channel was found, and how to check it again. Detect is 1 while
- * something grounds J6 pin 9.
- *
- * Millivolts are against VREFP: the probe's own 3.3 V supply on the plain board, so a reading
- * there is only as absolute as that regulator, and a 3.0 V reference on the Pro. Status is
- * DAP_ERROR if the converter could not be brought up or did not answer, and the other fields are
- * then zero.
- */
-#define TARGET_MODE_SUPPLY 0U
-#define TARGET_MODE_CHANNEL 1U
-#define TARGET_CHANNEL_SIDE_B 0x80U
-#define TARGET_CHANNEL_MASK 0x1FU
-
-/** The ADC0 channel DBGIF_VREF, PIO0_31, lands on. Found by sweeping every channel with the
- *  target powered and unpowered: see BENCH.md. */
-#define TARGET_SUPPLY_CHANNEL 3U
-#define TARGET_SUPPLY_SIDE_B false
-
-/** ID_VENDOR_TARGET_POWER takes one mode byte: 0 off, 1 on, 2 read. It answers `status, enabled`.
- *  Status is DAP_ERROR unless target supply control is available and the mode is known. The state
- *  is the output latch's last value since startup; it does not confirm voltage at the target.
- */
-
-/** R22/R23 halve pin 1 on its way to the ADC. */
-#define TARGET_DIVIDER 2U
+#ifdef DAP_TIMING_DIAGNOSTICS
+static uint32_t timing_command(const uint8_t* request, uint8_t* response) {
+    (void)request;
+    uint32_t const values[] = {
+        dap_stage.timing.clock_hz,
+        dap_stage.timing.rx_count,
+        dap_stage.timing.rx_callback_cycles,
+        dap_stage.timing.rx_stage_copy_cycles,
+        dap_stage.timing.tx_stage_copy_cycles,
+        dap_stage.timing.rx_publish_cycles,
+        dap_stage.timing.mailbox1_signal_cycles,
+        dap_stage.timing.wake_to_dispatch_cycles,
+        dap_stage.timing.dispatch_cycles,
+        dap_stage.timing.request_copy_cycles,
+        dap_stage.timing.dap_execute_cycles,
+        dap_stage.timing.response_copy_cycles,
+        dap_stage.timing.reply_publish_cycles,
+        dap_stage.timing.tx_count,
+        dap_stage.timing.tx_start_cycles,
+        dap_stage.timing.tx_in_flight_cycles,
+    };
+    response[1] = DAP_OK;
+    response[2] = 1U;
+    memcpy(response + 3U, values, sizeof(values));
+    dap_stage.timing.rx_count = 0U;
+    dap_stage.timing.rx_callback_cycles = 0U;
+    dap_stage.timing.rx_stage_copy_cycles = 0U;
+    dap_stage.timing.tx_stage_copy_cycles = 0U;
+    dap_stage.timing.rx_publish_cycles = 0U;
+    dap_stage.timing.mailbox1_signal_cycles = 0U;
+    dap_stage.timing.wake_to_dispatch_cycles = 0U;
+    dap_stage.timing.dispatch_cycles = 0U;
+    dap_stage.timing.request_copy_cycles = 0U;
+    dap_stage.timing.dap_execute_cycles = 0U;
+    dap_stage.timing.response_copy_cycles = 0U;
+    dap_stage.timing.reply_publish_cycles = 0U;
+    dap_stage.timing.tx_count = 0U;
+    dap_stage.timing.tx_start_cycles = 0U;
+    dap_stage.timing.tx_in_flight_cycles = 0U;
+    return 3U + sizeof(values);
+}
+#endif
 
 bool dap_vendor_on_aux;
 
+/** Each handler answers with its reply's length, the echoed id included. The request's length is
+ *  dap_packet_plan's (dap_packet.h): execute_one takes it from there, so no handler states it. */
 uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
-    const uint8_t id = request[0];
-
-    // The echoed command id. Every handled case keeps it; the default case replaces it.
-    response[0] = id;
-
-    switch (id) {
-    case ID_VENDOR_CJTAG_INFO: {
-        uint8_t* out = response + 1;
-        memcpy(out, CJTAG_INFO_MAGIC, sizeof(CJTAG_INFO_MAGIC) - 1U);
-        out += sizeof(CJTAG_INFO_MAGIC) - 1U;
-        *out++ = (uint8_t)CJTAG_INFO_VERSION;
-        *out++ = (uint8_t)(CJTAG_CAP_TARGET_SENSE | CJTAG_CAPS_BUILT |
-                           (cJTAG_Active() ? CJTAG_CAP_OSCAN1_ACTIVE : 0U) | (dio_available() ? CJTAG_CAP_DIO : 0U) |
-                           (target_power_available() ? CJTAG_CAP_TARGET_POWER : 0U));
-        // The same string DAP_Info's product firmware version reports, so a host that knows
-        // nothing about this command can still tell two builds apart.
-        *out++ = (uint8_t)(sizeof(FIRMWARE_VERSION) - 1U);
-        memcpy(out, FIRMWARE_VERSION, sizeof(FIRMWARE_VERSION) - 1U);
-        out += sizeof(FIRMWARE_VERSION) - 1U;
-        *out++ = board_kind;
-        // Format 4 to 6's scan formats, which an older host would take as a reason to frame.
-        for (uint32_t i = 0U; i < 4U; i++) {
-            *out++ = 0U;
-        }
-        uint32_t const extended = (dap_shared.energy_available
-                                       ? CJTAG_EXT_CAP_ENERGY | CJTAG_EXT_CAP_ENERGY_CALIBRATED |
-                                             CJTAG_EXT_CAP_ENERGY_ACCUMULATED | CJTAG_EXT_CAP_MARKS |
-                                             CJTAG_EXT_CAP_CAPTURE_ID | CJTAG_EXT_CAP_ENERGY_RANGES
-                                       : 0U) |
-                                  (pro_bus_available() ? CJTAG_EXT_CAP_SPI | CJTAG_EXT_CAP_I2C : 0U) |
-                                  (dio_available() ? CJTAG_EXT_CAP_DIO_AUX : 0U) |
-                                  ((dio_available() && !dap_shared.energy_available) ? CJTAG_EXT_CAP_DIO_STREAM : 0U);
-        out = put_u32_le(out, extended);
-        return (1U << 16) | (uint32_t)(out - response);
-    }
-
-    case ID_VENDOR_JTAG_FORMAT:
-        // An on-board MCU-Link has no cJTAG, but takes 0 as every probe that reports the commands does.
-        response[1] =
-            (((board_kind != BOARD_KIND_ON_BOARD) || (request[1] == CJTAG_SELECT_JTAG)) && cJTAG_Select(request[1]))
-                ? DAP_OK
-                : DAP_ERROR;
-#ifdef GENERATED_WIRE
-        // The wire changed: generate for it now rather than in the next command.
-        if ((response[1] == DAP_OK) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {
-            (void)jtag_gen_ready(jtag_gen_wire());
-        }
-#endif
-        return (2U << 16) | 2U;
-
-    case ID_VENDOR_JTAG_ESCAPE:
-        // Two or more edges from level 0 or 1, on a JTAG connection in any format: the host picks the
-        // context.
-        if ((board_kind == BOARD_KIND_ON_BOARD) || (DAP_Data.debug_port != DAP_PORT_JTAG) || (request[1] < 2U) ||
-            (request[2] > 1U)) {
-            response[1] = DAP_ERROR;
-        } else {
-            cJTAG_Escape(request[1], request[2]);
-            response[1] = DAP_OK;
-        }
-        return (3U << 16) | 2U;
-
+    // The echoed command id. Every handler keeps it; an id with none replaces it.
+    response[0] = request[0];
+    switch (request[0]) {
+    case ID_VENDOR_CJTAG_INFO:
+        return info_command(request, response);
 #ifdef MARKER_PINS
     case ID_VENDOR_J8:
-        // request[1] names the J8 pins the marker drives; the rest are DIO pins. Zero, as at boot,
-        // gives all four to DIO.
-        response[1] = dio_marker(request[1]) ? DAP_OK : DAP_ERROR;
-        response[2] = (uint8_t)marker_mask;
-        return (2U << 16) | 3U;
+        return j8_command(request, response);
 #endif
-
-    case ID_VENDOR_DIO: {
-        response[1] = dio_set(request[1], request[2], request[3]) ? DAP_OK : DAP_ERROR;
-        dio_state_t state;
-        dio_get(&state);
-        response[2] = state.outputs;
-        response[3] = state.levels;
-        response[4] = state.read;
-        response[5] = state.pins;
-        response[6] = state.groups;
-        static_assert(DIO_REPLY_FIXED + DIO_GROUPS_MAX == 11U, "dap_packet.h plans 0x8E's reply at 11 bytes");
-        memcpy(response + DIO_REPLY_FIXED, state.group, state.groups);
-        return (4U << 16) | (DIO_REPLY_FIXED + state.groups);
-    }
-
-    case ID_VENDOR_STAGE:
-        if (request[1] <= 1U) {
-            dap_shared.stage_commands = request[1];
-        }
-        response[1] = DAP_OK;
-        response[2] = dap_shared.stage_commands;
-        return (2U << 16) | 3U;
-
-#ifdef DAP_TIMING_DIAGNOSTICS
-    case ID_VENDOR_TIMING: {
-        uint32_t const values[] = {
-            dap_stage.timing.clock_hz,
-            dap_stage.timing.rx_count,
-            dap_stage.timing.rx_callback_cycles,
-            dap_stage.timing.rx_stage_copy_cycles,
-            dap_stage.timing.tx_stage_copy_cycles,
-            dap_stage.timing.rx_publish_cycles,
-            dap_stage.timing.mailbox1_signal_cycles,
-            dap_stage.timing.wake_to_dispatch_cycles,
-            dap_stage.timing.dispatch_cycles,
-            dap_stage.timing.request_copy_cycles,
-            dap_stage.timing.dap_execute_cycles,
-            dap_stage.timing.response_copy_cycles,
-            dap_stage.timing.reply_publish_cycles,
-            dap_stage.timing.tx_count,
-            dap_stage.timing.tx_start_cycles,
-            dap_stage.timing.tx_in_flight_cycles,
-        };
-        response[1] = DAP_OK;
-        response[2] = 1U;
-        memcpy(response + 3U, values, sizeof(values));
-        dap_stage.timing.rx_count = 0U;
-        dap_stage.timing.rx_callback_cycles = 0U;
-        dap_stage.timing.rx_stage_copy_cycles = 0U;
-        dap_stage.timing.tx_stage_copy_cycles = 0U;
-        dap_stage.timing.rx_publish_cycles = 0U;
-        dap_stage.timing.mailbox1_signal_cycles = 0U;
-        dap_stage.timing.wake_to_dispatch_cycles = 0U;
-        dap_stage.timing.dispatch_cycles = 0U;
-        dap_stage.timing.request_copy_cycles = 0U;
-        dap_stage.timing.dap_execute_cycles = 0U;
-        dap_stage.timing.response_copy_cycles = 0U;
-        dap_stage.timing.reply_publish_cycles = 0U;
-        dap_stage.timing.tx_count = 0U;
-        dap_stage.timing.tx_start_cycles = 0U;
-        dap_stage.timing.tx_in_flight_cycles = 0U;
-        return (2U << 16) | (3U + sizeof(values));
-    }
-#endif
-
-    case ID_VENDOR_TARGET: {
-        const bool supply = (request[1] == TARGET_MODE_SUPPLY);
-        const uint8_t channel = supply ? TARGET_SUPPLY_CHANNEL : (uint8_t)(request[2] & TARGET_CHANNEL_MASK);
-        const bool side_b = supply ? TARGET_SUPPLY_SIDE_B : ((request[2] & TARGET_CHANNEL_SIDE_B) != 0U);
-        uint16_t code = 0U;
-        uint32_t mv = 0U;
-        target_sense_status_t status = TARGET_SENSE_OK;
-        if (request[1] <= TARGET_MODE_CHANNEL) {
-            status = target_sense_convert(channel, side_b, &code);
-        }
-        if (request[1] > TARGET_MODE_CHANNEL || status != TARGET_SENSE_OK) {
-            response[1] = DAP_ERROR;
-            code = (uint16_t)status;
-        } else {
-            response[1] = DAP_OK;
-            mv = ((uint32_t)code * target_sense_full_scale_mv()) >> 16;
-            if (supply) {
-                mv *= TARGET_DIVIDER;
-            }
-        }
-        put_u16_le(response + 2, code);
-        put_u16_le(response + 4, (uint16_t)mv);
-        response[6] = target_sense_detected() ? 1U : 0U;
-        return (3U << 16) | 7U;
-    }
-
-    case ID_VENDOR_TARGET_POWER: {
-        const uint8_t mode = request[1];
-        bool ok = target_power_available();
-        if (ok && mode == TARGET_POWER_MODE_OFF) {
-            ok = target_power_set(false);
-        } else if (ok && mode == TARGET_POWER_MODE_ON) {
-            ok = target_power_set(true);
-        } else if (mode != TARGET_POWER_MODE_READ) {
-            ok = false;
-        }
-        response[1] = ok ? DAP_OK : DAP_ERROR;
-        response[2] = target_power_enabled() ? 1U : 0U;
-        return (2U << 16) | 3U;
-    }
-
-    case ID_VENDOR_ENERGY: {
-        uint8_t const mode = request[1];
-        response[1] = DAP_OK;
-        if ((mode == 0U) || (mode == 5U) || (mode == 8U) || (mode == 9U)) {
-            bool const streaming = (mode == 5U) || (mode == 9U);
-            bool const identified = (mode == 8U) || (mode == 9U);
-            uint32_t const rate = read_u32_le(request + 2);
-            // Mode 5 starts a stream with the capture, and only Verge Aux carries a stream. Its last
-            // byte is the DIO pins whose edges the stream reports.
-            if (streaming && !dap_vendor_on_aux) {
-                response[1] = DAP_ERROR;
-                return (7U << 16) | 2U;
-            }
-            energy_monitor_status_t const status = identified ? energy_monitor_start_identified(rate, streaming, streaming ? request[6] : 0U)
-                                                     : streaming ? energy_monitor_start_stream(rate, request[6])
-                                                                 : energy_monitor_start(rate);
-            uint32_t const actual_rate = identified && (status != ENERGY_MONITOR_OK) ? 0U : energy_monitor_rate();
-            response[2] = (uint8_t)status;
-            put_u32_le(response + 3, actual_rate);
-            if (identified) {
-                energy_capture_id_t capture_id = {0};
-                if (status == ENERGY_MONITOR_OK) {
-                    uint32_t unused = 0U;
-                    (void)energy_monitor_identity(&capture_id, &unused);
-                }
-                memcpy(response + 7U, capture_id.bytes, ENERGY_IDENTITY_BYTES);
-            }
-            return ((streaming ? 7U : 6U) << 16) | (identified ? 31U : 7U);
-        }
-        if (mode == 11U) {
-            response[2] = (uint8_t)energy_monitor_stop_identified(request + 2U);
-            return (26U << 16) | 3U;
-        }
-        if (mode == 14U) {
-            response[2] = (uint8_t)energy_monitor_set_ranges(request[2]);
-            return (3U << 16) | 3U;
-        }
-        if (mode == 12U) {
-            energy_capture_id_t capture_id = {0};
-            uint32_t rate = 0U;
-            energy_monitor_status_t const status = energy_monitor_identity(&capture_id, &rate);
-            response[2] = (uint8_t)status;
-            response[3] = status == ENERGY_MONITOR_OK ? 1U : 0U;
-            put_u32_le(response + 4, rate);
-            memcpy(response + 8U, capture_id.bytes, ENERGY_IDENTITY_BYTES);
-            return (2U << 16) | 32U;
-        }
-        if ((mode == 10U) || (mode == 13U)) {
-            response[1] = DAP_ERROR;
-            return ((mode == 10U ? 3U : 26U) << 16) | 2U;
-        }
-        if (mode == 1U) {
-            energy_monitor_sample_t sample = {0};
-            energy_monitor_status_t const status = energy_monitor_latest(&sample);
-            response[2] = (uint8_t)status;
-            put_u16_le(response + 3, sample.voltage_code);
-            put_u16_le(response + 5, sample.current_code);
-            put_u32_le(response + 7, sample.sequence);
-            put_u32_le(response + 11, sample.voltage_mv);
-            put_u32_le(response + 15, (uint32_t)sample.current_na);
-            response[19] = sample.range_id;
-            response[20] = sample.calibrated ? 1U : 0U;
-            return (2U << 16) | 21U;
-        }
-        if (mode == 2U) {
-            energy_monitor_status_t const status = dap_shared.energy_available
-                                                       ? energy_monitor_stop() : ENERGY_MONITOR_UNAVAILABLE;
-            response[2] = (uint8_t)status;
-            return (2U << 16) | 3U;
-        }
-        if (mode == 3U) {
-            uint64_t energy_nj = 0U;
-            uint64_t pairs = 0U;
-            energy_monitor_status_t const status =
-                energy_monitor_accumulated(&energy_nj, &pairs);
-            response[2] = (uint8_t)status;
-            put_u64_le(response + 3, energy_nj);
-            put_u64_le(response + 11, pairs);
-            return (2U << 16) | 19U;
-        }
-        if (mode == 4U) {
-            energy_calibration_t table = {0};
-            energy_monitor_status_t const status =
-                request[2] > 1U ? ENERGY_MONITOR_BAD_ARGUMENT : energy_monitor_calibration(request[2] == 1U, &table);
-            response[2] = (uint8_t)status;
-            response[3] = table.count;
-            for (uint32_t i = 0U; i < 4U; i++) {
-                uint8_t* const point = response + 4U + (6U * i);
-                put_u32_le(put_u16_le(point, table.code[i]), table.current_na[i]);
-            }
-            return (3U << 16) | 28U;
-        }
-        // Modes 6 and 15 are Aux's alone, but their DIO mask is still part of the request in a
-        // batch.
-        response[1] = DAP_ERROR;
-        return (((mode == 6U) || (mode == 15U) ? 3U : 2U) << 16) | 2U;
-    }
-
-    case ID_VENDOR_MARK: {
-        // dap_packet.h's plan has checked that the label is all there.
-        uint8_t const length = request[5];
-        uint32_t const consumed = 6U + length;
-        bool available = false;
-        uint8_t result = 0U;
-        if (length <= ENERGY_STREAM_LABEL_MAX) {
-            result = energy_monitor_mark(read_u32_le(request + 1), request + 6, length, &available);
-        }
-        if (!available) {
-            response[1] = DAP_ERROR;
-            return (consumed << 16) | 2U;
-        }
-        response[1] = DAP_OK;
-        response[2] = result;
-        return (consumed << 16) | 3U;
-    }
-
-    case ID_VENDOR_SPI:
-        return pro_spi_command(request, response);
-
-    case ID_VENDOR_I2C:
-        return pro_i2c_command(request, response);
-
+    case ID_VENDOR_TARGET:
+        return target_sense_command(request, response);
     case ID_VENDOR_SAMPLE:
         return sample_probe_command(request, response);
-
-
 #ifdef CODE_LAB
     case ID_VENDOR_LAB:
         return code_lab_command(request, response);
 #endif
-
 #ifdef GENERATED_WIRE
-    case ID_VENDOR_SWD_GEN: {
-        const uint32_t latency = request[1];
-        const uint32_t mode = request[2];
-        response[1] = DAP_OK;
-        if ((latency > LATENCY_MAX) || (mode > SWD_GEN_MODE_AUTOMATIC)) {
-            response[1] = DAP_ERROR;
-        } else {
-            if (latency != 0U) {
-                swd_gen_latency = latency;
-                swd_sweep_automatic = false;
-                swd_gen_changed();
-            }
-            if (mode == SWD_GEN_MODE_PIN) {
-                swd_sweep_automatic = false;
-            } else if (mode == SWD_GEN_MODE_AUTOMATIC) {
-                swd_sweep_automatic = true;
-            } else if (mode == SWD_GEN_MODE_MEASURE) {
-                if ((DAP_Data.debug_port == DAP_PORT_SWD) && !cJTAG_Active()) {
-                    swd_sweep();
-                } else {
-                    response[1] = DAP_ERROR;
-                }
-            }
-        }
-        (void)swd_gen_ready();
-        response[2] = (uint8_t)swd_gen_latency;
-        response[3] = swd_gen_info.masked ? 1U : 0U;
-        response[4] = swd_gen_info.ok ? 1U : 0U;
-        const struct latency_result* measured = &swd_sweep_last.result;
-        uint8_t* out = put_u32_le(response + 5, swd_gen_clock_hz);
-        out = put_u32_le(out, swd_gen_info.write_period);
-        out = put_u32_le(out, swd_gen_info.read_period);
-        out = put_u32_le(out, swd_gen_info.code_bytes);
-        out = put_u32_le(out, swd_gen_builds);
-        out = put_u32_le(out, swd_gen_failures);
-        *out++ = swd_sweep_automatic ? 1U : 0U;
-        *out++ = (uint8_t)measured->outcome;
-        *out++ = (uint8_t)measured->latency;
-        *out++ = (uint8_t)(measured->tries < 255U ? measured->tries : 255U);
-        *out++ = (uint8_t)measured->periods;
-        out = put_u32_le(out, measured->word);
-        out = put_u32_le(out, swd_sweep_last.cycles);
-        out = put_u32_le(out, swd_sweep_last.runs);
-        out = put_u64_le(out, measured->consistent);
-        out = put_u32_le(out, swd_sweep_last.rescues);
-        return (3U << 16) | (uint32_t)(out - response);
-    }
-
-    case ID_VENDOR_JTAG_GEN: {
-        const uint32_t two_pin = request[1];
-        const uint32_t four_wire = request[2];
-        const uint32_t mode = request[3];
-        response[1] = DAP_OK;
-        if ((two_pin > LATENCY_MAX) || (four_wire > LATENCY_MAX) || (mode > SWD_GEN_MODE_AUTOMATIC)) {
-            response[1] = DAP_ERROR;
-        } else {
-            if (two_pin != 0U) {
-                jtag_gen_latency[JTAG_GEN_TWO_PIN] = two_pin;
-                jtag_sweep_automatic = false;
-            }
-            if (four_wire != 0U) {
-                jtag_gen_latency[JTAG_GEN_FOUR_WIRE] = four_wire;
-                jtag_sweep_automatic = false;
-            }
-            if (mode == SWD_GEN_MODE_PIN) {
-                jtag_sweep_automatic = false;
-            } else if (mode == SWD_GEN_MODE_AUTOMATIC) {
-                jtag_sweep_automatic = true;
-            } else if (mode == SWD_GEN_MODE_MEASURE) {
-                // The measurement scans at the index the host's last transfer left, which ARM's
-                // handlers store before they refuse one past the chain.
-                if ((DAP_Data.debug_port == DAP_PORT_JTAG) && (DAP_Data.jtag_dev.index < DAP_Data.jtag_dev.count)) {
-                    jtag_sweep();
-                } else {
-                    response[1] = DAP_ERROR;
-                }
-            }
-        }
-        (void)jtag_gen_ready(jtag_gen_wire());
-        response[2] = (uint8_t)jtag_gen_latency[JTAG_GEN_TWO_PIN];
-        response[3] = (uint8_t)jtag_gen_latency[JTAG_GEN_FOUR_WIRE];
-        response[4] = jtag_gen_info.masked ? 1U : 0U;
-        response[5] = (jtag_gen_info.ok ? 1U : 0U) | (jtag_gen_info.transfers ? 2U : 0U) |
-                      (jtag_gen_info.looped ? 4U : 0U);
-        uint8_t* out = put_u32_le(response + 6, jtag_gen_clock_hz);
-        out = put_u32_le(out, jtag_gen_info.period);
-        out = put_u32_le(out, jtag_gen_info.frame);
-        out = put_u32_le(out, jtag_gen_info.code_bytes);
-        out = put_u32_le(out, jtag_gen_builds);
-        out = put_u32_le(out, jtag_gen_failures);
-        const struct latency_result* measured = &jtag_sweep_last.result;
-        *out++ = jtag_sweep_automatic ? 1U : 0U;
-        *out++ = (uint8_t)measured->outcome;
-        *out++ = (uint8_t)jtag_sweep_last.wire;
-        *out++ = (uint8_t)measured->latency;
-        *out++ = (uint8_t)(measured->tries < 255U ? measured->tries : 255U);
-        *out++ = (uint8_t)measured->periods;
-        out = put_u32_le(out, measured->word);
-        out = put_u32_le(out, jtag_sweep_last.cycles);
-        out = put_u32_le(out, jtag_sweep_last.runs);
-        out = put_u64_le(out, measured->consistent);
-        out = put_u32_le(out, jtag_sweep_last.rescues);
-        out = put_u32_le(out, jtag_gen_restores);
-        return (4U << 16) | (uint32_t)(out - response);
-    }
-
-    case ID_VENDOR_JTAG_LOG: {
-        const uint32_t count = jtag_gen_builds + jtag_gen_failures + jtag_gen_restores;
-        const uint32_t back = request[1];
-        if ((back >= count) || (back >= JTAG_GEN_LOG_SIZE)) {
-            response[1] = DAP_ERROR;
-            return (2U << 16) | 2U;
-        }
-        const struct jtag_gen_log_entry* entry = &jtag_gen_log[(count - 1U - back) % JTAG_GEN_LOG_SIZE];
-        response[1] = DAP_OK;
-        uint8_t* out = put_u32_le(response + 2, count);
-        const uint8_t bytes[] = {entry->command, entry->wire,   entry->changed, entry->flags, entry->latency,
-                                 entry->before,  entry->after,  entry->idle,    entry->paced};
-        memcpy(out, bytes, sizeof bytes);
-        out += sizeof bytes;
-        out = put_u16_le(out, entry->period);
-        out = put_u32_le(out, entry->at);
-        out = put_u32_le(out, entry->cycles);
-        return (2U << 16) | (uint32_t)(out - response);
-    }
-
+    case ID_VENDOR_SWD_GEN:
+        return swd_sweep_command(request, response);
+    case ID_VENDOR_JTAG_GEN:
+        return jtag_sweep_command(request, response);
     case ID_VENDOR_JTAG_PACING:
-        if (request[1] <= 1U) {
-            jtag_gen_pacing = request[1] != 0U;
-            if (DAP_Data.debug_port == DAP_PORT_JTAG) {
-                (void)jtag_gen_ready(jtag_gen_wire());
-            }
-        }
-        response[1] = DAP_OK;
-        response[2] = jtag_gen_pacing ? 1U : 0U;
-        response[3] = (uint8_t)jtag_gen_paced;
-        return (2U << 16) | 4U;
+        return jtag_pacing_command(request, response);
 #endif
-
+    case ID_VENDOR_STAGE:
+        return stage_command(request, response);
+#ifdef GENERATED_WIRE
+    case ID_VENDOR_JTAG_LOG:
+        return jtag_log_command(request, response);
+#endif
+    case ID_VENDOR_DIO:
+        return dio_command(request, response);
+    case ID_VENDOR_TARGET_POWER:
+        return target_power_command(request, response);
+    case ID_VENDOR_ENERGY:
+        return energy_command(request, response);
+    case ID_VENDOR_SPI:
+        return pro_spi_command(request, response);
+    case ID_VENDOR_I2C:
+        return pro_i2c_command(request, response);
+#ifdef DAP_TIMING_DIAGNOSTICS
+    case ID_VENDOR_TIMING:
+        return timing_command(request, response);
+#endif
+    case ID_VENDOR_MARK:
+        return energy_mark_command(request, response);
+    case ID_VENDOR_JTAG_FORMAT:
+        return jtag_format_command(request, response);
+    case ID_VENDOR_JTAG_ESCAPE:
+        return jtag_escape_command(request, response);
     default:
         // DAP_ProcessCommand hands this return value straight back to the host, so an id we
         // do not answer has to say so itself. A host that got its own id back would read
         // that as success.
         response[0] = ID_DAP_Invalid;
-        return (1U << 16) | 1U;
+        return 1U;
     }
 }

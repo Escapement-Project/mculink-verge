@@ -54,17 +54,16 @@ static void spi_pinmux(void) {
 
 uint32_t pro_spi_command(const uint8_t* request, uint8_t* response) {
     uint16_t const length = read_u16_le(request + 6U);
-    uint32_t const consumed = PRO_SPI_REQUEST_FIXED + length;
     response[1] = PRO_BUS_INVALID;
     put_u16_le(response + 2U, 0U);
 
     if ((length == 0U) || (length > DAP_PACKET_SIZE - PRO_SPI_REQUEST_FIXED) ||
         ((request[1] & (uint8_t)~SPI_MODE_MASK) != 0U)) {
-        return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
+        return PRO_BUS_RESPONSE_FIXED;
     }
     if (!pro_bus_available()) {
         response[1] = PRO_BUS_UNAVAILABLE;
-        return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
+        return PRO_BUS_RESPONSE_FIXED;
     }
 
     // A refused clock leaves the pins where they are: checked before SPI takes them.
@@ -75,12 +74,12 @@ uint32_t pro_spi_command(const uint8_t* request, uint8_t* response) {
         (requested_clock > (source_clock / 2U))) {
         CLOCK_AttachClk(kNONE_to_HSLSPI);
         response[1] = PRO_BUS_INVALID;
-        return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
+        return PRO_BUS_RESPONSE_FIXED;
     }
     if (!dio_spi_begin()) {
         CLOCK_AttachClk(kNONE_to_HSLSPI);
         response[1] = PRO_BUS_BUSY;
-        return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
+        return PRO_BUS_RESPONSE_FIXED;
     }
 
     spi_pinmux();
@@ -111,11 +110,11 @@ uint32_t pro_spi_command(const uint8_t* request, uint8_t* response) {
     if (status == kStatus_Success) {
         response[1] = PRO_BUS_OK;
         put_u16_le(response + 2U, length);
-        return (consumed << 16U) | (PRO_BUS_RESPONSE_FIXED + length);
+        return PRO_BUS_RESPONSE_FIXED + length;
     }
 
     response[1] = PRO_BUS_TRANSFER_ERROR;
-    return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
+    return PRO_BUS_RESPONSE_FIXED;
 }
 
 static void i2c_wait_half(void) {
@@ -174,7 +173,6 @@ uint32_t pro_i2c_command(const uint8_t* request, uint8_t* response) {
     uint32_t const requested_clock = read_u32_le(request + 2U);
     uint16_t const tx_length = read_u16_le(request + 6U);
     uint16_t const rx_length = read_u16_le(request + 8U);
-    uint32_t const consumed = PRO_I2C_REQUEST_FIXED + tx_length;
     response[1] = PRO_BUS_INVALID;
     put_u16_le(response + 2U, 0U);
 
@@ -182,15 +180,15 @@ uint32_t pro_i2c_command(const uint8_t* request, uint8_t* response) {
         (tx_length > DAP_PACKET_SIZE - PRO_I2C_REQUEST_FIXED) ||
         (rx_length > DAP_PACKET_SIZE - PRO_BUS_RESPONSE_FIXED) ||
         (requested_clock < I2C_MIN_CLOCK_HZ) || (requested_clock > I2C_MAX_CLOCK_HZ)) {
-        return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
+        return PRO_BUS_RESPONSE_FIXED;
     }
     if (!pro_bus_available()) {
         response[1] = PRO_BUS_UNAVAILABLE;
-        return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
+        return PRO_BUS_RESPONSE_FIXED;
     }
     if (SWO_IsConfigured()) {
         response[1] = PRO_BUS_BUSY;
-        return (consumed << 16U) | PRO_BUS_RESPONSE_FIXED;
+        return PRO_BUS_RESPONSE_FIXED;
     }
 
     CLOCK_EnableClock(kCLOCK_Iocon);
@@ -242,5 +240,5 @@ i2c_release_pins:
     IOCON_PinMuxSet(IOCON, 0U, I2C_SDA_PIN, IOCON_FUNC0 | I2C_PIN_MODE);
     IOCON_PinMuxSet(IOCON, 0U, I2C_SCL_PIN, IOCON_FUNC0 | I2C_PIN_MODE);
     CLOCK_AttachClk(kNONE_to_FLEXCOMM3);
-    return (consumed << 16U) | (PRO_BUS_RESPONSE_FIXED + returned);
+    return PRO_BUS_RESPONSE_FIXED + returned;
 }

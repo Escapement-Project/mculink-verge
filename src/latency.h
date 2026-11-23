@@ -49,6 +49,12 @@
 /** The highest latency the generators take, and so the most a measurement can find. */
 #define LATENCY_MAX 64U
 
+/** Vendor 0x89's and 0x8A's mode byte (src/swd_sweep.c, src/jtag_sweep.c). */
+#define SWD_GEN_MODE_NONE 0U
+#define SWD_GEN_MODE_MEASURE 1U
+#define SWD_GEN_MODE_PIN 2U
+#define SWD_GEN_MODE_AUTOMATIC 3U
+
 /** Longer read periods tried after the host's, while two latencies or more are left. */
 #define LATENCY_EXTRA_PERIODS 3U
 

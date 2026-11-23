@@ -4,6 +4,9 @@
 #include "fsl_device_registers.h"
 #include "fsl_iocon.h"
 
+#include "DAP_config.h"
+
+#include "DAP.h"
 #include "board_pins.h"
 #include "dap_core.h"
 #include "dap_shared.h"
@@ -264,4 +267,38 @@ __attribute__((noinline)) void dio_spi_end(void) {
     dap_shared.dio_spi_turns++;
     __DMB();
     MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQSET = DAP_CORE_MAILBOX_WAKE_MASK;
+}
+
+#define DIO_REPLY_FIXED 7U
+
+/** Vendor 0x8E takes `mask, outputs, levels`, always all three, so that it can sit inside
+ * DAP_ExecuteCommands. It sets the direction (1 an output) and the output level of each DIO pin in
+ * `mask`, bit n for DIOn, and leaves the rest. A mask of 0 only reads. It answers:
+ *
+ *     [1]      status
+ *     [2]      the pins the probe drives
+ *     [3]      each pin's output latch: what it drives, or will once it is an output
+ *     [4]      the levels on the probe's side of the translators, sampled as the command ends; an
+ *              output reads our own drive
+ *     [5]      the pins there are: 0 on a board without them or with J15 fitted
+ *     [6]      the number of groups g
+ *     [7..]    g masks, the pins that change direction together (Pro: 0x07, 0x08)
+ *
+ * Status is DAP_ERROR, and nothing changes, where there are no pins, for a pin that does not
+ * exist, and for a result that would split a group. [2..] are the state as it stands either way.
+ * The state outlives sessions and hosts, so a host that starts by reading with mask 0 sees what
+ * one before it left driving. Each pin's header level moves at most once per command.
+ */
+uint32_t dio_command(const uint8_t* request, uint8_t* response) {
+    response[1] = dio_set(request[1], request[2], request[3]) ? DAP_OK : DAP_ERROR;
+    dio_state_t state;
+    dio_get(&state);
+    response[2] = state.outputs;
+    response[3] = state.levels;
+    response[4] = state.read;
+    response[5] = state.pins;
+    response[6] = state.groups;
+    static_assert(DIO_REPLY_FIXED + DIO_GROUPS_MAX == 11U, "dap_packet.h plans 0x8E's reply at 11 bytes");
+    memcpy(response + DIO_REPLY_FIXED, state.group, state.groups);
+    return DIO_REPLY_FIXED + state.groups;
 }

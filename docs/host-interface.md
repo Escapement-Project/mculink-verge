@@ -1039,10 +1039,10 @@ IDs (below). Any other ID from `0x80` to `0x9F` gets the invalid-command reply.
 ## Commands Verge's own tools use
 
 These serve Verge's own tools and its bench tests. They are not a stable host interface: their
-requests and replies can change between builds, and `src/dap_vendor.c` has each one's bytes. Some
-exist only in some builds: `0x84` needs `MARKER`, which is on by default, and `0x88` needs
-`CODE_LAB`. `0x89` to `0x8B` and `0x8D` need the generated transfers. `0x93` needs
-`DAP_TIMING_DIAGNOSTICS`.
+requests and replies can change between builds, and each one's bytes are in the handler
+`src/dap_vendor.c` sends it to. Some exist only in some builds: `0x84` needs `MARKER`, which is on
+by default, and `0x88` needs `CODE_LAB`. `0x89` to `0x8B` and `0x8D` need the generated transfers.
+`0x93` needs `DAP_TIMING_DIAGNOSTICS`.
 
 | ID | Name | What it does |
 | --- | --- | --- |

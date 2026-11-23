@@ -112,25 +112,27 @@ def campaign(c, elf, symbols, *, seed, steps, capacity):
 
 
 VENDOR_MODES = (0, 1, 2, 3, 4, 5, 6, 7, 8, 0x10, 0x80, 0xE0, 0xFF)
+# A page nothing maps, on the part or in the emulator, for a request to end against.
+GUARD_PAGE = (0x60000000, 0x1000)
 
 
 def check_vendor_plans(c, elf, symbols, boards):
     """Every vendor id from 0x80 to 0x9F, with each mode byte above: the reply fits the size
-    checker's plan (src/dap_packet.h), and the handler reads as much of the request as the plan
-    says. A handler the checker lacks is planned as one byte each way, so it writes its reply past
-    a full transport, and in a batch the next command is read from the wrong place.
+    checker's plan (src/dap_packet.h), and the handler reads nothing past the plan's request. A
+    handler the checker lacks is planned as one byte each way, so it writes its reply past a full
+    transport; one that reads past its plan takes the next command's bytes in a batch.
 
-    The plan's reply size is the smallest capacity the dispatcher accepts. `boards` maps a name to
-    a setup that takes the machine."""
+    The plan's reply size is the smallest capacity the dispatcher accepts. The request is then run
+    again ending at the last byte of a mapped page, with nothing mapped after it, so a read past
+    the plan faults. `boards` maps a name to a setup that takes the machine."""
     length = 64
     requests = 0
     response = SCRATCH + 0x1000
 
-    def run(probe, entry, request, capacity):
-        probe.uc.mem_write(SCRATCH, request)
+    def run(probe, request, capacity, at=SCRATCH):
+        probe.uc.mem_write(at, request)
         probe.uc.mem_write(response - 32, b"\xee" * (capacity + 64))
-        args = (SCRATCH, length, capacity, response) if entry == "DAP_ExecuteCommandSized" else (SCRATCH, response)
-        packed = probe.call(entry, *args)
+        packed = probe.call("DAP_ExecuteCommandSized", at, len(request), capacity, response)
         returned = probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC
         past = len(bytes(probe.uc.mem_read(response + capacity, 32)).rstrip(b"\xee"))
         return returned, packed >> 16, packed & 0xffff, past
@@ -139,6 +141,7 @@ def check_vendor_plans(c, elf, symbols, boards):
         probe = build(elf, "swd", True, Model())
         probe.sym.update({symbol: address for symbol, (address, _) in symbols.items()})
         setup(probe)
+        probe.uc.mem_map(*GUARD_PAGE)
         if "lab_sram" in probe.sym:
             # The code lab's LAB_RUN calls whatever the host left in the arena, at offset 0 here:
             # a `bx lr`, so it returns (src/code_lab.c).
@@ -149,24 +152,25 @@ def check_vendor_plans(c, elf, symbols, boards):
                 label = f"{name} board, vendor {command:#04x} mode {mode:#04x}"
                 requests += 1
                 low, high = 1, 512
-                if run(probe, "DAP_ExecuteCommandSized", request, high)[1] == length:
+                if run(probe, request, high)[1] == length:
                     continue  # the plan refuses this request at any capacity
                 while low < high:
                     middle = (low + high) // 2
-                    if run(probe, "DAP_ExecuteCommandSized", request, middle)[1] != length:
+                    if run(probe, request, middle)[1] != length:
                         high = middle
                     else:
                         low = middle + 1
-                returned, planned_in, produced, past = run(probe, "DAP_ExecuteCommandSized", request, low)
+                returned, planned_in, produced, past = run(probe, request, low)
                 if not c.check(returned, f"{label}: did not return"):
                     continue
                 c.check(produced <= low and not past,
                         f"{label}: a {produced}-byte reply, {past} bytes written past the plan's {low}")
-                returned, handled_in, produced, past = run(probe, "DAP_ProcessCommand", request, low)
-                c.check(returned and handled_in == planned_in,
-                        f"{label}: the handler took {handled_in} request bytes, the plan {planned_in}")
+                try:
+                    run(probe, request[:planned_in], low, at=sum(GUARD_PAGE) - planned_in)
+                except SystemExit as fault:  # how the machine reports an emulator fault
+                    c.check(False, f"{label}: read past the plan's {planned_in}-byte request: {fault}")
     c.note(f"vendor ids 0x80-0x9F: {requests} requests on {len(boards)} boards; each reply within the size"
-           f" checker's plan, each handler's request length the plan's")
+           f" checker's plan, none reading past the plan's request")
 
 
 def main():

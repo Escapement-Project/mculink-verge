@@ -68,4 +68,7 @@ bool dio_spi_begin(void);
 /** Returns the DIO pins to inputs after hardware SPI releases them. */
 void dio_spi_end(void);
 
+/** A vendor command's handler (src/dap_vendor.c): the reply's length. */
+uint32_t dio_command(const uint8_t* request, uint8_t* response);
+
 #endif

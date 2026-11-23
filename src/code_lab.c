@@ -55,7 +55,6 @@
 
 #define LAB_WRITE_HEADER 7U // id, op, arena, offset, length
 #define LAB_READ_HEADER 2U  // id, status
-#define LAB_RUN_REQUEST 21U
 
 alignas(32) static uint8_t lab_sram[LAB_SRAM_SIZE];
 
@@ -125,7 +124,7 @@ uint32_t code_lab_command(const uint8_t* request, uint8_t* response) {
             put_u32_le(out + 4, a.size);
             out += 8;
         }
-        return (2U << 16) | (uint32_t)(out - response);
+        return (uint32_t)(out - response);
     }
 
     if (op == LAB_WRITE) {
@@ -133,11 +132,11 @@ uint32_t code_lab_command(const uint8_t* request, uint8_t* response) {
         const uint32_t length = read_u16_le(request + 5);
         if (length > DAP_PACKET_SIZE - LAB_WRITE_HEADER || !arena_get(request[2], &a) || offset > a.size ||
             length > a.size - offset) {
-            return (LAB_WRITE_HEADER << 16) | 2U;
+            return 2U;
         }
         memcpy(a.base + offset, request + LAB_WRITE_HEADER, length);
         response[1] = DAP_OK;
-        return ((LAB_WRITE_HEADER + length) << 16) | 2U;
+        return 2U;
     }
 
     if (op == LAB_READ) {
@@ -145,17 +144,17 @@ uint32_t code_lab_command(const uint8_t* request, uint8_t* response) {
         const uint32_t length = read_u16_le(request + 5);
         if (length > DAP_PACKET_SIZE - LAB_READ_HEADER || !arena_get(request[2], &a) || offset > a.size ||
             length > a.size - offset) {
-            return (7U << 16) | 2U;
+            return 2U;
         }
         memcpy(response + LAB_READ_HEADER, a.base + offset, length);
         response[1] = DAP_OK;
-        return (7U << 16) | (LAB_READ_HEADER + length);
+        return LAB_READ_HEADER + length;
     }
 
     if (op == LAB_RUN) {
         const uint32_t entry = read_u16_le(request + 3);
         if (!arena_get(request[2], &a) || entry >= a.size || (entry & 1U) != 0U) {
-            return (LAB_RUN_REQUEST << 16) | 2U;
+            return 2U;
         }
         const lab_fn fn = (lab_fn)((uint32_t)(a.base + entry) | 1U);
         const uint32_t primask = __get_PRIMASK();
@@ -169,14 +168,14 @@ uint32_t code_lab_command(const uint8_t* request, uint8_t* response) {
         response[1] = DAP_OK;
         put_u32_le(response + 2, (uint32_t)result);
         put_u32_le(response + 6, (uint32_t)(result >> 32));
-        return (LAB_RUN_REQUEST << 16) | 10U;
+        return 10U;
     }
 
     if (op == LAB_EDGES) {
         lab_edges(read_u32_le(request + 2));
         response[1] = DAP_OK;
-        return (6U << 16) | 2U;
+        return 2U;
     }
 
-    return (2U << 16) | 2U;
+    return 2U;
 }

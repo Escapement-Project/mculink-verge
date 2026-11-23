@@ -64,4 +64,7 @@ uint32_t target_sense_monitor_pair_adck(uint32_t rate_hz);
 /** True while something grounds J6 pin 9, which a standard target header does. */
 bool target_sense_detected(void);
 
+/** A vendor command's handler (src/dap_vendor.c): the reply's length. */
+uint32_t target_sense_command(const uint8_t* request, uint8_t* response);
+
 #endif

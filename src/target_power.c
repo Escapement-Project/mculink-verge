@@ -4,6 +4,9 @@
 #include "fsl_device_registers.h"
 #include "fsl_iocon.h"
 
+#include "DAP_config.h"
+
+#include "DAP.h"
 #include "board_pins.h"
 
 #define TARGET_POWER_PORT 0U
@@ -49,4 +52,23 @@ bool target_power_enabled(void) {
 
 bool target_power_available(void) {
     return target_power_ready;
+}
+
+/** Vendor 0x8F takes one mode byte: 0 off, 1 on, 2 read. It answers `status, enabled`.
+ *  Status is DAP_ERROR unless target supply control is available and the mode is known. The state
+ *  is the output latch's last value since startup; it does not confirm voltage at the target.
+ */
+uint32_t target_power_command(const uint8_t* request, uint8_t* response) {
+    const uint8_t mode = request[1];
+    bool ok = target_power_available();
+    if (ok && mode == TARGET_POWER_MODE_OFF) {
+        ok = target_power_set(false);
+    } else if (ok && mode == TARGET_POWER_MODE_ON) {
+        ok = target_power_set(true);
+    } else if (mode != TARGET_POWER_MODE_READ) {
+        ok = false;
+    }
+    response[1] = ok ? DAP_OK : DAP_ERROR;
+    response[2] = target_power_enabled() ? 1U : 0U;
+    return 3U;
 }

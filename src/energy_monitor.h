@@ -109,4 +109,8 @@ uint32_t energy_monitor_rate(void);
 [[nodiscard]] bool energy_monitor_hold(void);
 void energy_monitor_release(bool held);
 
+/** A vendor command's handler (src/dap_vendor.c): the reply's length. */
+uint32_t energy_command(const uint8_t* request, uint8_t* response);
+uint32_t energy_mark_command(const uint8_t* request, uint8_t* response);
+
 #endif

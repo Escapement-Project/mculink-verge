@@ -4,6 +4,8 @@
 #include "DAP_config.h"
 
 #include "DAP.h"
+#include "byte_io.h"
+#include "cjtag.h"
 #include "dap_shared.h"
 #include "energy_monitor.h"
 #include "gen.h"
@@ -251,4 +253,83 @@ void swd_sweep(void) {
     (void)swd_gen_ready();
     swd_sweep_last.cycles = DWT->CYCCNT - start;
     swd_sweep_last.runs++;
+}
+
+/** Vendor 0x89 takes `latency, mode`. `latency` is the cycles from a rising-edge store to
+ * the first load that sees the bit it launched, 1 to 64, or 0 to leave it as it is; setting it
+ * regenerates and pins it, as mode 2 does. `mode` then:
+ *
+ *     0  nothing more
+ *     1  measure the latency now, at the current clock, with DPIDR reads (src/swd_sweep.h)
+ *     2  pin the latency: the probe stops measuring it on its own
+ *     3  let the probe measure it on its own again
+ *
+ * It answers `status, latency, masked, ok`, then little-endian u32s: the clock asked for in Hz,
+ * the write period and the read period in core cycles, the generated code's size in bytes, and
+ * how many configurations were generated and how many could not be. Then the last measurement:
+ *
+ *     [29]      1 while the probe measures on its own, 0 once pinned
+ *     [30]      what it found, LATENCY_* (latency.h)
+ *     [31]      the latency it set, or 0 if it kept the one in use
+ *     [32]      generations it ran reads with, at most 255
+ *     [33]      read periods it measured at, the host's included
+ *     [34..37]  the DPIDR value that read right
+ *     [38..41]  core cycles it took
+ *     [42..45]  measurements since the probe started
+ *     [46..53]  u64: the latencies every read agrees with, bit n - 1 for latency n
+ *     [54..57]  connections whose DPIDR read failed and read right once measured
+ *
+ * A measurement that ends LATENCY_INCONSISTENT runs again, up to LATENCY_ATTEMPTS in all; [32]
+ * and [33] count every attempt's. One that ends LATENCY_BOUNDARY leaves [46..53] empty.
+ *
+ * Status is DAP_ERROR for a latency or a mode out of range, which change nothing, and for a
+ * measurement asked for while the port is not plain SWD, which does not run. `ok` is 0 when the
+ * current configuration could not be generated and transfers fail without touching the wire.
+ */
+uint32_t swd_sweep_command(const uint8_t* request, uint8_t* response) {
+    const uint32_t latency = request[1];
+    const uint32_t mode = request[2];
+    response[1] = DAP_OK;
+    if ((latency > LATENCY_MAX) || (mode > SWD_GEN_MODE_AUTOMATIC)) {
+        response[1] = DAP_ERROR;
+    } else {
+        if (latency != 0U) {
+            swd_gen_latency = latency;
+            swd_sweep_automatic = false;
+            swd_gen_changed();
+        }
+        if (mode == SWD_GEN_MODE_PIN) {
+            swd_sweep_automatic = false;
+        } else if (mode == SWD_GEN_MODE_AUTOMATIC) {
+            swd_sweep_automatic = true;
+        } else if (mode == SWD_GEN_MODE_MEASURE) {
+            if ((DAP_Data.debug_port == DAP_PORT_SWD) && !cJTAG_Active()) {
+                swd_sweep();
+            } else {
+                response[1] = DAP_ERROR;
+            }
+        }
+    }
+    (void)swd_gen_ready();
+    response[2] = (uint8_t)swd_gen_latency;
+    response[3] = swd_gen_info.masked ? 1U : 0U;
+    response[4] = swd_gen_info.ok ? 1U : 0U;
+    const struct latency_result* measured = &swd_sweep_last.result;
+    uint8_t* out = put_u32_le(response + 5, swd_gen_clock_hz);
+    out = put_u32_le(out, swd_gen_info.write_period);
+    out = put_u32_le(out, swd_gen_info.read_period);
+    out = put_u32_le(out, swd_gen_info.code_bytes);
+    out = put_u32_le(out, swd_gen_builds);
+    out = put_u32_le(out, swd_gen_failures);
+    *out++ = swd_sweep_automatic ? 1U : 0U;
+    *out++ = (uint8_t)measured->outcome;
+    *out++ = (uint8_t)measured->latency;
+    *out++ = (uint8_t)(measured->tries < 255U ? measured->tries : 255U);
+    *out++ = (uint8_t)measured->periods;
+    out = put_u32_le(out, measured->word);
+    out = put_u32_le(out, swd_sweep_last.cycles);
+    out = put_u32_le(out, swd_sweep_last.runs);
+    out = put_u64_le(out, measured->consistent);
+    out = put_u32_le(out, swd_sweep_last.rescues);
+    return (uint32_t)(out - response);
 }

@@ -44,7 +44,7 @@ answering can still be sent to the bootloader over USB, because CPU 0 answers th
 | USB: TinyUSB, the descriptors, every endpoint | CPU 0 | `main.c`, `usb_descriptors.c` |
 | Receiving commands and sending replies | CPU 0 | `main.c` |
 | `DAP_TransferAbort`: setting CPU 1's abort flag | CPU 0 | `main.c` |
-| Running CMSIS-DAP commands, vendor commands included | CPU 1 | `core1_main.c`, `dap_dispatch.c`, ARM's `DAP.c`, `dap_vendor.c` |
+| Running CMSIS-DAP commands, vendor commands included | CPU 1 | `core1_main.c`, `dap_dispatch.c`, ARM's `DAP.c`, `dap_vendor.c` and each vendor command's feature |
 | Generating and running the wire code: SWD, JTAG, cJTAG | CPU 1 | `swd_gen.c`, `jtag_gen.c`, `swd_dp.c`, `cjtag_dp.c` |
 | Measuring the target's read latency | CPU 1 | `swd_sweep.c`, `jtag_sweep.c` |
 | The consoles, VCOM and the Pro's VCOM2 | CPU 0 | `vcom.c` |
@@ -166,9 +166,10 @@ A CMSIS-DAP v2 command goes like this:
    while this one runs. A command numbered before the current USB configuration came from a host
    that has gone, and CPU 1 drops it unrun.
 5. CPU 1 runs it. `dap_dispatch.c` sends SWD and JTAG transfers, `DAP_Transfer` and
-   `DAP_TransferBlock`, down a short route to the generated code. Everything else goes through
-   ARM's `DAP.c`, and vendor ids on to `dap_vendor.c`. The reply goes into `dap_stage`, or, for a
-   command CPU 0 did not stage, into CPU 1's own buffer and from there to the reply slot.
+   `DAP_TransferBlock`, down a short route to the generated code. Everything else goes through ARM's
+   `DAP.c`, and vendor ids on to `dap_vendor.c`, which hands each to its feature's handler. The
+   reply goes into `dap_stage`, or, for a command CPU 0 did not stage, into CPU 1's own buffer and
+   from there to the reply slot.
 6. CPU 1 publishes the reply in the bulk reply ring and raises CPU 0's mailbox.
 7. CPU 0 copies a staged reply into the slot's USB buffer and starts the IN transfer. It sends one
    reply at a time, from the head of the ring, so replies leave in the order their commands ran.
