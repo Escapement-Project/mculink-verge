@@ -1173,13 +1173,22 @@ static void slow_idle(struct gen_emitter* e, const struct xfer* x, uint32_t n) {
     gen_emit(e, t_bcond(T_COND_NE, ((int32_t)head - (int32_t)e->pos) * 4));
 }
 
-struct xfer_cfg {
+/** A jtag_gen_config with its wire decoded, as the build's steps take it. */
+struct build_cfg {
     bool two_pin;
-    bool oscan2;
-    bool oscan5;
-    bool oscan6;
+    bool oscan2; // one TMS packet a frame outside Shift: OScan2 and OScan6
+    bool oscan5; // nTDI and TDO alone in Shift, leaving it by an EOT escape: OScan5 and OScan6
+    bool oscan6; // and a PAD packet in the first frame after entering Shift
     uint32_t period, latency, stall, before, after, idle;
-    bool loop; // the data bits as a loop, which is smaller and takes the same cycles
+    bool earliest; // scans: every sample as early as the latency allows, to measure it
+    bool loop;     // transfers: the data bits as a loop, which is smaller and takes the same cycles
+};
+
+/** Where a generated function's samples fall, as jtag_gen_info reports it. */
+struct window {
+    int32_t first, last; // the real latencies it reads right for (struct jtag_gen_info)
+    bool bound;          // the latency decided where something went
+    bool masked;         // it runs with interrupts masked throughout
 };
 
 /** `count` repeats of the `period` cycles from `from`. */
@@ -1239,7 +1248,7 @@ static void x_patch(struct xfer* x, uint32_t cycle, uint32_t insn) {
 }
 
 /** Lays out one transfer in `xs` with a JTAG clock or cJTAG packet of `p` cycles. */
-static bool lay_xfer(const struct xfer_cfg* c, bool read, uint32_t p) {
+static bool lay_xfer(const struct build_cfg* c, bool read, uint32_t p) {
     struct xfer* x = &xs;
     *x = (struct xfer){.two_pin = c->two_pin,
                        .oscan2 = c->oscan2,
@@ -1274,7 +1283,12 @@ static bool lay_xfer(const struct xfer_cfg* c, bool read, uint32_t p) {
     return !x->q.failed && !x->pend;
 }
 
-static bool emit_xfer(struct gen_emitter* e, const struct xfer_cfg* c, bool read) {
+/** One transfer function at `e->pos`, if it fits, with where its samples fall in `window`. `xs` is
+ * this one's scratch, and nothing else reads it. Out of line, so that it stays in flash with the rest
+ * of the transfer emitter: a latency search builds scans alone, and transfers come back from a saved
+ * build (tools/image.py). */
+static __attribute__((noinline)) bool emit_xfer(struct gen_emitter* e, const struct build_cfg* c, bool read,
+                                                struct window* window) {
     struct xfer* x = &xs;
     // A JTAG clock too short for the TDO window runs longer, as the scan engine's does. A
     // cJTAG frame finds its own room.
@@ -1286,7 +1300,8 @@ static bool emit_xfer(struct gen_emitter* e, const struct xfer_cfg* c, bool read
             return false;
         }
     }
-    x->bound = x->bound || (p != shortest);
+    *window = (struct window){
+        .first = x->lowest, .last = (int32_t)x->offset, .bound = x->bound || (p != shortest), .masked = x->masked};
     struct span loop = {0U, 0U, 0U};
     if (x->uniform) {
         if (!find_loop(x, &loop) || (loop.count > 255U)) {
@@ -1422,81 +1437,20 @@ static bool emit_xfer(struct gen_emitter* e, const struct xfer_cfg* c, bool read
     return !e->failed;
 }
 
-GEN_PATH __attribute__((noinline)) bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan, jtag_gen_xfer_fn* read,
-                    jtag_gen_xfer_fn* write) {
-    if ((config->period < JTAG_GEN_PERIOD_MIN) || (config->period > JTAG_GEN_PERIOD_MAX) || (config->latency == 0U) ||
-        (config->latency > 64U) || (config->wire > JTAG_GEN_OSCAN6) || (config->before > 7U) ||
-        (config->after > 7U) || (config->idle > 255U) || (config->stall > JTAG_GEN_STALL_MAX)) {
-        return false;
-    }
-    const bool two_pin = config->wire != JTAG_GEN_FOUR_WIRE;
-    const bool oscan6 = config->wire == JTAG_GEN_OSCAN6;
-    // One TMS packet a frame outside Shift (OScan2, OScan6); nTDI and TDO in it (OScan5, OScan6).
-    const bool oscan2 = (config->wire == JTAG_GEN_OSCAN2) || oscan6;
-    const bool oscan5 = (config->wire == JTAG_GEN_OSCAN5) || oscan6;
-    static struct block b;
-    const bool earliest = config->earliest != 0U;
-    if (earliest && (read != nullptr)) {
-        return false;
-    }
-    if (!(two_pin ? layout_two_pin(&b, config->period, config->latency, earliest, SHAPE_THREE)
-                  : layout_four_wire(&b, config->period, config->latency, config->stall, earliest))) {
-        return false;
-    }
-    struct gen_emitter e = {
-        .code = (uint32_t*)JTAG_GEN_BASE, .cap = JTAG_GEN_SIZE / 4U, .delay_reg = R_DELAY, .filler = FILLER};
-    const uint32_t scan_at = e.pos;
-    if (!emit_scan(&e, &b, two_pin)) {
-        return false;
-    }
-    const uint32_t tms_at = e.pos;
-    if (oscan2 && !emit_tms(&e, config->period)) {
-        return false;
-    }
-    // OScan5's and OScan6's frames in Shift, the one that leaves it, and OScan6's one that leaves it
-    // straight after entering, with a PAD. Their samples bound the latency too.
-    int32_t scan_last = (int32_t)b.offset;
-    // A JTAG clock's sample may come after the next fall, and reads its bit only while TDO holds
-    // it. Every cJTAG sample comes before the fall that ends its packet.
-    const int32_t scan_lowest =
-        two_pin || (b.offset <= b.cycles) ? 1 : (int32_t)(b.offset + config->stall) - (int32_t)b.cycles + 1;
-    const int32_t scan_first = scan_lowest > 1 ? scan_lowest : 1;
-    bool scan_bound = b.bound;
-    const uint32_t shift_at = e.pos;
-    uint32_t eot_at = e.pos;
-    uint32_t eot_pad_at = e.pos;
-    if (oscan5) {
-        static struct block shift;
-        static struct block eot;
-        if (!layout_two_pin(&shift, config->period, config->latency, earliest, SHAPE_SHIFT) ||
-            !emit_scan(&e, &shift, true)) {
-            return false;
-        }
-        eot_at = e.pos;
-        if (!layout_two_pin(&eot, config->period, config->latency, earliest, SHAPE_EOT) ||
-            !emit_scan(&e, &eot, true)) {
-            return false;
-        }
-        const uint32_t fewest = shift.offset < eot.offset ? shift.offset : eot.offset;
-        scan_last = (int32_t)fewest < scan_last ? (int32_t)fewest : scan_last;
-        scan_bound = scan_bound || shift.bound || eot.bound;
-    }
-    if (oscan6) {
-        static struct block eot_pad;
-        eot_pad_at = e.pos;
-        if (!layout_two_pin(&eot_pad, config->period, config->latency, earliest, SHAPE_EOT_PAD) ||
-            !emit_scan(&e, &eot_pad, true)) {
-            return false;
-        }
-        scan_last = (int32_t)eot_pad.offset < scan_last ? (int32_t)eot_pad.offset : scan_last;
-        scan_bound = scan_bound || eot_pad.bound;
-    }
+/** Whether every field of `config` is in the range jtag_gen.h gives it. */
+GEN_PATH static bool in_range(const struct jtag_gen_config* config) {
+    return (config->period >= JTAG_GEN_PERIOD_MIN) && (config->period <= JTAG_GEN_PERIOD_MAX) &&
+           (config->latency != 0U) && (config->latency <= 64U) && (config->wire <= JTAG_GEN_OSCAN6) &&
+           (config->before <= 7U) && (config->after <= 7U) && (config->idle <= 255U) &&
+           (config->stall <= JTAG_GEN_STALL_MAX);
+}
 
-    // The transfers, if they fit beside it. The delay register is X_DELAY, the filler the same.
-    struct xfer_cfg xc = {
-        .two_pin = two_pin,
-        .oscan2 = oscan2,
-        .oscan5 = oscan5,
+GEN_PATH static struct build_cfg decode(const struct jtag_gen_config* config) {
+    const bool oscan6 = config->wire == JTAG_GEN_OSCAN6;
+    return (struct build_cfg){
+        .two_pin = config->wire != JTAG_GEN_FOUR_WIRE,
+        .oscan2 = (config->wire == JTAG_GEN_OSCAN2) || oscan6,
+        .oscan5 = (config->wire == JTAG_GEN_OSCAN5) || oscan6,
         .oscan6 = oscan6,
         .period = config->period,
         .latency = config->latency,
@@ -1504,69 +1458,175 @@ GEN_PATH __attribute__((noinline)) bool jtag_gen_build(const struct jtag_gen_con
         .before = config->before,
         .after = config->after,
         .idle = config->idle,
+        .earliest = config->earliest != 0U,
+        .loop = false,
     };
-    const uint32_t scan_end = e.pos;
-    uint32_t read_at = scan_end;
-    uint32_t write_at = scan_end;
-    bool transfers = false;
-    uint32_t read_offset = 0U;
-    int32_t read_lowest = 1;
-    bool read_bound = false;
-    bool read_masked = false;
-    // Unrolled where that fits in JTAG_GEN_UNROLLED_MAX, which leaves the fastest clocks the fewest
-    // instructions; the data bits in a loop otherwise; unrolled into the whole region where the
-    // loop does not fit either.
-    for (uint32_t loop = 0U; (read != nullptr) && (loop < 3U) && !transfers; loop++) {
-        xc.loop = loop == 1U;
-        e.cap = loop == 0U ? JTAG_GEN_UNROLLED_MAX / 4U : JTAG_GEN_SIZE / 4U;
-        e.pos = scan_end;
-        e.failed = false;
-        read_at = e.pos;
-        transfers = emit_xfer(&e, &xc, true);
-        read_offset = xs.offset;
-        read_lowest = xs.lowest;
-        read_bound = xs.bound;
-        read_masked = xs.masked;
-        write_at = e.pos;
-        transfers = transfers && emit_xfer(&e, &xc, false);
-    }
-    e.cap = JTAG_GEN_SIZE / 4U;
-    if (!transfers) {
-        e.pos = scan_end;
-        e.failed = false;
-    }
+}
 
-    jtag_gen_info = (struct jtag_gen_info){
-        .period = two_pin ? config->period : b.cycles,
-        .frame = b.cycles,
-        .code_bytes = 4U * e.pos,
-        .masked = b.masked,
+/** The entry point of the function `e` emits next. */
+GEN_PATH static uint32_t entry(const struct gen_emitter* e) { return JTAG_GEN_BASE + 4U * e->pos + 1U; }
+
+/** The scan functions, nullptr where the wire has none (jtag_gen.h), and where their samples fall. */
+struct scans {
+    jtag_gen_scan_fn scan, tms, shift, eot, eot_pad;
+    uint32_t frame;       // the scan function's cycles a clock or frame
+    struct window window; // the narrowest any of them allows; `masked` is the scan function's
+};
+
+/** Narrows `w` to a further cJTAG scan's samples. They come before the fall that ends their packet,
+ * so `first` stays 1. */
+GEN_PATH static void narrow(struct window* w, const struct block* b) {
+    w->last = (int32_t)b->offset < w->last ? (int32_t)b->offset : w->last;
+    w->bound = w->bound || b->bound;
+}
+
+/** The scans, in the order jtag_gen.h lists them. */
+GEN_PATH static bool build_scans(struct gen_emitter* e, const struct build_cfg* c, struct scans* s) {
+    static struct block b;
+    if (!(c->two_pin ? layout_two_pin(&b, c->period, c->latency, c->earliest, SHAPE_THREE)
+                     : layout_four_wire(&b, c->period, c->latency, c->stall, c->earliest))) {
+        return false;
+    }
+    s->scan = (jtag_gen_scan_fn)entry(e);
+    if (!emit_scan(e, &b, c->two_pin)) {
+        return false;
+    }
+    s->tms = c->oscan2 ? (jtag_gen_scan_fn)entry(e) : nullptr;
+    if (c->oscan2 && !emit_tms(e, c->period)) {
+        return false;
+    }
+    // A JTAG clock's sample may come after the next fall, and reads its bit only while TDO holds
+    // it. Every cJTAG sample comes before the fall that ends its packet.
+    const int32_t lowest =
+        c->two_pin || (b.offset <= b.cycles) ? 1 : (int32_t)(b.offset + c->stall) - (int32_t)b.cycles + 1;
+    s->frame = b.cycles;
+    s->window = (struct window){
+        .first = lowest > 1 ? lowest : 1, .last = (int32_t)b.offset, .bound = b.bound, .masked = b.masked};
+    s->shift = nullptr;
+    s->eot = nullptr;
+    s->eot_pad = nullptr;
+    if (c->oscan5) {
+        static struct block shift;
+        static struct block eot;
+        s->shift = (jtag_gen_scan_fn)entry(e);
+        if (!layout_two_pin(&shift, c->period, c->latency, c->earliest, SHAPE_SHIFT) || !emit_scan(e, &shift, true)) {
+            return false;
+        }
+        s->eot = (jtag_gen_scan_fn)entry(e);
+        if (!layout_two_pin(&eot, c->period, c->latency, c->earliest, SHAPE_EOT) || !emit_scan(e, &eot, true)) {
+            return false;
+        }
+        narrow(&s->window, &shift);
+        narrow(&s->window, &eot);
+    }
+    if (c->oscan6) {
+        static struct block eot_pad;
+        s->eot_pad = (jtag_gen_scan_fn)entry(e);
+        if (!layout_two_pin(&eot_pad, c->period, c->latency, c->earliest, SHAPE_EOT_PAD) ||
+            !emit_scan(e, &eot_pad, true)) {
+            return false;
+        }
+        narrow(&s->window, &eot_pad);
+    }
+    return true;
+}
+
+/** The transfer functions and where their samples fall. */
+struct transfers {
+    jtag_gen_xfer_fn read, write;
+    struct window read_window, write_window;
+    bool looped;
+};
+
+static_assert(X_DELAY == R_DELAY, "the transfers emit through the scans' emitter, whose delay loops count in R_DELAY");
+
+/** The read and write transfers after the scans, if both fit: unrolled where that fits in
+ * JTAG_GEN_UNROLLED_MAX, which leaves the fastest clocks the fewest instructions; the data bits in a
+ * loop otherwise; unrolled into the whole region where the loop does not fit either. Where they do
+ * not fit, `e` is left where the scans ended and `t` holds nothing. */
+GEN_PATH static bool build_transfers(struct gen_emitter* e, const struct build_cfg* cfg, struct transfers* t) {
+    struct build_cfg c = *cfg;
+    const uint32_t scans_end = e->pos;
+    uint32_t read_at = scans_end;
+    uint32_t write_at = scans_end;
+    bool fit = false;
+    for (uint32_t loop = 0U; (loop < 3U) && !fit; loop++) {
+        c.loop = loop == 1U;
+        e->cap = loop == 0U ? JTAG_GEN_UNROLLED_MAX / 4U : JTAG_GEN_SIZE / 4U;
+        e->pos = scans_end;
+        e->failed = false;
+        read_at = entry(e);
+        fit = emit_xfer(e, &c, true, &t->read_window);
+        write_at = entry(e);
+        fit = fit && emit_xfer(e, &c, false, &t->write_window);
+    }
+    e->cap = JTAG_GEN_SIZE / 4U;
+    if (!fit) {
+        e->pos = scans_end;
+        e->failed = false;
+        return false;
+    }
+    t->read = (jtag_gen_xfer_fn)read_at;
+    t->write = (jtag_gen_xfer_fn)write_at;
+    t->looped = c.loop;
+    return true;
+}
+
+/** What a build made, for jtag_gen_info. `t` is nullptr without transfers, and `asked` says whether
+ * they were asked for. */
+GEN_PATH static struct jtag_gen_info summary(const struct build_cfg* c, const struct scans* s,
+                                             const struct transfers* t, bool asked, uint32_t code_bytes) {
+    // Without transfers, ARM's run as scans.
+    const struct window read = t != nullptr ? t->read_window : s->window;
+    const struct window write = t != nullptr ? t->write_window : s->window;
+    // Transfers that did not fit at this latency might at a lower one.
+    const bool same_below = (!asked || (t != nullptr)) && !s->window.bound && !read.bound && !write.bound;
+    return (struct jtag_gen_info){
+        .period = c->two_pin ? c->period : s->frame,
+        .frame = s->frame,
+        .code_bytes = code_bytes,
+        .masked = s->window.masked,
         .ok = true,
-        .transfers = transfers,
-        .looped = transfers && xc.loop,
-        .stall_moves = !two_pin && (b.masked || (transfers && (read_masked || xs.masked))),
-        // Without transfers, ARM's run as scans.
-        .scan_first = scan_first,
-        .scan_last = scan_last,
-        .read_first = transfers ? read_lowest : scan_first,
-        .read_last = transfers ? (int32_t)read_offset : scan_last,
-        .write_first = transfers ? xs.lowest : scan_first,
-        .write_last = transfers ? (int32_t)xs.offset : scan_last,
-        // Transfers that did not fit at this latency might at a lower one.
-        .same_below =
-            (!scan_bound && ((read == nullptr) || (transfers && !read_bound && !xs.bound))) ? config->latency + 1U : 0U,
+        .transfers = t != nullptr,
+        .looped = (t != nullptr) && t->looped,
+        .stall_moves = !c->two_pin && (s->window.masked || read.masked || write.masked),
+        .scan_first = s->window.first,
+        .scan_last = s->window.last,
+        .read_first = read.first,
+        .read_last = read.last,
+        .write_first = write.first,
+        .write_last = write.last,
+        .same_below = same_below ? c->latency + 1U : 0U,
     };
+}
+
+GEN_PATH __attribute__((noinline)) bool jtag_gen_build(const struct jtag_gen_config* config, jtag_gen_scan_fn* scan,
+                                                       jtag_gen_xfer_fn* read, jtag_gen_xfer_fn* write) {
+    // A measurement builds scans alone.
+    if (!in_range(config) || ((config->earliest != 0U) && (read != nullptr))) {
+        return false;
+    }
+    const struct build_cfg c = decode(config);
+    struct gen_emitter e = {
+        .code = (uint32_t*)JTAG_GEN_BASE, .cap = JTAG_GEN_SIZE / 4U, .delay_reg = R_DELAY, .filler = FILLER};
+    struct scans scans;
+    if (!build_scans(&e, &c, &scans)) {
+        return false;
+    }
+    struct transfers transfers;
+    const bool fit = (read != nullptr) && build_transfers(&e, &c, &transfers);
+    jtag_gen_info = summary(&c, &scans, fit ? &transfers : nullptr, read != nullptr, 4U * e.pos);
     // The code was written as data; the core has to fetch what is there now.
     __DSB();
     __ISB();
-    *scan = (jtag_gen_scan_fn)(JTAG_GEN_BASE + 4U * scan_at + 1U);
-    jtag_gen_tms = oscan2 ? (jtag_gen_scan_fn)(JTAG_GEN_BASE + 4U * tms_at + 1U) : nullptr;
-    jtag_gen_shift = oscan5 ? (jtag_gen_scan_fn)(JTAG_GEN_BASE + 4U * shift_at + 1U) : nullptr;
-    jtag_gen_eot = oscan5 ? (jtag_gen_scan_fn)(JTAG_GEN_BASE + 4U * eot_at + 1U) : nullptr;
-    jtag_gen_eot_pad = oscan6 ? (jtag_gen_scan_fn)(JTAG_GEN_BASE + 4U * eot_pad_at + 1U) : nullptr;
+    *scan = scans.scan;
+    jtag_gen_tms = scans.tms;
+    jtag_gen_shift = scans.shift;
+    jtag_gen_eot = scans.eot;
+    jtag_gen_eot_pad = scans.eot_pad;
     if (read != nullptr) {
-        *read = transfers ? (jtag_gen_xfer_fn)(JTAG_GEN_BASE + 4U * read_at + 1U) : nullptr;
-        *write = transfers ? (jtag_gen_xfer_fn)(JTAG_GEN_BASE + 4U * write_at + 1U) : nullptr;
+        *read = fit ? transfers.read : nullptr;
+        *write = fit ? transfers.write : nullptr;
     }
     return true;
 }
