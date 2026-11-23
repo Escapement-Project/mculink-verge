@@ -6,11 +6,7 @@
 uint32_t gen_owner = GEN_OWNER_NONE;
 uint32_t gen_stall;
 
-#if defined(SWD_CODEGEN) && !defined(JTAG_CODEGEN)
-struct gen_event gen_events[256];
-#else
 struct gen_event gen_events[1280];
-#endif
 
 GEN_PATH void gen_schedule_reset(struct gen_schedule* s, struct gen_event* ev, uint32_t cap) {
     s->ev = ev;

@@ -47,19 +47,17 @@ option(CORE_150MHZ "Run the core at 150 MHz" ON)
 # Drive J8's four pins high while a host command runs, so an analyser sees the gap between
 # commands as well as the clock. src/marker.h says why that is worth a pin.
 option(MARKER "Mark command processing on the J8 header" ON)
-# Generate the SWD transfer paths at runtime into SRAMX, for the clock the host asks for. See
-# src/swd_gen.c.
-option(SWD_CODEGEN "Generate the SWD transfer paths at runtime" ON)
-# Generate the four-wire and two-pin JTAG paths at runtime into SRAMX. See src/jtag_gen.c.
-option(JTAG_CODEGEN "Generate the JTAG transfer paths at runtime" ON)
-# A product image generates both and carries no ARM transfer path. Both off is the ARM reference,
-# the wire tools/equiv.py holds the generated paths to: a test build, marked +armwire. It runs ARM's
-# CMSIS-DAP as it ships, with cJTAG from external/cmsis-dap-cjtag.patch. Keep it simple: anything
-# that needs to be fast belongs on the generated paths.
-if((SWD_CODEGEN AND NOT JTAG_CODEGEN) OR (JTAG_CODEGEN AND NOT SWD_CODEGEN))
+# Generate the SWD and JTAG transfer paths at runtime into SRAMX, for the clock the host asks for
+# (src/swd_gen.c, src/jtag_gen.c). A product image does, and carries no ARM transfer path. Off is
+# the ARM reference, the wire tools/equiv.py holds the generated paths to: a test build, marked
+# +armwire. It runs ARM's CMSIS-DAP as it ships, with cJTAG from external/cmsis-dap-cjtag.patch.
+# Keep it simple: anything that needs to be fast belongs on the generated paths.
+option(GENERATED_WIRE "Generate the SWD and JTAG transfer paths at runtime" ON)
+# The two options GENERATED_WIRE replaced. Ignored, -DSWD_CODEGEN=OFF would build a product image.
+if(DEFINED SWD_CODEGEN OR DEFINED JTAG_CODEGEN)
   message(FATAL_ERROR
-    "SWD_CODEGEN and JTAG_CODEGEN go together: both on for a product image, both off for the ARM "
-    "reference.")
+    "SWD_CODEGEN and JTAG_CODEGEN are now one option, GENERATED_WIRE. Configure with "
+    "-USWD_CODEGEN -UJTAG_CODEGEN, and -DGENERATED_WIRE=OFF for the ARM reference.")
 endif()
 # Run TinyUSB's device stack from SRAM. Flash runs at 11 wait states, and the stack's interrupt
 # handler and task are branchy code the prefetcher cannot cover; they are paid once per command.
@@ -93,7 +91,7 @@ add_executable(${PROJECT_NAME})
 # two images built from one commit answer alike.
 set(FW_VERSION_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/fw_version.h)
 set(FW_VARIANT "")
-if(NOT SWD_CODEGEN)
+if(NOT GENERATED_WIRE)
   string(APPEND FW_VARIANT "+armwire")
 endif()
 if(CODE_LAB)
@@ -120,7 +118,7 @@ add_dependencies(${PROJECT_NAME} fw_version)
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 
 set(DAP_TREE ${CMAKE_CURRENT_SOURCE_DIR}/external/CMSIS-DAP)
-if(NOT JTAG_CODEGEN)
+if(NOT GENERATED_WIRE)
   # The ARM reference build's cJTAG is the port proposed for ARM's CMSIS-DAP, applied to a staging
   # copy of the submodule's sources. Git must not find this repository from there: inside one, or
   # with GIT_DIR set, `git apply` takes its paths from elsewhere and patches nothing without a word,
@@ -200,13 +198,13 @@ set(LPC55_DEVICE ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyusb/hw/mcu/nxp/mcux-de
 
 # ARM's JTAG_DP.c, cJTAG included, is the ARM reference build's alone, behind Verge's vendor IDs
 # (src/cjtag_arm_shim.c). Each keeps its place in the list: link order moves GCC's LTO output.
-set(ARM_JTAG_SOURCES "")
-set(SWD_DP_SOURCES "")
-if(SWD_CODEGEN)
+if(GENERATED_WIRE)
   set(SWD_DP_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_dp.c)
-endif()
-set(VERGE_CJTAG_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag.c ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_dp.c)
-if(NOT JTAG_CODEGEN)
+  set(ARM_JTAG_SOURCES "")
+  set(VERGE_CJTAG_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag.c
+                          ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_dp.c)
+else()
+  set(SWD_DP_SOURCES "")
   set(ARM_JTAG_SOURCES ${DAP_SRC}/JTAG_DP.c)
   set(VERGE_CJTAG_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/cjtag_arm_shim.c)
   target_compile_definitions(${CORE1} PRIVATE ARM_CJTAG=1)
@@ -282,7 +280,7 @@ set_source_files_properties(
 # In a product image ARM's SWD_Transfer is renamed out of the way so src/swd_dp.c can own the
 # name, for the generated route. The rest of SW_DP.c -- SWJ_Sequence and SWD_Sequence -- is still
 # ARM's and still linked, so this is a replaced function rather than a replaced file.
-if(SWD_CODEGEN)
+if(GENERATED_WIRE)
   set_source_files_properties(${DAP_SRC}/SW_DP.c PROPERTIES COMPILE_DEFINITIONS
     "SWD_Transfer=arm_SWD_Transfer"
     )
@@ -362,19 +360,14 @@ if(MARKER)
   target_compile_definitions(${CORE1} PRIVATE MARKER_PINS=1)
 endif()
 
-if(SWD_CODEGEN OR JTAG_CODEGEN)
-  target_sources(${CORE1} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/gen.c)
-endif()
-if(SWD_CODEGEN)
-  target_sources(${CORE1} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_gen.c
-                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_sweep.c)
-  target_compile_definitions(${CORE1} PRIVATE SWD_CODEGEN=1)
-endif()
-if(JTAG_CODEGEN)
-  target_sources(${CORE1} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_gen.c
+if(GENERATED_WIRE)
+  target_sources(${CORE1} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/gen.c
+                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_gen.c
+                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/swd_sweep.c
+                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_gen.c
                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_gen_dp.c
                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/jtag_sweep.c)
-  target_compile_definitions(${CORE1} PRIVATE JTAG_CODEGEN=1)
+  target_compile_definitions(${CORE1} PRIVATE GENERATED_WIRE=1)
 endif()
 
 if(CODE_LAB)
@@ -463,7 +456,7 @@ set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/core1_image.S PROPER
 
 # Unroll SW_DP.c's sequence commands in a product image, which runs them as every image has. The
 # ARM reference build compiles SW_DP.c and JTAG_DP.c as ARM ships them.
-if(SWD_CODEGEN)
+if(GENERATED_WIRE)
   set_source_files_properties(
     ${DAP_SRC}/SW_DP.c
     PROPERTIES COMPILE_OPTIONS "${UPSTREAM_RELAX};-funroll-loops"

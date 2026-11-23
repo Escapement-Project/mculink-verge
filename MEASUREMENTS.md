@@ -701,11 +701,11 @@ script.
 
 Measured 2026-10-16, on the generated transfers. They became the default build on 2026-10-20.
 
-**What it is.** A build with `SWD_CODEGEN` on writes its SWD transfer code into SRAMX whenever the
-host changes the clock, the turnaround, the data phase or the idle cycles. Every edge, data store
-and sample sits at a cycle the timing model chose. ARM's command logic stays in C around it: posted
-reads, the RDBUFF reads and WAIT retries. `src/swd_gen.c` has the details and CODEGEN.md the
-reasoning.
+**What it is.** A build with generated SWD transfers writes its SWD transfer code into SRAMX
+whenever the host changes the clock, the turnaround, the data phase or the idle cycles. Every edge,
+data store and sample sits at a cycle the timing model chose. ARM's command logic stays in C around
+it: posted reads, the RDBUFF reads and WAIT retries. `src/swd_gen.c` has the details and CODEGEN.md
+the reasoning.
 
 **The host now gets the rate it asks for, to one cycle.** The period is the shortest whole number
 of cycles that is no faster than the request. Clocks the probe drives go down to 3 cycles, 50 MHz.

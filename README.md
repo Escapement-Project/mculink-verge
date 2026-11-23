@@ -107,11 +107,11 @@ done; done
 ```
 
 The transfer paths are generated at runtime, and a product image carries no other transfer path.
-`-DSWD_CODEGEN=OFF -DJTAG_CODEGEN=OFF` builds ARM's paths alone, as the reference the generated
-ones are held to. That build is marked `+armwire`. CMake refuses one option off without the other.
-It runs ARM's code as it ships, with cJTAG from the port proposed for ARM's CMSIS-DAP,
-`external/cmsis-dap-cjtag.patch`, which CMake applies to a copy of the submodule's sources. The
-reference is kept simple: anything where speed matters belongs on the generated paths.
+`-DGENERATED_WIRE=OFF` builds ARM's paths alone, as the reference the generated ones are held to.
+That build is marked `+armwire`. It runs ARM's code as it ships, with cJTAG from the port proposed
+for ARM's CMSIS-DAP, `external/cmsis-dap-cjtag.patch`, which CMake applies to a copy of the
+submodule's sources. The reference is kept simple: anything where speed matters belongs on the
+generated paths.
 The check holds that build to `tools/baseline-armwire/` instead. Built with GCC, ARM's paths clock
 SWD, JTAG and cJTAG faster than asked for at 10 and 20 MHz, and JTAG at 50 MHz too; built with
 clang, only JTAG, at 10 and 50 MHz. That directory's `known-overshoot.txt` records them. ARM's code

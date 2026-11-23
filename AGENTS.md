@@ -30,8 +30,7 @@ from the port with the command in its header when the port changes.
 
 **Gate on both compilers.** `uv run tools/gate.py` before committing firmware or tool changes. It
 runs the host checks and builds gcc and clang together, each in the default configuration and as
-the ARM reference, with `SWD_CODEGEN` and `JTAG_CODEGEN` off. The two options go together; CMake
-refuses one without the other. It holds every image to its baselines in the emulator,
+the ARM reference, with `GENERATED_WIRE` off. It holds every image to its baselines in the emulator,
 each generated image to its compiler's ARM paths on every `tools/equiv.py` matrix, and the
 reference images' cJTAG frames to `tools/jtagcheck.py`'s wire rules. Two more gcc
 images, one with `DAP_TIMING_DIAGNOSTICS` and one with `CODE_LAB`, get `tools/image.py` alone.

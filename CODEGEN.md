@@ -32,9 +32,8 @@ cJTAG wire, and the [measurement log](MEASUREMENTS.md) the evidence.
 - Latency: a connection measures the target's read latency on the wire (`src/swd_sweep.c`,
   `src/jtag_sweep.c`, the search in `src/latency.h`). docs/wires.md says when. Vendor `0x89` and
   `0x8A` set, pin or measure it.
-- `SWD_CODEGEN` and `JTAG_CODEGEN` build the two generators in. Both are on by default, and CMake
-  refuses one without the other. With both off, the image runs ARM's paths alone: the reference the
-  gate holds the generated paths to.
+- `GENERATED_WIRE` builds the two generators in, and is on by default. With it off, the image runs
+  ARM's paths alone: the reference the gate holds the generated paths to.
 - A product image has no ARM path to fall back to. When generation fails, a transfer reports a
   protocol error with no transfer done, and `DAP_JTAG_Sequence`, `DAP_JTAG_IDCODE` and
   `DAP_WriteABORT` answer `DAP_ERROR`, before the wire moves (docs/host-interface.md).

@@ -222,13 +222,11 @@ static inline bool dap_packet_plan(const uint8_t* p, uint32_t length, uint32_t c
         }
         break;
 #endif
-#ifdef SWD_CODEGEN
+#ifdef GENERATED_WIRE
     case 0x89:
         in = 3U;
         out = 58U;
         break;
-#endif
-#ifdef JTAG_CODEGEN
     case 0x8a:
         in = 4U;
         out = 64U;

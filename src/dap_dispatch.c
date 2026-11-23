@@ -37,11 +37,9 @@
 #include "led.h"
 #include "swd_dp.h"
 
-#ifdef SWD_CODEGEN
+#ifdef GENERATED_WIRE
 #include "swd_gen.h"
 #include "swd_sweep.h"
-#endif
-#ifdef JTAG_CODEGEN
 #include "jtag_gen.h"
 #include "jtag_sweep.h"
 #endif
@@ -56,10 +54,8 @@ extern uint32_t arm_DAP_ProcessCommand(const uint8_t* request, uint8_t* response
  * selected is Verge's: ARM's handler would drive TDI and leave TCK high. The ARM reference build's
  * port connects into the format itself. */
 __attribute__((noinline)) static uint32_t arm_command(const uint8_t* request, uint8_t* response) {
-#ifdef SWD_CODEGEN
+#ifdef GENERATED_WIRE
     swd_sweep_watch(request);
-#endif
-#ifdef JTAG_CODEGEN
     jtag_sweep_watch(request);
 #endif
     const bool connect = *request == ID_DAP_Connect;
@@ -97,12 +93,10 @@ __attribute__((noinline)) static uint32_t arm_command(const uint8_t* request, ui
 }
 
 COMMAND_PATH static uint32_t transfer_block(const uint8_t* request, uint8_t* response) {
-#ifdef SWD_CODEGEN
+#ifdef GENERATED_WIRE
     if (DAP_Data.debug_port == DAP_PORT_SWD) {
         return SWD_TransferBlock(request, response);
     }
-#endif
-#ifdef JTAG_CODEGEN
     const uint32_t wire = jtag_gen_wire();
     if (!jtag_gen_ready_transfers(wire)) {
         // Nothing to run it on: no transfers done, and a protocol error, with the wire untouched.
@@ -120,7 +114,7 @@ COMMAND_PATH static uint32_t transfer_block(const uint8_t* request, uint8_t* res
 #endif
 }
 
-#if defined(SWD_CODEGEN) && defined(JTAG_CODEGEN)
+#ifdef GENERATED_WIRE
 /** Whether the generators can run `hz`. A period longer than either takes, 8 Hz and slower, has
  *  no code, and this build has no ARM path to run it on. */
 static bool clock_generates(uint32_t hz) {
@@ -162,7 +156,7 @@ static uint32_t refuse(const uint8_t* request, uint8_t* response) {
 #endif
 
 COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* response) {
-#ifdef JTAG_CODEGEN
+#ifdef GENERATED_WIRE
     jtag_gen_command = *request;
 #endif
     if ((*request == ID_DAP_Delay) && (request[1] == 0U) && (request[2] == 0U)) {
@@ -174,12 +168,10 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
         response[1] = DAP_OK;
         return (3U << 16) | 2U;
     }
-#if defined(SWD_CODEGEN) && defined(JTAG_CODEGEN)
+#ifdef GENERATED_WIRE
     if (generation_refuses(request)) {
         return refuse(request, response);
     }
-#endif
-#ifdef JTAG_CODEGEN
     if ((*request == ID_DAP_SWJ_Sequence) && cJTAG_Active()) {
         // Raw output in an OScan format: one TCKC period a bit, as ARM's, but TMSC moves only while
         // TCKC is low, where ARM's moves it with SWCLK still high: on two pins that is an escape edge.
@@ -189,8 +181,6 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
         response[1] = DAP_OK;
         return ((2U + ((count + 7U) / 8U)) << 16) | 2U;
     }
-#endif
-#ifdef SWD_CODEGEN
     if ((*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_SWD)) {
         if (swd_sweep_pending()) {
             return swd_sweep_connect(request, response);
@@ -198,8 +188,6 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
         *response = *request;
         return (1U << 16) + 1U + SWD_TransferCommand(request + 1, response + 1);
     }
-#endif
-#ifdef JTAG_CODEGEN
     if ((*request == ID_DAP_Transfer) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {
         if (jtag_sweep_pending()) {
             uint32_t const result = jtag_sweep_connect(request, response);
@@ -226,24 +214,18 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
         *response = *request;
         return (1U << 16) + 1U + transfer_block(request + 1, response + 1);
     }
-#if defined(SWD_CODEGEN) || defined(JTAG_CODEGEN)
+#ifdef GENERATED_WIRE
     if (*request == ID_DAP_SWJ_Clock) {
         // ARM keeps only the delay it derives from the clock, and the generators want the clock.
         const uint32_t hz = (uint32_t)request[1] | ((uint32_t)request[2] << 8) | ((uint32_t)request[3] << 16) |
                             ((uint32_t)request[4] << 24);
-#if defined(SWD_CODEGEN) && defined(JTAG_CODEGEN)
         // ARM's handler refuses 0 Hz the same way, keeping the clock it had.
         if ((hz != 0U) && !clock_generates(hz)) {
             return refuse(request, response);
         }
-#endif
         if (hz != 0U) {
-#ifdef SWD_CODEGEN
             swd_gen_clock_hz = hz;
-#endif
-#ifdef JTAG_CODEGEN
             jtag_gen_clock_hz = hz;
-#endif
         }
     }
     const uint32_t result = arm_command(request, response);
@@ -251,7 +233,6 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
     // JTAG the scans alone, since a host often changes the chain or the framing again before it
     // transfers, and the first transfer builds the transfers (jtag_gen_ready_transfers).
     // The two generators share SRAMX, so only the port in use generates.
-#ifdef SWD_CODEGEN
     if ((*request == ID_DAP_SWJ_Clock) || (*request == ID_DAP_SWD_Configure) ||
         (*request == ID_DAP_TransferConfigure)) {
         swd_gen_changed();
@@ -259,14 +240,11 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
             (void)swd_gen_ready();
         }
     }
-#endif
-#ifdef JTAG_CODEGEN
     if (((*request == ID_DAP_SWJ_Clock) || (*request == ID_DAP_JTAG_Configure) ||
          (*request == ID_DAP_TransferConfigure)) &&
         (DAP_Data.debug_port == DAP_PORT_JTAG)) {
         (void)jtag_gen_ready(jtag_gen_wire());
     }
-#endif
     return result;
 #else
     return arm_command(request, response);

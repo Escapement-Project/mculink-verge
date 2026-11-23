@@ -22,11 +22,9 @@
 #ifdef CODE_LAB
 #include "code_lab.h"
 #endif
-#ifdef SWD_CODEGEN
+#ifdef GENERATED_WIRE
 #include "swd_gen.h"
 #include "swd_sweep.h"
-#endif
-#ifdef JTAG_CODEGEN
 #include "jtag_gen.h"
 #include "jtag_sweep.h"
 #endif
@@ -155,17 +153,11 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
 #define CJTAG_EXT_CAP_ENERGY_RANGES (1U << 9)
 /// 0x90 mode 15 on Verge Aux: a DIO stream, on a board with DIO pins and no energy capture.
 #define CJTAG_EXT_CAP_DIO_STREAM (1U << 10)
-#ifdef SWD_CODEGEN
-#define CJTAG_CAPS_SWD CJTAG_CAP_SWD_CODEGEN
+#ifdef GENERATED_WIRE
+#define CJTAG_CAPS_BUILT (CJTAG_CAP_SWD_CODEGEN | CJTAG_CAP_JTAG_CODEGEN)
 #else
-#define CJTAG_CAPS_SWD 0U
+#define CJTAG_CAPS_BUILT 0U
 #endif
-#ifdef JTAG_CODEGEN
-#define CJTAG_CAPS_JTAG CJTAG_CAP_JTAG_CODEGEN
-#else
-#define CJTAG_CAPS_JTAG 0U
-#endif
-#define CJTAG_CAPS_BUILT (CJTAG_CAPS_SWD | CJTAG_CAPS_JTAG)
 
 /** ID_VENDOR_SWD_GEN takes `latency, mode`. `latency` is the cycles from a rising-edge store to
  * the first load that sees the bit it launched, 1 to 64, or 0 to leave it as it is; setting it
@@ -303,7 +295,7 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
 /** R22/R23 halve pin 1 on its way to the ADC. */
 #define TARGET_DIVIDER 2U
 
-#if defined(SWD_CODEGEN) || defined(JTAG_CODEGEN)
+#ifdef GENERATED_WIRE
 /** `n` little-endian u32s at `out`; returns the byte after them. */
 static uint8_t* put_u32s(uint8_t* out, const uint32_t* fields, uint32_t n) {
     for (uint32_t i = 0U; i < n; i++) {
@@ -364,7 +356,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             (((board_kind != BOARD_KIND_ON_BOARD) || (request[1] == CJTAG_SELECT_JTAG)) && cJTAG_Select(request[1]))
                 ? DAP_OK
                 : DAP_ERROR;
-#ifdef JTAG_CODEGEN
+#ifdef GENERATED_WIRE
         // The wire changed: generate for it now rather than in the next command.
         if ((response[1] == DAP_OK) && (DAP_Data.debug_port == DAP_PORT_JTAG)) {
             (void)jtag_gen_ready(jtag_gen_wire());
@@ -660,7 +652,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         return code_lab_command(request, response);
 #endif
 
-#ifdef SWD_CODEGEN
+#ifdef GENERATED_WIRE
     case ID_VENDOR_SWD_GEN: {
         const uint32_t latency = request[1];
         const uint32_t mode = request[2];
@@ -707,9 +699,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         out = put_u32s(out, sweep, sizeof sweep / sizeof sweep[0]);
         return (3U << 16) | (uint32_t)(out - response);
     }
-#endif
 
-#ifdef JTAG_CODEGEN
     case ID_VENDOR_JTAG_GEN: {
         const uint32_t two_pin = request[1];
         const uint32_t four_wire = request[2];

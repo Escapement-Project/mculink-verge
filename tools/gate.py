@@ -4,7 +4,7 @@
 """The whole gate: host checks and both compilers' images through the emulator.
 
 `ninja -C <build> check` holds one image to its baselines. The gate runs that for gcc and clang,
-each in the default configuration and as the ARM reference, with SWD_CODEGEN and JTAG_CODEGEN off.
+each in the default configuration and as the ARM reference, with GENERATED_WIRE off.
 An optimisation that holds under one compiler has been seen not to under the other.
 
 It runs in three stages, and the steps inside a stage run at once:
@@ -127,7 +127,7 @@ def build_image(
     check_jobs = cycles_jobs if codegen else min(2, cycles_jobs)
     started = time.monotonic()
     configure = ["cmake", "-B", directory, "-G", "Ninja", "-DBOARD=mcu_link",
-                 f"-DTOOLCHAIN={toolchain}", f"-DSWD_CODEGEN={flag}", f"-DJTAG_CODEGEN={flag}",
+                 f"-DTOOLCHAIN={toolchain}", f"-DGENERATED_WIRE={flag}",
                  f"-DCYCLES_CHECK_JOBS={check_jobs}", *(variant[1] if variant else ())]
     if toolchain == "clang" and not codegen:
         configure.append("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON")

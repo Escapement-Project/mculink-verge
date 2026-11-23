@@ -49,7 +49,7 @@ int main(void) {
         assert(check(bytes, fixed[i].in, 64U, true).produced == fixed[i].out);
         check(bytes, fixed[i].in, fixed[i].out - 1U, false);
     }
-#ifdef JTAG_CODEGEN
+#ifdef GENERATED_WIRE
     prefixes((uint8_t[]){0x8a, 0, 0, 0}, 4U, 64U);
     check((uint8_t[]){0x8a, 0, 0, 0}, 4U, 63U, false);
 #else

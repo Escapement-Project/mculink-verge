@@ -19,13 +19,9 @@
 #include "dma_ring.h"
 #include "energy_integration.h"
 #include "target_sense.h"
-#if defined(SWD_CODEGEN) || defined(JTAG_CODEGEN)
+#ifdef GENERATED_WIRE
 #include "gen.h"
-#endif
-#ifdef SWD_CODEGEN
 #include "swd_gen.h"
-#endif
-#ifdef JTAG_CODEGEN
 #include "jtag_gen.h"
 #endif
 
@@ -56,7 +52,7 @@ static_assert(ENERGY_SEGMENTS == 2U, "a completion flag for each half");
 /** Cycles a DMA0 read of ADC0 can hold a load from the secure GPIO, which shares its AHB port
  *  (BUSES.md). Measured; no longer hold was seen. */
 #define ADC0_LOAD_STALL 2U
-#ifdef JTAG_CODEGEN
+#ifdef GENERATED_WIRE
 static_assert(ADC0_LOAD_STALL <= JTAG_GEN_STALL_MAX, "the JTAG generator would refuse every build during a capture");
 #endif
 
@@ -931,14 +927,12 @@ __attribute__((noinline)) void energy_monitor_calibrate(void) {
 /** While a capture is asked for, paused or not, the generated bit paths keep a stall's margin. */
 static void request_rate(uint32_t rate_hz) {
     requested_rate_hz = rate_hz;
-#if defined(SWD_CODEGEN) || defined(JTAG_CODEGEN)
+#ifdef GENERATED_WIRE
     uint32_t const stall = (rate_hz != 0U) ? ADC0_LOAD_STALL : 0U;
     if (gen_stall != stall) {
         gen_stall = stall;
-#ifdef SWD_CODEGEN
         // The JTAG generator compares its inputs on every call; SWD's waits to be told.
         swd_gen_changed();
-#endif
     }
 #endif
 }
