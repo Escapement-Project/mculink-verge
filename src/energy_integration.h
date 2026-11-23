@@ -146,4 +146,31 @@ static inline void energy_integrate(struct energy_integration* energy, bool took
     }
 }
 
+/* CPU 0's alone: src/energy_integration.c, and the loop's check for its work. */
+
+/** Only CPU 0's image has it: CPU 1 goes through dap_shared.energy_integration. */
+extern struct energy_integration energy_integration;
+
+/** DMA0's interrupt, for each completed segment: energy_integrate over the state. */
+void energy_integrate_segment(bool took_a, bool took_b);
+
+/** The loop's: acknowledge CPU 1's control request, and re-arm the low range. */
+void energy_control_task(void);
+void energy_range_retry_task(void);
+
+/** Whether the integration has asked for the low range back, re-arming is on, and the state is
+ *  CPU 0's. */
+__attribute__((always_inline)) static inline bool energy_rearm_wanted(void) {
+    return (dap_shared.energy_range_retry_pending != 0U) && (dap_shared.energy_range_retry_enabled != 0U) &&
+           ((dap_shared.energy_control_ack & DAP_ENERGY_QUIET_FLAG) == 0U);
+}
+
+/** Whether either task has work, so the loop must not wait. A hold stops the conversion timer for a
+ *  read-latency measurement: no gap comes until it ends, so the loop may wait meanwhile, and the
+ *  next wake tries again. Always inlined, so the loop stays in SRAM. */
+__attribute__((always_inline)) static inline bool energy_work_waiting(void) {
+    return (energy_rearm_wanted() && ((CTIMER2->TCR & CTIMER_TCR_CEN_MASK) != 0U)) ||
+           (dap_shared.energy_control_request != dap_shared.energy_control_ack);
+}
+
 #endif

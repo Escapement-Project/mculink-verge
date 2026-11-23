@@ -45,8 +45,6 @@ static_assert(CFG_TUD_HID_EP_BUFSIZE == DAP_SHARED_HID_REPORT_SIZE, "dap_shared.
 
 dap_shared_t dap_shared __attribute__((section(".dap_shared")));
 
-/** In SRAM0, CPU 0's own bank: DMA0's ring writes and the interrupt's reads stay off CPU 1's. */
-static struct energy_integration energy_integration;
 dap_stage_t dap_stage __attribute__((section(".dap_stage")));
 
 /** The dap_stage request buffer each transport's next staged command goes in. */
@@ -88,8 +86,6 @@ static volatile bool bulk_reply_in_flight;
 static volatile bool hid_reply_in_flight;
 
 static void usb_transport_task(void);
-static void energy_range_retry_task(void);
-static void energy_control_task(void);
 static void arm_rx(void);
 static void send_head(void);
 static void send_bulk_head(void);
@@ -287,59 +283,6 @@ __attribute__((section(".ramfunc"))) static void usb_transport_task(void) {
     send_head();
 }
 
-/** Whether the converter has finished a pair and the next trigger is far enough off for the switch
- *  to settle (energy_monitor.c, switch_timing), by the conversion timer alone: CTIMER2 is on port
- *  7, which no timed window uses, and ADC0 shares port 10 with CPU 1's wire (BUSES.md). CTIMER2
- *  toggles its trigger output every `trigger_ticks`, and the converter starts on its rise. */
-__attribute__((section(".ramfunc"))) static bool energy_between_pairs(struct energy_integration const* energy) {
-    uint32_t const emr = CTIMER2->EMR;
-    uint32_t const count = CTIMER2->TC;
-    if (CTIMER2->EMR != emr) {
-        return false;
-    }
-    uint32_t const since = ((emr & CTIMER_EMR_EM3_MASK) != 0U) ? (count + 1U) : (energy->trigger_ticks + count + 1U);
-    return (since >= energy->rearm_from_ticks) && (since <= energy->rearm_until_ticks);
-}
-
-/** Re-arm the Pro's low range outside the DMA interrupt, once the integration has seen the high
- *  range's current stay under the low range's limit for a whole segment. Where the rate leaves
- *  room, it waits until the converter is between pairs, so the pair after the switch is the low
- *  range's alone (src/energy_pairs.h); the loop keeps coming back while it waits. */
-__attribute__((section(".ramfunc"), noinline)) static void energy_range_retry_task(void) {
-    if ((dap_shared.energy_control_ack & DAP_ENERGY_QUIET_FLAG) != 0U ||
-        dap_shared.energy_range_retry_pending == 0U || dap_shared.energy_range_retry_enabled == 0U) {
-        return;
-    }
-    bool const between = energy_integration.rearm_between_pairs;
-    if (between && !energy_between_pairs(&energy_integration)) {
-        return;
-    }
-    // Nothing may come between the check and the edge, the pin interrupts included.
-    uint32_t const primask = __get_PRIMASK();
-    __disable_irq();
-    if (!between || energy_between_pairs(&energy_integration)) {
-        dap_shared.energy_range_retry_pending = 0U;
-        uint32_t const range_pins = GPIO->PIN[0];
-        // The comparator keeps the reset, so a current back over the threshold keeps the high range.
-        if (((range_pins & (1UL << 29U)) != 0U) && ((range_pins & (1UL << 30U)) == 0U)) {
-            energy_latch_clock();
-        }
-    }
-    __set_PRIMASK(primask);
-}
-
-/** Main-loop acknowledgement follows the previous handler's segment-count publication. */
-__attribute__((section(".ramfunc"), noinline)) static void energy_control_task(void) {
-    uint32_t const requested = dap_shared.energy_control_request;
-    if (requested != dap_shared.energy_control_ack) {
-        uint32_t const basepri = cpu0_mask_all_but_edges();
-        __DMB();
-        dap_shared.energy_control_ack = requested;
-        __DMB();
-        cpu0_unmask(basepri);
-    }
-}
-
 /** Arms the OUT endpoint into the tail request slot if that is free. Arming claims the endpoint,
  *  so a call while it is armed changes nothing. The receive callback calls it as well, so the
  *  next request can arrive without the loop coming round. */
@@ -447,14 +390,8 @@ __attribute__((section(".ramfunc"))) static bool queued_work(void) {
     bool const reply_waiting =
         (!bulk_reply_in_flight && !dap_usb_slot_free(dap_shared.response_len, dap_shared.response_head)) ||
         (!hid_reply_in_flight && !dap_usb_slot_free(dap_shared.hid_response_len, dap_shared.hid_response_head));
-    // A hold stops the conversion timer for a read-latency measurement: no gap comes until it
-    // ends, so the loop may wait meanwhile, and the next wake tries again.
-    bool const rearm_waiting = (dap_shared.energy_range_retry_pending != 0U) &&
-                               (dap_shared.energy_range_retry_enabled != 0U) &&
-                               ((dap_shared.energy_control_ack & DAP_ENERGY_QUIET_FLAG) == 0U) &&
-                               ((CTIMER2->TCR & CTIMER_TCR_CEN_MASK) != 0U);
-    return reply_waiting || disconnect_requested || tud_task_event_ready() || aux_has_work() || rearm_waiting ||
-           usb_speed_waiting() || dap_shared.energy_control_request != dap_shared.energy_control_ack;
+    return reply_waiting || energy_work_waiting() || disconnect_requested || tud_task_event_ready() || aux_has_work() ||
+           usb_speed_waiting();
 }
 
 /** Everything that gives the loop work wakes it: USB and the LED tick by interrupt, CPU 1 through
@@ -473,13 +410,6 @@ __attribute__((section(".ramfunc"))) static void idle(void) {
         wait_for_work();
     }
     cpu0_unmask(basepri);
-}
-
-/** One completed energy segment, integrated from SRAM. Out of line, so tools/energy_checks.py can
- *  call it. */
-__attribute__((section(".ramfunc"), noinline)) void energy_integrate_segment(bool took_a, bool took_b);
-__attribute__((section(".ramfunc"), noinline)) void energy_integrate_segment(bool took_a, bool took_b) {
-    energy_integrate(&energy_integration, took_a, took_b);
 }
 
 /** The startup file's vector table names it, weakly; this is the strong definition. */

@@ -72,7 +72,7 @@ struct energy_integration {
     uint32_t switch_weight_q16;
     /** Whether CPU 0 re-arms the low range between pairs, and when: CTIMER2 counts half periods of
      *  `trigger_ticks`, and a re-arm lands from `rearm_from_ticks` to `rearm_until_ticks` after a
-     *  trigger (src/main.c). */
+     *  trigger (src/energy_integration.c). */
     bool rearm_between_pairs;
     uint32_t trigger_ticks;
     uint32_t rearm_from_ticks;

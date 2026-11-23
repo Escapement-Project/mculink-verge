@@ -33,9 +33,10 @@ static inline void energy_add_pair(energy_total_t* total, uint32_t mv, uint32_t 
  *  tell which. It takes a stand-in: the next pair's current, less the previous pair's share. That
  *  share is half the part of a period the conversions span, the expected part of them still on the
  *  low range for a switch at any moment, so the total is right on average over many switches.
- *  CPU 0 re-arms the low range between pairs where the rate leaves room (src/main.c), so a pair
- *  that switched down is clean and keeps its own reading; at other rates it takes the next pair's
- *  current. A pair whose next pair switched too keeps its own, as the next may be a blend. */
+ *  CPU 0 re-arms the low range between pairs where the rate leaves room (src/energy_integration.c),
+ *  so a pair that switched down is clean and keeps its own reading; at other rates it takes the
+ *  next pair's current. A pair whose next pair switched too keeps its own, as the next may be a
+ *  blend. */
 static inline uint32_t energy_stand_in_na(uint32_t next_na, uint32_t before_na, uint32_t weight_q16) {
     return (uint32_t)(((uint64_t)next_na * (65536U - weight_q16) + (uint64_t)before_na * weight_q16 + 32768U) >> 16U);
 }

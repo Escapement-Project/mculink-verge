@@ -50,7 +50,7 @@ answering can still be sent to the bootloader over USB, because CPU 0 answers th
 | The consoles, VCOM and the Pro's VCOM2 | CPU 0 | `vcom.c` |
 | SWO capture: setup and reads | CPU 1 | `swo.c` |
 | Energy capture: start, stop, calibration, readings | CPU 1 | `energy_monitor.c` |
-| Energy capture while it runs: integrating, stream messages, the range re-arm | CPU 0, and CPU 1 while it owns the capture state (below) | `main.c`, `energy_integration.h`, `energy_stream.c` |
+| Energy capture while it runs: integrating, stream messages, the range re-arm | CPU 0, and CPU 1 while it owns the capture state (below) | `energy_integration.c`, `energy_integration.h`, `energy_stream.c` |
 | Verge Aux: the endpoints, sending stream messages, attaching and ending a stream | CPU 0 | `verge_aux.c` |
 | DIO pins, SPI and I2C, target supply, target sense | CPU 1 | `dio.c`, `pro_bus.c`, `target_power.c`, `target_sense.c` |
 | DIO edges for the energy stream | CPU 0 | `dio_edges.c` |

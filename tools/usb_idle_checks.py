@@ -114,7 +114,8 @@ def check_idle(c, elf, symbols, code_lab=False):
 
 def check_idle_rearm(c, elf, symbols, offsets):
     """A re-arm waiting for the gap between pairs keeps CPU 0's loop from waiting while the
-    conversion timer runs, and lets it wait while a hold has the timer stopped (src/main.c)."""
+    conversion timer runs, and lets it wait while a hold has the timer stopped
+    (src/energy_integration.h, energy_work_waiting)."""
     ctimer2_tcr = 0x40028004
     for running in (True, False):
         probe = machine(elf, symbols)

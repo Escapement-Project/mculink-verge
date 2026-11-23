@@ -550,10 +550,10 @@ static uint32_t timer_rounded_rate(uint32_t rate_hz) {
 }
 
 /** The stand-in's weight and CPU 0's re-arm window, for the timer `requested_hz` starts and the
- *  averaging `rate_hz` gets (src/energy_pairs.h, src/main.c). The
- *  re-arm comes in the first half of the time between a pair's end and the next trigger, which
- *  leaves the switch at least as long to settle as it had to land; a rate with under
- *  ENERGY_REARM_MIN_GAP_TICKS of it re-arms anywhere. */
+ *  averaging `rate_hz` gets (src/energy_pairs.h, src/energy_integration.c). The re-arm comes in the
+ *  first half of the time between a pair's end and the next trigger, which leaves the switch at
+ *  least as long to settle as it had to land; a rate with under ENERGY_REARM_MIN_GAP_TICKS of it
+ *  re-arms anywhere. */
 static void switch_timing(struct energy_integration* energy, uint32_t requested_hz, uint32_t rate_hz) {
     uint32_t const ticks = timer_ticks(requested_hz);
     uint32_t const window = target_sense_monitor_window_adck(rate_hz) * TARGET_SENSE_ADC_DIVIDER;
