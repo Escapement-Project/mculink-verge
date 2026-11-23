@@ -212,7 +212,7 @@ __attribute__((section(".ramfunc"))) static void begin_dropped(struct energy_str
  *  time under one mask: the interrupt can take an edge only after it, and stamps it later. CPU 1
  *  counts `dio_spi_turns` before SPI moves the pins (src/dio.c), so a count read after the time
  *  unchanged means the pins held until then. */
-__attribute__((section(".ramfunc"))) static void dio_time(struct energy_stream* stream) {
+__attribute__((always_inline)) static inline void dio_time(struct energy_stream* stream) {
     uint32_t const written = stream->written;
     uint32_t const now = CTIMER4->TC;
     if (written != quiet_written) {
@@ -244,40 +244,48 @@ __attribute__((section(".ramfunc"))) static void dio_time(struct energy_stream* 
     quiet_from = now;
 }
 
-__attribute__((section(".ramfunc"), noinline)) void dio_edges_task(void) {
-    if (!present) {
-        return;
-    }
-    struct energy_stream* const stream = edges_stream;
-    uint32_t const turns = dap_shared.dio_spi_turns;
+/** Follows the stream's start, and returns the pins it reports: none while a new stream's state is
+ *  still CPU 1's. Nothing sends its edges until then, and a fast pin would fill the record while
+ *  CPU 1 finishes the start. Sets `*began` on the pass that first finds a new stream CPU 0's. */
+__attribute__((always_inline)) static inline uint8_t follow_stream(struct energy_stream* stream, bool* began) {
     // A start counts after it writes the mask, so one counted has its mask.
     uint32_t const begins = stream->edge_begins;
     __DMB();
-    // A new stream's edges wait until CPU 0 owns its state: until then nothing sends them, and a
-    // fast pin would fill the record while CPU 1 finishes the start.
     bool const ready = owned(stream);
     bool const waiting = (begins != begins_seen) && !ready;
-    bool const began = (begins != begins_seen) && ready;
-    if (began) {
+    *began = (begins != begins_seen) && ready;
+    if (*began) {
         begins_seen = begins;
     }
     uint8_t const reported = (stream->active && !waiting) ? stream->edge_mask : 0U;
     if (reported == 0U) {
         clear_dropped(stream);
-    } else if (began) {
+    } else if (*began) {
         begin_dropped(stream);
     }
-    if (turns != spi_turns_seen) {
-        // CPU 1 turned the interrupts off for SPI (src/dio.c).
-        spi_turns_seen = turns;
-        enabled = 0U;
-        if (reported != 0U) {
-            spi_dropped(stream);
-        }
-        // After the stamp is read: CPU 1 writes a new one only once it sees this.
-        __DMB();
-        dap_shared.dio_spi_seen = turns;
+    return reported;
+}
+
+/** Follows CPU 1 turning the interrupts off for SPI (src/dio.c). */
+__attribute__((always_inline)) static inline void follow_spi(struct energy_stream* stream, uint32_t turns,
+                                                             uint8_t reported) {
+    if (turns == spi_turns_seen) {
+        return;
     }
+    spi_turns_seen = turns;
+    enabled = 0U;
+    if (reported != 0U) {
+        spi_dropped(stream);
+    }
+    // After the stamp is read: CPU 1 writes a new one only once it sees this.
+    __DMB();
+    dap_shared.dio_spi_seen = turns;
+}
+
+/** Turns the pin interrupts on and off to the pins the stream reports, none while SPI has them.
+ *  Returns false if SPI took the pins meanwhile, with the ones it turned on off again: the next
+ *  pass sees the count. */
+__attribute__((always_inline)) static inline bool switch_pins(uint32_t turns, uint8_t reported, bool began) {
     uint8_t const wanted = ((turns & 1U) != 0U) ? 0U : reported;
     uint32_t const off = (uint32_t)enabled & ~(uint32_t)wanted;
     uint32_t const on = (uint32_t)wanted & ~(uint32_t)enabled;
@@ -294,39 +302,52 @@ __attribute__((section(".ramfunc"), noinline)) void dio_edges_task(void) {
         // to one peripheral before a load from another, USB SRAM included.
         __DMB();
         if (dap_shared.dio_spi_turns != turns) {
-            // SPI took the pins meanwhile: CPU 1 counts before it turns them off, so they stay off
-            // whichever of us wrote last. The run resync asked for records nothing if it read the
-            // levels after the count (PIN_INT0_IRQHandler), and the sync goes with the pins. The
-            // next pass sees the count.
+            // CPU 1 counts before it turns the pins off, so they stay off whichever of us wrote
+            // last. The run resync asked for records nothing if it read the levels after the count
+            // (PIN_INT0_IRQHandler), and the sync goes with the pins.
             uint32_t const primask = __get_PRIMASK();
             __disable_irq();
             PINT->CIENR = on;
             PINT->CIENF = on;
             sync = false;
             __set_PRIMASK(primask);
-            return;
+            return false;
         }
     }
     enabled = wanted;
-    if (stream->active && stream->pairless && owned(stream)) {
-        // No pairs move a DIO stream's origin on, and this runs every few milliseconds.
-        uint32_t const basepri = cpu0_mask_all_but_edges();
-        energy_stream_dio_advance(stream, CTIMER4->TC);
-        cpu0_unmask(basepri);
-        if (reported != 0U) {
-            dio_time(stream);
-        }
+    return true;
+}
+
+/** Moves a DIO stream's origin on, since no pairs do: the loop comes round every few milliseconds.
+ *  Then sends the stream's time if it has been quiet (dio_time). */
+__attribute__((always_inline)) static inline void advance_dio_stream(struct energy_stream* stream, uint8_t reported) {
+    if (!stream->active || !stream->pairless || !owned(stream)) {
+        return;
     }
-    if (resting && ((CTIMER4->TC - rest_from) >= DIO_EDGES_REST_COUNTS)) {
-        resting = false;
-        NVIC->ICPR[0] = DIO_EDGES_IRQS;
-        NVIC->ISER[0] = DIO_EDGES_IRQS;
-        if ((enabled != 0U) && (dap_shared.dio_spi_turns == turns)) {
-            resync(enabled);
-        }
+    uint32_t const basepri = cpu0_mask_all_but_edges();
+    energy_stream_dio_advance(stream, CTIMER4->TC);
+    cpu0_unmask(basepri);
+    if (reported != 0U) {
+        dio_time(stream);
     }
-    // Edges go with the next pairs message, but no later than 10 ms after the first of them, nor
-    // once they half fill the record. Sending them sends the pairs message being built first.
+}
+
+/** Ends a rest that has run its time. The pins on start again at a run that records their levels. */
+__attribute__((always_inline)) static inline void end_rest(uint32_t turns) {
+    if (!resting || ((CTIMER4->TC - rest_from) < DIO_EDGES_REST_COUNTS)) {
+        return;
+    }
+    resting = false;
+    NVIC->ICPR[0] = DIO_EDGES_IRQS;
+    NVIC->ISER[0] = DIO_EDGES_IRQS;
+    if ((enabled != 0U) && (dap_shared.dio_spi_turns == turns)) {
+        resync(enabled);
+    }
+}
+
+/** Edges go with the next pairs message, but no later than 10 ms after the first of them, nor once
+ *  they half fill the record. Sending them sends the pairs message being built first. */
+__attribute__((always_inline)) static inline void send_edges(struct energy_stream* stream, uint8_t reported) {
     uint32_t const read = stream->edge_entries_read;
     uint32_t const written = stream->edge_entries_written;
     if ((reported == 0U) || (written == read) || !owned(stream)) {
@@ -341,6 +362,23 @@ __attribute__((section(".ramfunc"), noinline)) void dio_edges_task(void) {
         energy_stream_close(stream);
     }
     cpu0_unmask(basepri);
+}
+
+__attribute__((section(".ramfunc"), noinline)) void dio_edges_task(void) {
+    if (!present) {
+        return;
+    }
+    struct energy_stream* const stream = edges_stream;
+    uint32_t const turns = dap_shared.dio_spi_turns;
+    bool began;
+    uint8_t const reported = follow_stream(stream, &began);
+    follow_spi(stream, turns, reported);
+    if (!switch_pins(turns, reported, began)) {
+        return;
+    }
+    advance_dio_stream(stream, reported);
+    end_rest(turns);
+    send_edges(stream, reported);
 }
 
 __attribute__((section(".ramfunc"), noinline)) bool dio_edges_stream_ready(void) {
