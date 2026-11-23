@@ -4,6 +4,15 @@
 #include "energy_pairs.h"
 #include "energy_samples.h"
 
+/** The reference energy_total_sum and energy_total_fold are held to: one sample's power, in
+ *  picowatts (millivolts times nanoamps), added at once. */
+static void energy_total_add(energy_total_t* total, uint64_t power_pw, uint64_t scale_q32) {
+    energy_total_carry(total, power_pw, scale_q32);
+    if (total->pairs != UINT64_MAX) {
+        total->pairs++;
+    }
+}
+
 static uint32_t word(uint32_t command, uint16_t code) {
     return 0x80070000U | (command << 24U) | code;
 }

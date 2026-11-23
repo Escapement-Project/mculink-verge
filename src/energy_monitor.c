@@ -525,18 +525,11 @@ static bool capture_drain(void) {
     return empty;
 }
 
-/** CTIMER4 runs free from PLL0, the conversion timer's clock, so a stream's times count the clock
- *  its pairs are paced by (src/energy_stream.h). */
 static void stamp_init(void) {
     if (stamp_ready) {
         return;
     }
-    CLOCK_AttachClk(kPLL0_to_CTIMER4);
-    CLOCK_EnableClock(kCLOCK_Timer4);
-    RESET_PeripheralReset(kCTIMER4_RST_SHIFT_RSTn);
-    CTIMER4->PR = 0U;
-    CTIMER4->MCR = 0U;
-    CTIMER4->TCR = CTIMER_TCR_CEN_MASK;
+    energy_stamp_timer_start();
     stamp_ready = true;
 }
 
@@ -1053,6 +1046,46 @@ energy_monitor_status_t energy_monitor_stop(void) {
     return dap_shared.energy_dma_error != 0U ? ENERGY_MONITOR_DMA_ERROR : ENERGY_MONITOR_OK;
 }
 
+/** A copy of CPU 0's decoder, taken while CPU 0 was not folding pairs into it
+ *  (energy_accumulator_sequence even and unchanged), with the ring's unread tail decoded on the copy.
+ *  False, and the capture marked failed, when the ring holds more than it can. */
+static bool latest_decoder(struct energy_integration* energy, energy_sample_decoder_t* decoder) {
+    uint32_t const ring_words = energy_ring_words(energy);
+    for (;;) {
+        uint32_t const before = dap_shared.energy_accumulator_sequence;
+        __DMB();
+        if ((before & 1U) != 0U) {
+            continue;
+        }
+        *decoder = energy->decoder;
+        uint32_t const consumed = energy->consumed_bytes;
+        uint32_t const written = ring_written();
+        __DMB();
+        if (before != dap_shared.energy_accumulator_sequence) {
+            continue;
+        }
+        uint32_t const bytes = written - consumed;
+        if (bytes > (ring_words * sizeof(uint32_t))) {
+            dap_shared.energy_dma_error = 1U;
+            return false;
+        }
+        for (uint32_t position = consumed; position != written; position += sizeof(uint32_t)) {
+            uint32_t const index = (position / sizeof(uint32_t)) & (ring_words - 1U);
+            (void)energy_sample_feed(decoder, energy->ring[index]);
+        }
+        uint32_t const after = ring_written();
+        __DMB();
+        if (before != dap_shared.energy_accumulator_sequence) {
+            continue;
+        }
+        if (after - consumed > (ring_words * sizeof(uint32_t))) {
+            dap_shared.energy_dma_error = 1U;
+            return false;
+        }
+        return true;
+    }
+}
+
 energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {
     if (sample == nullptr) {
         return ENERGY_MONITOR_BAD_ARGUMENT;
@@ -1067,40 +1100,9 @@ energy_monitor_status_t energy_monitor_latest(energy_monitor_sample_t* sample) {
     if (!energy->running) {
         return ENERGY_MONITOR_STOPPED;
     }
-    uint32_t const ring_words = energy_ring_words(energy);
     energy_sample_decoder_t decoder;
-    for (;;) {
-        uint32_t const before = dap_shared.energy_accumulator_sequence;
-        __DMB();
-        if ((before & 1U) != 0U) {
-            continue;
-        }
-        decoder = energy->decoder;
-        uint32_t const consumed = energy->consumed_bytes;
-        uint32_t const written = ring_written();
-        __DMB();
-        if (before != dap_shared.energy_accumulator_sequence) {
-            continue;
-        }
-        uint32_t const bytes = written - consumed;
-        if (bytes > (ring_words * sizeof(uint32_t))) {
-            dap_shared.energy_dma_error = 1U;
-            return ENERGY_MONITOR_DMA_ERROR;
-        }
-        for (uint32_t position = consumed; position != written; position += sizeof(uint32_t)) {
-            uint32_t const index = (position / sizeof(uint32_t)) & (ring_words - 1U);
-            (void)energy_sample_feed(&decoder, energy->ring[index]);
-        }
-        uint32_t const after = ring_written();
-        __DMB();
-        if (before != dap_shared.energy_accumulator_sequence) {
-            continue;
-        }
-        if (after - consumed > (ring_words * sizeof(uint32_t))) {
-            dap_shared.energy_dma_error = 1U;
-            return ENERGY_MONITOR_DMA_ERROR;
-        }
-        break;
+    if (!latest_decoder(energy, &decoder)) {
+        return ENERGY_MONITOR_DMA_ERROR;
     }
     if (capture_failed()) {
         return ENERGY_MONITOR_DMA_ERROR;

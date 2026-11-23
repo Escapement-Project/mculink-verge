@@ -5,7 +5,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "fsl_clock.h"
 #include "fsl_device_registers.h"
+#include "fsl_reset.h"
 
 #include "core_clock.h"
 #include "energy_samples.h"
@@ -14,6 +16,18 @@
 /** What CTIMER2 paces pairs by and CTIMER4 stamps pairs, edges and markers with. ADC0 runs from the
  *  same PLL0 (TARGET_SENSE_ADC_DIVIDER), so a pair's length in its counts is exact. */
 #define ENERGY_TIMER_HZ PLL0_CLOCK_HZ
+
+/** Starts CTIMER4, the stamping timer, free-running from PLL0, so a stream's times count the clock
+ *  its pairs are paced by (src/energy_stream.h). CPU 1 starts it for the first capture; CPU 0 for a
+ *  DIO stream on a board without energy capture, where nothing else would. */
+static inline void energy_stamp_timer_start(void) {
+    CLOCK_AttachClk(kPLL0_to_CTIMER4);
+    CLOCK_EnableClock(kCLOCK_Timer4);
+    RESET_PeripheralReset(kCTIMER4_RST_SHIFT_RSTn);
+    CTIMER4->PR = 0U;
+    CTIMER4->MCR = 0U;
+    CTIMER4->TCR = CTIMER_TCR_CEN_MASK;
+}
 
 #define ENERGY_DMA_CHANNEL 21U
 #define ENERGY_DMA_MASK (1UL << ENERGY_DMA_CHANNEL)

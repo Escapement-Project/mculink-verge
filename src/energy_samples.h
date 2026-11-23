@@ -107,21 +107,10 @@ static inline void energy_total_carry(energy_total_t* total, uint64_t power_pw, 
     total->pj = UINT64_MAX - total->pj < increment ? UINT64_MAX : total->pj + increment;
 }
 
-static inline void energy_total_count(energy_total_t* total) {
-    if (total->pairs != UINT64_MAX) {
-        total->pairs++;
-    }
-}
-
-/** Adds one sample's power, in picowatts (millivolts times nanoamps), at once. */
-static inline void energy_total_add(energy_total_t* total, uint64_t power_pw, uint64_t scale_q32) {
-    energy_total_carry(total, power_pw, scale_q32);
-    energy_total_count(total);
-}
-
 /** Adds one sample's power to the batch's sum; energy_total_fold turns the sum into energy and
- *  counts the batch's pairs. The carry is exact, so the total comes out as energy_total_add a
- *  sample at a time gives it, with one multiply a batch rather than a sample. */
+ *  counts the batch's pairs. The carry is exact, so the total comes out as adding each sample's
+ *  power at once gives it (tools/energy_samples_test.c), with one multiply a batch rather than a
+ *  sample. */
 static inline void energy_total_sum(energy_total_t* total, uint64_t power_pw) {
     total->pending_pw += power_pw;
     total->pending_pairs++;

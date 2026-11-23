@@ -81,14 +81,7 @@ __attribute__((noinline)) void dio_edges_init(struct energy_stream* stream, uint
         INPUTMUX->PINTSEL[pin] = j8 ? j8_select[pin] : pro_select[pin];
     }
     if (dap_shared.energy_available == 0U) {
-        // Without energy capture, nothing else starts the stamping timer, and a DIO stream needs
-        // it: PLL0, as CPU 1's stamp_init runs it for a capture (src/energy_monitor.c).
-        CLOCK_AttachClk(kPLL0_to_CTIMER4);
-        CLOCK_EnableClock(kCLOCK_Timer4);
-        RESET_PeripheralReset(kCTIMER4_RST_SHIFT_RSTn);
-        CTIMER4->PR = 0U;
-        CTIMER4->MCR = 0U;
-        CTIMER4->TCR = CTIMER_TCR_CEN_MASK;
+        energy_stamp_timer_start();
     }
     // Edge-sensitive, every enable off: the detectors latch whatever happens, and the loop clears
     // them as it turns a pin on.
