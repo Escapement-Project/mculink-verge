@@ -416,39 +416,8 @@ void energy_stream_unmark(struct energy_stream* stream);
 /** CPU 1, running 0x94 with a capture running: records a marker for the stream, stamped by `timer`
  *  once it is known to be the stream's, between its header and its end. Says whether it did
  *  (ENERGY_STREAM_MARK_*). */
-static inline uint8_t energy_stream_mark(struct energy_stream* stream, volatile uint32_t const* timer,
-                                         uint32_t number, uint8_t const* label, uint8_t length) {
-    stream->mark_busy = true;
-    energy_stream_barrier();
-    uint8_t result = ENERGY_STREAM_MARK_NO_STREAM;
-    if (stream->marking) {
-        uint32_t const stamp = *timer;
-        energy_stream_barrier();
-        uint32_t const streams = stream->mark_streams;
-        uint32_t const at = stream->marks_written;
-        if ((at - stream->marks_read) >= ENERGY_STREAM_MARKS) {
-            stream->mark_dropped = true;
-            stream->mark_dropped_stream = streams;
-            result = ENERGY_STREAM_MARK_FULL;
-        } else {
-            energy_stream_mark_t* const mark = &stream->marks[at & (ENERGY_STREAM_MARKS - 1U)];
-            mark->stamp = stamp;
-            mark->number = number;
-            mark->length = length;
-            mark->lost = stream->mark_dropped && (stream->mark_dropped_stream == streams);
-            stream->mark_dropped = false;
-            for (uint32_t i = 0U; i < length; i++) {
-                mark->label[i] = label[i];
-            }
-            energy_stream_barrier();
-            stream->marks_written = at + 1U;
-            result = ENERGY_STREAM_MARK_SENT;
-        }
-    }
-    energy_stream_barrier();
-    stream->mark_busy = false;
-    return result;
-}
+uint8_t energy_stream_mark(struct energy_stream* stream, volatile uint32_t const* timer, uint32_t number,
+                           uint8_t const* label, uint8_t length);
 
 /** Whether markers have waited 10 ms by the stamping `timer`, which it reads only when some wait:
  *  then a capture has clocked it. The owner sends them then, if no pairs message has taken them. */
@@ -461,119 +430,15 @@ ENERGY_STREAM_INLINE bool energy_stream_marks_due(struct energy_stream const* st
     return (*timer - stream->marks[read & (ENERGY_STREAM_MARKS - 1U)].stamp) >= (stream->clock_hz / 100U);
 }
 
-/** Whether the ring has room for a stream's header. A stream that has none does not start. */
-ENERGY_STREAM_INLINE bool energy_stream_room(struct energy_stream* stream) {
-    stream->open_pairs = 0U;
-    stream->open_dropped = false;
-    stream->gap = 0U;
-    if (energy_stream_free(stream) == 0U) {
-        stream->active = false;
-        stream->edge_mask = 0U;
-        return false;
-    }
-    return true;
-}
-
-/** Publishes the header the caller wrote, `length` bytes, and starts the stream: the pins in
- *  `dio_mask` from their `dio_levels`, read just before the stamping timer read `dio_stamp`, and the
- *  markers from now. */
-ENERGY_STREAM_INLINE void energy_stream_opened(struct energy_stream* stream, uint16_t length, uint8_t dio_mask,
-                                               uint8_t dio_levels, uint32_t dio_stamp) {
-    energy_stream_publish(stream, length);
-    // Whatever the pin interrupt recorded before is an earlier stream's.
-    stream->edge_entries_read = stream->edge_entries_written;
-    stream->edge_waiting = true;
-    stream->edge_header_raw = dio_stamp;
-    stream->edge_levels = dio_levels & dio_mask;
-    stream->edge_lost = false;
-    stream->edge_mask = dio_mask;
-    stream->marks_read = stream->marks_written;
-    stream->mark_flags = 0U;
-    stream->mark_streams++;
-    stream->active = true;
-    energy_stream_barrier();
-    stream->edge_begins++;
-    stream->marking = true;
-}
-
 /** The first message of a capture's stream. Starts the stream only if the ring had room for it. */
-ENERGY_STREAM_INLINE bool energy_stream_begin(struct energy_stream* stream, energy_stream_header_t const* header) {
-    if (!energy_stream_room(stream)) {
-        return false;
-    }
-    stream->pairless = false;
-    uint8_t* out = energy_stream_slot(stream);
-    *out++ = ENERGY_STREAM_HEADER;
-    *out++ = header->capture_id != NULL ? 4U : 3U;
-    out = energy_stream_u32(out, header->clock_hz);
-    out = energy_stream_u32(out, header->period);
-    *out++ = header->setting;
-    out = energy_stream_u16(out, header->full_scale_mv);
-    out = energy_stream_u32(out, header->first_sequence);
-    *out++ = header->previous_low ? 1U : 0U;
-    energy_calibration_t const* const tables[] = {header->low, header->high};
-    for (uint32_t t = 0U; t < 2U; t++) {
-        uint8_t const count = tables[t]->count < 4U ? tables[t]->count : 4U;
-        *out++ = count;
-        for (uint32_t i = 0U; i < 4U; i++) {
-            out = energy_stream_u16(out, i < count ? tables[t]->code[i] : 0U);
-            out = energy_stream_u32(out, i < count ? tables[t]->current_na[i] : 0U);
-        }
-    }
-    *out++ = header->dio_mask;
-    *out++ = header->dio_levels;
-    out = energy_stream_u16(out, header->edge_resolution_ns);
-    if (header->capture_id != NULL) {
-        for (uint32_t i = 0U; i < ENERGY_IDENTITY_BYTES; i++) {
-            *out++ = header->capture_id->bytes[i];
-        }
-    }
-    out = energy_stream_u16(out, (uint16_t)header->switch_weight_q16);
-    *out++ = (uint8_t)((header->rearm_between_pairs ? 1U : 0U) | (header->previous_known ? 2U : 0U) |
-                       (header->high_range_only ? 4U : 0U));
-    out = energy_stream_u32(out, header->previous_known ? header->previous_na : 0U);
-    energy_stream_opened(stream, header->capture_id != NULL ? ENERGY_STREAM_ID_HEADER_BYTES : ENERGY_STREAM_HEADER_BYTES,
-                         header->dio_mask, header->dio_levels, header->dio_stamp);
-    return true;
-}
-
-/** Times convert at `clock_hz`. */
-ENERGY_STREAM_INLINE void energy_stream_clock(struct energy_stream* stream, uint32_t clock_hz) {
-    stream->clock_hz = clock_hz;
-    uint32_t left = 0U;
-    uint32_t const whole = energy_stream_divide(1000000000U, clock_hz, &left);
-    uint32_t unused = 0U;
-    stream->ns_q32 = ((uint64_t)whole << 32U) | energy_stream_divide((uint64_t)left << 32U, clock_hz, &unused);
-}
+bool energy_stream_begin(struct energy_stream* stream, energy_stream_header_t const* header);
 
 /** A DIO stream's first message, header format 5, on a board without energy capture
  *  (docs/host-interface.md, "DIO streams"): no capture, no pairs, and times from `dio_stamp`. Its
  *  owner keeps it from then on, and moves its origin on with energy_stream_dio_advance. Starts the
  *  stream only if the ring had room for it. */
-ENERGY_STREAM_INLINE bool energy_stream_begin_dio(struct energy_stream* stream, uint32_t clock_hz, uint8_t dio_mask,
-                                                  uint8_t dio_levels, uint32_t dio_stamp) {
-    if (!energy_stream_room(stream)) {
-        return false;
-    }
-    stream->pairless = true;
-    stream->next_sequence = 0U;
-    stream->next_raw = dio_stamp;
-    stream->next_counts = 0U;
-    stream->period = 0U;
-    energy_stream_clock(stream, clock_hz);
-    stream->holds_read = stream->holds_written;
-    stream->holds_seen = stream->holds_read;
-    stream->timeline_pending = false;
-    uint8_t* out = energy_stream_slot(stream);
-    *out++ = ENERGY_STREAM_HEADER;
-    *out++ = 5U;
-    out = energy_stream_u32(out, clock_hz);
-    *out++ = dio_mask;
-    *out++ = (uint8_t)(dio_levels & dio_mask);
-    (void)energy_stream_u16(out, (dio_mask != 0U) ? energy_stream_edge_resolution(clock_hz) : 0U);
-    energy_stream_opened(stream, ENERGY_STREAM_DIO_HEADER_BYTES, dio_mask, dio_levels, dio_stamp);
-    return true;
-}
+bool energy_stream_begin_dio(struct energy_stream* stream, uint32_t clock_hz, uint8_t dio_mask, uint8_t dio_levels,
+                             uint32_t dio_stamp);
 
 /** A DIO stream's origin moves to the stamping timer's `now`. Nothing else moves it, and a stamp
  *  converts only within 2^31 counts of it, so its owner calls this more often than that: 14 s at
@@ -605,96 +470,25 @@ ENERGY_STREAM_INLINE void energy_stream_dio_time(struct energy_stream* stream, u
  *  ended: its owner moves its origin to then first (energy_stream_dio_advance), and the end comes
  *  no earlier than an edge or loss the stream sent. The pin interrupt can record an edge stamped
  *  after that move, and the flush here sends it. */
-ENERGY_STREAM_INLINE void energy_stream_end(struct energy_stream* stream, uint8_t reason, uint32_t last_sequence) {
-    if (!stream->active) {
-        return;
-    }
-    energy_stream_unmark(stream);
-    energy_stream_close(stream);
-    // Edges lost when the stream ends may be missing to its end: the time its next pair was due.
-    if ((stream->edge_mask != 0U) && !stream->edge_waiting && stream->edge_dropped) {
-        uint64_t from = energy_stream_counts_at(stream, stream->edge_dropped_from);
-        from = (from <= stream->edge_known) ? stream->edge_known + 1U : from;
-        if (!stream->edge_lost) {
-            stream->edge_lost = true;
-            stream->edge_lost_from = from;
-        }
-        stream->edge_lost_to = (stream->next_counts > from) ? stream->next_counts : from + 1U;
-        stream->edge_lost_levels = stream->edge_levels;
-    }
-    uint64_t ended = stream->next_counts;
-    if (stream->pairless) {
-        // Until its sync run, `edge_known` is an earlier stream's.
-        ended = (!stream->edge_waiting && (stream->edge_known > ended)) ? stream->edge_known : ended;
-        ended = (stream->edge_lost && (stream->edge_lost_to > ended)) ? stream->edge_lost_to : ended;
-    }
-    // One slot stays for the end message.
-    energy_stream_dio_lost_send(stream, 1U);
-    stream->edge_lost = false;
-    stream->active = false;
-    stream->edge_mask = 0U;
-    if (energy_stream_free(stream) == 0U) {
-        return;
-    }
-    uint8_t* const out = energy_stream_slot(stream);
-    out[0] = ENERGY_STREAM_END;
-    out[1] = reason;
-    uint8_t* const after = energy_stream_u32(out + 2, last_sequence);
-    if (stream->pairless) {
-        (void)energy_stream_u64(after, energy_stream_flush_ns(ended, stream->clock_hz));
-        energy_stream_publish(stream, ENERGY_STREAM_DIO_END_BYTES);
-        return;
-    }
-    energy_stream_publish(stream, ENERGY_STREAM_END_BYTES);
-}
+void energy_stream_end(struct energy_stream* stream, uint8_t reason, uint32_t last_sequence);
 
 /** A pause: the pairs so far leave, and the next message says the capture paused. */
-ENERGY_STREAM_INLINE void energy_stream_pause(struct energy_stream* stream) {
-    energy_stream_close(stream);
-    stream->gap |= ENERGY_STREAM_FLAG_PAUSED;
-}
+void energy_stream_pause(struct energy_stream* stream);
 
 /** A start (`first_sequence` 1) or a resume, while its caller owns the state: no pair until
  *  energy_stream_timeline_run. A resume's pending holds all came before its pause. */
-static inline void energy_stream_timeline_prepare(struct energy_stream* stream, uint32_t first_sequence) {
-    stream->timeline_pending = true;
-    stream->next_sequence = first_sequence;
-    stream->holds_read = stream->holds_written;
-    stream->holds_seen = stream->holds_read;
-}
+void energy_stream_timeline_prepare(struct energy_stream* stream, uint32_t first_sequence);
 
 /** Once the conversion timer runs: its first trigger, `first_raw`, comes `ticks` after the stamp
  *  taken as it started. A start's counts begin at that stamp; a resume continues from the pair
  *  before its pause, `next_counts` and `next_raw` as it left them, by however long the pause took. */
-static inline void energy_stream_timeline_run(struct energy_stream* stream, bool new_session, uint32_t clock_hz,
-                                              uint32_t ticks, uint32_t started_raw) {
-    uint32_t const first_raw = started_raw + ticks;
-    if (new_session) {
-        stream->next_counts = ticks;
-    } else {
-        stream->next_counts = (uint64_t)((int64_t)stream->next_counts + (int32_t)(first_raw - stream->next_raw));
-    }
-    stream->next_raw = first_raw;
-    stream->period = 2U * ticks;
-    energy_stream_clock(stream, clock_hz);
-    energy_stream_barrier();
-    stream->timeline_pending = false;
-}
+void energy_stream_timeline_run(struct energy_stream* stream, bool new_session, uint32_t clock_hz, uint32_t ticks,
+                                uint32_t started_raw);
 
 /** CPU 1, as a read-latency hold ends: records when its first trigger was due, and hands back the
  *  record, or NULL with the ring full, for `came`. No pair the hold delayed can arrive before the
  *  timer runs again, so `came` is final if written before that. */
-static inline energy_stream_hold_t* energy_stream_hold(struct energy_stream* stream, uint32_t due) {
-    uint32_t const at = stream->holds_written;
-    if ((at - stream->holds_read) >= ENERGY_STREAM_HOLDS) {
-        return NULL;
-    }
-    energy_stream_hold_t* const hold = &stream->holds[at % ENERGY_STREAM_HOLDS];
-    *hold = (energy_stream_hold_t){due, due};
-    energy_stream_barrier();
-    stream->holds_written = at + 1U;
-    return hold;
-}
+energy_stream_hold_t* energy_stream_hold(struct energy_stream* stream, uint32_t due);
 
 /** Before the owner integrates a batch of pairs: a start's timeline, and the holds recorded so far.
  *  `sequence` is the decoder's count of pairs so far. Without a stream or a hold to place, the batch
