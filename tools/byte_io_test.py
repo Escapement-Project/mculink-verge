@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
 # ///
-"""Run the little-endian decoder under gcc and clang sanitizers."""
+"""Run the little-endian readers and writers under gcc and clang sanitizers."""
 
 import os
 import pathlib
@@ -30,7 +30,7 @@ def main() -> int:
             env = os.environ.copy()
             env["ASAN_OPTIONS"] = ":".join(filter(None, (env.get("ASAN_OPTIONS"), "detect_leaks=0")))
             run([executable], env)
-            print(f"  {compiler}: unsigned word decoding at every byte alignment")
+            print(f"  {compiler}: little-endian reads and writes at every byte alignment")
     return 0
 
 

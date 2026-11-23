@@ -50,6 +50,7 @@
 #include "DAP_config.h"
 
 #include "DAP.h"
+#include "byte_io.h"
 #include "cjtag.h"
 #include "sample_probe.h"
 
@@ -286,16 +287,6 @@ static PROBE_CODE uint32_t dry_lead(const struct timing* t) {
     return (cycles * 32U + LEAD_CLOCKS / 2U) / LEAD_CLOCKS;
 }
 
-static void put16(uint8_t* out, uint32_t v) {
-    out[0] = (uint8_t)v;
-    out[1] = (uint8_t)(v >> 8);
-}
-
-static void put32(uint8_t* out, uint32_t v) {
-    put16(out, v);
-    put16(out + 2, v >> 16);
-}
-
 uint32_t sample_probe_command(const uint8_t* request, uint8_t* response) {
     const uint32_t low = request[1];
     const uint32_t fill = request[2];
@@ -347,11 +338,11 @@ uint32_t sample_probe_command(const uint8_t* request, uint8_t* response) {
     }
 
     response[1] = DAP_OK;
-    put16(response + 2, good);
-    put16(response + 4, bad_ack);
-    put16(response + 6, bad_word);
+    put_u16_le(response + 2, (uint16_t)good);
+    put_u16_le(response + 4, (uint16_t)bad_ack);
+    put_u16_le(response + 6, (uint16_t)bad_word);
     response[8] = (uint8_t)last_ack;
-    put32(response + 9, last_word);
-    put32(response + 13, cycles);
+    put_u32_le(response + 9, last_word);
+    put_u32_le(response + 13, cycles);
     return (SAMPLE_REQUEST_LEN << 16) | SAMPLE_REPLY_LEN;
 }

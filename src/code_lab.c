@@ -37,6 +37,7 @@
 #include "DAP_config.h"
 
 #include "DAP.h"
+#include "byte_io.h"
 #include "code_lab.h"
 #include "fsl_clock.h"
 #include "fsl_iocon.h"
@@ -73,17 +74,6 @@ static bool arena_get(uint8_t index, struct arena* out) {
         return true;
     }
     return false;
-}
-
-static uint32_t get16(const uint8_t* in) { return (uint32_t)in[0] | ((uint32_t)in[1] << 8); }
-
-static uint32_t get32(const uint8_t* in) { return get16(in) | (get16(in + 2) << 16); }
-
-static void put32(uint8_t* out, uint32_t v) {
-    out[0] = (uint8_t)v;
-    out[1] = (uint8_t)(v >> 8);
-    out[2] = (uint8_t)(v >> 16);
-    out[3] = (uint8_t)(v >> 24);
 }
 
 /** A lab build resets on a fault rather than spinning in the startup code's handler. A function
@@ -131,16 +121,16 @@ uint32_t code_lab_command(const uint8_t* request, uint8_t* response) {
         uint8_t* out = response + 3;
         for (uint8_t i = 0U; i < 2U; i++) {
             (void)arena_get(i, &a);
-            put32(out, (uint32_t)a.base);
-            put32(out + 4, a.size);
+            put_u32_le(out, (uint32_t)a.base);
+            put_u32_le(out + 4, a.size);
             out += 8;
         }
         return (2U << 16) | (uint32_t)(out - response);
     }
 
     if (op == LAB_WRITE) {
-        const uint32_t offset = get16(request + 3);
-        const uint32_t length = get16(request + 5);
+        const uint32_t offset = read_u16_le(request + 3);
+        const uint32_t length = read_u16_le(request + 5);
         if (length > DAP_PACKET_SIZE - LAB_WRITE_HEADER || !arena_get(request[2], &a) || offset > a.size ||
             length > a.size - offset) {
             return (LAB_WRITE_HEADER << 16) | 2U;
@@ -151,8 +141,8 @@ uint32_t code_lab_command(const uint8_t* request, uint8_t* response) {
     }
 
     if (op == LAB_READ) {
-        const uint32_t offset = get16(request + 3);
-        const uint32_t length = get16(request + 5);
+        const uint32_t offset = read_u16_le(request + 3);
+        const uint32_t length = read_u16_le(request + 5);
         if (length > DAP_PACKET_SIZE - LAB_READ_HEADER || !arena_get(request[2], &a) || offset > a.size ||
             length > a.size - offset) {
             return (7U << 16) | 2U;
@@ -163,7 +153,7 @@ uint32_t code_lab_command(const uint8_t* request, uint8_t* response) {
     }
 
     if (op == LAB_RUN) {
-        const uint32_t entry = get16(request + 3);
+        const uint32_t entry = read_u16_le(request + 3);
         if (!arena_get(request[2], &a) || entry >= a.size || (entry & 1U) != 0U) {
             return (LAB_RUN_REQUEST << 16) | 2U;
         }
@@ -173,16 +163,17 @@ uint32_t code_lab_command(const uint8_t* request, uint8_t* response) {
         // The arena was written as data; the barriers make the core fetch what is there now.
         __DSB();
         __ISB();
-        const uint64_t result = fn(get32(request + 5), get32(request + 9), get32(request + 13), get32(request + 17));
+        const uint64_t result = fn(read_u32_le(request + 5), read_u32_le(request + 9), read_u32_le(request + 13),
+                                   read_u32_le(request + 17));
         __set_PRIMASK(primask);
         response[1] = DAP_OK;
-        put32(response + 2, (uint32_t)result);
-        put32(response + 6, (uint32_t)(result >> 32));
+        put_u32_le(response + 2, (uint32_t)result);
+        put_u32_le(response + 6, (uint32_t)(result >> 32));
         return (LAB_RUN_REQUEST << 16) | 10U;
     }
 
     if (op == LAB_EDGES) {
-        lab_edges(get32(request + 2));
+        lab_edges(read_u32_le(request + 2));
         response[1] = DAP_OK;
         return (6U << 16) | 2U;
     }

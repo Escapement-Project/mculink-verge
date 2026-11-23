@@ -58,7 +58,7 @@ HOST_CHECKS = (
     ("Energy samples and accumulation: sanitizers, both compilers", ["uv", "run", "tools/energy_samples_test.py"]),
     ("Energy stream messages and timeline: sanitizers, both compilers", ["uv", "run", "tools/energy_stream_test.py"]),
     ("Energy converter vectors as committed: sanitizers, both compilers", ["uv", "run", "tools/energy_vectors.py"]),
-    ("Unsigned byte decoding: sanitizers, both compilers", ["uv", "run", "tools/byte_io_test.py"]),
+    ("Little-endian reads and writes: sanitizers, both compilers", ["uv", "run", "tools/byte_io_test.py"]),
     ("DAP packet framing: sanitizers, both compilers", ["uv", "run", "tools/dap_packet_test.py"]),
     ("MS OS 2.0 descriptor sets: sanitizers, both compilers", ["uv", "run", "tools/ms_os_20_test.py"]),
     ("ARCHITECTURE.md's figures as drawn, every label in its room", ["uv", "run", "tools/figures.py"]),

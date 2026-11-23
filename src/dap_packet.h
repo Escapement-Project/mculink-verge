@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "byte_io.h"
 #include "pro_bus.h"
 
 typedef struct {
@@ -11,8 +12,6 @@ typedef struct {
     uint32_t produced;
     uint32_t limit;
 } dap_packet_plan_t;
-
-static inline uint32_t dap_packet_u16(const uint8_t* p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8U); }
 
 /** Preflight one command, excluding batches. Info is read-only and sized by its caller. */
 static inline bool dap_packet_plan(const uint8_t* p, uint32_t length, uint32_t capacity, uint32_t info_size,
@@ -69,7 +68,7 @@ static inline bool dap_packet_plan(const uint8_t* p, uint32_t length, uint32_t c
         if (length < 5U || capacity < 4U) {
             return false;
         }
-        uint32_t const count = dap_packet_u16(p + 2U);
+        uint32_t const count = read_u16_le(p + 2U);
         in = 5U;
         out = 4U;
         if ((p[4] & 2U) != 0U) {
@@ -162,7 +161,7 @@ static inline bool dap_packet_plan(const uint8_t* p, uint32_t length, uint32_t c
             return false;
         }
         in = 3U;
-        limit = dap_packet_u16(p + 1U);
+        limit = read_u16_le(p + 1U);
         if (limit > capacity - 4U) {
             limit = capacity - 4U;
         }
@@ -206,7 +205,7 @@ static inline bool dap_packet_plan(const uint8_t* p, uint32_t length, uint32_t c
                 return false;
             }
             in = 7U;
-            uint32_t const bytes = dap_packet_u16(p + 5U);
+            uint32_t const bytes = read_u16_le(p + 5U);
             if (p[1] == 1U) {
                 in += bytes;
             } else {
@@ -279,15 +278,15 @@ static inline bool dap_packet_plan(const uint8_t* p, uint32_t length, uint32_t c
         if (length < PRO_SPI_REQUEST_FIXED) {
             return false;
         }
-        in = PRO_SPI_REQUEST_FIXED + dap_packet_u16(p + 6U);
-        out = PRO_BUS_RESPONSE_FIXED + dap_packet_u16(p + 6U);
+        in = PRO_SPI_REQUEST_FIXED + read_u16_le(p + 6U);
+        out = PRO_BUS_RESPONSE_FIXED + read_u16_le(p + 6U);
         break;
     case 0x92:
         if (length < PRO_I2C_REQUEST_FIXED) {
             return false;
         }
-        in = PRO_I2C_REQUEST_FIXED + dap_packet_u16(p + 6U);
-        out = PRO_BUS_RESPONSE_FIXED + dap_packet_u16(p + 8U);
+        in = PRO_I2C_REQUEST_FIXED + read_u16_le(p + 6U);
+        out = PRO_BUS_RESPONSE_FIXED + read_u16_le(p + 8U);
         break;
     case 0x95:
         in = 2U;

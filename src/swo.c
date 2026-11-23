@@ -34,6 +34,7 @@
 #include "DAP_config.h"
 #include "DAP.h"
 #include "board_pins.h"
+#include "byte_io.h"
 #include "dap_shared.h"
 #include "dma0.h"
 #include "led.h"
@@ -287,13 +288,6 @@ static uint8_t take_status(void) {
     return status;
 }
 
-static void put_u32(uint8_t* out, uint32_t value) {
-    out[0] = (uint8_t)value;
-    out[1] = (uint8_t)(value >> 8);
-    out[2] = (uint8_t)(value >> 16);
-    out[3] = (uint8_t)(value >> 24);
-}
-
 uint32_t SWO_Transport(const uint8_t* request, uint8_t* response) {
     bool const ok = !capturing && (request[0] <= SWO_TRANSPORT_DATA_COMMAND);
     if (ok) {
@@ -356,7 +350,7 @@ uint32_t SWO_Baudrate(const uint8_t* request, uint8_t* response) {
         }
     }
     baudrate_set = (actual != 0U);
-    put_u32(response, actual);
+    put_u32_le(response, actual);
     return (4U << 16) | 4U;
 }
 
@@ -378,7 +372,7 @@ uint32_t SWO_Control(const uint8_t* request, uint8_t* response) {
 uint32_t SWO_Status(uint8_t* response) {
     uint32_t const at = poll();
     response[0] = take_status();
-    put_u32(&response[1], swo_unread(at, read_position));
+    put_u32_le(&response[1], swo_unread(at, read_position));
     return 5U;
 }
 
@@ -390,12 +384,12 @@ uint32_t SWO_ExtendedStatus(const uint8_t* request, uint8_t* response) {
         length += 1U;
     }
     if ((request[0] & 0x02U) != 0U) {
-        put_u32(&response[length], swo_unread(at, read_position));
+        put_u32_le(&response[length], swo_unread(at, read_position));
         length += 4U;
     }
     if ((request[0] & 0x04U) != 0U) {
-        put_u32(&response[length], stamp_index);
-        put_u32(&response[length + 4U], stamp_tick);
+        put_u32_le(&response[length], stamp_index);
+        put_u32_le(&response[length + 4U], stamp_tick);
         length += 8U;
     }
     return (1U << 16) | length;

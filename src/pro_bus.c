@@ -15,6 +15,7 @@
 #include "DAP_config.h"
 #include "board_pins.h"
 #include "board_straps.h"
+#include "byte_io.h"
 #include "dap_shared.h"
 #include "dio.h"
 #include "swo.h"
@@ -38,20 +39,6 @@
 /** Half an SCL period of the bus clear, at 100 kHz. */
 #define I2C_CLEAR_HALF_US 5U
 
-static uint16_t get_u16(const uint8_t* bytes) {
-    return (uint16_t)((uint16_t)bytes[0] | ((uint16_t)bytes[1] << 8U));
-}
-
-static uint32_t get_u32(const uint8_t* bytes) {
-    return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8U) | ((uint32_t)bytes[2] << 16U) |
-           ((uint32_t)bytes[3] << 24U);
-}
-
-static void put_u16(uint8_t* bytes, uint16_t value) {
-    bytes[0] = (uint8_t)value;
-    bytes[1] = (uint8_t)(value >> 8U);
-}
-
 bool pro_bus_available(void) {
     return (board_kind == BOARD_KIND_PRO) && ((dap_shared.jumpers & BOARD_JUMPER_USBSIO_OFF) == 0U);
 }
@@ -66,10 +53,10 @@ static void spi_pinmux(void) {
 }
 
 uint32_t pro_spi_command(const uint8_t* request, uint8_t* response) {
-    uint16_t const length = get_u16(request + 6U);
+    uint16_t const length = read_u16_le(request + 6U);
     uint32_t const consumed = PRO_SPI_REQUEST_FIXED + length;
     response[1] = PRO_BUS_INVALID;
-    put_u16(response + 2U, 0U);
+    put_u16_le(response + 2U, 0U);
 
     if ((length == 0U) || (length > DAP_PACKET_SIZE - PRO_SPI_REQUEST_FIXED) ||
         ((request[1] & (uint8_t)~SPI_MODE_MASK) != 0U)) {
@@ -81,7 +68,7 @@ uint32_t pro_spi_command(const uint8_t* request, uint8_t* response) {
     }
 
     // A refused clock leaves the pins where they are: checked before SPI takes them.
-    uint32_t const requested_clock = get_u32(request + 2U);
+    uint32_t const requested_clock = read_u32_le(request + 2U);
     CLOCK_AttachClk(kFRO_HF_DIV_to_HSLSPI);
     uint32_t const source_clock = CLOCK_GetHsLspiClkFreq();
     if ((source_clock == 0U) || (requested_clock < (source_clock / 4096U)) ||
@@ -123,7 +110,7 @@ uint32_t pro_spi_command(const uint8_t* request, uint8_t* response) {
 
     if (status == kStatus_Success) {
         response[1] = PRO_BUS_OK;
-        put_u16(response + 2U, length);
+        put_u16_le(response + 2U, length);
         return (consumed << 16U) | (PRO_BUS_RESPONSE_FIXED + length);
     }
 
@@ -184,12 +171,12 @@ static status_t i2c_transfer(uint8_t address, i2c_direction_t direction, uint8_t
 
 uint32_t pro_i2c_command(const uint8_t* request, uint8_t* response) {
     uint8_t const address = request[1];
-    uint32_t const requested_clock = get_u32(request + 2U);
-    uint16_t const tx_length = get_u16(request + 6U);
-    uint16_t const rx_length = get_u16(request + 8U);
+    uint32_t const requested_clock = read_u32_le(request + 2U);
+    uint16_t const tx_length = read_u16_le(request + 6U);
+    uint16_t const rx_length = read_u16_le(request + 8U);
     uint32_t const consumed = PRO_I2C_REQUEST_FIXED + tx_length;
     response[1] = PRO_BUS_INVALID;
-    put_u16(response + 2U, 0U);
+    put_u16_le(response + 2U, 0U);
 
     if (((address & 0x80U) != 0U) || ((tx_length == 0U) && (rx_length == 0U)) ||
         (tx_length > DAP_PACKET_SIZE - PRO_I2C_REQUEST_FIXED) ||
@@ -240,7 +227,7 @@ uint32_t pro_i2c_command(const uint8_t* request, uint8_t* response) {
 
     if (status == kStatus_Success) {
         response[1] = PRO_BUS_OK;
-        put_u16(response + 2U, rx_length);
+        put_u16_le(response + 2U, rx_length);
         returned = rx_length;
         goto i2c_release_pins;
     }

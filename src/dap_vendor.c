@@ -13,6 +13,7 @@
 
 #include "DAP.h"
 #include "board_pins.h"
+#include "byte_io.h"
 #include "cjtag.h"
 #include "dap_dispatch.h"
 #include "dap_shared.h"
@@ -295,20 +296,6 @@ static_assert(CJTAG_INFO_FIXED + sizeof(FIRMWARE_VERSION) - 1U <= DAP_SHARED_HID
 /** R22/R23 halve pin 1 on its way to the ADC. */
 #define TARGET_DIVIDER 2U
 
-#ifdef GENERATED_WIRE
-/** `n` little-endian u32s at `out`; returns the byte after them. */
-static uint8_t* put_u32s(uint8_t* out, const uint32_t* fields, uint32_t n) {
-    for (uint32_t i = 0U; i < n; i++) {
-        out[0] = (uint8_t)fields[i];
-        out[1] = (uint8_t)(fields[i] >> 8);
-        out[2] = (uint8_t)(fields[i] >> 16);
-        out[3] = (uint8_t)(fields[i] >> 24);
-        out += 4;
-    }
-    return out;
-}
-#endif
-
 bool dap_vendor_on_aux;
 
 uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
@@ -344,9 +331,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
                                   (pro_bus_available() ? CJTAG_EXT_CAP_SPI | CJTAG_EXT_CAP_I2C : 0U) |
                                   (dio_available() ? CJTAG_EXT_CAP_DIO_AUX : 0U) |
                                   ((dio_available() && !dap_shared.energy_available) ? CJTAG_EXT_CAP_DIO_STREAM : 0U);
-        for (uint32_t i = 0U; i < 4U; i++) {
-            *out++ = (uint8_t)(extended >> (8U * i));
-        }
+        out = put_u32_le(out, extended);
         return (1U << 16) | (uint32_t)(out - response);
     }
 
@@ -469,10 +454,8 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
                 mv *= TARGET_DIVIDER;
             }
         }
-        response[2] = (uint8_t)code;
-        response[3] = (uint8_t)(code >> 8);
-        response[4] = (uint8_t)mv;
-        response[5] = (uint8_t)(mv >> 8);
+        put_u16_le(response + 2, code);
+        put_u16_le(response + 4, (uint16_t)mv);
         response[6] = target_sense_detected() ? 1U : 0U;
         return (3U << 16) | 7U;
     }
@@ -498,8 +481,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         if ((mode == 0U) || (mode == 5U) || (mode == 8U) || (mode == 9U)) {
             bool const streaming = (mode == 5U) || (mode == 9U);
             bool const identified = (mode == 8U) || (mode == 9U);
-            uint32_t const rate = (uint32_t)request[2] | ((uint32_t)request[3] << 8U) |
-                                  ((uint32_t)request[4] << 16U) | ((uint32_t)request[5] << 24U);
+            uint32_t const rate = read_u32_le(request + 2);
             // Mode 5 starts a stream with the capture, and only Verge Aux carries a stream. Its last
             // byte is the DIO pins whose edges the stream reports.
             if (streaming && !dap_vendor_on_aux) {
@@ -511,19 +493,14 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
                                                                  : energy_monitor_start(rate);
             uint32_t const actual_rate = identified && (status != ENERGY_MONITOR_OK) ? 0U : energy_monitor_rate();
             response[2] = (uint8_t)status;
-            response[3] = (uint8_t)actual_rate;
-            response[4] = (uint8_t)(actual_rate >> 8U);
-            response[5] = (uint8_t)(actual_rate >> 16U);
-            response[6] = (uint8_t)(actual_rate >> 24U);
+            put_u32_le(response + 3, actual_rate);
             if (identified) {
                 energy_capture_id_t capture_id = {0};
                 if (status == ENERGY_MONITOR_OK) {
                     uint32_t unused = 0U;
                     (void)energy_monitor_identity(&capture_id, &unused);
                 }
-                for (uint32_t i = 0U; i < ENERGY_IDENTITY_BYTES; i++) {
-                    response[7U + i] = capture_id.bytes[i];
-                }
+                memcpy(response + 7U, capture_id.bytes, ENERGY_IDENTITY_BYTES);
             }
             return ((streaming ? 7U : 6U) << 16) | (identified ? 31U : 7U);
         }
@@ -541,12 +518,8 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             energy_monitor_status_t const status = energy_monitor_identity(&capture_id, &rate);
             response[2] = (uint8_t)status;
             response[3] = status == ENERGY_MONITOR_OK ? 1U : 0U;
-            for (uint32_t i = 0U; i < 4U; i++) {
-                response[4U + i] = (uint8_t)(rate >> (8U * i));
-            }
-            for (uint32_t i = 0U; i < ENERGY_IDENTITY_BYTES; i++) {
-                response[8U + i] = capture_id.bytes[i];
-            }
+            put_u32_le(response + 4, rate);
+            memcpy(response + 8U, capture_id.bytes, ENERGY_IDENTITY_BYTES);
             return (2U << 16) | 32U;
         }
         if ((mode == 10U) || (mode == 13U)) {
@@ -557,22 +530,11 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             energy_monitor_sample_t sample = {0};
             energy_monitor_status_t const status = energy_monitor_latest(&sample);
             response[2] = (uint8_t)status;
-            response[3] = (uint8_t)sample.voltage_code;
-            response[4] = (uint8_t)(sample.voltage_code >> 8U);
-            response[5] = (uint8_t)sample.current_code;
-            response[6] = (uint8_t)(sample.current_code >> 8U);
-            response[7] = (uint8_t)sample.sequence;
-            response[8] = (uint8_t)(sample.sequence >> 8U);
-            response[9] = (uint8_t)(sample.sequence >> 16U);
-            response[10] = (uint8_t)(sample.sequence >> 24U);
-            response[11] = (uint8_t)sample.voltage_mv;
-            response[12] = (uint8_t)(sample.voltage_mv >> 8U);
-            response[13] = (uint8_t)(sample.voltage_mv >> 16U);
-            response[14] = (uint8_t)(sample.voltage_mv >> 24U);
-            response[15] = (uint8_t)sample.current_na;
-            response[16] = (uint8_t)((uint32_t)sample.current_na >> 8U);
-            response[17] = (uint8_t)((uint32_t)sample.current_na >> 16U);
-            response[18] = (uint8_t)((uint32_t)sample.current_na >> 24U);
+            put_u16_le(response + 3, sample.voltage_code);
+            put_u16_le(response + 5, sample.current_code);
+            put_u32_le(response + 7, sample.sequence);
+            put_u32_le(response + 11, sample.voltage_mv);
+            put_u32_le(response + 15, (uint32_t)sample.current_na);
             response[19] = sample.range_id;
             response[20] = sample.calibrated ? 1U : 0U;
             return (2U << 16) | 21U;
@@ -589,10 +551,8 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             energy_monitor_status_t const status =
                 energy_monitor_accumulated(&energy_nj, &pairs);
             response[2] = (uint8_t)status;
-            for (uint32_t i = 0U; i < 8U; i++) {
-                response[3U + i] = (uint8_t)(energy_nj >> (8U * i));
-                response[11U + i] = (uint8_t)(pairs >> (8U * i));
-            }
+            put_u64_le(response + 3, energy_nj);
+            put_u64_le(response + 11, pairs);
             return (2U << 16) | 19U;
         }
         if (mode == 4U) {
@@ -603,11 +563,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
             response[3] = table.count;
             for (uint32_t i = 0U; i < 4U; i++) {
                 uint8_t* const point = response + 4U + (6U * i);
-                point[0] = (uint8_t)table.code[i];
-                point[1] = (uint8_t)(table.code[i] >> 8U);
-                for (uint32_t j = 0U; j < 4U; j++) {
-                    point[2U + j] = (uint8_t)(table.current_na[i] >> (8U * j));
-                }
+                put_u32_le(put_u16_le(point, table.code[i]), table.current_na[i]);
             }
             return (3U << 16) | 28U;
         }
@@ -624,9 +580,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         bool available = false;
         uint8_t result = 0U;
         if (length <= ENERGY_STREAM_LABEL_MAX) {
-            uint32_t const number = (uint32_t)request[1] | ((uint32_t)request[2] << 8U) |
-                                    ((uint32_t)request[3] << 16U) | ((uint32_t)request[4] << 24U);
-            result = energy_monitor_mark(number, request + 6, length, &available);
+            result = energy_monitor_mark(read_u32_le(request + 1), request + 6, length, &available);
         }
         if (!available) {
             response[1] = DAP_ERROR;
@@ -682,21 +636,22 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         response[3] = swd_gen_info.masked ? 1U : 0U;
         response[4] = swd_gen_info.ok ? 1U : 0U;
         const struct latency_result* measured = &swd_sweep_last.result;
-        const uint32_t fields[] = {swd_gen_clock_hz,         swd_gen_info.write_period, swd_gen_info.read_period,
-                                   swd_gen_info.code_bytes, swd_gen_builds,            swd_gen_failures};
-        uint8_t* out = put_u32s(response + 5, fields, sizeof fields / sizeof fields[0]);
+        uint8_t* out = put_u32_le(response + 5, swd_gen_clock_hz);
+        out = put_u32_le(out, swd_gen_info.write_period);
+        out = put_u32_le(out, swd_gen_info.read_period);
+        out = put_u32_le(out, swd_gen_info.code_bytes);
+        out = put_u32_le(out, swd_gen_builds);
+        out = put_u32_le(out, swd_gen_failures);
         *out++ = swd_sweep_automatic ? 1U : 0U;
         *out++ = (uint8_t)measured->outcome;
         *out++ = (uint8_t)measured->latency;
         *out++ = (uint8_t)(measured->tries < 255U ? measured->tries : 255U);
         *out++ = (uint8_t)measured->periods;
-        const uint32_t sweep[] = {measured->word,
-                                  swd_sweep_last.cycles,
-                                  swd_sweep_last.runs,
-                                  (uint32_t)measured->consistent,
-                                  (uint32_t)(measured->consistent >> 32),
-                                  swd_sweep_last.rescues};
-        out = put_u32s(out, sweep, sizeof sweep / sizeof sweep[0]);
+        out = put_u32_le(out, measured->word);
+        out = put_u32_le(out, swd_sweep_last.cycles);
+        out = put_u32_le(out, swd_sweep_last.runs);
+        out = put_u64_le(out, measured->consistent);
+        out = put_u32_le(out, swd_sweep_last.rescues);
         return (3U << 16) | (uint32_t)(out - response);
     }
 
@@ -736,9 +691,12 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         response[4] = jtag_gen_info.masked ? 1U : 0U;
         response[5] = (jtag_gen_info.ok ? 1U : 0U) | (jtag_gen_info.transfers ? 2U : 0U) |
                       (jtag_gen_info.looped ? 4U : 0U);
-        const uint32_t fields[] = {jtag_gen_clock_hz,       jtag_gen_info.period, jtag_gen_info.frame,
-                                   jtag_gen_info.code_bytes, jtag_gen_builds,      jtag_gen_failures};
-        uint8_t* out = put_u32s(response + 6, fields, sizeof fields / sizeof fields[0]);
+        uint8_t* out = put_u32_le(response + 6, jtag_gen_clock_hz);
+        out = put_u32_le(out, jtag_gen_info.period);
+        out = put_u32_le(out, jtag_gen_info.frame);
+        out = put_u32_le(out, jtag_gen_info.code_bytes);
+        out = put_u32_le(out, jtag_gen_builds);
+        out = put_u32_le(out, jtag_gen_failures);
         const struct latency_result* measured = &jtag_sweep_last.result;
         *out++ = jtag_sweep_automatic ? 1U : 0U;
         *out++ = (uint8_t)measured->outcome;
@@ -746,14 +704,12 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         *out++ = (uint8_t)measured->latency;
         *out++ = (uint8_t)(measured->tries < 255U ? measured->tries : 255U);
         *out++ = (uint8_t)measured->periods;
-        const uint32_t sweep[] = {measured->word,
-                                  jtag_sweep_last.cycles,
-                                  jtag_sweep_last.runs,
-                                  (uint32_t)measured->consistent,
-                                  (uint32_t)(measured->consistent >> 32),
-                                  jtag_sweep_last.rescues,
-                                  jtag_gen_restores};
-        out = put_u32s(out, sweep, sizeof sweep / sizeof sweep[0]);
+        out = put_u32_le(out, measured->word);
+        out = put_u32_le(out, jtag_sweep_last.cycles);
+        out = put_u32_le(out, jtag_sweep_last.runs);
+        out = put_u64_le(out, measured->consistent);
+        out = put_u32_le(out, jtag_sweep_last.rescues);
+        out = put_u32_le(out, jtag_gen_restores);
         return (4U << 16) | (uint32_t)(out - response);
     }
 
@@ -766,15 +722,14 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         }
         const struct jtag_gen_log_entry* entry = &jtag_gen_log[(count - 1U - back) % JTAG_GEN_LOG_SIZE];
         response[1] = DAP_OK;
-        uint8_t* out = put_u32s(response + 2, &count, 1U);
+        uint8_t* out = put_u32_le(response + 2, count);
         const uint8_t bytes[] = {entry->command, entry->wire,   entry->changed, entry->flags, entry->latency,
                                  entry->before,  entry->after,  entry->idle,    entry->paced};
         memcpy(out, bytes, sizeof bytes);
         out += sizeof bytes;
-        *out++ = (uint8_t)entry->period;
-        *out++ = (uint8_t)(entry->period >> 8);
-        const uint32_t times[] = {entry->at, entry->cycles};
-        out = put_u32s(out, times, 2U);
+        out = put_u16_le(out, entry->period);
+        out = put_u32_le(out, entry->at);
+        out = put_u32_le(out, entry->cycles);
         return (2U << 16) | (uint32_t)(out - response);
     }
 
