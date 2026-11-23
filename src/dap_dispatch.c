@@ -80,7 +80,7 @@ __attribute__((noinline)) static uint32_t arm_command(const uint8_t* request, ui
     } else {
         result = arm_DAP_ProcessCommand(request, response);
     }
-    if (connect || (*request == ID_DAP_Disconnect) || (*request == ID_DAP_Vendor21)) {
+    if (connect || (*request == ID_DAP_Disconnect) || (*request == ID_VENDOR_JTAG_FORMAT)) {
         if (DAP_Data.debug_port == DAP_PORT_SWD) {
             led_wire(LED_WIRE_SWD);
         } else if (DAP_Data.debug_port == DAP_PORT_JTAG) {
@@ -153,22 +153,11 @@ static uint32_t refuse(const uint8_t* request, uint8_t* response) {
     response[1] = DAP_ERROR;
     return (1U << 16) | 2U;
 }
-#endif
 
-COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* response) {
-#ifdef GENERATED_WIRE
-    jtag_gen_command = *request;
-#endif
-    if ((*request == ID_DAP_Delay) && (request[1] == 0U) && (request[2] == 0U)) {
-        // ARM's pacing loop decrements before it tests, so a count of zero runs 2^32 times:
-        // about ninety seconds with the probe answering nothing and the host waiting. A zero
-        // microsecond delay is a legal request, and probe-rs being careful not to send one is
-        // the only reason this has never been seen.
-        response[0] = *request;
-        response[1] = DAP_OK;
-        return (3U << 16) | 2U;
-    }
-#ifdef GENERATED_WIRE
+/** The product image's route: the transfers, the cJTAG raw output and the clock on its own code, a
+ *  refusal where nothing could be generated, and ARM's processing for the rest, after which the
+ *  generators learn what changed. Inlined, so a transfer pays no call to reach it. */
+__attribute__((always_inline)) static inline uint32_t generated_command(const uint8_t* request, uint8_t* response) {
     if (generation_refuses(request)) {
         return refuse(request, response);
     }
@@ -199,26 +188,9 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
         jtag_gen_learn(jtag_gen_wire());
         return result;
     }
-#endif
-    if (*request == ID_DAP_JTAG_Configure) {
-        // Validate the whole chain before ARM's handler or either sweep watcher changes it.
-        const uint32_t devices = request[1];
-        if (!jtag_chain_valid(request + 2U, devices, DAP_JTAG_DEV_CNT)) {
-            response[0] = *request;
-            response[1] = DAP_ERROR;
-            return ((devices + 2U) << 16) | 2U;
-        }
-    }
-    if ((*request == ID_DAP_TransferBlock) &&
-        ((DAP_Data.debug_port == DAP_PORT_SWD) || (DAP_Data.debug_port == DAP_PORT_JTAG))) {
-        *response = *request;
-        return (1U << 16) + 1U + transfer_block(request + 1, response + 1);
-    }
-#ifdef GENERATED_WIRE
     if (*request == ID_DAP_SWJ_Clock) {
         // ARM keeps only the delay it derives from the clock, and the generators want the clock.
-        const uint32_t hz = (uint32_t)request[1] | ((uint32_t)request[2] << 8) | ((uint32_t)request[3] << 16) |
-                            ((uint32_t)request[4] << 24);
+        const uint32_t hz = read_u32_le(request + 1);
         // ARM's handler refuses 0 Hz the same way, keeping the clock it had.
         if ((hz != 0U) && !clock_generates(hz)) {
             return refuse(request, response);
@@ -246,6 +218,39 @@ COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* respon
         (void)jtag_gen_ready(jtag_gen_wire());
     }
     return result;
+}
+#endif
+
+/** The checks both builds make, then the build's route: the generated one, or ARM's processing. */
+COMMAND_PATH uint32_t DAP_ProcessCommand(const uint8_t* request, uint8_t* response) {
+#ifdef GENERATED_WIRE
+    jtag_gen_command = *request;
+#endif
+    if ((*request == ID_DAP_Delay) && (request[1] == 0U) && (request[2] == 0U)) {
+        // ARM's pacing loop decrements before it tests, so a count of zero runs 2^32 times:
+        // about ninety seconds with the probe answering nothing and the host waiting. A zero
+        // microsecond delay is a legal request, and probe-rs being careful not to send one is
+        // the only reason this has never been seen.
+        response[0] = *request;
+        response[1] = DAP_OK;
+        return (3U << 16) | 2U;
+    }
+    if (*request == ID_DAP_JTAG_Configure) {
+        // Validate the whole chain before ARM's handler or either sweep watcher changes it.
+        const uint32_t devices = request[1];
+        if (!jtag_chain_valid(request + 2U, devices, DAP_JTAG_DEV_CNT)) {
+            response[0] = *request;
+            response[1] = DAP_ERROR;
+            return ((devices + 2U) << 16) | 2U;
+        }
+    }
+    if ((*request == ID_DAP_TransferBlock) &&
+        ((DAP_Data.debug_port == DAP_PORT_SWD) || (DAP_Data.debug_port == DAP_PORT_JTAG))) {
+        *response = *request;
+        return (1U << 16) + 1U + transfer_block(request + 1, response + 1);
+    }
+#ifdef GENERATED_WIRE
+    return generated_command(request, response);
 #else
     return arm_command(request, response);
 #endif
@@ -307,7 +312,7 @@ COMMAND_PATH uint32_t DAP_ExecuteCommandSized(const uint8_t* request, uint32_t r
         if (result != 0U) {
             return result;
         }
-        if ((request[0] == ID_DAP_Vendor17 || request[0] == ID_DAP_Vendor18) && packet_size >= PRO_BUS_RESPONSE_FIXED) {
+        if ((request[0] == ID_VENDOR_SPI || request[0] == ID_VENDOR_I2C) && packet_size >= PRO_BUS_RESPONSE_FIXED) {
             response[0] = request[0];
             response[1] = PRO_BUS_INVALID;
             response[2] = 0U;
