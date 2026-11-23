@@ -15,6 +15,7 @@
 #include "DAP_config.h"
 
 #include "board_straps.h"
+#include "byte_io.h"
 #include "dap_core.h"
 #include "dap_shared.h"
 #include "ms_os_20.h"
@@ -330,129 +331,157 @@ __attribute__((noinline)) static void ms_os_20_init(void) {
 
 uint8_t const* tud_descriptor_bos_cb(void) { return ((functions() & FUNCTIONS_WINUSB) != 0U) ? desc_bos : nullptr; }
 
-bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_request_t const* request) {
-    if (request->bRequest == DAP_SHARED_CORE1_STATUS_REQUEST) {
-        if (request->bmRequestType != 0xC0U || request->wValue > DAP_SHARED_SWO_STATUS || request->wIndex != 0U) {
-            return false;
-        }
-        if (stage != CONTROL_STAGE_SETUP) {
-            return true;
-        }
-        if (request->wValue == DAP_SHARED_QUEUE_STATUS) {
-            // Slot count, the heads and tails, whether each transport's head reply is in flight, both
-            // mailbox registers' low bytes, then each ring's lengths: what tools/dap.py core1 --queues
-            // prints.
-            static uint8_t queues[14U + 8U * REQUEST_SLOTS];
-            uint8_t* out = queues;
-            *out++ = REQUEST_SLOTS;
-            *out++ = dap_shared.request_head;
-            *out++ = dap_shared.request_tail;
-            *out++ = dap_shared.rx_armed_slot;
-            *out++ = dap_shared.hid_request_head;
-            *out++ = dap_shared.hid_request_tail;
-            *out++ = dap_shared.response_head;
-            *out++ = dap_shared.response_tail;
-            *out++ = usb_transport_reply_in_flight(false) ? 1U : 0U;
-            *out++ = dap_shared.hid_response_head;
-            *out++ = dap_shared.hid_response_tail;
-            *out++ = usb_transport_reply_in_flight(true) ? 1U : 0U;
-            *out++ = (uint8_t)MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU1].IRQ;
-            *out++ = (uint8_t)MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQ;
-            for (uint32_t i = 0U; i < REQUEST_SLOTS; i++) {
-                uint16_t const lengths[] = {dap_shared.request_len[i], dap_shared.hid_request_len[i],
-                                            dap_shared.response_len[i], dap_shared.hid_response_len[i]};
-                for (uint32_t j = 0U; j < 4U; j++) {
-                    *out++ = (uint8_t)lengths[j];
-                    *out++ = (uint8_t)(lengths[j] >> 8);
-                }
-            }
-            return tud_control_xfer(rhport, request, queues, (uint16_t)TU_MIN(sizeof(queues), request->wLength));
-        }
-        if (request->wValue == DAP_SHARED_SWO_STATUS) {
-            // Words: the segment count, DMA0's CTRL, ENABLESET, ACTIVE, BUSY, INTA and ERRINT, channel
-            // 8's CFG, CTLSTAT and XFERCFG, Flexcomm 3's PSELID, the USART's CFG, STAT, FIFOCFG and
-            // FIFOSTAT, P0_3's IOCON word, then DMA0's INTB and swo_lost: what tools/dap.py core1
-            // --swo prints. A peripheral whose clock is off reads as zeros rather than being touched.
-            static uint32_t swo[18];
-            for (uint32_t i = 0U; i < 18U; i++) {
-                swo[i] = 0U;
-            }
-            swo[0] = dap_shared.swo_segments;
-            if ((SYSCON->AHBCLKCTRL.AHBCLKCTRL0 & SYSCON_AHBCLKCTRL0_DMA0_MASK) != 0U) {
-                swo[1] = DMA0->CTRL;
-                swo[2] = DMA0->COMMON[0].ENABLESET;
-                swo[3] = DMA0->COMMON[0].ACTIVE;
-                swo[4] = DMA0->COMMON[0].BUSY;
-                swo[5] = DMA0->COMMON[0].INTA;
-                swo[6] = DMA0->COMMON[0].ERRINT;
-                swo[7] = DMA0->CHANNEL[SWO_DMA_CHANNEL].CFG;
-                swo[8] = DMA0->CHANNEL[SWO_DMA_CHANNEL].CTLSTAT;
-                swo[9] = DMA0->CHANNEL[SWO_DMA_CHANNEL].XFERCFG;
-                swo[16] = DMA0->COMMON[0].INTB;
-            }
-            if ((SYSCON->AHBCLKCTRL.AHBCLKCTRL1 & SYSCON_AHBCLKCTRL1_FC3_MASK) != 0U) {
-                swo[10] = FLEXCOMM3->PSELID;
-                swo[11] = USART3->CFG;
-                swo[12] = USART3->STAT;
-                swo[13] = USART3->FIFOCFG;
-                swo[14] = USART3->FIFOSTAT;
-            }
-            swo[15] = IOCON->PIO[0][3];
-            swo[17] = dap_shared.swo_lost;
-            return tud_control_xfer(rhport, request, swo, (uint16_t)TU_MIN(sizeof(swo), request->wLength));
-        }
-        // A snapshot, so the reply is one consistent read of what CPU 1 last wrote. CPU 1 writes
-        // `exception` last, so read it first: set, the fault fields read after it are complete.
-        static dap_core1_status_t status;
-        uint32_t const exception = dap_shared.core1.exception;
-        __DMB();
-        status = dap_shared.core1;
-        status.exception = exception;
-        return tud_control_xfer(rhport, request, &status, (uint16_t)TU_MIN(sizeof(status), request->wLength));
+/** The queues' state: the slot count, the heads and tails, whether each transport's head reply is in
+ *  flight, both mailbox registers' low bytes, then each ring's lengths. What tools/dap.py core1
+ *  --queues prints. */
+static bool queue_status(uint8_t rhport, tusb_control_request_t const* request) {
+    static uint8_t queues[14U + 8U * REQUEST_SLOTS];
+    uint8_t* out = queues;
+    *out++ = REQUEST_SLOTS;
+    *out++ = dap_shared.request_head;
+    *out++ = dap_shared.request_tail;
+    *out++ = dap_shared.rx_armed_slot;
+    *out++ = dap_shared.hid_request_head;
+    *out++ = dap_shared.hid_request_tail;
+    *out++ = dap_shared.response_head;
+    *out++ = dap_shared.response_tail;
+    *out++ = usb_transport_reply_in_flight(false) ? 1U : 0U;
+    *out++ = dap_shared.hid_response_head;
+    *out++ = dap_shared.hid_response_tail;
+    *out++ = usb_transport_reply_in_flight(true) ? 1U : 0U;
+    *out++ = (uint8_t)MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU1].IRQ;
+    *out++ = (uint8_t)MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQ;
+    for (uint32_t i = 0U; i < REQUEST_SLOTS; i++) {
+        out = put_u16_le(out, dap_shared.request_len[i]);
+        out = put_u16_le(out, dap_shared.hid_request_len[i]);
+        out = put_u16_le(out, dap_shared.response_len[i]);
+        out = put_u16_le(out, dap_shared.hid_response_len[i]);
     }
+    return tud_control_xfer(rhport, request, queues, (uint16_t)TU_MIN(sizeof(queues), request->wLength));
+}
 
-    if (request->bRequest == DAP_SHARED_CORE1_SAMPLE_REQUEST) {
-        if (request->bmRequestType != 0x40U || request->wValue != 0U || request->wIndex != 0U ||
-            request->wLength != 0U) {
-            return false;
-        }
-        if (stage == CONTROL_STAGE_SETUP) {
-            return tud_control_status(rhport, request);
-        }
-        if (stage == CONTROL_STAGE_ACK) {
-            // The NMI mux takes CPU 0's interrupt lines, where the mailbox's is the register that
-            // wakes CPU 0: raising CPU 1's own does nothing (measured). The NMI wants a rising edge,
-            // so the line is dropped first.
-            MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQCLR = UINT32_MAX;
-            __DSB();
-            SYSCON->NMISRC = SYSCON_NMISRC_IRQCPU1(MAILBOX_IRQn) | SYSCON_NMISRC_NMIENCPU1_MASK;
-            __DSB();
-            MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQSET = DAP_CORE_MAILBOX_WAKE_MASK;
-        }
-        return true;
+/** SWO's capture, in words: the segment count, DMA0's CTRL, ENABLESET, ACTIVE, BUSY, INTA and ERRINT,
+ *  channel 8's CFG, CTLSTAT and XFERCFG, Flexcomm 3's PSELID, the USART's CFG, STAT, FIFOCFG and
+ *  FIFOSTAT, P0_3's IOCON word, then DMA0's INTB and swo_lost. What tools/dap.py core1 --swo prints.
+ *  A peripheral whose clock is off reads as zeros rather than being touched. */
+static bool swo_status(uint8_t rhport, tusb_control_request_t const* request) {
+    static uint32_t swo[18];
+    for (uint32_t i = 0U; i < 18U; i++) {
+        swo[i] = 0U;
     }
-
-    if (request->bRequest == REBOOT_USB_VENDOR_REQUEST) {
-        if (!reboot_usb_control_request_valid(request->bmRequestType, request->bRequest, request->wValue,
-                                              request->wIndex, request->wLength)) {
-            return false;
-        }
-        if (stage == CONTROL_STAGE_SETUP) {
-            return tud_control_status(rhport, request);
-        }
-        if (stage == CONTROL_STAGE_ACK) {
-            reboot_request_from_usb((uint8_t)request->wValue);
-        }
-        return true;
+    swo[0] = dap_shared.swo_segments;
+    if ((SYSCON->AHBCLKCTRL.AHBCLKCTRL0 & SYSCON_AHBCLKCTRL0_DMA0_MASK) != 0U) {
+        swo[1] = DMA0->CTRL;
+        swo[2] = DMA0->COMMON[0].ENABLESET;
+        swo[3] = DMA0->COMMON[0].ACTIVE;
+        swo[4] = DMA0->COMMON[0].BUSY;
+        swo[5] = DMA0->COMMON[0].INTA;
+        swo[6] = DMA0->COMMON[0].ERRINT;
+        swo[7] = DMA0->CHANNEL[SWO_DMA_CHANNEL].CFG;
+        swo[8] = DMA0->CHANNEL[SWO_DMA_CHANNEL].CTLSTAT;
+        swo[9] = DMA0->CHANNEL[SWO_DMA_CHANNEL].XFERCFG;
+        swo[16] = DMA0->COMMON[0].INTB;
     }
+    if ((SYSCON->AHBCLKCTRL.AHBCLKCTRL1 & SYSCON_AHBCLKCTRL1_FC3_MASK) != 0U) {
+        swo[10] = FLEXCOMM3->PSELID;
+        swo[11] = USART3->CFG;
+        swo[12] = USART3->STAT;
+        swo[13] = USART3->FIFOCFG;
+        swo[14] = USART3->FIFOSTAT;
+    }
+    swo[15] = IOCON->PIO[0][3];
+    swo[17] = dap_shared.swo_lost;
+    return tud_control_xfer(rhport, request, swo, (uint16_t)TU_MIN(sizeof(swo), request->wLength));
+}
 
+/** CPU 1's status, as a snapshot, so the reply is one consistent read of what CPU 1 last wrote. */
+static bool core1_status(uint8_t rhport, tusb_control_request_t const* request) {
+    // CPU 1 writes `exception` last, so read it first: set, the fault fields read after it are complete.
+    static dap_core1_status_t status;
+    uint32_t const exception = dap_shared.core1.exception;
+    __DMB();
+    status = dap_shared.core1;
+    status.exception = exception;
+    return tud_control_xfer(rhport, request, &status, (uint16_t)TU_MIN(sizeof(status), request->wLength));
+}
+
+/** A diagnostic read: the view wValue names. */
+static bool status_request(uint8_t rhport, uint8_t stage, tusb_control_request_t const* request) {
+    if (request->bmRequestType != 0xC0U || request->wValue > DAP_SHARED_SWO_STATUS || request->wIndex != 0U) {
+        return false;
+    }
     if (stage != CONTROL_STAGE_SETUP) {
         return true;
     }
-    if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_VENDOR && request->bRequest == VENDOR_REQUEST_MICROSOFT &&
-        request->wIndex == 7) {
-        uint16_t const total_len = (uint16_t)(desc_ms_os_20[8] | (desc_ms_os_20[9] << 8U));
-        return tud_control_xfer(rhport, request, desc_ms_os_20, total_len);
+    switch (request->wValue) {
+    case DAP_SHARED_QUEUE_STATUS:
+        return queue_status(rhport, request);
+    case DAP_SHARED_SWO_STATUS:
+        return swo_status(rhport, request);
+    default:
+        return core1_status(rhport, request);
     }
-    return false;
+}
+
+/** Stops CPU 1 with an NMI once the status stage is done, so its fault record shows where it was. */
+static bool sample_request(uint8_t rhport, uint8_t stage, tusb_control_request_t const* request) {
+    if (request->bmRequestType != 0x40U || request->wValue != 0U || request->wIndex != 0U || request->wLength != 0U) {
+        return false;
+    }
+    if (stage == CONTROL_STAGE_SETUP) {
+        return tud_control_status(rhport, request);
+    }
+    if (stage == CONTROL_STAGE_ACK) {
+        // The NMI mux takes CPU 0's interrupt lines, where the mailbox's is the register that
+        // wakes CPU 0: raising CPU 1's own does nothing (measured). The NMI wants a rising edge,
+        // so the line is dropped first.
+        MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQCLR = UINT32_MAX;
+        __DSB();
+        SYSCON->NMISRC = SYSCON_NMISRC_IRQCPU1(MAILBOX_IRQn) | SYSCON_NMISRC_NMIENCPU1_MASK;
+        __DSB();
+        MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU0].IRQSET = DAP_CORE_MAILBOX_WAKE_MASK;
+    }
+    return true;
+}
+
+/** Restarts the probe, into the ROM bootloader when wValue asks, once the status stage is done. */
+static bool reboot_request(uint8_t rhport, uint8_t stage, tusb_control_request_t const* request) {
+    if (!reboot_usb_control_request_valid(request->bmRequestType, request->bRequest, request->wValue, request->wIndex,
+                                          request->wLength)) {
+        return false;
+    }
+    if (stage == CONTROL_STAGE_SETUP) {
+        return tud_control_status(rhport, request);
+    }
+    if (stage == CONTROL_STAGE_ACK) {
+        reboot_request_from_usb((uint8_t)request->wValue);
+    }
+    return true;
+}
+
+/** The MS OS 2.0 descriptor set, which Windows asks for with the vendor code the BOS names. */
+static bool ms_os_20_request(uint8_t rhport, uint8_t stage, tusb_control_request_t const* request) {
+    if (stage != CONTROL_STAGE_SETUP) {
+        return true;
+    }
+    if (request->bmRequestType_bit.type != TUSB_REQ_TYPE_VENDOR || request->wIndex != 7) {
+        return false;
+    }
+    uint16_t const total_len = (uint16_t)(desc_ms_os_20[8] | (desc_ms_os_20[9] << 8U));
+    return tud_control_xfer(rhport, request, desc_ms_os_20, total_len);
+}
+
+bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_request_t const* request) {
+    switch (request->bRequest) {
+    case DAP_SHARED_CORE1_STATUS_REQUEST:
+        return status_request(rhport, stage, request);
+    case DAP_SHARED_CORE1_SAMPLE_REQUEST:
+        return sample_request(rhport, stage, request);
+    case REBOOT_USB_VENDOR_REQUEST:
+        return reboot_request(rhport, stage, request);
+    case VENDOR_REQUEST_MICROSOFT:
+        return ms_os_20_request(rhport, stage, request);
+    default:
+        return stage != CONTROL_STAGE_SETUP;
+    }
 }
