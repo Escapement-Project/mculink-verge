@@ -94,7 +94,7 @@ Send `[0x82]`. The reply's fields, counted from the byte after the ID:
 | Offset | Field |
 | --- | --- |
 | 0 to 4 | `CJTAG` in ASCII |
-| 5 | Format version: 8 |
+| 5 | Format version: 9 |
 | 6 | Capability flags |
 | 7 | Length of the build string, `n` |
 | 8 to 7+n | The build string, `n` bytes, with no terminator |
@@ -102,7 +102,7 @@ Send `[0x82]`. The reply's fields, counted from the byte after the ID:
 | 9+n to 12+n | 0, u32 |
 | 13+n to 16+n | Extended capabilities, u32 |
 
-Format 8 holds every field above. On the HID interface the reply is padded to 64 bytes, and the
+Format 9 holds every field above. On the HID interface the reply is padded to 64 bytes, and the
 bytes after the extended capabilities are padding. A later format adds fields only at the end, and
 raises the format version, so read the fields you know and ignore any after them.
 

@@ -38,7 +38,7 @@
  * The reply, after the echoed command id:
  *
  *     [0..4]  "CJTAG"                 magic
- *     [5]     format version          8; the fields are format 7's (below)
+ *     [5]     format version          9; the fields are format 7's (below)
  *     [6]     capability flags        CJTAG_CAP_*
  *     [7]     build string length n
  *     [8..]   build string, n bytes, not terminated
@@ -69,9 +69,12 @@
  *
  * Format 8 changes no field: it says ID_VENDOR_JTAG_FORMAT, sent while disconnected, selects the format
  * the next DAP_Connect(2) starts in. Format 7 refused it there.
+ *
+ * Format 9 changes no field: it says vendor 0x84, 0x8C and 0x93 and 0x90 modes 5 and 6 are gone,
+ * 0x87 answers only in a CODE_LAB build, and every capture stream's header is format 4.
  */
 #define CJTAG_INFO_MAGIC "CJTAG"
-#define CJTAG_INFO_VERSION 8U
+#define CJTAG_INFO_VERSION 9U
 /// The id, the magic, the version, the flags, the length, the board, the old formats and extended
 /// capabilities, around the build string. A v1 HID report holds 64 bytes.
 #define CJTAG_INFO_FIXED 18U

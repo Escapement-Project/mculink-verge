@@ -23,10 +23,10 @@ def u32(value: int) -> bytes:
     return value.to_bytes(4, "little")
 
 
-# Format 8 on the standalone board: the board, a zero where formats 4 to 6 had vendor 0x83's scan
+# Format 9 on the standalone board: the board, a zero where formats 4 to 6 had vendor 0x83's scan
 # formats, then the extended capabilities.
-assert parse_identify(reply(8, 0x6C, b"v0.3.0", bytes([0]) + u32(0) + u32(0x440))) == {
-    "format": 8, "flags": 0x6C, "build": "v0.3.0", "board": 0, "scan_formats": None, "extended": 0x440}
+assert parse_identify(reply(9, 0x6C, b"v0.3.0", bytes([0]) + u32(0) + u32(0x440))) == {
+    "format": 9, "flags": 0x6C, "build": "v0.3.0", "board": 0, "scan_formats": None, "extended": 0x440}
 
 # Format 6 carried the scan formats, OScan1 and OScan2 here, and already the extended capabilities.
 found = parse_identify(reply(6, 0x2D, b"abc1234", bytes([1]) + u32((1 << 9) | (1 << 10)) + u32(1)))

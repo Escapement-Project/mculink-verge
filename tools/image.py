@@ -1263,8 +1263,8 @@ def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
     build = reply[9 : 9 + length].decode("ascii", "replace")
     if magic != b"CJTAG":
         c.problems.append(f"vendor 0x82 magic is {magic!r}, wanted b'CJTAG'")
-    if version != 8:
-        c.problems.append(f"vendor 0x82 format version is {version}, wanted 8")
+    if version != 9:
+        c.problems.append(f"vendor 0x82 format version is {version}, wanted 9")
     # The plain board, format 4 to 6's formats cleared, then the extended capabilities. A host finds
     # the cJTAG formats by trying them with DAP_JTAG_Format.
     tail = reply[9 + length :]
