@@ -65,8 +65,6 @@ option(USB_RAM "Run TinyUSB from SRAM" ON)
 # Vendor 0x88, which runs code the host sends. A bench instrument for the emulator's cost model;
 # src/code_lab.c says what it measures.
 option(CODE_LAB "Build the vendor 0x88 code lab" OFF)
-# Add shared-timer counters for the USB and two-core command path. Bench-only; off in shipped images.
-option(DAP_TIMING_DIAGNOSTICS "Measure command handoff stages" OFF)
 # A test build that attaches at full speed, which needs no full-speed hub: `always` never chirps,
 # as on a full-speed-only port; `first` skips the chirp on the first attach only, as a chirp that
 # failed once. Never shipped; the version string carries it.
@@ -96,9 +94,6 @@ if(NOT GENERATED_WIRE)
 endif()
 if(CODE_LAB)
   string(APPEND FW_VARIANT "+lab")
-endif()
-if(DAP_TIMING_DIAGNOSTICS)
-  string(APPEND FW_VARIANT "+timing")
 endif()
 if(NOT USB_FULL_SPEED_TEST STREQUAL "")
   string(APPEND FW_VARIANT "+fs-${USB_FULL_SPEED_TEST}")
@@ -384,12 +379,6 @@ elseif(USB_FULL_SPEED_TEST STREQUAL "first")
   target_compile_definitions(${PROJECT_NAME} PRIVATE USB_FULL_SPEED_TEST_FIRST=1)
 endif()
 
-if(DAP_TIMING_DIAGNOSTICS)
-  target_sources(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_timing.c)
-  target_compile_definitions(${CORE1} PRIVATE DAP_TIMING_DIAGNOSTICS=1)
-  target_compile_definitions(${PROJECT_NAME} PRIVATE DAP_TIMING_DIAGNOSTICS=1)
-endif()
-
 if(CORE_150MHZ)
   set(CORE_CLOCK_MHZ 150)
 else()
@@ -606,9 +595,6 @@ if(UV_EXECUTABLE)
   set(IMAGE_CHECK_ARGS --packet-count ${DAP_PACKET_COUNT} --core-clock-mhz ${CORE_CLOCK_MHZ})
   if(CODE_LAB)
     list(APPEND IMAGE_CHECK_ARGS --code-lab)
-  endif()
-  if(DAP_TIMING_DIAGNOSTICS)
-    list(APPEND IMAGE_CHECK_ARGS --timing-diagnostics)
   endif()
   add_custom_target(check_wire
     COMMAND ${UV_EXECUTABLE} run ${CMAKE_CURRENT_SOURCE_DIR}/tools/cycles.py

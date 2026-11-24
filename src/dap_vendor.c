@@ -203,48 +203,6 @@ static uint32_t stage_command(const uint8_t* request, uint8_t* response) {
     return 3U;
 }
 
-#ifdef DAP_TIMING_DIAGNOSTICS
-static uint32_t timing_command(const uint8_t* request, uint8_t* response) {
-    (void)request;
-    uint32_t const values[] = {
-        dap_stage.timing.clock_hz,
-        dap_stage.timing.rx_count,
-        dap_stage.timing.rx_callback_cycles,
-        dap_stage.timing.rx_stage_copy_cycles,
-        dap_stage.timing.tx_stage_copy_cycles,
-        dap_stage.timing.rx_publish_cycles,
-        dap_stage.timing.mailbox1_signal_cycles,
-        dap_stage.timing.wake_to_dispatch_cycles,
-        dap_stage.timing.dispatch_cycles,
-        dap_stage.timing.request_copy_cycles,
-        dap_stage.timing.dap_execute_cycles,
-        dap_stage.timing.response_copy_cycles,
-        dap_stage.timing.reply_publish_cycles,
-        dap_stage.timing.tx_count,
-        dap_stage.timing.tx_start_cycles,
-        dap_stage.timing.tx_in_flight_cycles,
-    };
-    response[1] = DAP_OK;
-    response[2] = 1U;
-    memcpy(response + 3U, values, sizeof(values));
-    dap_stage.timing.rx_count = 0U;
-    dap_stage.timing.rx_callback_cycles = 0U;
-    dap_stage.timing.rx_stage_copy_cycles = 0U;
-    dap_stage.timing.tx_stage_copy_cycles = 0U;
-    dap_stage.timing.rx_publish_cycles = 0U;
-    dap_stage.timing.mailbox1_signal_cycles = 0U;
-    dap_stage.timing.wake_to_dispatch_cycles = 0U;
-    dap_stage.timing.dispatch_cycles = 0U;
-    dap_stage.timing.request_copy_cycles = 0U;
-    dap_stage.timing.dap_execute_cycles = 0U;
-    dap_stage.timing.response_copy_cycles = 0U;
-    dap_stage.timing.reply_publish_cycles = 0U;
-    dap_stage.timing.tx_count = 0U;
-    dap_stage.timing.tx_start_cycles = 0U;
-    dap_stage.timing.tx_in_flight_cycles = 0U;
-    return 3U + sizeof(values);
-}
-#endif
 
 bool dap_vendor_on_aux;
 
@@ -292,10 +250,6 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         return pro_spi_command(request, response);
     case ID_VENDOR_I2C:
         return pro_i2c_command(request, response);
-#ifdef DAP_TIMING_DIAGNOSTICS
-    case ID_VENDOR_TIMING:
-        return timing_command(request, response);
-#endif
     case ID_VENDOR_MARK:
         return energy_mark_command(request, response);
     case ID_VENDOR_JTAG_FORMAT:

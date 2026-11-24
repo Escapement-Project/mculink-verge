@@ -358,10 +358,6 @@ static inline dap_packet_plan_t dap_command_lengths(const uint8_t* p, uint32_t l
         return dap_spi_lengths(p, length);
     case ID_VENDOR_I2C:
         return dap_i2c_lengths(p, length);
-#ifdef DAP_TIMING_DIAGNOSTICS
-    case ID_VENDOR_TIMING:
-        return dap_lengths(2U, 67U);
-#endif
     case ID_VENDOR_MARK:
         return dap_mark_lengths(p, length);
     case ID_VENDOR_JTAG_FORMAT:

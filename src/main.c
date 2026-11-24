@@ -23,9 +23,6 @@
 #include "dap_shared.h"
 #include "dio_edges.h"
 #include "dma0.h"
-#ifdef DAP_TIMING_DIAGNOSTICS
-#include "dap_timing.h"
-#endif
 #include "energy_integration.h"
 #include "energy_monitor.h"
 #include "dap_usb_slots.h"
@@ -61,17 +58,7 @@ __attribute__((section(".ramfunc"))) static uint8_t stage_request(uint8_t (*buff
     }
     uint8_t const at = *next;
     *next = dap_usb_next_slot(at, DAP_STAGE_REQUESTS);
-#ifdef DAP_TIMING_DIAGNOSTICS
-    // The bulk pipeline's alone, as CPU 1's counters are.
-    bool const record_timing = (buffers != dap_stage.hid_request) && (command[0] != DAP_TIMING_COMMAND);
-    uint32_t const copy_start = record_timing ? dap_timing_now() : 0U;
-#endif
     memcpy(buffers[at], command, length);
-#ifdef DAP_TIMING_DIAGNOSTICS
-    if (record_timing) {
-        dap_stage.timing.rx_stage_copy_cycles += dap_timing_now() - copy_start;
-    }
-#endif
     return (uint8_t)(at + 1U);
 }
 
@@ -128,43 +115,15 @@ __attribute__((section(".ramfunc"))) void tud_vendor_rx_cb(uint8_t index, const 
         return;
     }
 
-#ifdef DAP_TIMING_DIAGNOSTICS
-    bool const record_timing = buffer[0] != DAP_TIMING_COMMAND;
-    uint32_t const callback_start = record_timing ? dap_timing_now() : 0U;
-#endif
     uint8_t const tail = dap_shared.request_tail;
     dap_shared.request_stage[tail] = stage_request(dap_stage.request, &stage_next, buffer, length);
-#ifdef DAP_TIMING_DIAGNOSTICS
-    uint32_t const publish_start = record_timing ? dap_timing_now() : 0U;
-#endif
     dap_shared.request_seq[tail] = dap_shared.next_request_seq++;
-#ifdef DAP_TIMING_DIAGNOSTICS
-    // Before the length: CPU 1 can take the command the moment that lands.
-    dap_stage.request_tick[tail] = dap_timing_now();
-#endif
     __DMB();
     dap_shared.request_len[tail] = (uint16_t)length;
     __DMB();
     dap_shared.request_tail = dap_usb_next_slot(dap_shared.request_tail, REQUEST_SLOTS);
-#ifdef DAP_TIMING_DIAGNOSTICS
-    if (record_timing) {
-        dap_stage.timing.rx_publish_cycles += dap_timing_now() - publish_start;
-    }
-    uint32_t const signal_start = record_timing ? dap_timing_now() : 0U;
-#endif
     signal_core1();
-#ifdef DAP_TIMING_DIAGNOSTICS
-    if (record_timing) {
-        dap_stage.timing.mailbox1_signal_cycles += dap_timing_now() - signal_start;
-        dap_stage.timing.rx_count++;
-    }
-#endif
     arm_rx();
-#ifdef DAP_TIMING_DIAGNOSTICS
-    if (record_timing) {
-        dap_stage.timing.rx_callback_cycles += dap_timing_now() - callback_start;
-    }
-#endif
 }
 
 /** TinyUSB reports no bus reset to the application. This runs at each configuration the host sets,
@@ -187,14 +146,6 @@ void tud_mount_cb(void) {
 /** The head bulk reply has left, or will not: its slot goes back to CPU 1, which may be waiting for
  *  one. */
 __attribute__((section(".ramfunc"))) static void bulk_reply_sent(void) {
-#ifdef DAP_TIMING_DIAGNOSTICS
-    uint8_t const head = dap_shared.response_head;
-    if (dap_stage.response_timing_excluded[head] == 0U) {
-        dap_stage.timing.tx_in_flight_cycles += dap_timing_now() - dap_stage.response_tx_tick[head];
-        dap_stage.timing.tx_count++;
-    }
-    dap_stage.response_timing_excluded[head] = 0U;
-#endif
     // The slot's bytes are read before CPU 1 can write the next reply into it.
     __DMB();
     dap_shared.response_head = dap_usb_slot_release(dap_shared.response_len, dap_shared.response_head, REQUEST_SLOTS);
@@ -232,12 +183,6 @@ __attribute__((section(".ramfunc"))) static bool start_rx(void* context, uint8_t
 
 __attribute__((section(".ramfunc"))) static bool start_bulk_tx(void* context, uint8_t slot, uint16_t length) {
     uint8_t (*buffers)[DAP_PACKET_SIZE] = context;
-#ifdef DAP_TIMING_DIAGNOSTICS
-    bool const staged = dap_shared.response_staged[slot] != 0U;
-    bool const record_timing = staged ? dap_stage.response[slot][0] != DAP_TIMING_COMMAND
-                                      : buffers[slot][0] != DAP_TIMING_COMMAND;
-    uint32_t const copy_start = record_timing ? dap_timing_now() : 0U;
-#endif
     if (dap_shared.response_staged[slot] != 0U) {
         if (length == 7U) {
             memcpy(buffers[slot], dap_stage.response[slot], 4U);
@@ -245,26 +190,8 @@ __attribute__((section(".ramfunc"))) static bool start_bulk_tx(void* context, ui
         } else {
             memcpy(buffers[slot], dap_stage.response[slot], length);
         }
-#ifdef DAP_TIMING_DIAGNOSTICS
-        if (record_timing) {
-            dap_stage.timing.tx_stage_copy_cycles += dap_timing_now() - copy_start;
-        }
-#endif
     }
-#ifdef DAP_TIMING_DIAGNOSTICS
-    dap_stage.response_timing_excluded[slot] = !record_timing;
-    uint32_t const start = record_timing ? dap_timing_now() : 0U;
-    if (record_timing) {
-        dap_stage.response_tx_tick[slot] = dap_timing_now();
-    }
-#endif
-    bool const started = tud_vendor_write_xfer(buffers[slot], length) == length;
-#ifdef DAP_TIMING_DIAGNOSTICS
-    if (record_timing) {
-        dap_stage.timing.tx_start_cycles += dap_timing_now() - start;
-    }
-#endif
-    return started;
+    return tud_vendor_write_xfer(buffers[slot], length) == length;
 }
 
 /** TinyUSB's HID class copies the report into its own endpoint buffer. */
@@ -305,10 +232,6 @@ __attribute__((section(".ramfunc"))) static void send_bulk_head(void) {
     __DMB();
     // An unconfigured device has no host to take this reply, including one CPU 1 just finished.
     if (!tud_mounted() || dap_usb_stale(dap_shared.response_seq[head], dap_shared.first_live_seq)) {
-#ifdef DAP_TIMING_DIAGNOSTICS
-        // It never left, so it has no time on the wire to count.
-        dap_stage.response_timing_excluded[head] = 1U;
-#endif
         bulk_reply_sent();
         return;
     }
@@ -544,9 +467,6 @@ int main(void) {
     board_core_clock_init();
     board_clocks_init();
     dap_shared_init(&dap_shared, &dap_stage, &energy_integration);
-#ifdef DAP_TIMING_DIAGNOSTICS
-    dap_timing_init();
-#endif
     board_read_straps();
     // TinyUSB numbers vendor instances in the order the configuration declares the interfaces, and
     // src/usb_descriptors.c declares CMSIS-DAP v2 first and Verge Aux last.

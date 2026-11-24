@@ -125,7 +125,7 @@ def shared_fields() -> list[str]:
 
 
 def shared_offsets(request_slots: int, *fields: str, small_enums: bool = True,
-                   struct_type: str = "dap_shared_t", timing_diagnostics: bool = False) -> dict[str, int]:
+                   struct_type: str = "dap_shared_t") -> dict[str, int]:
     """Member offsets of dap_shared_t, and its size as "size", as the firmware's compiler lays it
     out. A host compiler would not: its pointers are a different size. An image's enum size is
     its compiler's choice, so pass the image's own."""
@@ -136,7 +136,6 @@ def shared_offsets(request_slots: int, *fields: str, small_enums: bool = True,
         c_file, obj, raw = (os.path.join(tmp, n) for n in ("layout.c", "layout.o", "layout.bin"))
         open(c_file, "w").write(source)
         subprocess.run(["arm-none-eabi-gcc", "-std=gnu23", "-mthumb", "-mcpu=cortex-m33", f"-DREQUEST_SLOTS={request_slots}U",
-                        *(["-DDAP_TIMING_DIAGNOSTICS"] if timing_diagnostics else []),
                         "-fshort-enums" if small_enums else "-fno-short-enums",
                         f"-I{os.path.join(ROOT, 'src')}", "-c", c_file, "-o", obj], check=True)
         subprocess.run(["arm-none-eabi-objcopy", "-O", "binary", "-j", ".rodata", obj, raw], check=True)
@@ -933,11 +932,9 @@ def check_hid_padding(c: Checker, elf: str, slots: int) -> None:
     c.note("HID long/short/malformed Info replies, zero padding and packet size across both staging modes and all slots")
 
 
-def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: bool = False,
-                        timing_diagnostics: bool = False) -> None:
+def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: bool = False) -> None:
     from usb_checks import (check_aux, check_aux_stream, check_completion_chains, check_descriptors, check_full_speed,
-                            check_interfaces_apart, check_rechirp, check_transport, check_unconfigured,
-                            check_unsent_untimed)
+                            check_interfaces_apart, check_rechirp, check_transport, check_unconfigured)
     from usb_idle_checks import check_idle, check_idle_rearm, check_idle_reply, check_idle_serviced, check_reboot
     from usb_lifecycle import check_sequences
 
@@ -954,10 +951,6 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: 
     check_transport(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_interfaces_apart(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_completion_chains(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
-    if timing_diagnostics:
-        stage = shared_offsets(slots, "timing.tx_count", "timing.tx_in_flight_cycles", small_enums=short_enums(elf0),
-                               struct_type="dap_stage_t", timing_diagnostics=True)
-        check_unsent_untimed(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, stage)
     check_full_speed(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
     check_descriptors(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
     check_rechirp(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
@@ -2348,8 +2341,7 @@ def check_sram_code(c: Checker, elf: str, what: str, names: tuple[str, ...], all
         c.note(f"{what} from SRAM: {' and '.join(names)}{below}, and every branch they take")
 
 
-def check_core1_image(c: Checker, elf: str, core1: str, request_slots: int,
-                      timing_diagnostics: bool = False) -> None:
+def check_core1_image(c: Checker, elf: str, core1: str, request_slots: int) -> None:
     """CPU 0 starts CPU 1 from the image it embeds, and both reach the same shared struct.
 
     Built separately, the two images agree on nothing a linker can check. So this checks what each
@@ -2397,7 +2389,7 @@ def check_core1_image(c: Checker, elf: str, core1: str, request_slots: int,
             f"dap_stage is {stage_size0} bytes at {stage0:#x} on CPU 0 and {stage_size1} bytes at {stage1:#x} on CPU 1")
     stage_fields = ("request", "hid_request", "response", "response[1]", "hid_response", "hid_response[1]")
     stages = [shared_offsets(request_slots, *stage_fields, small_enums=short_enums(image),
-                             struct_type="dap_stage_t", timing_diagnostics=timing_diagnostics)
+                             struct_type="dap_stage_t")
               for image in (elf, core1)]
     c.check(stages[0] == stages[1] and stages[0]["size"] == stage_size0,
             "staged buffer layouts differ between cores or from dap_shared.h")
@@ -2935,7 +2927,6 @@ def main() -> int:
     ap.add_argument("--packet-count", type=int,
                     help="the packet count the build asked for (REQUEST_SLOTS); the image's own when left out")
     ap.add_argument("--code-lab", action="store_true", help="check the optional vendor 0x88 code lab")
-    ap.add_argument("--timing-diagnostics", action="store_true", help="include timing counters in the staged layout")
     ap.add_argument("--core-clock-mhz", type=int, default=150, help="the main clock, src/core_clock.h")
     ap.add_argument("--stack-report", help="record executed-call SP minima as JSON; not a worst-case bound")
     args = ap.parse_args()
@@ -2962,7 +2953,7 @@ def main() -> int:
     check_allocator_trap(c, args.elf)
     check_allocator_trap(c, args.core1)
     swo = bool(config_value(args.config, "SWO_UART"))
-    check_core1_image(c, args.elf, args.core1, slots, args.timing_diagnostics)
+    check_core1_image(c, args.elf, args.core1, slots)
     check_stacks(c, args.elf, args.core1)
     check_sram_code(c, args.elf, "CPU 0 waits for work", ("wait_for_work", "energy_control_task", "vcom_ready", "tud_cdc_n_available",
                                                          "tud_cdc_n_write_available", "tu_edpt_stream_write_available"))
@@ -3018,7 +3009,7 @@ def main() -> int:
     check_rng(c, args.core1, symbols_with_size(args.core1), slots)
     check_console_recovery(c, args.elf, slots)
     check_hid_padding(c, args.core1, slots)
-    check_usb_transport(c, args.elf, args.core1, slots, args.code_lab, args.timing_diagnostics)
+    check_usb_transport(c, args.elf, args.core1, slots, args.code_lab)
     check_identity(c, args.core1, args.code_lab)
     check_board(c, args.core1, slots)
     check_dio(c, args.core1, slots)

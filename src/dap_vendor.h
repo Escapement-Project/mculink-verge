@@ -35,7 +35,6 @@
 #define ID_VENDOR_SPI ID_DAP_Vendor17
 /// Executes one Pro I2C write, read, or combined transaction.
 #define ID_VENDOR_I2C ID_DAP_Vendor18
-#define ID_VENDOR_TIMING ID_DAP_Vendor19
 /// Marks a moment in Verge Aux's energy stream, stamped as the command runs
 /// (docs/host-interface.md, "Markers: 0x94").
 #define ID_VENDOR_MARK ID_DAP_Vendor20

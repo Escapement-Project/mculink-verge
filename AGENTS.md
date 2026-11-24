@@ -32,8 +32,8 @@ from the port with the command in its header when the port changes.
 runs the host checks and builds gcc and clang together, each in the default configuration and as
 the ARM reference, with `GENERATED_WIRE` off. It holds every image to its baselines in the emulator,
 each generated image to its compiler's ARM paths on every `tools/equiv.py` matrix, and the
-reference images' cJTAG frames to `tools/jtagcheck.py`'s wire rules. Two more gcc
-images, one with `DAP_TIMING_DIAGNOSTICS` and one with `CODE_LAB`, get `tools/image.py` alone.
+reference images' cJTAG frames to `tools/jtagcheck.py`'s wire rules. One more gcc image, with
+`CODE_LAB`, gets `tools/image.py` alone.
 `ninja -C <build> check` checks one image only.
 
 **Keep the "Limits" table in docs/wires.md current.** It is the record of the fastest each transport

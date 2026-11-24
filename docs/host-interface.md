@@ -1042,7 +1042,6 @@ These serve Verge's own tools and its bench tests. They are not a stable host in
 requests and replies can change between builds, and each one's bytes are in the handler
 `src/dap_vendor.c` sends it to. Some exist only in some builds: `0x84` needs `MARKER`, which is on
 by default, and `0x88` needs `CODE_LAB`. `0x89` to `0x8B` and `0x8D` need the generated transfers.
-`0x93` needs `DAP_TIMING_DIAGNOSTICS`.
 
 | ID | Name | What it does |
 | --- | --- | --- |
@@ -1054,7 +1053,6 @@ by default, and `0x88` needs `CODE_LAB`. `0x89` to `0x8B` and `0x8D` need the ge
 | `0x8B` | JTAG pacing | Switches the generated JTAG transfers' learned idle clocks |
 | `0x8C` | Staging | Switches whether CPU 0 stages commands for CPU 1 |
 | `0x8D` | JTAG log | Reads back what each JTAG generation was for |
-| `0x93` | Timing | The command path's cycle counts |
 
 Two vendor requests on endpoint 0 serve `tools/dap.py core1`, in every build. bRequest `0x04`
 (device-to-host) reads CPU 1's progress and fault record, the shared queues, or SWO's registers.

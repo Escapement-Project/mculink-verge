@@ -55,10 +55,6 @@ int main(void) {
 #else
     assert(check((uint8_t[]){0x8a}, 1U, 1U, true).produced == 1U);
 #endif
-#ifdef DAP_TIMING_DIAGNOSTICS
-    check((uint8_t[]){0x93, 0}, 2U, 64U, false);
-    prefixes((uint8_t[]){0x93, 0}, 2U, 67U);
-#endif
     for (uint8_t mode = 8U; mode <= 13U; mode++) {
         uint8_t bytes[64] = {0x90U, mode};
         uint32_t const length = mode == 8U ? 6U : mode == 9U ? 7U : mode == 10U ? 3U : mode == 12U ? 2U : 26U;

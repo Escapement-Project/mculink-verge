@@ -164,26 +164,6 @@ typedef struct {
     uint32_t stale;  // commands from a host that had gone, dropped without running
 } dap_core1_status_t;
 
-#ifdef DAP_TIMING_DIAGNOSTICS
-typedef struct {
-    volatile uint32_t clock_hz;
-    volatile uint32_t rx_count;
-    volatile uint32_t rx_callback_cycles;
-    volatile uint32_t rx_stage_copy_cycles;
-    volatile uint32_t tx_stage_copy_cycles;
-    volatile uint32_t rx_publish_cycles;
-    volatile uint32_t mailbox1_signal_cycles;
-    volatile uint32_t wake_to_dispatch_cycles;
-    volatile uint32_t dispatch_cycles;
-    volatile uint32_t request_copy_cycles;
-    volatile uint32_t dap_execute_cycles;
-    volatile uint32_t response_copy_cycles;
-    volatile uint32_t reply_publish_cycles;
-    volatile uint32_t tx_count;
-    volatile uint32_t tx_start_cycles;
-    volatile uint32_t tx_in_flight_cycles;
-} dap_timing_counters_t;
-#endif
 
 /** Four rings of REQUEST_SLOTS, each handed over through its `_len` array (dap_usb_slot_free): a
  *  request ring and a reply ring for each transport.
@@ -331,12 +311,6 @@ typedef struct {
     DAP_SHARED_ALIGN uint8_t hid_response[REQUEST_SLOTS][DAP_SHARED_HID_REPORT_SIZE];
     /** Verge Aux's one request and its reply (src/aux_slot.h). */
     aux_slot_t aux;
-#ifdef DAP_TIMING_DIAGNOSTICS
-    volatile uint32_t request_tick[REQUEST_SLOTS];
-    volatile uint32_t response_tx_tick[REQUEST_SLOTS];
-    volatile uint8_t response_timing_excluded[REQUEST_SLOTS];
-    DAP_SHARED_ALIGN dap_timing_counters_t timing;
-#endif
 } dap_stage_t;
 
 extern dap_stage_t dap_stage;
