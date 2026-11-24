@@ -59,9 +59,9 @@ endif()
 # Run TinyUSB's device stack from SRAM. Flash runs at 11 wait states, and the stack's interrupt
 # handler and task are branchy code the prefetcher cannot cover; they are paid once per command.
 option(USB_RAM "Run TinyUSB from SRAM" ON)
-# Vendor 0x88, which runs code the host sends. A bench instrument for the emulator's cost model;
-# src/code_lab.c says what it measures.
-option(CODE_LAB "Build the vendor 0x88 code lab" OFF)
+# Two bench instruments: vendor 0x88, which runs code the host sends, for the emulator's cost model
+# (src/code_lab.c), and vendor 0x87, which places SWD's read sample (src/sample_probe.c).
+option(CODE_LAB "Build the vendor 0x87 sample probe and 0x88 code lab" OFF)
 # A test build that attaches at full speed, which needs no full-speed hub: `always` never chirps,
 # as on a full-speed-only port; `first` skips the chirp on the first attach only, as a chirp that
 # failed once. Never shipped; the version string carries it.
@@ -223,7 +223,6 @@ target_sources(${CORE1} PRIVATE
   ${LPC55_DEVICE}/LPC55S69/drivers/fsl_reset.c
   ${DAP_SRC}/DAP.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_vendor.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/sample_probe.c
   ${VERGE_CJTAG_SOURCES}
   ${DAP_SRC}/SW_DP.c
   ${SWD_DP_SOURCES}
@@ -361,7 +360,7 @@ if(GENERATED_WIRE)
 endif()
 
 if(CODE_LAB)
-  target_sources(${CORE1} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/code_lab.c)
+  target_sources(${CORE1} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/code_lab.c ${CMAKE_CURRENT_SOURCE_DIR}/src/sample_probe.c)
   target_compile_definitions(${CORE1} PRIVATE CODE_LAB=1)
   target_compile_definitions(${PROJECT_NAME} PRIVATE CODE_LAB=1)
 endif()

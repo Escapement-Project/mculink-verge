@@ -9,7 +9,8 @@
 #define ID_VENDOR_CJTAG_INFO ID_DAP_Vendor2
 /// Reads the target's supply and J6 pin 9's detect line (target_sense.c).
 #define ID_VENDOR_TARGET ID_DAP_Vendor6
-/// DPIDR reads with the SWDIO sample placed by the host. An instrument; see sample_probe.c.
+/// DPIDR reads with the SWDIO sample placed by the host. An instrument, built only with CODE_LAB;
+/// see sample_probe.c.
 #define ID_VENDOR_SAMPLE ID_DAP_Vendor7
 /// Runs host-supplied code from RAM, masked. An instrument, built only with CODE_LAB; see code_lab.c.
 #define ID_VENDOR_LAB ID_DAP_Vendor8

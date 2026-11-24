@@ -1038,8 +1038,8 @@ IDs (below). Any other ID from `0x80` to `0x9F` gets the invalid-command reply.
 
 These serve Verge's own tools and its bench tests. They are not a stable host interface: their
 requests and replies can change between builds, and each one's bytes are in the handler
-`src/dap_vendor.c` sends it to. Some exist only in some builds: `0x88` needs `CODE_LAB`, and `0x89`
-to `0x8B` and `0x8D` need the generated transfers.
+`src/dap_vendor.c` sends it to. Some exist only in some builds: `0x87` and `0x88` need `CODE_LAB`, and
+`0x89` to `0x8B` and `0x8D` need the generated transfers.
 
 | ID | Name | What it does |
 | --- | --- | --- |

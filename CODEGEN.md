@@ -268,4 +268,4 @@ One generator draws both JTAG and cJTAG; `src/jtag_gen.c`'s opening comment has 
   (the sample at a delay from the launching edge, stored to a buffer) are working generator
   prototypes.
 - `tools/dap.py` has `swd_reset` (a line reset, then DPIDR), `limit`, `block` and `sample`
-  (vendor 0x87).
+  (vendor 0x87, in a `CODE_LAB` build).

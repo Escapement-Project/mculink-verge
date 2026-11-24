@@ -330,9 +330,6 @@ DAP_COMMANDS = {
     # the timeout path and answers DAP_ERROR: what is checked is that it answers at all, which is
     # the property that matters on hardware too.
     0x86: b"\x00\x00",
-    # Our SAMPLE, no reads. The port is disconnected by this point, so it answers DAP_ERROR;
-    # check_sample_probe runs it connected.
-    0x87: b"\x00\x00\xff\x00\x00\x00\x00\x00\x00",
     0x8E: b"\x00\x00\x00",  # our DIO, only reading
 }
 ID_DAP_INVALID = 0xFF
@@ -1326,6 +1323,10 @@ def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
             c.note("vendor 0x88 code lab: two arenas reported")
     elif not lab or lab[0] != ID_DAP_INVALID:
         c.problems.append("vendor 0x88 should answer ID_DAP_Invalid until something implements it")
+    # The sample probe is the lab build's too; check_sample_probe runs it there.
+    sample = probe.command(bytes([0x87]))
+    if not code_lab and (not sample or sample[0] != ID_DAP_INVALID):
+        c.problems.append(f"vendor 0x87 answered {sample.hex()} outside the lab build")
 
     c.note(f"identity: vendor 0x82 magic CJTAG v{version} flags {flags:#04x}, build {build!r}")
 
@@ -2960,7 +2961,8 @@ def main() -> int:
     check_generation_refusals(c, args.core1)
     check_core1_placement(c, args.core1)
     check_image_boards(c, args.elf)
-    check_sample_probe(c, args.core1)
+    if args.code_lab:
+        check_sample_probe(c, args.core1)
     check_timestamp(c, args.core1)
     check_connect_on_capture_board(c, args.core1, slots)
     if swo:

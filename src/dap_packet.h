@@ -323,9 +323,9 @@ static inline dap_packet_plan_t dap_command_lengths(const uint8_t* p, uint32_t l
         return dap_lengths(1U, 18U + sizeof(FIRMWARE_VERSION) - 1U);
     case ID_VENDOR_TARGET:
         return dap_lengths(3U, 7U);
+#ifdef CODE_LAB
     case ID_VENDOR_SAMPLE:
         return dap_lengths(10U, 17U);
-#ifdef CODE_LAB
     case ID_VENDOR_LAB:
         return dap_lab_lengths(p, length);
 #endif

@@ -19,9 +19,9 @@
 #include "dap_shared.h"
 #include "dap_vendor.h"
 #include "dio.h"
-#include "sample_probe.h"
 #ifdef CODE_LAB
 #include "code_lab.h"
+#include "sample_probe.h"
 #endif
 #ifdef GENERATED_WIRE
 #include "jtag_gen.h"
@@ -192,9 +192,9 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         return info_command(request, response);
     case ID_VENDOR_TARGET:
         return target_sense_command(request, response);
+#ifdef CODE_LAB
     case ID_VENDOR_SAMPLE:
         return sample_probe_command(request, response);
-#ifdef CODE_LAB
     case ID_VENDOR_LAB:
         return code_lab_command(request, response);
 #endif

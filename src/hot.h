@@ -33,8 +33,8 @@
 
 /** The code every command runs through on CPU 1, outside the transfer loops: the loop, the
  *  dispatch, the block wrappers and what they call each command. In SRAM after every transfer
- *  loop, so it moves none of them: the linker takes every .ramfunc section before any .data one
- *  (src/sample_probe.c). tools/image.py checks none of it branches into flash. */
+ *  loop, so it moves none of them: the linker takes every .ramfunc section before any .data one.
+ *  tools/image.py checks none of it branches into flash. */
 #ifdef RAMFUNC_BIT_PATHS
 #define COMMAND_PATH __attribute__((noinline, section(".data_command_path")))
 #else

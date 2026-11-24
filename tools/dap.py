@@ -1233,7 +1233,7 @@ def sample_run(probe: "Probe", low: int, fill: int, at: int, count: int, expecte
     request = bytes([DAP_VENDOR_SAMPLE, low, fill, at]) + count.to_bytes(2, "little") + expected.to_bytes(4, "little")
     reply = probe.command(request)
     if len(reply) < 17 or reply[0] != DAP_VENDOR_SAMPLE:
-        raise SystemExit(f"vendor 0x87 answered {reply.hex()}: not this firmware, or too old for it")
+        raise SystemExit(f"vendor 0x87 answered {reply.hex()}: it needs this firmware's lab build (CODE_LAB)")
     if reply[1] != 0:
         raise SystemExit("vendor 0x87 refused: the port is not plain SWD, or the operands are out of range")
     u16 = lambda i: int.from_bytes(reply[i:i + 2], "little")  # noqa: E731

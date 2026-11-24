@@ -167,8 +167,8 @@ COMMAND_PATH static bool dap_task(void) {
  * its last check had found nothing. Why the pend made no event was not found. A level cannot be
  * missed. The interrupt stays disabled: the generated transfers clear PRIMASK.
  *
- * In SRAM after the transfer loops (src/sample_probe.c says why there), so the spin fetches nothing
- * from flash.
+ * In SRAM, so the spin fetches nothing from flash, and in a .data section rather than .ramfunc: the
+ * linker places those after every .ramfunc one, so this cannot move a transfer loop (src/hot.h).
  */
 __attribute__((noinline, section(".data_core1_wait"))) static void wait_for_mailbox(void) {
     while ((MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU1].IRQ & DAP_CORE_MAILBOX_WAKE_MASK) == 0U) {
