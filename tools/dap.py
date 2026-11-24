@@ -55,7 +55,6 @@ DAP_SWO_DATA = 0x1C
 SWO_ACTIVE, SWO_STREAM_ERROR, SWO_OVERRUN = 0x01, 0x40, 0x80
 DAP_VENDOR_JTAG_FORMAT = 0x95  # DAP_JTAG_Format as proposed for CMSIS-DAP
 DAP_VENDOR_JTAG_ESCAPE = 0x96  # DAP_JTAG_Escape
-DAP_VENDOR_J8 = 0x84
 USB_RESTART_REQUEST = 0x03
 USB_CORE1_STATUS_REQUEST = 0x04  # DAP_SHARED_CORE1_STATUS_REQUEST
 USB_CORE1_SAMPLE_REQUEST = 0x05  # DAP_SHARED_CORE1_SAMPLE_REQUEST
@@ -754,24 +753,12 @@ def swd_reset(probe: "Probe") -> int:
 
 
 def cmd_j8(args) -> int:
-    """Give J8's pins to the bench marker, or name J8's pads.
-
-    J8 is the plain board's four DIO pins, inputs from boot. The marker, given pins, drives them
-    high while a command runs, all at once, so an analyser clipped to any of them sees it and the
-    header needs no orientation. `--marker` gives it pins, all four by default, and `--release`
-    gives them back to DIO. A restart gives them back too.
-
-    `--walk` names the pads: it holds each pin high on its own through the DIO command, so
-    whichever pad the analyser or the meter is on names itself, and leaves all four inputs.
+    """Name J8's pads, the plain board's four DIO pins: hold each pin high on its own through the
+    DIO command, so whichever pad the analyser or the meter is on names itself, then leave all four
+    inputs.
     """
     probe = one(args)
     print(f"{probe.serial}  {probe.product}")
-
-    def marker(pins: int) -> int:
-        reply = probe.command(bytes([DAP_VENDOR_J8, pins]))
-        if len(reply) < 3 or reply[0] != DAP_VENDOR_J8 or reply[1] != 0:
-            raise RuntimeError(f"J8 marker {pins:#04x} answered {reply.hex()}")
-        return reply[2]
 
     def dio(mask: int, outputs: int, levels: int) -> int:
         reply = probe.command(bytes([DAP_VENDOR_DIO, mask, outputs, levels]))
@@ -779,21 +766,13 @@ def cmd_j8(args) -> int:
             raise RuntimeError(f"DIO {mask:#04x}/{outputs:#04x}/{levels:#04x} answered {reply.hex()}")
         return reply[4]
 
-    if args.walk:
-        marker(0)
-        for pin in range(4):
-            bit = 1 << pin
-            read = dio(bit, bit, bit)
-            print(f"  J8 pin {pin + 1} (PIO1_{pin}) driven high, the others inputs  -- pins read {read:#06b}")
-            time.sleep(args.seconds)
-            dio(bit, 0, 0)
-        print("  all four inputs again")
-        probe.release()
-        return 0
-
-    held = marker(0 if args.release else args.marker)
-    owned = "none" if held == 0 else ", ".join(f"{p + 1}" for p in range(4) if held & (1 << p))
-    print(f"  the marker drives pin {owned}; the rest are DIO pins")
+    for pin in range(4):
+        bit = 1 << pin
+        read = dio(bit, bit, bit)
+        print(f"  J8 pin {pin + 1} (PIO1_{pin}) driven high, the others inputs  -- pins read {read:#06b}")
+        time.sleep(args.seconds)
+        dio(bit, 0, 0)
+    print("  all four inputs again")
     probe.release()
     return 0
 
@@ -2136,11 +2115,8 @@ def main() -> int:
     pins.add_argument("--bit", type=int, default=0, help="which pin to drive, default SWCLK")
     pins.set_defaults(run=cmd_pins)
 
-    j8 = subcommand("j8", help="give the standalone MCU-Link's J8 pins to the bench marker, or name its pads")
-    j8.add_argument("--walk", action="store_true", help="hold each pin high in turn, to name the pads")
+    j8 = subcommand("j8", help="name the standalone MCU-Link's J8 pads by holding each pin high in turn")
     j8.add_argument("--seconds", type=float, default=3.0, help="how long to hold each one")
-    j8.add_argument("--marker", type=number, default=0x0F, help="pins the marker drives, bit n J8 pin n+1")
-    j8.add_argument("--release", action="store_true", help="give all four back to DIO")
     j8.set_defaults(run=cmd_j8)
 
     dio = subcommand("dio", help="drive and read the DIO pins (the Pro's J19, the standalone MCU-Link's J8)")

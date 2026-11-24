@@ -294,8 +294,7 @@ The reply is `[0x8E, status, outputs, levels, read, pins, group_count, groups...
 - `outputs` is each pin's direction.
 - `levels` is the level each pin drives, or will drive once it is an output.
 - `read` is each pin's level as sampled. An output reads its own drive.
-- `pins` is `0x0f` on a Pro with DIO on and on the standalone MCU-Link, and 0 otherwise. On the
-  standalone MCU-Link it leaves out any pin a bench tool has given to its command marker (`0x84`).
+- `pins` is `0x0f` on a Pro with DIO on and on the standalone MCU-Link, and 0 otherwise.
 - `groups` is `group_count` bytes, each a mask of pins that change direction together. A Pro reports
   `0x07` (DIO0 to DIO2) and `0x08` (DIO3). The standalone MCU-Link reports `0x01`, `0x02`, `0x04`
   and `0x08`: each pin changes on its own.
@@ -959,9 +958,8 @@ samples and no markers. Its times count from its header, in ns.
 | 7 | Their levels when the stream started. Pins not reporting read 0 |
 | 8 to 9 | The resolution of edge times in ns, u16. 0 when no pin reports |
 
-The pins exclude any the bench marker holds on the standalone MCU-Link (`0x84`). Edges go out within
-10 ms of the first of them, or sooner when many wait. A stream reports whatever drives the pins, the
-host's own drive included, as the energy stream's edges do.
+Edges go out within 10 ms of the first of them, or sooner when many wait. A stream reports whatever
+drives the pins, the host's own drive included, as the energy stream's edges do.
 
 A stream that has sent nothing for 200 ms sends a DIO time message:
 
@@ -1040,12 +1038,11 @@ IDs (below). Any other ID from `0x80` to `0x9F` gets the invalid-command reply.
 
 These serve Verge's own tools and its bench tests. They are not a stable host interface: their
 requests and replies can change between builds, and each one's bytes are in the handler
-`src/dap_vendor.c` sends it to. Some exist only in some builds: `0x84` needs `MARKER`, which is on
-by default, and `0x88` needs `CODE_LAB`. `0x89` to `0x8B` and `0x8D` need the generated transfers.
+`src/dap_vendor.c` sends it to. Some exist only in some builds: `0x88` needs `CODE_LAB`, and `0x89`
+to `0x8B` and `0x8D` need the generated transfers.
 
 | ID | Name | What it does |
 | --- | --- | --- |
-| `0x84` | J8 | Gives the standalone MCU-Link's J8 pins to a bench marker that drives them high while each command runs, and back to DIO |
 | `0x87` | Sample | Reads DPIDR, reading SWDIO at a point the host places; a measuring instrument |
 | `0x88` | Code lab | Runs code the host supplies from RAM |
 | `0x89` | SWD generation | Reports the generated SWD transfers, and sets or measures the read latency they are generated for |

@@ -7,8 +7,6 @@
 
 /// Identifies this firmware and says what it can do. Read-only, so a host may send it blindly.
 #define ID_VENDOR_CJTAG_INFO ID_DAP_Vendor2
-/// Gives J8's pins to the bench marker (marker.h), and back to DIO. A bench command.
-#define ID_VENDOR_J8 ID_DAP_Vendor4
 /// Reads the target's supply and J6 pin 9's detect line (target_sense.c).
 #define ID_VENDOR_TARGET ID_DAP_Vendor6
 /// DPIDR reads with the SWDIO sample placed by the host. An instrument; see sample_probe.c.

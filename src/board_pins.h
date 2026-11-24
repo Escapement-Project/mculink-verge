@@ -67,16 +67,6 @@
 #define LED1_PORT 0U
 #define LED1_PIN 5U
 
-/** J8, four through-hole pads at 50-mil pitch beside the MCU: PIO1_0 to PIO1_3, J8 pin 1 to pin 4.
- *
- * The only pins on this board that nothing else uses: the plain board's DIO pins (src/dio.h),
- * which the bench marker can borrow (src/marker.h). No buffer, no series resistor and no ground
- * pin, so ground comes from the debug connector, and 3.3 V only.
- */
-#define J8_GPIO GPIO
-#define J8_PORT 1U
-#define J8_PIN_MASK 0x0FU
-
 /** CPU 1: which board this is (board_straps.h), as CPU 0 read it, copied from dap_shared by
  *  board_debug_pins_init. */
 extern uint8_t board_kind;

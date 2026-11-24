@@ -301,8 +301,7 @@ On a board without energy capture, Verge Aux's mode 15 starts a DIO stream, whic
 CPU 1 never asks for the capture state there, as every capture path stops at `energy_available`,
 so CPU 0 owns the stream throughout. Its Aux path writes the header and the end
 (`stream_command`), and its loop sends the edges and moves the stream's origin, which no sample
-moves (`dio_edges_task`). CPU 1 writes the pins the bench marker holds to `dio_marker_pins` as
-`0x84` gives or takes them; a stream reads them once, as it starts.
+moves (`dio_edges_task`).
 
 After 200 ms with nothing sent, the loop sends the stream's time (`dio_time`), once timing has
 started (the sync run). With interrupts masked, it checks that the pin interrupt's record is empty

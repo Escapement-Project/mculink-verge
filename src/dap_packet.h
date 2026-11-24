@@ -321,10 +321,6 @@ static inline dap_packet_plan_t dap_command_lengths(const uint8_t* p, uint32_t l
 #endif
     case ID_VENDOR_CJTAG_INFO:
         return dap_lengths(1U, 18U + sizeof(FIRMWARE_VERSION) - 1U);
-#ifdef MARKER_PINS
-    case ID_VENDOR_J8:
-        return dap_lengths(2U, 3U);
-#endif
     case ID_VENDOR_TARGET:
         return dap_lengths(3U, 7U);
     case ID_VENDOR_SAMPLE:

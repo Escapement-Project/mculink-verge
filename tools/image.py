@@ -326,7 +326,6 @@ DAP_COMMANDS = {
     0x82: b"",  # our CJTAG_INFO
     0x95: b"\x00",  # our DAP_JTAG_Format, conventional JTAG, which with no connection clears a selection
     0x96: b"\x02\x01",  # our DAP_JTAG_Escape, refused with no JTAG connection
-    0x84: b"\x00",  # our J8, giving the marker no pins, which leaves all four to DIO
     # Our TARGET, reading the supply. The emulator's ADC never finishes calibrating, so this takes
     # the timeout path and answers DAP_ERROR: what is checked is that it answers at all, which is
     # the property that matters on hardware too.
@@ -976,7 +975,7 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: 
     check_edge_rest(c, elf0, symbols_with_size(elf0), edge_shared, edge_layout)
     check_edge_spi(c, elf0, symbols_with_size(elf0), edge_shared, edge_layout)
     from dio_edges_checks import check_j8_edges
-    j8_shared = shared_offsets(slots, "energy_control_ack", "dio_spi_turns", "energy_available", "dio_marker_pins",
+    j8_shared = shared_offsets(slots, "energy_control_ack", "dio_spi_turns", "energy_available",
                                small_enums=short_enums(elf0))
     j8_layout = shared_offsets(slots, "stream", "stream.active", "stream.pairless", "stream.edge_mask",
                                "stream.timeline_pending", "stream.edge_entries_written", "stream.edge_entries",
@@ -1328,14 +1327,6 @@ def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
     elif not lab or lab[0] != ID_DAP_INVALID:
         c.problems.append("vendor 0x88 should answer ID_DAP_Invalid until something implements it")
 
-    # J8 gives the bench marker its pins and takes them back, on the plain board once DIO has J8.
-    probe.call("board_debug_pins_init")
-    probe.call("dio_init")
-    for pins in (0x0F, 0x01, 0x00):
-        reply = probe.command(bytes([0x84, pins]))
-        if len(reply) < 3 or reply[0] != 0x84 or reply[1] != 0x00 or reply[2] != pins:
-            c.problems.append(f"vendor 0x84 {pins:#04x} answered {reply.hex()}")
-
     c.note(f"identity: vendor 0x82 magic CJTAG v{version} flags {flags:#04x}, build {build!r}")
 
 
@@ -1684,17 +1675,12 @@ ISP_CTRL_PIN = 14
 
 
 def check_board(c: Checker, elf: str, request_slots: int) -> None:
-    """Only the plain MCU-Link lets the marker near its pins, and only once given them, and an
-    on-board one keeps cJTAG off (BOARDS.md).
-
-    On a Pro the J8 pins are the analog trace input, a level shifter's direction and two SPI lines,
-    so driving them fights other drivers. CPU 1 takes the board from dap_shared, as CPU 0 read it.
+    """An on-board MCU-Link keeps cJTAG off (BOARDS.md). CPU 1 takes the board from dap_shared, as
+    CPU 0 read it.
 
     The plain board and the Pro release the target's ISP pin: P0_14 driven high, as P0_13's I2C
     cell is set up to drive, since a low one boots an attached NXP part into its bootloader.
     """
-    j8_dir = ORDINARY_GPIO + 0x2380 + 4  # DIRSET[1]
-    j8_set = ORDINARY_GPIO + 0x2200 + 4  # SET[1]
     offset = shared_offsets(request_slots, "board", small_enums=short_enums(elf))["board"]
     for name, _, board in BOARDS:
         probe = Machine(elf, Target([0] * 64), restart_at=set(), model=Model())
@@ -1703,8 +1689,6 @@ def check_board(c: Checker, elf: str, request_slots: int) -> None:
             return
         probe.uc.mem_write(probe.sym["dap_shared"] + offset, bytes([board]))
         probe.call("board_debug_pins_init")
-        if board == 0:
-            probe.call("dio_init")  # J8 is DIO's, which the marker borrows
         isp = ((probe.level >> ISP_CTRL_PIN) & 1, (probe.dir >> ISP_CTRL_PIN) & 1)
         iocon = [int.from_bytes(probe.uc.mem_read(IOCON + 4 * pin, 4), "little") for pin in (13, ISP_CTRL_PIN)]
         if board == 2:
@@ -1720,23 +1704,16 @@ def check_board(c: Checker, elf: str, request_slots: int) -> None:
         reply = probe.command(bytes([0x82]))
         flags, length = reply[7], reply[8]
         reported = reply[9 + length] if len(reply) > 9 + length else None
-        j8 = probe.command(bytes([0x84, 0x0F]))
         unconnected = probe.command(bytes([0x95, 0]))
         probe.command(bytes([0x02, 2]))
         enter = probe.command(bytes([0x95, 1]))
         leave = probe.command(bytes([0x95, 0]))
         probe.command(bytes([0x03]))
-        driven = int.from_bytes(probe.uc.mem_read(j8_dir, 4), "little") | int.from_bytes(
-            probe.uc.mem_read(j8_set, 4), "little"
-        )
-        plain = board == 0
         two_pin = board != 2
         if reported != board:
             c.problems.append(f"{name} board: vendor 0x82 reports board {reported}, wanted {board}")
         if flags & 0x11:
             c.problems.append(f"{name} board: vendor 0x82 flags {flags:#04x} claim the old cJTAG control")
-        if (j8[1] == 0) != plain:
-            c.problems.append(f"{name} board: vendor 0x84 answered {j8.hex()}")
         if (enter[1] == 0) != two_pin:
             c.problems.append(f"{name} board: vendor 0x95 OScan1 answered {enter.hex()}")
         if unconnected[1] != 0:
@@ -1745,9 +1722,7 @@ def check_board(c: Checker, elf: str, request_slots: int) -> None:
         if leave[1] != 0:
             c.problems.append(f"{name} board: vendor 0x95 0, which every board takes on a JTAG connection, "
                               f"answered {leave.hex()}")
-        if bool(driven & 0x0F) != plain:
-            c.problems.append(f"{name} board: J8's pins were {'not ' if plain else ''}driven ({driven:#x})")
-    c.note("board: CPU 1 reports each board as CPU 0 read it; J8 on the plain one only, cJTAG on the plain one and the Pro, "
+    c.note("board: CPU 1 reports each board as CPU 0 read it; cJTAG on the plain one and the Pro, "
            "the target's ISP pin released on both")
 
 
@@ -1895,8 +1870,7 @@ class J8Pins:
 
 def check_j8_dio(c: Checker, elf: str, request_slots: int) -> None:
     """The plain board's DIO pins on J8: inputs pulled down from boot, each pin turned on its own,
-    each pad moving at most once a command and no other pin stored to; the bench marker takes the
-    pins it is given out of DIO and gives them back as inputs."""
+    each pad moving at most once a command and no other pin stored to."""
     offsets = shared_offsets(request_slots, "board", "jumpers", "led_sio", small_enums=short_enums(elf))
     probe = Machine(elf, Target([0] * 64), restart_at=set(), model=Model())
     shared = probe.sym["dap_shared"]
@@ -1910,10 +1884,6 @@ def check_j8_dio(c: Checker, elf: str, request_slots: int) -> None:
             f"IOCON {[hex(v) for v in iocon]}")
     c.check(pins.dir == 0 and pins.header == ["z"] * 4 and not pins.strays,
             f"plain: dio_init left J8 {pins.header}, directions {pins.dir:#x}, strays {pins.strays}")
-    # The marker sets its pins on every command, so one it held from boot would pulse a DIO output.
-    if "marker_mask" in probe.sym:
-        held = int.from_bytes(probe.uc.mem_read(probe.sym["marker_mask"], 4), "little")
-        c.check(held == 0, f"plain: the marker holds J8 pins {held:#x} from boot")
     info = probe.command(bytes([0x82]))
     flags = info[7]
     extended = int.from_bytes(info[14 + info[8]:18 + info[8]], "little")
@@ -1948,34 +1918,7 @@ def check_j8_dio(c: Checker, elf: str, request_slots: int) -> None:
                 f"plain: vendor 0x8E {bytes(request).hex()} left J8 {pins.header} (wanted {headers}), moved it "
                 f"{pins.moves} times, strays {pins.strays or 'none'}, stores {pins.stores}")
 
-    # The marker takes DIO0 and DIO2, driving them low between commands; DIO1 keeps its drive.
-    pins.step()
-    marked = probe.command(bytes([0x84, 0x05]))
-    ok, state = dio(0x00, 0x00, 0x00)
-    drove, _ = dio(0x01, 0x01, 0x01)
-    c.check(marked[:3] == b"\x84\x00\x05" and ok and state[:3] == [0x02, 0x02, 0x0A] and not drove
-            and pins.dir == 0x07 and pins.latch & 0x05 == 0,
-            f"plain: the marker given DIO0 and DIO2 answered {marked.hex()}, then DIO {[hex(v) for v in state]}, "
-            f"a DIO0 drive {'taken' if drove else 'refused'}; J8 directions {pins.dir:#x}, latches {pins.latch:#x}")
-    pins.step()
-    back = probe.command(bytes([0x84, 0x00]))
-    ok, state = dio(0x00, 0x00, 0x00)
-    c.check(back[:3] == b"\x84\x00\x00" and ok and state[:3] == [0x02, 0x02, 0x0F] and pins.dir == 0x02
-            and pins.header == ["z", "1", "z", "z"],
-            f"plain: the marker giving the pins back answered {back.hex()}, then DIO {[hex(v) for v in state]}, "
-            f"J8 {pins.header}, directions {pins.dir:#x}")
-    # Holding all four, the marker leaves DIO with no pin, but the board still has DIO: the
-    # capability stays, so a host can say the marker has them rather than that the build lacks them.
-    probe.command(bytes([0x84, 0x0F]))
-    info = probe.command(bytes([0x82]))
-    flags, extended = info[7], int.from_bytes(info[14 + info[8]:18 + info[8]], "little")
-    ok, state = dio(0x00, 0x00, 0x00)
-    probe.command(bytes([0x84, 0x00]))
-    c.check(bool(flags & CAP_DIO) and bool(extended & EXT_CAP_DIO_AUX) and ok and state[2:] == [0, 4, 1, 2, 4, 8],
-            f"plain: with the marker holding all four, 0x82 flags {flags:#04x}, extended {extended:#x}, "
-            f"0x8E answered {ok}, {[hex(v) for v in state]}")
-    c.note("DIO on J8: pulled-down inputs from boot, each pin its own group, no stray store or double move; "
-           "the marker takes pins out of DIO and gives them back as inputs, and DIO stays offered meanwhile")
+    c.note("DIO on J8: pulled-down inputs from boot, each pin its own group, no stray store or double move")
 
 
 def check_dio(c: Checker, elf: str, request_slots: int) -> None:

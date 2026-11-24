@@ -1,7 +1,7 @@
 # The bench
 
-How the firmware is checked on real hardware: reading the target's supply, the hazards, the marker
-header, what each failure looks like, and what the emulator predicts. MEASUREMENTS.md has what the
+How the firmware is checked on real hardware: reading the target's supply, the hazards, J8's pads,
+what each failure looks like, and what the emulator predicts. MEASUREMENTS.md has what the
 bench measured. Flash and recover probes with verge (its docs/updating.md, "ISP mode");
 mculink-stock-notes' `updating.md` has what the bootloader does with the ISP jumper and without it.
 BOARDS.md has both boards' pins.
@@ -74,7 +74,7 @@ harness is not plugged in.
   this is placement in flash, not work. Treat anything under about 0.1% as inside the floor for any
   change to the image, unless placement is controlled for.
 
-## J8, the marker header
+## J8
 
 J8 holds the standalone MCU-Link's four DIO pins: through-hole pads at 50-mil pitch beside the MCU,
 and the only pins on the board nothing else uses. They have no buffer, no series resistor and no
@@ -89,12 +89,7 @@ ground pin, so the analyser takes its ground from the debug connector.
 
 **Pin 1 is the leftmost pad with the board the right way up**, USB to the left and the 10-pin debug
 connector to the right. That was settled by driving one pin at a time and watching the analyser,
-not by reading the silkscreen. `uv run tools/dap.py j8 --walk` repeats it in twelve seconds.
-
-The pins boot as DIO inputs, so a capture that wants the command marker gives it the pins first:
-`uv run tools/dap.py j8` gives it all four. They then go high together while a host command runs,
-which is one store and makes the header orientation-free. `--marker 0x8` gives it J8 pin 4 alone,
-and `--release` gives the pins back to DIO, as a restart does.
+not by reading the silkscreen. `uv run tools/dap.py j8` repeats it in twelve seconds.
 
 ## Failure modes
 

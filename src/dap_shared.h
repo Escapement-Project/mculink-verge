@@ -238,9 +238,6 @@ typedef struct {
     volatile uint8_t jumpers;
     /** HW_VER_5 enables Pro power measurement, written with the board straps. */
     volatile uint8_t energy_available;
-    /** The J8 pins the bench marker holds (src/marker.h), written by CPU 1: a DIO stream leaves them
-     *  out. */
-    volatile uint8_t dio_marker_pins;
 
     /** SWO ring segments DMA0 has completed, counted by CPU 0's DMA interrupt for src/swo.c. */
     volatile uint32_t swo_segments;

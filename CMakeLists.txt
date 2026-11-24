@@ -44,9 +44,6 @@ option(RAMFUNC "Run CPU 1's command code from SRAM" ON)
 # See src/core_clock.h for why the 144 does not bind this firmware.
 option(CORE_150MHZ "Run the core at 150 MHz" ON)
 
-# Drive J8's four pins high while a host command runs, so an analyser sees the gap between
-# commands as well as the clock. src/marker.h says why that is worth a pin.
-option(MARKER "Mark command processing on the J8 header" ON)
 # Generate the SWD and JTAG transfer paths at runtime into SRAMX, for the clock the host asks for
 # (src/swd_gen.c, src/jtag_gen.c). A product image does, and carries no ARM transfer path. Off is
 # the ARM reference, the wire tools/equiv.py holds the generated paths to: a test build, marked
@@ -352,10 +349,6 @@ if(NOT REQUEST_SLOTS)
   set(REQUEST_SLOTS 3 CACHE STRING "How many host commands the firmware will hold" FORCE)
 endif()
 set(DAP_PACKET_COUNT ${REQUEST_SLOTS})
-
-if(MARKER)
-  target_compile_definitions(${CORE1} PRIVATE MARKER_PINS=1)
-endif()
 
 if(GENERATED_WIRE)
   target_sources(${CORE1} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/gen.c

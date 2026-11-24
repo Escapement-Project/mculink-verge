@@ -9,9 +9,9 @@
 
 /** The board, as vendor 0x82's board byte reports it, so the values never change meaning.
  *
- * The plain MCU-Link and the Pro run this firmware. The J8 marker is the plain board's alone: the
- * Pro's 100-pin package bonds those pins to other nets. An on-board MCU-Link refuses cJTAG
- * cJTAG, since nobody has framed OScan1 through its buffers. */
+ * The plain MCU-Link and the Pro run this firmware. J8 is the plain board's alone: the Pro's 100-pin
+ * package bonds those pins to other nets. An on-board MCU-Link refuses cJTAG, since nobody has
+ * framed OScan1 through its buffers. */
 #define BOARD_KIND_PLAIN 0U
 #define BOARD_KIND_PRO 1U
 /** An MCU-Link built into an evaluation board. */

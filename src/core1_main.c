@@ -21,7 +21,6 @@
 #include "energy_monitor.h"
 #include "hot.h"
 #include "led.h"
-#include "marker.h"
 #include "target_power.h"
 #include "target_sense.h"
 
@@ -29,11 +28,6 @@ static_assert(DAP_PACKET_SIZE == DAP_SHARED_PACKET_SIZE, "dap_shared.h repeats D
 
 dap_shared_t dap_shared __attribute__((section(".dap_shared")));
 dap_stage_t dap_stage __attribute__((section(".dap_stage")));
-
-#ifdef MARKER_PINS
-/** Which J8 pins the marker drives: none until ID_VENDOR_J8 gives it some (src/dio.c). */
-volatile uint32_t marker_mask = 0U;
-#endif
 
 /** Every HID command's reply, in CPU 1's own SRAM, a packet long: the command layer bounds its
  *  writes by the packet size, and only the report goes out to dap_stage. Every other command and
@@ -123,9 +117,7 @@ COMMAND_PATH static bool dap_task(void) {
     dap_shared.core1.command = command;
 
     led_activity();
-    MARKER_BUSY();
     uint32_t produced = DAP_ExecuteCommandSized(request, request_length, packet_size, response) & 0xFFFFU;
-    MARKER_IDLE();
     if (produced > packet_size) {
         produced = packet_size;
     }

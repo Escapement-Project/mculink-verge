@@ -19,7 +19,6 @@
 #include "dap_shared.h"
 #include "dap_vendor.h"
 #include "dio.h"
-#include "marker.h"
 #include "sample_probe.h"
 #ifdef CODE_LAB
 #include "code_lab.h"
@@ -180,16 +179,6 @@ static uint32_t jtag_escape_command(const uint8_t* request, uint8_t* response) {
     return 2U;
 }
 
-#ifdef MARKER_PINS
-static uint32_t j8_command(const uint8_t* request, uint8_t* response) {
-    // request[1] names the J8 pins the marker drives; the rest are DIO pins. Zero, as at boot,
-    // gives all four to DIO.
-    response[1] = dio_marker(request[1]) ? DAP_OK : DAP_ERROR;
-    response[2] = (uint8_t)marker_mask;
-    return 3U;
-}
-#endif
-
 
 bool dap_vendor_on_aux;
 
@@ -201,10 +190,6 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
     switch (request[0]) {
     case ID_VENDOR_CJTAG_INFO:
         return info_command(request, response);
-#ifdef MARKER_PINS
-    case ID_VENDOR_J8:
-        return j8_command(request, response);
-#endif
     case ID_VENDOR_TARGET:
         return target_sense_command(request, response);
     case ID_VENDOR_SAMPLE:

@@ -10,14 +10,13 @@
  *
  * On the plain board they are J8's pins 1 to 4, PIO1_0 to PIO1_3, wired straight to the MCU: no
  * translator, so each pin is a group of its own, and 3.3 V only. They start as inputs with the MCU's
- * pull-downs. The bench marker (src/marker.h) can take them; a pin it holds is not a DIO pin.
+ * pull-downs.
  *
  * The host reaches these pins through vendor commands 0x8E, on CMSIS-DAP or Verge Aux, and on the
  * Pro 0x91.
  *
  * The state outlives sessions, so a host can hold a target's boot pin through a reconnect. Only a
- * reset of the probe puts the pins back to inputs, and on the plain board the marker taking and
- * returning them. CPU 1 only.
+ * reset of the probe puts the pins back to inputs. CPU 1 only.
  */
 #ifndef DIO_H
 #define DIO_H
@@ -28,7 +27,7 @@
 #define DIO_GROUPS_MAX 4U
 
 typedef struct {
-    uint8_t pins;    // the pins this board has and its jumpers and the marker leave on, bit n DIOn
+    uint8_t pins;    // the pins this board has and its jumpers leave on, bit n DIOn
     uint8_t outputs; // the pins the probe drives
     uint8_t levels;  // each pin's output latch: what it drives, or will once it is an output
     uint8_t read;    // the probe's side of each pin, now, so an output reads our own drive
@@ -41,22 +40,16 @@ typedef struct {
  *  board_debug_pins_init, which sets board_kind. */
 void dio_init(void);
 
-/** Whether this board has the pins and its jumpers leave them on, whether or not the bench marker
- *  holds some of them. */
+/** Whether this board has the pins and its jumpers leave them on. */
 bool dio_available(void);
 
 /** Sets the directions and output levels of the pins in `mask`, leaving the others as they are.
  *  Returns false, changing nothing, when the pins are not available, `mask` names a pin they do not
- *  have or the marker holds, or the result would split a group. A mask of 0 changes nothing and
+ *  have, or the result would split a group. A mask of 0 changes nothing and
  *  succeeds wherever the pins are available. */
 bool dio_set(uint8_t mask, uint8_t outputs, uint8_t levels);
 
 void dio_get(dio_state_t* state);
-
-/** Gives the J8 pins in `pins` to the bench marker, which drives them high while a command runs,
- *  and the rest back to DIO as inputs. False, changing nothing, on a board other than the plain one
- *  or in a build without the marker. */
-bool dio_marker(uint8_t pins);
 
 /** The pins of `requested` an energy stream can report edges on, none while SPI has them and none
  *  but the Pro's, and in `levels` their levels now. */
