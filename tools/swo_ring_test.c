@@ -160,7 +160,7 @@ static void ring_model_isr(struct ring_model* m) {
             m->took_b = m->b;
             m->take = dma_ring_take(m->segments, m->took_a, m->took_b);
             if (m->take == DMA_RING_LOST) {
-                m->lost = true;  // before the flags clear, as src/main.c does
+                m->lost = true;  // before the flags clear, as src/dma0.c does
             }
             m->isr = 2;
             break;

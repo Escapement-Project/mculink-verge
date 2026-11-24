@@ -1,4 +1,5 @@
-/** Reading where a DMA0 ring's writer is, for SWO capture on CPU 1 and the consoles on CPU 0. */
+/** Reading where a DMA0 ring's writer is, for SWO capture on CPU 1 and the consoles on CPU 0. CPU 0
+ *  also sets the controller up (src/dma0.c). */
 #ifndef DMA0_H
 #define DMA0_H
 
@@ -37,5 +38,12 @@ __attribute__((always_inline)) static inline uint32_t dma0_ring_written(volatile
         }
     }
 }
+
+/* CPU 0's alone: src/dma0.c, with DMA0's interrupt. */
+
+/** DMA0 is CPU 0's: the consoles use channels 4 to 7, and CPU 1 uses channels 8 and 21 for SWO and
+ *  energy capture. Only CPU 0 resets the controller or points it at its table. Its table is in USB
+ *  SRAM, so set its security rules before DMA fetches a descriptor. */
+void dma0_init(void);
 
 #endif

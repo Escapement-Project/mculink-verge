@@ -12,7 +12,7 @@
  * consoles: CPU 0 sets the controller up at boot, and this file touches channel 8 alone. Capture
  * costs no CPU time per byte and carries on through any command, however long. Each descriptor
  * raises INTA or INTB as it completes (src/dma_ring.h), and CPU 0's DMA interrupt counts them
- * (src/main.c): the count is what tells one lap of the ring from the next, since CPU 1 takes no
+ * (src/dma0.c): the count is what tells one lap of the ring from the next, since CPU 1 takes no
  * interrupts and one command can outlast a lap. The ring arithmetic is in src/swo_ring.h, where
  * the host can test it.
  *

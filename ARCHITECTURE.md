@@ -54,7 +54,7 @@ answering can still be sent to the bootloader over USB, because CPU 0 answers th
 | Verge Aux: the endpoints, sending stream messages, attaching and ending a stream | CPU 0 | `verge_aux.c` |
 | DIO pins, SPI and I2C, target supply, target sense | CPU 1 | `dio.c`, `pro_bus.c`, `target_power.c`, `target_sense.c` |
 | DIO edges for the energy stream | CPU 0 | `dio_edges.c` |
-| The DMA controller: its reset, descriptor table and interrupt | CPU 0 | `main.c` |
+| The DMA controller: its reset, descriptor table and interrupt | CPU 0 | `dma0.c` |
 | LEDs | CPU 0 | `led.c` |
 | Restart, and entering the bootloader | CPU 0 | `reboot.c` |
 | Falling back to full speed | CPU 0 | `usb_speed.c` |

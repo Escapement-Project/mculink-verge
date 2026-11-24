@@ -161,6 +161,7 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dio_edges.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/energy_stream.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/energy_integration.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/dma0.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/core1_image.S
   ${CMAKE_CURRENT_SOURCE_DIR}/src/mem.S
   ${CMAKE_CURRENT_SOURCE_DIR}/src/usb_descriptors.c

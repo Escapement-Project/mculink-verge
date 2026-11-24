@@ -1,6 +1,6 @@
 /** CPU 0's half of energy capture: the integration state, each segment's integration for DMA0's
- *  interrupt, and the loop's two tasks (src/main.c calls all three). src/energy_integration.h has
- *  the code both cores run on the state, and who may change what. All of it runs from SRAM, as its
+ *  interrupt (src/dma0.c), and the loop's two tasks (src/main.c). src/energy_integration.h has the
+ *  code both cores run on the state, and who may change what. All of it runs from SRAM, as its
  *  callers do. */
 #include "energy_integration.h"
 
