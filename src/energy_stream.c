@@ -376,7 +376,7 @@ ENERGY_STREAM_RAMFUNC __attribute__((noinline)) bool energy_stream_begin(struct 
     stream->pairless = false;
     uint8_t* out = energy_stream_slot(stream);
     *out++ = ENERGY_STREAM_HEADER;
-    *out++ = header->capture_id != NULL ? 4U : 3U;
+    *out++ = 4U;
     out = energy_stream_u32(out, header->clock_hz);
     out = energy_stream_u32(out, header->period);
     *out++ = header->setting;
@@ -395,18 +395,14 @@ ENERGY_STREAM_RAMFUNC __attribute__((noinline)) bool energy_stream_begin(struct 
     *out++ = header->dio_mask;
     *out++ = header->dio_levels;
     out = energy_stream_u16(out, header->edge_resolution_ns);
-    if (header->capture_id != NULL) {
-        for (uint32_t i = 0U; i < ENERGY_IDENTITY_BYTES; i++) {
-            *out++ = header->capture_id->bytes[i];
-        }
+    for (uint32_t i = 0U; i < ENERGY_IDENTITY_BYTES; i++) {
+        *out++ = header->capture_id->bytes[i];
     }
     out = energy_stream_u16(out, (uint16_t)header->switch_weight_q16);
     *out++ = (uint8_t)((header->rearm_between_pairs ? 1U : 0U) | (header->previous_known ? 2U : 0U) |
                        (header->high_range_only ? 4U : 0U));
     out = energy_stream_u32(out, header->previous_known ? header->previous_na : 0U);
-    energy_stream_opened(stream,
-                         header->capture_id != NULL ? ENERGY_STREAM_ID_HEADER_BYTES : ENERGY_STREAM_HEADER_BYTES,
-                         header->dio_mask, header->dio_levels, header->dio_stamp);
+    energy_stream_opened(stream, ENERGY_STREAM_HEADER_BYTES, header->dio_mask, header->dio_levels, header->dio_stamp);
     return true;
 }
 

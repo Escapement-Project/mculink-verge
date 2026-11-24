@@ -254,10 +254,11 @@ on EP5 IN. It arms EP5 OUT again only once the slot is free, so the interface ta
 a time. A request from a host that has since gone still runs, since an Aux command needs no session
 state. Only its reply is dropped.
 
-Four `0x90` modes never reach CPU 1: modes 6, 7, 10 and 13 attach a stream to a running capture or
-end it, without touching the capture. CPU 0 answers them itself, because it owns the capture state
-while a capture runs (below). When CPU 1 holds the state for a moment, the answer waits. Starting a
-capture with a stream, modes 5 and 9, is CPU 1's, like any start.
+Four `0x90` modes never reach CPU 1. Modes 7, 10 and 13 attach a stream to a running capture or
+end it, without touching the capture, and mode 15 starts a DIO stream on a board without energy
+capture. CPU 0 answers them itself: it owns the capture state while a capture runs (below), and a
+DIO stream always. When CPU 1 holds the state for a moment, the answer waits. Starting a
+capture with a stream, mode 9, is CPU 1's, like any start.
 
 The energy stream's messages come out of 16 slots in SRAM4. Whichever core owns the capture state
 writes them, and CPU 0 sends them on EP5 IN between replies. A capture start's header waits until

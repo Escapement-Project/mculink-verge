@@ -164,10 +164,10 @@ state away. While the quiet flag stands, the interrupt leaves energy completions
 stream commands stand aside too.
 
 While CPU 1 holds the state it drains what is left in the ring at a pause or stop, writes a
-stream's end, and for a start clears the last failure and writes the tables, the DMA descriptors,
-the position and an unidentified stream's header. Then the start hands the state back, but it is
-not finished: it goes on to write a new session's identity, reset the total and the decoder, write
-an identified stream's header, mark the capture running, and start the timeline. CPU 0 stays
+stream's end, and for a start clears the last failure and writes the tables, the DMA descriptors
+and the position. Then the start hands the state back, but it is not finished: it goes on to write
+a new session's identity, reset the total and the decoder, write the stream's header, mark the
+capture running, and start the timeline. CPU 0 stays
 off all of that for three reasons. The DMA channel is still off, and enabled last, so no completion
 can reach the interrupt. The interrupt also integrates nothing while `running` is clear. The loop
 treats the stream as CPU 1's while `timeline_pending` is set. And the identity has its own

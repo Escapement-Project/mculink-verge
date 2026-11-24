@@ -694,8 +694,8 @@ def check_bounded_commands(c: Checker, elf: str, slots: int) -> None:
                     "malformed batch lost prior replies or counted rejected command")
             c.check(bytes(probe.uc.mem_read(state, 1)) == b"\x01", "rejected batch tail changed port")
             c.check(execute(bytes([2, 1])) == bytes([2, 1]), "command after malformed batch failed")
-        # Modes 6 and 15 are Verge Aux's alone, but their DIO mask is part of the request in a batch.
-        for mode in (6, 15):
+        # Modes 10 and 15 are Verge Aux's alone, but their DIO mask is part of the request in a batch.
+        for mode in (10, 15):
             reply = execute(bytes([0x7f, 2, 0x90, mode, 0x0f, 0, 0xff]))
             c.check(reply == bytes([0x7f, 2, 0x90, 0xff, 0, 2]) + u16(capacity),
                     f"0x90 mode {mode} in a batch: {reply.hex()}")

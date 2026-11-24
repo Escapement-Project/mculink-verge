@@ -177,13 +177,11 @@ static inline dap_packet_plan_t dap_energy_lengths(const uint8_t* p, uint32_t le
         in = 6U;
         break;
     case 4U:
-    case 6U:
     case 10U:
     case 14U:
     case 15U:
         in = 3U;
         break;
-    case 5U:
     case 9U:
         in = 7U;
         break;
@@ -198,7 +196,6 @@ static inline dap_packet_plan_t dap_energy_lengths(const uint8_t* p, uint32_t le
     uint32_t out;
     switch (p[1]) {
     case 0U:
-    case 5U:
         out = 7U;
         break;
     case 1U:
