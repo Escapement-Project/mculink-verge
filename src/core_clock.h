@@ -15,17 +15,13 @@
 #ifndef CORE_CLOCK_H
 #define CORE_CLOCK_H
 
-#ifdef CORE_150MHZ
 #define CORE_CLOCK_HZ 150000000U
-#else
-#define CORE_CLOCK_HZ 144000000U
-#endif
 
-/** PLL0, from the 16 MHz crystal: the board support sets it to 150 MHz in either build. The SDK's
+/** PLL0, from the 16 MHz crystal, which the board support sets to 150 MHz. The SDK's
  *  CLOCK_GetPll0OutFreq reads a variable only CPU 0's image sets, so CPU 1 cannot ask for it. */
 #define PLL0_CLOCK_HZ 150000000U
 
-/** Move MAIN_CLK to PLL0, after board_init has brought both PLLs up. Does nothing at 144 MHz. */
+/** Move MAIN_CLK to PLL0, after board_init has brought both PLLs up. */
 void board_core_clock_init(void);
 
 #endif

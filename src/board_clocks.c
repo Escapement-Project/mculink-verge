@@ -20,13 +20,11 @@
  * tick TinyUSB counts on needs setting again.
  */
 void board_core_clock_init(void) {
-#ifdef CORE_150MHZ
     POWER_SetVoltageForFreq(CORE_CLOCK_HZ);
     CLOCK_SetFLASHAccessCyclesForFreq(CORE_CLOCK_HZ);
     CLOCK_AttachClk(kPLL0_to_MAIN_CLK);
     SystemCoreClock = CORE_CLOCK_HZ;
     SysTick_Config(SystemCoreClock / 1000U);
-#endif
 }
 
 /** Start the high-speed FRO and its divider, which both the console and SWO clock off.
