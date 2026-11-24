@@ -341,8 +341,6 @@ static inline dap_packet_plan_t dap_command_lengths(const uint8_t* p, uint32_t l
     case ID_VENDOR_JTAG_PACING:
         return dap_lengths(2U, 4U);
 #endif
-    case ID_VENDOR_STAGE:
-        return dap_lengths(2U, 3U);
 #ifdef GENERATED_WIRE
     case ID_VENDOR_JTAG_LOG:
         return dap_lengths(2U, 25U);

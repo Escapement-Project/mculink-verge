@@ -1051,7 +1051,6 @@ by default, and `0x88` needs `CODE_LAB`. `0x89` to `0x8B` and `0x8D` need the ge
 | `0x89` | SWD generation | Reports the generated SWD transfers, and sets or measures the read latency they are generated for |
 | `0x8A` | JTAG generation | The same for the generated JTAG and cJTAG transfers |
 | `0x8B` | JTAG pacing | Switches the generated JTAG transfers' learned idle clocks |
-| `0x8C` | Staging | Switches whether CPU 0 stages commands for CPU 1 |
 | `0x8D` | JTAG log | Reads back what each JTAG generation was for |
 
 Two vendor requests on endpoint 0 serve `tools/dap.py core1`, in every build. bRequest `0x04`

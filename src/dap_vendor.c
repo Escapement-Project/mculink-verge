@@ -190,19 +190,6 @@ static uint32_t j8_command(const uint8_t* request, uint8_t* response) {
 }
 #endif
 
-/** ID_VENDOR_STAGE takes `mode`: 0 has CPU 1 copy each command and reply itself, 1 has CPU 0 stage
- * them (the default), anything else leaves it. It answers `status, on`. Commands already received
- * keep the way they arrived, so the change reaches the ones after them.
- */
-static uint32_t stage_command(const uint8_t* request, uint8_t* response) {
-    if (request[1] <= 1U) {
-        dap_shared.stage_commands = request[1];
-    }
-    response[1] = DAP_OK;
-    response[2] = dap_shared.stage_commands;
-    return 3U;
-}
-
 
 bool dap_vendor_on_aux;
 
@@ -234,8 +221,6 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
     case ID_VENDOR_JTAG_PACING:
         return jtag_pacing_command(request, response);
 #endif
-    case ID_VENDOR_STAGE:
-        return stage_command(request, response);
 #ifdef GENERATED_WIRE
     case ID_VENDOR_JTAG_LOG:
         return jtag_log_command(request, response);

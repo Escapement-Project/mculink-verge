@@ -334,7 +334,6 @@ DAP_COMMANDS = {
     # Our SAMPLE, no reads. The port is disconnected by this point, so it answers DAP_ERROR;
     # check_sample_probe runs it connected.
     0x87: b"\x00\x00\xff\x00\x00\x00\x00\x00\x00",
-    0x8C: b"\xff",  # our STAGE, asking only
     0x8E: b"\x00\x00\x00",  # our DIO, only reading
 }
 ID_DAP_INVALID = 0xFF
@@ -887,49 +886,48 @@ def check_hid_padding(c: Checker, elf: str, slots: int) -> None:
     sym = symbols_with_size(elf)
     if not c.check("dap_task" in sym, "CPU1 command task missing from HID checks"):
         return
-    names = ("hid_request_len", "hid_request_seq", "hid_request_stage", "hid_request_head",
-             "hid_request", "hid_response_tail", "hid_response_len")
+    names = ("hid_request_len", "hid_request_seq", "hid_request_stage", "hid_request_head", "hid_response_tail",
+             "hid_response_len")
     fields = shared_offsets(slots, *names, small_enums=short_enums(elf))
     stage = shared_offsets(slots, "hid_request", "hid_response", "hid_response[1]",
                            small_enums=short_enums(elf), struct_type="dap_stage_t")
     stride = stage["hid_response[1]"] - stage["hid_response"]
     own, own_size = sym["response_copy"]
-    for staged in (False, True):
-        probe = machine(elf, sym)
-        shared = probe.sym["dap_shared"]
-        staging = probe.sym["dap_stage"]
-        # Each round reuses every reply slot. A one-byte Info retains a stale ff selector.
-        for payload, prefix in ((b"\x00\x02", None), (b"\x7e", b"\xff"),
-                                (b"\x00", b"\xff"), (b"\x00\xff", b"\x00\x02\x40\x00")):
-            for slot in range(slots):
-                probe.uc.mem_write(shared + fields["hid_request_head"], bytes([slot]))
-                probe.uc.mem_write(shared + fields["hid_response_tail"], bytes([slot]))
-                probe.uc.mem_write(shared + fields["hid_request_len"] + slot * 2, u16(len(payload)))
-                probe.uc.mem_write(shared + fields["hid_request_seq"] + slot * 4, u32(1))
-                probe.uc.mem_write(shared + fields["hid_request_stage"] + slot, bytes([slot + 1 if staged else 0]))
-                probe.uc.mem_write(shared + fields["hid_response_len"] + slot * 2, u16(0))
-                request = staging + stage["hid_request"] + 512 * slot if staged else shared + fields["hid_request"] + 64 * slot
-                probe.uc.mem_write(request, b"\xa5\xff" + b"\xa5" * 62)
-                probe.uc.mem_write(request, payload)
-                response = staging + stage["hid_response"] + stride * slot
-                if prefix is None:
-                    probe.uc.mem_write(response, b"\xa5" * 64)
-                probe.uc.mem_write(own, b"\x5a" * own_size)
-                probe.call("dap_task")
-                c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC, "HID command task did not return")
-                reply = bytes(probe.uc.mem_read(response, 64))
-                if prefix is None:
-                    c.check(reply[0] == 0 and reply[1] > 4, "long HID fixture did not produce a string")
-                    meaningful = 2 + reply[1]
-                else:
-                    meaningful = len(prefix)
-                    c.check(reply[:meaningful] == prefix, "HID payload or packet-size override changed")
-                c.check(reply[meaningful:] == bytes(64 - meaningful), "HID reply leaked its previous tail")
-                c.check(bytes(probe.uc.mem_read(shared + fields["hid_response_len"] + slot * 2, 2)) == u16(64),
-                        "HID reply did not publish a full report")
-                c.check(bytes(probe.uc.mem_read(own, 64)) == reply,
-                        "HID reply did not run in CPU 1's own packet-long buffer")
-    c.note("HID long/short/malformed Info replies, zero padding and packet size across both staging modes and all slots")
+    probe = machine(elf, sym)
+    shared = probe.sym["dap_shared"]
+    staging = probe.sym["dap_stage"]
+    # Each round reuses every reply slot. A one-byte Info retains a stale ff selector.
+    for payload, prefix in ((b"\x00\x02", None), (b"\x7e", b"\xff"),
+                            (b"\x00", b"\xff"), (b"\x00\xff", b"\x00\x02\x40\x00")):
+        for slot in range(slots):
+            probe.uc.mem_write(shared + fields["hid_request_head"], bytes([slot]))
+            probe.uc.mem_write(shared + fields["hid_response_tail"], bytes([slot]))
+            probe.uc.mem_write(shared + fields["hid_request_len"] + slot * 2, u16(len(payload)))
+            probe.uc.mem_write(shared + fields["hid_request_seq"] + slot * 4, u32(1))
+            probe.uc.mem_write(shared + fields["hid_request_stage"] + slot, bytes([slot]))
+            probe.uc.mem_write(shared + fields["hid_response_len"] + slot * 2, u16(0))
+            request = staging + stage["hid_request"] + 512 * slot
+            probe.uc.mem_write(request, b"\xa5\xff" + b"\xa5" * 62)
+            probe.uc.mem_write(request, payload)
+            response = staging + stage["hid_response"] + stride * slot
+            if prefix is None:
+                probe.uc.mem_write(response, b"\xa5" * 64)
+            probe.uc.mem_write(own, b"\x5a" * own_size)
+            probe.call("dap_task")
+            c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC, "HID command task did not return")
+            reply = bytes(probe.uc.mem_read(response, 64))
+            if prefix is None:
+                c.check(reply[0] == 0 and reply[1] > 4, "long HID fixture did not produce a string")
+                meaningful = 2 + reply[1]
+            else:
+                meaningful = len(prefix)
+                c.check(reply[:meaningful] == prefix, "HID payload or packet-size override changed")
+            c.check(reply[meaningful:] == bytes(64 - meaningful), "HID reply leaked its previous tail")
+            c.check(bytes(probe.uc.mem_read(shared + fields["hid_response_len"] + slot * 2, 2)) == u16(64),
+                    "HID reply did not publish a full report")
+            c.check(bytes(probe.uc.mem_read(own, 64)) == reply,
+                    "HID reply did not run in CPU 1's own packet-long buffer")
+    c.note("HID long/short/malformed Info replies, zero padding and packet size across all slots")
 
 
 def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: bool = False) -> None:

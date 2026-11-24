@@ -93,17 +93,13 @@ flight are CPU 0's loop's alone, since TinyUSB's callbacks run in the loop too.
 
 ### Staged copies
 
-CPU 0 copies a staged command into `dap_stage` before it writes the command's length, so CPU 1
-sees it whole. CPU 1 releases the request slot as soon as it takes the command, so the next command
+CPU 0 copies each command into `dap_stage` before it writes the command's length, so CPU 1 sees
+it whole. CPU 1 releases the request slot as soon as it takes the command, so the next command
 can arrive while this one runs. So the staged buffers cannot be the slots. CPU 0 takes them in
 turn, and there is one more of them than there are slots. A buffer comes round again only after
 `REQUEST_SLOTS` more commands, and CPU 0 cannot receive that many while the command in it runs
-(`dap_stage_t`). A staged reply goes the other way: CPU 1 writes it before it
-publishes the reply's length, and CPU 0 copies it into the USB buffer before it starts sending.
-
-Vendor command `0x8C` switches staging: CPU 1 writes `stage_commands`, and CPU 0 reads it as each
-command arrives. Each command carries its own flag (`request_stage`), so a change takes effect
-between commands, never inside one.
+(`dap_stage_t`). A bulk reply goes the other way: CPU 1 writes it before it publishes the reply's
+length, and CPU 0 copies it into the USB buffer before it starts sending.
 
 ### Aborts
 
@@ -326,8 +322,8 @@ costs at most one flicker, so nothing orders them.
 
 CPU 0 clears the handover state and reads the straps before it starts CPU 1 (`dap_shared_init`,
 `board_read_straps`): the board, its jumpers, whether it can measure energy, and the pointer to the
-energy state. CPU 1 only reads those. The same call sets staging on and the high-speed packet size,
-which change later as described above.
+energy state. CPU 1 only reads those. The same call sets the high-speed packet size, which
+changes later as described above.
 
 ## Counts read without ordering
 

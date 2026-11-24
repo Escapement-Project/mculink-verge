@@ -45,21 +45,18 @@ dap_shared_t dap_shared __attribute__((section(".dap_shared")));
 
 dap_stage_t dap_stage __attribute__((section(".dap_stage")));
 
-/** The dap_stage request buffer each transport's next staged command goes in. */
+/** The dap_stage request buffer each transport's next command goes in. */
 static uint8_t stage_next;
 static uint8_t hid_stage_next;
 
-/** Copy a command into the next stage buffer, and return what its slot's `_stage` takes. */
+/** Copy a command into the next stage buffer, and return that buffer's index for its slot's `_stage`. */
 __attribute__((section(".ramfunc"))) static uint8_t stage_request(uint8_t (*buffers)[DAP_SHARED_PACKET_SIZE],
                                                                  uint8_t* next, const uint8_t* command,
                                                                  uint32_t length) {
-    if (dap_shared.stage_commands == 0U) {
-        return 0U;
-    }
     uint8_t const at = *next;
     *next = dap_usb_next_slot(at, DAP_STAGE_REQUESTS);
     memcpy(buffers[at], command, length);
-    return (uint8_t)(at + 1U);
+    return at;
 }
 
 static bool disconnect_requested;
@@ -183,13 +180,11 @@ __attribute__((section(".ramfunc"))) static bool start_rx(void* context, uint8_t
 
 __attribute__((section(".ramfunc"))) static bool start_bulk_tx(void* context, uint8_t slot, uint16_t length) {
     uint8_t (*buffers)[DAP_PACKET_SIZE] = context;
-    if (dap_shared.response_staged[slot] != 0U) {
-        if (length == 7U) {
-            memcpy(buffers[slot], dap_stage.response[slot], 4U);
-            memcpy(buffers[slot] + 4U, dap_stage.response[slot] + 4U, 3U);
-        } else {
-            memcpy(buffers[slot], dap_stage.response[slot], length);
-        }
+    if (length == 7U) {
+        memcpy(buffers[slot], dap_stage.response[slot], 4U);
+        memcpy(buffers[slot] + 4U, dap_stage.response[slot] + 4U, 3U);
+    } else {
+        memcpy(buffers[slot], dap_stage.response[slot], length);
     }
     return tud_vendor_write_xfer(buffers[slot], length) == length;
 }
@@ -376,11 +371,7 @@ __attribute__((section(".ramfunc"))) void tud_hid_set_report_cb(uint8_t instance
         return;
     }
 
-    uint8_t const stage = stage_request(dap_stage.hid_request, &hid_stage_next, buffer, bufsize);
-    if (stage == 0U) {
-        memcpy(dap_shared.hid_request[tail], buffer, bufsize);
-    }
-    dap_shared.hid_request_stage[tail] = stage;
+    dap_shared.hid_request_stage[tail] = stage_request(dap_stage.hid_request, &hid_stage_next, buffer, bufsize);
     dap_shared.hid_request_seq[tail] = dap_shared.next_request_seq++;
     __DMB();
     dap_shared.hid_request_len[tail] = bufsize;

@@ -275,8 +275,7 @@ static void test_shared_state_initialization(void) {
     size_t const pointer = offsetof(dap_shared_t, energy_integration);
     size_t const packet = offsetof(dap_shared_t, bulk_packet_size);
     for (size_t i = 0U; i < offsetof(dap_shared_t, request); i++) {
-        if ((i != offsetof(dap_shared_t, stage_commands)) &&
-            ((i < pointer) || (i >= pointer + sizeof(state.energy_integration))) &&
+        if (((i < pointer) || (i >= pointer + sizeof(state.energy_integration))) &&
             ((i < packet) || (i >= packet + sizeof(state.bulk_packet_size)))) {
             assert(bytes[i] == 0U);
         }
@@ -291,7 +290,6 @@ static void test_shared_state_initialization(void) {
     assert(state.response_head == 0U && state.response_tail == 0U);
     assert(state.hid_response_head == 0U && state.hid_response_tail == 0U);
     assert(state.transfer_abort == nullptr);
-    assert(state.stage_commands == 1U);
 }
 
 /** The USB DMA buffers in the struct both images place at one address. */
@@ -300,7 +298,6 @@ static void test_shared_buffer_alignment(void) {
     assert(sizeof(((dap_shared_t*)0)->request[0]) % DAP_USB_BUFFER_ALIGN == 0U);
     assert(offsetof(dap_shared_t, response) % DAP_USB_BUFFER_ALIGN == 0U);
     assert(sizeof(((dap_shared_t*)0)->response[0]) % DAP_USB_BUFFER_ALIGN == 0U);
-    assert(offsetof(dap_shared_t, hid_request) % DAP_USB_BUFFER_ALIGN == 0U);
 }
 
 static void test_cpu0_usb_reboot_request(void) {

@@ -102,9 +102,8 @@ in `dap_shared`. CPU 0 reaches CPU 1's abort flag through a pointer CPU 1 puts t
 reply slots are what it reads and writes. USB SRAM is Device memory to both cores, where an
 unaligned access faults. The generated code loads and stores words at any offset: a block write's
 data starts at byte 5, and inside `DAP_ExecuteCommands` a reply can start anywhere. So CPU 1 never
-runs a command in place. It runs it from a copy in ordinary RAM. By default CPU 0 makes that copy
-as the command arrives, into `dap_stage`, and copies the reply back out as it sends it. That is
-staging. Vendor command `0x8C` turns it off, and CPU 1 then copies each command and reply itself.
+runs a command in place. It runs it from a copy in ordinary RAM. CPU 0 makes that copy as the
+command arrives, into `dap_stage`, and copies the reply back out as it sends it. That is staging.
 
 ## USB
 

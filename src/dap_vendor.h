@@ -21,8 +21,6 @@
 #define ID_VENDOR_JTAG_GEN ID_DAP_Vendor10
 /// Switches the generated JTAG transfers' learned pacing (jtag_sweep.c).
 #define ID_VENDOR_JTAG_PACING ID_DAP_Vendor11
-/// Switches whether CPU 0 stages commands for CPU 1 (dap_stage in dap_shared.h).
-#define ID_VENDOR_STAGE ID_DAP_Vendor12
 /// Reads back the JTAG generator's log of what each generation was for (jtag_sweep.c).
 #define ID_VENDOR_JTAG_LOG ID_DAP_Vendor13
 /// Drives and reads the DIO pins: the Pro's on J19, the plain board's on J8 (dio.h, dio.c).

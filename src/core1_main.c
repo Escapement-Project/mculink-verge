@@ -35,22 +35,15 @@ dap_stage_t dap_stage __attribute__((section(".dap_stage")));
 volatile uint32_t marker_mask = 0U;
 #endif
 
-/** The command being executed and its reply, in CPU 1's own SRAM, for a command CPU 0 did not
- *  stage.
- *
- * The generated transfer code loads and stores words at any offset in these: a block write's data
- * starts at byte 5, and inside DAP_ExecuteCommands a reply can start anywhere. Normal memory takes
- * that; USB SRAM is Device memory, where it faults. So each command is copied in from its USB slot
- * and its reply copied back out, both between word-aligned buffers: here by CPU 1, or by CPU 0
- * through dap_stage.
+/** Every HID command's reply, in CPU 1's own SRAM, a packet long: the command layer bounds its
+ *  writes by the packet size, and only the report goes out to dap_stage. Every other command and
+ *  reply runs in dap_stage (src/dap_shared.h), where CPU 0 copies it in and out.
  */
-alignas(DAP_USB_BUFFER_ALIGN) static uint8_t request_copy[DAP_PACKET_SIZE];
 alignas(DAP_USB_BUFFER_ALIGN) static uint8_t response_copy[DAP_PACKET_SIZE];
 
-/** The same two buffers, read through volatile so link-time optimisation cannot specialise
- *  DAP_ExecuteCommandSized to them. tools/cycles.py and tools/image.py call it with buffers of
- *  their own, and what they check has to be the code that ships. */
-static uint8_t* const volatile request_buffer = request_copy;
+/** The same buffer, read through volatile so link-time optimisation cannot specialise
+ *  DAP_ExecuteCommandSized to it. tools/cycles.py and tools/image.py call it with buffers of their
+ *  own, and what they check has to be the code that ships. */
 static uint8_t* const volatile response_buffer = response_copy;
 
 /** CPU 0 waits for work off flash (src/main.c), and this is how it hears of CPU 1's. */
@@ -104,23 +97,10 @@ COMMAND_PATH static bool dap_task(void) {
         dap_usb_choose_hid(hid_ready, dap_shared.hid_request_seq[hid], bulk_ready, dap_shared.request_seq[bulk]);
     uint32_t const seq = use_hid ? dap_shared.hid_request_seq[hid] : dap_shared.request_seq[bulk];
     uint8_t const stage = use_hid ? dap_shared.hid_request_stage[hid] : dap_shared.request_stage[bulk];
-    bool const staged = stage != 0U;
     uint16_t const request_length = use_hid ? dap_shared.hid_request_len[hid] : dap_shared.request_len[bulk];
     uint32_t const packet_size = use_hid ? DAP_SHARED_HID_REPORT_SIZE : dap_shared.bulk_packet_size;
-    // An HID reply always runs here, a packet long, and only its report goes out to dap_stage's
-    // report-long rows.
-    uint8_t* request = request_buffer;
-    uint8_t* response = response_buffer;
-    if (staged) {
-        request = use_hid ? dap_stage.hid_request[stage - 1U] : dap_stage.request[stage - 1U];
-        if (!use_hid) {
-            response = dap_stage.response[bulk_out];
-        }
-    } else if (use_hid) {
-        memcpy(request_copy, dap_shared.hid_request[hid], dap_shared.hid_request_len[hid]);
-    } else {
-        memcpy(request_copy, dap_shared.request[bulk], dap_shared.request_len[bulk]);
-    }
+    uint8_t* const request = use_hid ? dap_stage.hid_request[stage] : dap_stage.request[stage];
+    uint8_t* const response = use_hid ? response_buffer : dap_stage.response[bulk_out];
 
     // The slot goes back to CPU 0, which can receive the next command into it while this one runs.
     __DMB();
@@ -161,10 +141,6 @@ COMMAND_PATH static bool dap_task(void) {
         dap_shared.hid_response_tail = dap_usb_next_slot(hid_out, REQUEST_SLOTS);
         wake_core0();
     } else if (produced != 0U) {
-        if (!staged) {
-            memcpy(dap_shared.response[bulk_out], response_copy, produced);
-        }
-        dap_shared.response_staged[bulk_out] = staged;
         dap_shared.response_seq[bulk_out] = seq;
         __DMB();
         dap_shared.response_len[bulk_out] = (uint16_t)produced;
