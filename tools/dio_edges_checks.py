@@ -496,8 +496,7 @@ def j8_static(symbols, statics):
 def check_j8_edges(c, elf, symbols, shared, layout, model_syscon):
     """The standalone MCU-Link's DIO edges (src/dio_edges.c): J8's pins as the pin interrupts'
     selects and their levels from GPIO port 1; the stamping timer started where no energy capture
-    does it; the bench marker's pins left out of a stream; and a DIO stream's origin moved on by
-    CPU 0's loop, which nothing else moves."""
+    does it; and a DIO stream's origin moved on by CPU 0's loop, which nothing else moves."""
     statics = edge_statics(symbols)
     j8 = j8_static(symbols, statics)
     integration = symbols["energy_integration"][0]
@@ -532,7 +531,7 @@ def check_j8_edges(c, elf, symbols, shared, layout, model_syscon):
 
     # The interrupt's sync run and a stream header's levels, read on each board from ports that
     # tell the two apart: port 0 all high, port 1 0b1010.
-    for on_j8, run_levels, header_pins in ((1, 0x0A, 0x0B), (0, 0x0B, 0x0F)):
+    for on_j8, run_levels, header_pins in ((1, 0x0A, 0x0F), (0, 0x0B, 0x0F)):
         probe = machine(elf, symbols)
         pins = Pins(probe)
         pins.ports[:] = [0xFFFFFFFF, 0x0A]
@@ -543,13 +542,11 @@ def check_j8_edges(c, elf, symbols, shared, layout, model_syscon):
             put(probe, statics[name], value)
         put(probe, statics["sync"], 1, 1)
         put(probe, dap_shared + shared["dio_spi_turns"], 0)
-        put(probe, dap_shared + shared["dio_marker_pins"], 0x04, 1)
         put(probe, integration + layout["stream.edge_entries_written"], 0)
         probe.call("PIN_INT0_IRQHandler", timeout_insns=10_000)
         entry = bytes(probe.uc.mem_read(integration + layout["stream.edge_entries"], ENTRY_BYTES))
         c.check(get(probe, integration + layout["stream.edge_entries_written"]) == 1 and entry[ENTRY_LEVELS] == run_levels,
                 f"DIO edges, j8 {on_j8}: the interrupt read levels {entry[ENTRY_LEVELS]:#x}, wanted {run_levels:#x}")
-        # The marker holds DIO2 on J8: a stream leaves it out there, and the Pro has no marker.
         returned = probe.call("dio_edges_pins", 0xF, SCRATCH, SCRATCH + 4, timeout_insns=10_000) & 0xFF
         levels = probe.uc.mem_read(SCRATCH, 1)[0]
         c.check(returned == header_pins and levels == (run_levels & header_pins),
@@ -583,4 +580,4 @@ def check_j8_edges(c, elf, symbols, shared, layout, model_syscon):
         want = (0x100, 5 + 0x200) if pairless else (0xFFFFFF00, 5)
         c.check((raw, counts) == want, f"DIO stream origin, pairless {pairless}: {raw:#x}, {counts}; wanted {want}")
     c.note("DIO edges on J8: selects PIO1_0 to PIO1_3, levels from port 1, the timer started without energy capture, "
-           "marker pins left out, mode 15 ready only without energy capture, a DIO stream's origin moved by the loop")
+           "mode 15 ready only without energy capture, a DIO stream's origin moved by the loop")

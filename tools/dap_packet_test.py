@@ -43,8 +43,7 @@ def main() -> int:
             executable = os.path.join(directory, compiler)
             env = os.environ.copy()
             env["ASAN_OPTIONS"] = ":".join(filter(None, (env.get("ASAN_OPTIONS"), "detect_leaks=0")))
-            for features in ([], ["-DGENERATED_WIRE", "-DCODE_LAB",
-                                  "-DMARKER_PINS", "-DDAP_TIMING_DIAGNOSTICS"]):
+            for features in ([], ["-DGENERATED_WIRE", "-DCODE_LAB"]):
                 run([compiler, "-std=gnu23", "-Wall", "-Wextra", "-Werror", "-fsanitize=address,undefined",
                      "-fno-sanitize-recover=all", *features, "-Isrc", f"-I{arm}", str(SOURCE), "-o", executable],
                     env)

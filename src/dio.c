@@ -12,7 +12,6 @@
 #include "dap_shared.h"
 #include "dio_pins.h"
 #include "led.h"
-#include "marker.h"
 
 typedef struct {
     uint8_t port;
@@ -40,8 +39,6 @@ static uint8_t dio_groups;
 static bool dio_translated;
 /** The board has the pins and its jumpers leave them on: what the capability bits report. */
 static bool dio_present;
-/** The pins a host can drive: all of them, less any the bench marker holds. */
-static uint8_t dio_on;
 static uint8_t dio_outputs;
 static uint8_t dio_levels;
 static bool dio_spi_owned;
@@ -91,7 +88,6 @@ static void j8_init(void) {
     }
     dio_store(GPIO->DIRCLR, DIO_PINS);
     dio_present = true;
-    dio_on = DIO_PINS;
 }
 
 __attribute__((noinline)) void dio_init(void) {
@@ -117,7 +113,6 @@ __attribute__((noinline)) void dio_init(void) {
     for (uint32_t n = 0U; n < 4U; n++) {
         IOCON_PinMuxSet(IOCON, dio_pins[n].port, dio_pins[n].pin, DIO_PIN_MODE);
     }
-    dio_on = DIO_PINS;
 }
 
 bool dio_available(void) {
@@ -125,7 +120,7 @@ bool dio_available(void) {
 }
 
 bool dio_set(uint8_t mask, uint8_t outputs, uint8_t levels) {
-    if (!dio_present || dio_spi_owned || ((mask & ~dio_on) != 0U)) {
+    if (!dio_present || dio_spi_owned || ((mask & ~DIO_PINS) != 0U)) {
         return false;
     }
     const uint32_t next = (dio_outputs & ~(uint32_t)mask) | (outputs & (uint32_t)mask);
@@ -172,7 +167,7 @@ void dio_get(dio_state_t* state) {
     if (!dio_present) {
         return;
     }
-    state->pins = dio_on;
+    state->pins = DIO_PINS;
     state->outputs = dio_outputs;
     state->levels = dio_levels;
     state->read = dio_read();
@@ -182,41 +177,14 @@ void dio_get(dio_state_t* state) {
     }
 }
 
-bool dio_marker(uint8_t pins) {
-#ifdef MARKER_PINS
-    // The marker borrows J8 from DIO, which dio_init gives it on the plain board alone.
-    if (dio_pins != j8_pins) {
-        return false;
-    }
-    uint32_t const want = pins & J8_PIN_MASK;
-    uint32_t const taken = want & ~marker_mask;
-    uint32_t const given = marker_mask & ~want;
-    // This command runs with the marker's pins high. A pin it takes stops being a DIO pin and
-    // drives low until the next command; one it gives back goes low, then becomes an input again.
-    J8_GPIO->CLR[J8_PORT] = taken | given;
-    J8_GPIO->DIRSET[J8_PORT] = taken;
-    J8_GPIO->DIRCLR[J8_PORT] = given;
-    marker_mask = want;
-    dap_shared.dio_marker_pins = (uint8_t)want;
-    dio_on = (uint8_t)(DIO_PINS & ~want);
-    dio_outputs = (uint8_t)(dio_outputs & ~want);
-    dio_levels = (uint8_t)(dio_levels & ~want);
-    led_sio(dio_outputs);
-    return true;
-#else
-    (void)pins;
-    return false;
-#endif
-}
-
 uint8_t dio_stream_pins(uint8_t requested, uint8_t* levels) {
-    uint8_t const pins = (dio_spi_owned || !dio_translated) ? 0U : (uint8_t)(requested & dio_on);
+    uint8_t const pins = (dio_spi_owned || !dio_translated) ? 0U : (uint8_t)(requested & DIO_PINS);
     *levels = (uint8_t)(dio_pins_levels(GPIO->PIN[0], GPIO->PIN[1]) & pins);
     return pins;
 }
 
 __attribute__((noinline)) bool dio_spi_begin(void) {
-    if (!dio_translated || (dio_on == 0U) || (dio_outputs != 0U) || dio_spi_owned) {
+    if (!dio_translated || (dio_outputs != 0U) || dio_spi_owned) {
         return false;
     }
 

@@ -9,12 +9,11 @@ An optimisation that holds under one compiler has been seen not to under the oth
 
 It runs in three stages, and the steps inside a stage run at once:
 
-1. The host checks and the image builds. With gcc's default image come two more gcc images, one
-   with DAP_TIMING_DIAGNOSTICS and one with CODE_LAB. A build fails if it compiles or links
-   anything with unaligned access allowed.
+1. The host checks and the image builds. With gcc's default image comes one more gcc image, with
+   CODE_LAB. A build fails if it compiles or links anything with unaligned access allowed.
 2. The checks on the built images:
-   - each image's `ninja check`, and tools/image.py alone for the two extra gcc images: their
-     checks need the option, and nothing else in them differs;
+   - each image's `ninja check`, and tools/image.py alone for the extra gcc image: its checks
+     need the option, and nothing else in it differs;
    - each generated image's cJTAG and JTAG clocks against targets that answer by time, at every
      period up to 40 cycles and three longer ones, and all of its clocks the same way built for
      energy capture's stall;
@@ -77,8 +76,7 @@ HOST_CHECKS = (
 )
 IMAGES = [(toolchain, codegen) for toolchain in ("gcc", "clang") for codegen in (False, True)]
 # Built as gcc's default image with one option on, and image-checked only.
-VARIANTS = (("timing", ("-DDAP_TIMING_DIAGNOSTICS=ON", "-DCODE_LAB=OFF")),
-            ("lab", ("-DCODE_LAB=ON", "-DDAP_TIMING_DIAGNOSTICS=OFF")))
+VARIANTS = (("lab", ("-DCODE_LAB=ON",)),)
 TIMED_WIRES = ("cjtag", "cjtag2", "cjtag5", "cjtag6", "jtag", "raw")
 
 

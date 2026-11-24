@@ -25,40 +25,24 @@
 #ifndef HOT_H
 #define HOT_H
 
-#ifdef RAMFUNC_BIT_PATHS
 #define HOT_PATH __attribute__((noinline, section(".ramfunc")))
-#else
-#define HOT_PATH
-#endif
 
 /** The code every command runs through on CPU 1, outside the transfer loops: the loop, the
  *  dispatch, the block wrappers and what they call each command. In SRAM after every transfer
- *  loop, so it moves none of them: the linker takes every .ramfunc section before any .data one
- *  (src/sample_probe.c). tools/image.py checks none of it branches into flash. */
-#ifdef RAMFUNC_BIT_PATHS
+ *  loop, so it moves none of them: the linker takes every .ramfunc section before any .data one.
+ *  tools/image.py checks none of it branches into flash. */
 #define COMMAND_PATH __attribute__((noinline, section(".data_command_path")))
-#else
-#define COMMAND_PATH
-#endif
 
 /** The SWD generator, the JTAG generator's scans and the schedule both share (src/gen.c,
  *  src/swd_gen.c, src/jtag_gen.c): branchy C that runs when a configuration changes and in every
  *  connect-time latency search, where flash wait states doubled the time of each SWD build. In SRAM
  *  after every transfer loop, so it moves none of them. tools/image.py checks everything they call
  *  stays in SRAM, the compiler's memset and the JTAG transfer emitter aside. */
-#ifdef RAMFUNC_BIT_PATHS
 #define GEN_PATH __attribute__((section(".data_gen_path")))
-#else
-#define GEN_PATH
-#endif
 
 /** Zeroed data touched only off the command path, placed after the rest of CPU 1's .bss
  *  (src/core1.ld.in) so that its size cannot push the statics every command reads into SRAM3,
  *  beside the buffers CPU 0 writes (BUSES.md). tools/image.py checks a product image for it. */
-#ifdef RAMFUNC_BIT_PATHS
 #define COLD_BSS __attribute__((section(".cold_bss")))
-#else
-#define COLD_BSS
-#endif
 
 #endif

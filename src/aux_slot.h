@@ -1,5 +1,5 @@
 /** Verge Aux's request slot (docs/host-interface.md, "Verge Aux"), in dap_stage so CPU 1 runs the
- *  request in place, as it does a staged command.
+ *  request in place, as it does a CMSIS-DAP command.
  *
  * CPU 0 puts each request the aux interface receives here, and CPU 1 answers it before its next
  * CMSIS-DAP command, with the code that answers the same command on CMSIS-DAP. One request at a

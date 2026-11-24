@@ -1866,11 +1866,11 @@ def check_stream(c, setup, result, offsets, local_symbols):
     stamp = 0xFFFF0000
     c.check(start(probe, local, stamp), "stream: an armed start failed")
     header = messages(probe)
-    c.check(len(header) == 1 and len(header[0]) == 79 and header[0][:2] == b"\xa1\x03", f"stream: start sent {header}")
-    if header and len(header[0]) == 79:
+    c.check(len(header) == 1 and len(header[0]) == 103 and header[0][:2] == b"\xa1\x04", f"stream: start sent {header}")
+    if header and len(header[0]) == 103:
         h = header[0]
-        c.check(u16_at(h, 72) == probe.energy.get("switch_weight_q16", 4) and h[74] == probe.energy.get("rearm_between_pairs", 1)
-                and u32_at(h, 75) == 0, f"stream: header's step 5 fields {h[72:].hex()}")
+        c.check(u16_at(h, 96) == probe.energy.get("switch_weight_q16", 4) and h[98] == probe.energy.get("rearm_between_pairs", 1)
+                and u32_at(h, 99) == 0, f"stream: header's step 5 fields {h[96:].hex()}")
         c.check(u32_at(h, 2) == clock and u32_at(h, 6) == period and h[10] == 1
                 and u16_at(h, 11) == probe.energy.get("full_scale_mv", 4) and u32_at(h, 13) == 1 and h[17] == 1,
                 f"stream: header fields {h[:18].hex()}")
@@ -1881,7 +1881,7 @@ def check_stream(c, setup, result, offsets, local_symbols):
     held, _, _, _, _, held_local, *_, held_hook = setup(ranges=1)
     c.check(start(held, held_local, stamp), "stream: a high-only start failed")
     header = messages(held)
-    c.check(len(header) == 1 and len(header[0]) == 79 and header[0][17] == 0 and header[0][74] & 4 == 4,
+    c.check(len(header) == 1 and len(header[0]) == 103 and header[0][17] == 0 and header[0][98] & 4 == 4,
             f"stream: a high-only start's header {header[0].hex() if header else None}")
     held.uc.hook_del(held_hook)
     # CPU 1 drains ten pairs at a pause: one message, timed from the start's stamp.
@@ -1927,7 +1927,7 @@ def check_stream(c, setup, result, offsets, local_symbols):
             int.from_bytes(got[0][6:14], "little") == ns(ticks + 480_000),
             f"stream: first message after a resume {[m[:16].hex() for m in got]}")
     # Without a stream, CPU 0's batches go untimed and move the timeline on at each end: after three
-    # segments it stands where timing each pair puts it, which a stream started then (mode 6) uses
+    # segments it stands where timing each pair puts it, which a stream started then (mode 10) uses
     # for its first sequence and time.
     quiet, quiet_dma, _, _, quiet_get, quiet_local, _, quiet_feed, _, _, quiet_hook = setup()
     quiet_stamp = 0x7FFFFF00
@@ -1955,12 +1955,15 @@ def check_stream(c, setup, result, offsets, local_symbols):
         c.check(held == 1 and probe.energy.get("stream.holds_written", 4) == 1 and
                 probe.energy.read("stream.holds", 8) == u32(due) + u32(due + 777),
                 f"stream: hold recorded as {probe.energy.read('stream.holds', 8).hex()}")
-    # A new start ends the stream with reason 3 before its own header; a stop ends it with 2.
+    # A new start ends the stream with reason 3, then drops what was queued, that end with it: the
+    # host sees the new header alone. A stop ends a stream with 2.
     last = probe.energy.get("decoder", 4, 12)
     c.check(start(probe, local, 0), "stream: a second armed start failed")
+    before = (probe.energy.get("stream.written", 4) - 2) % 16
+    ended = probe.energy.read_slots(probe.energy.get("stream.length", 2, 2 * before), before)
     got = messages(probe)
-    c.check(len(got) >= 2 and got[-2][:2] == b"\xa2\x03" and u32_at(got[-2], 2) == last and got[-1][0] == 0xA1,
-            f"stream: restart sent {[m[:6].hex() for m in got]}")
+    c.check(len(got) == 1 and got[0][0] == 0xA1 and ended[:2] == b"\xa2\x03" and u32_at(ended, 2) == last,
+            f"stream: restart sent {[m[:6].hex() for m in got]} after ending with {ended.hex()}")
     c.check(probe.command(bytes([0x90, 2])) == b"\x90\x00\x00", "stream: stop failed")
     got = messages(probe)
     c.check(got == [bytes([0xA2, 2]) + u32(0)], f"stream: stop sent {[m.hex() for m in got]}")
@@ -1973,7 +1976,7 @@ def check_stream(c, setup, result, offsets, local_symbols):
     c.check(got == [bytes([0xA2, 4]) + u32(0)], f"stream: fault sent {[m.hex() for m in got]}")
     # A start after that failure. Once it hands the state back, CPU 0's loop ends a stream it finds
     # with a failure recorded (stream_fault, src/verge_aux.c), so the failure has to be gone by
-    # then.
+    # then. The new stream begins only after the handback.
     released = []
 
     def release(uc, access, at, size, value, data):
@@ -1986,7 +1989,7 @@ def check_stream(c, setup, result, offsets, local_symbols):
     c.check(start(probe, local, 0), "stream: a start after a fault failed")
     probe.uc.hook_del(release_hook)
     probe.uc.ctl_flush_tb()
-    c.check(released == [(1, 0)], f"stream: at the handback after a fault, (active, failure) {released}")
+    c.check(released == [(0, 0)], f"stream: at the handback after a fault, (active, failure) {released}")
     got = messages(probe)
     c.check(len(got) == 1 and got[0][0] == 0xA1 and get("energy_dma_error", 1) == 0,
             f"stream: a start after a fault sent {[m[:2].hex() for m in got]}")
@@ -2002,14 +2005,14 @@ def check_stream(c, setup, result, offsets, local_symbols):
             stalled_get("energy_control_ack") & 1)
     c.check(left[0] == 0 or left[1:] == (1, 0),
             f"stream: after a start's handback and retake timed out, (active, failure, quiet) {left}: nothing ends it")
-    # Mode 5 belongs to Verge Aux: on CMSIS-DAP it is refused and starts nothing.
+    # Mode 9 belongs to Verge Aux: on CMSIS-DAP it is refused and starts nothing.
     local("dap_vendor_on_aux", 0)
-    reply = probe.command(bytes([0x90, 5]) + u32(FIXTURE_RATE) + b"\x00")
-    c.check(reply == b"\x90\xff" and not messages(probe), f"stream: CMSIS-DAP mode 5 answered {reply.hex()}")
+    reply = probe.command(bytes([0x90, 9]) + u32(FIXTURE_RATE) + b"\x00")
+    c.check(reply == b"\x90\xff" and not messages(probe), f"stream: CMSIS-DAP mode 9 answered {reply.hex()}")
     probe.uc.hook_del(hook)
     c.note("energy stream: header, pairs drained by CPU 1 and integrated by CPU 0, times across a resume, a hold's"
            " record, ends at a restart, a stop and a fault, a start after a fault, a start whose handback timed out,"
-           " mode 5 refused on CMSIS-DAP")
+           " mode 9 refused on CMSIS-DAP")
 
 
 def check_identity(c, setup, offsets):

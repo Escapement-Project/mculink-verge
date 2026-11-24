@@ -72,7 +72,6 @@ static uint8_t next_ranges = ENERGY_RANGES_AUTO;
 /** Set by energy_monitor_start_stream for the start it makes: Verge Aux's stream begins with it. */
 static bool stream_on_start;
 static uint8_t stream_dio_mask;
-static bool stream_identified;
 static bool identity_initialized;
 static bool identity_failed;
 static uint8_t identity_boot[16];
@@ -644,11 +643,9 @@ static bool capture_quiet(bool quiet) {
     return false;
 }
 
-static void capture_stream_begin(struct energy_integration* energy, bool identified) {
+static void capture_stream_begin(struct energy_integration* energy) {
     struct energy_stream* const stream = &energy->stream;
-    if (identified) {
-        stream->sent = stream->written;
-    }
+    stream->sent = stream->written;
     uint8_t levels = 0U;
     uint8_t const pins = dio_stream_pins(stream_dio_mask, &levels);
     energy_stream_header_t const header = {
@@ -664,7 +661,7 @@ static void capture_stream_begin(struct energy_integration* energy, bool identif
         .dio_levels = levels,
         .dio_stamp = CTIMER4->TC,
         .edge_resolution_ns = (pins != 0U) ? energy_stream_edge_resolution(ENERGY_TIMER_HZ) : 0U,
-        .capture_id = identified ? &next_identity : nullptr,
+        .capture_id = &next_identity,
         .switch_weight_q16 = energy->switch_weight_q16,
         .rearm_between_pairs = energy->rearm_between_pairs,
         .high_range_only = energy->high_range_only,
@@ -729,11 +726,6 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
         __DMB();
         energy_stream_end(stream, ENERGY_STREAM_END_RESTARTED, energy->decoder.sequence);
         energy_stream_timeline_prepare(stream, 1U);
-        if (stream_on_start) {
-            if (!stream_identified) {
-                capture_stream_begin(energy, false);
-            }
-        }
     } else {
         energy_stream_timeline_prepare(stream, energy->decoder.sequence + 1U);
     }
@@ -766,8 +758,8 @@ __attribute__((noinline)) static bool energy_capture_start(bool new_session) {
         accumulator_reset();
         accumulator_started = true;
         ADC0->STAT = ADC_STAT_FOF0_MASK;
-        if (stream_on_start && stream_identified) {
-            capture_stream_begin(energy, true);
+        if (stream_on_start) {
+            capture_stream_begin(energy);
         }
     }
     energy->running = true;
@@ -985,14 +977,6 @@ energy_monitor_status_t energy_monitor_start_stream(uint32_t rate_hz, uint8_t di
     return status;
 }
 
-energy_monitor_status_t energy_monitor_start_identified(uint32_t rate_hz, bool stream, uint8_t dio_mask) {
-    stream_identified = true;
-    energy_monitor_status_t const status = stream ? energy_monitor_start_stream(rate_hz, dio_mask)
-                                                  : energy_monitor_start(rate_hz);
-    stream_identified = false;
-    return status;
-}
-
 energy_monitor_status_t energy_monitor_set_ranges(uint8_t ranges) {
     if (!dap_shared.energy_available) {
         return ENERGY_MONITOR_UNAVAILABLE;
@@ -1192,20 +1176,18 @@ energy_monitor_status_t energy_monitor_accumulated(uint64_t* energy_nj, uint64_t
 uint32_t energy_command(const uint8_t* request, uint8_t* response) {
     uint8_t const mode = request[1];
     response[1] = DAP_OK;
-    if ((mode == 0U) || (mode == 5U) || (mode == 8U) || (mode == 9U)) {
-        bool const streaming = (mode == 5U) || (mode == 9U);
+    if ((mode == 0U) || (mode == 8U) || (mode == 9U)) {
+        bool const streaming = mode == 9U;
         bool const identified = (mode == 8U) || (mode == 9U);
         uint32_t const rate = read_u32_le(request + 2);
-        // Mode 5 starts a stream with the capture, and only Verge Aux carries a stream. Its last
+        // Mode 9 starts a stream with the capture, and only Verge Aux carries a stream. Its last
         // byte is the DIO pins whose edges the stream reports.
         if (streaming && !dap_vendor_on_aux) {
             response[1] = DAP_ERROR;
             return 2U;
         }
         energy_monitor_status_t const status =
-            identified  ? energy_monitor_start_identified(rate, streaming, streaming ? request[6] : 0U)
-            : streaming ? energy_monitor_start_stream(rate, request[6])
-                        : energy_monitor_start(rate);
+            streaming ? energy_monitor_start_stream(rate, request[6]) : energy_monitor_start(rate);
         uint32_t const actual_rate = identified && (status != ENERGY_MONITOR_OK) ? 0U : energy_monitor_rate();
         response[2] = (uint8_t)status;
         put_u32_le(response + 3, actual_rate);
@@ -1281,8 +1263,7 @@ uint32_t energy_command(const uint8_t* request, uint8_t* response) {
         }
         return 28U;
     }
-    // Modes 6 and 15 are Aux's alone, but their DIO mask is still part of the request in a
-    // batch.
+    // Mode 15 is Aux's alone, but its DIO mask is still part of the request in a batch.
     response[1] = DAP_ERROR;
     return 2U;
 }

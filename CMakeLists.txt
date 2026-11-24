@@ -31,22 +31,7 @@ if(LTO)
   set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 
-# Run CPU 1's command code, the generators and the loops around the generated transfers, out of
-# SRAM rather than flash (src/hot.h). Behind a switch so the two can be compared on one unit
-# without editing a source file.
-#
-# Not available in a Debug build: at -O0 that code no longer fits m_data, which also holds the
-# stack. Refuse it here rather than leave the linker to report the overflow, since Debug exists only
-# to bisect a miscompilation.
-option(RAMFUNC "Run CPU 1's command code from SRAM" ON)
 
-# Run the core at 150 MHz on PLL0 rather than the 144 MHz on PLL1 the board support leaves.
-# See src/core_clock.h for why the 144 does not bind this firmware.
-option(CORE_150MHZ "Run the core at 150 MHz" ON)
-
-# Drive J8's four pins high while a host command runs, so an analyser sees the gap between
-# commands as well as the clock. src/marker.h says why that is worth a pin.
-option(MARKER "Mark command processing on the J8 header" ON)
 # Generate the SWD and JTAG transfer paths at runtime into SRAMX, for the clock the host asks for
 # (src/swd_gen.c, src/jtag_gen.c). A product image does, and carries no ARM transfer path. Off is
 # the ARM reference, the wire tools/equiv.py holds the generated paths to: a test build, marked
@@ -59,14 +44,9 @@ if(DEFINED SWD_CODEGEN OR DEFINED JTAG_CODEGEN)
     "SWD_CODEGEN and JTAG_CODEGEN are now one option, GENERATED_WIRE. Configure with "
     "-USWD_CODEGEN -UJTAG_CODEGEN, and -DGENERATED_WIRE=OFF for the ARM reference.")
 endif()
-# Run TinyUSB's device stack from SRAM. Flash runs at 11 wait states, and the stack's interrupt
-# handler and task are branchy code the prefetcher cannot cover; they are paid once per command.
-option(USB_RAM "Run TinyUSB from SRAM" ON)
-# Vendor 0x88, which runs code the host sends. A bench instrument for the emulator's cost model;
-# src/code_lab.c says what it measures.
-option(CODE_LAB "Build the vendor 0x88 code lab" OFF)
-# Add shared-timer counters for the USB and two-core command path. Bench-only; off in shipped images.
-option(DAP_TIMING_DIAGNOSTICS "Measure command handoff stages" OFF)
+# Two bench instruments: vendor 0x88, which runs code the host sends, for the emulator's cost model
+# (src/code_lab.c), and vendor 0x87, which places SWD's read sample (src/sample_probe.c).
+option(CODE_LAB "Build the vendor 0x87 sample probe and 0x88 code lab" OFF)
 # A test build that attaches at full speed, which needs no full-speed hub: `always` never chirps,
 # as on a full-speed-only port; `first` skips the chirp on the first attach only, as a chirp that
 # failed once. Never shipped; the version string carries it.
@@ -75,10 +55,14 @@ set_property(CACHE USB_FULL_SPEED_TEST PROPERTY STRINGS "" always first)
 if(NOT USB_FULL_SPEED_TEST MATCHES "^(always|first)?$")
   message(FATAL_ERROR "USB_FULL_SPEED_TEST is always, first, or empty, not ${USB_FULL_SPEED_TEST}")
 endif()
-if(RAMFUNC AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+# CPU 1's command code, the generators and the loops around the generated transfers run from SRAM
+# (src/hot.h). At -O0 that code outgrows m_data, which also holds the stack, so refuse a Debug
+# build here rather than leave the linker to report the overflow. LTO exists to bisect a
+# miscompilation.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   message(FATAL_ERROR
-    "RAMFUNC does not fit a Debug build: at -O0 the code it puts in SRAM outgrows m_data. "
-    "Configure with -DRAMFUNC=OFF to bisect in Debug.")
+    "A Debug build does not fit: at -O0 CPU 1's code in SRAM outgrows m_data. Bisect a "
+    "miscompilation with -DLTO=OFF instead.")
 endif()
 
 family_initialize_project(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR})
@@ -96,9 +80,6 @@ if(NOT GENERATED_WIRE)
 endif()
 if(CODE_LAB)
   string(APPEND FW_VARIANT "+lab")
-endif()
-if(DAP_TIMING_DIAGNOSTICS)
-  string(APPEND FW_VARIANT "+timing")
 endif()
 if(NOT USB_FULL_SPEED_TEST STREQUAL "")
   string(APPEND FW_VARIANT "+fs-${USB_FULL_SPEED_TEST}")
@@ -231,7 +212,6 @@ target_sources(${CORE1} PRIVATE
   ${LPC55_DEVICE}/LPC55S69/drivers/fsl_reset.c
   ${DAP_SRC}/DAP.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_vendor.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/sample_probe.c
   ${VERGE_CJTAG_SOURCES}
   ${DAP_SRC}/SW_DP.c
   ${SWD_DP_SOURCES}
@@ -300,10 +280,6 @@ set_source_files_properties(
   PROPERTIES COMPILE_OPTIONS "-funroll-loops"
   )
 
-if(RAMFUNC)
-  target_compile_definitions(${CORE1} PRIVATE RAMFUNC_BIT_PATHS=1)
-endif()
-
 # Clang reaches for its own compiler-rt start files and runtime, which the distribution only
 # builds for the host. This firmware brings its own reset handler and linker script, so there are
 # no start files to want, and libgcc from the arm-none-eabi toolchain supplies the helpers.
@@ -352,15 +328,8 @@ endif()
 # pipeline of one and no overlap at all. Two commands in flight is what saturates the wire --
 # measured 669 KiB/s at depths 2, 4 and 8 with the slots to match -- so three slots is what lets
 # a conforming host reach it. Through probe-rs it is worth 4.5% on reads and 4.8% on writes.
-set(REQUEST_SLOTS 3 CACHE STRING "How many host commands the firmware will hold")
-if(NOT REQUEST_SLOTS)
-  set(REQUEST_SLOTS 3 CACHE STRING "How many host commands the firmware will hold" FORCE)
-endif()
+set(REQUEST_SLOTS 3)
 set(DAP_PACKET_COUNT ${REQUEST_SLOTS})
-
-if(MARKER)
-  target_compile_definitions(${CORE1} PRIVATE MARKER_PINS=1)
-endif()
 
 if(GENERATED_WIRE)
   target_sources(${CORE1} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/gen.c
@@ -373,7 +342,7 @@ if(GENERATED_WIRE)
 endif()
 
 if(CODE_LAB)
-  target_sources(${CORE1} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/code_lab.c)
+  target_sources(${CORE1} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/code_lab.c ${CMAKE_CURRENT_SOURCE_DIR}/src/sample_probe.c)
   target_compile_definitions(${CORE1} PRIVATE CODE_LAB=1)
   target_compile_definitions(${PROJECT_NAME} PRIVATE CODE_LAB=1)
 endif()
@@ -384,17 +353,7 @@ elseif(USB_FULL_SPEED_TEST STREQUAL "first")
   target_compile_definitions(${PROJECT_NAME} PRIVATE USB_FULL_SPEED_TEST_FIRST=1)
 endif()
 
-if(DAP_TIMING_DIAGNOSTICS)
-  target_sources(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/dap_timing.c)
-  target_compile_definitions(${CORE1} PRIVATE DAP_TIMING_DIAGNOSTICS=1)
-  target_compile_definitions(${PROJECT_NAME} PRIVATE DAP_TIMING_DIAGNOSTICS=1)
-endif()
-
-if(CORE_150MHZ)
-  set(CORE_CLOCK_MHZ 150)
-else()
-  set(CORE_CLOCK_MHZ 144)
-endif()
+set(CORE_CLOCK_MHZ 150)
 
 # CPU0 owns SRAM0. CPU1's full 16 KiB stack occupies the bottom of SRAM1, followed by its
 # data/code, which may run up to dap_stage's top 8 KiB of SRAM3 (a product image's hot part may not
@@ -424,7 +383,6 @@ foreach(_target ${PROJECT_NAME} ${CORE1})
     DAP_PACKET_COUNT_OVERRIDE=${REQUEST_SLOTS}U
     CORE1_RAM_ORIGIN=${CORE1_RAM_ORIGIN}U
     CORE1_RAM_LENGTH=${CORE1_RAM_LENGTH}U
-    $<$<BOOL:${CORE_150MHZ}>:CORE_150MHZ=1>
     )
   target_include_directories(${_target} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -511,15 +469,12 @@ rewrite_ld("(\n  m_usb_global \\(NOLOAD\\) :)"
            "\n  .stream_slots (NOLOAD) :\n  {\n    KEEP(*(.stream_slots))\n  } > m_stream_slots\n  .dap_shared (NOLOAD) :\n  {\n    KEEP(*(.dap_shared))\n  } > m_dap_shared\n  .dap_stage (NOLOAD) :\n  {\n    KEEP(*(.dap_stage))\n  } > m_dap_stage\n\\1"
            "the m_usb_global section")
 
-# memcpy goes into the RAM copy of .data, as on CPU 1: it stages every command. USB_RAM moves
-# TinyUSB's code there too. The linker places input sections by file, which LTO erases, so those
-# sources compile without it.
-set(_ram_files "*mem.S.obj")
-set(_ram_inputs "\n    *mem.S.obj(.text .text*)")
-if(USB_RAM)
-  string(APPEND _ram_files " */tinyusb/src/*")
-  string(APPEND _ram_inputs "\n    */tinyusb/src/*(.text .text*)")
-endif()
+# memcpy goes into the RAM copy of .data, as on CPU 1: it stages every command. TinyUSB's code goes
+# there too: flash runs at 11 wait states, and the stack's interrupt handler and task are branchy
+# code the prefetcher cannot cover, paid once per command. The linker places input sections by
+# file, which LTO erases, so those sources compile without it.
+set(_ram_files "*mem.S.obj */tinyusb/src/*")
+set(_ram_inputs "\n    *mem.S.obj(.text .text*)\n    */tinyusb/src/*(.text .text*)")
 rewrite_ld("\\*\\(\\.text\\)" "*(EXCLUDE_FILE(${_ram_files}) .text)" "*(.text)")
 rewrite_ld("\\*\\(\\.text\\*\\)" "*(EXCLUDE_FILE(${_ram_files}) .text*)" "*(.text*)")
 rewrite_ld("\\*\\(\\.ramfunc\\*\\)" "*(.ramfunc*)${_ram_inputs}" "the .ramfunc line to place code in RAM after")
@@ -535,11 +490,9 @@ family_configure_device_example(${PROJECT_NAME} noos)
 file(GLOB FIRST_PARTY_C_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c")
 set_property(SOURCE ${FIRST_PARTY_C_SOURCES} APPEND PROPERTY COMPILE_OPTIONS "-std=gnu23")
 
-if(USB_RAM)
-  get_target_property(_sources ${PROJECT_NAME} SOURCES)
-  list(FILTER _sources INCLUDE REGEX "/tinyusb/src/")
-  set_property(SOURCE ${_sources} APPEND PROPERTY COMPILE_OPTIONS -fno-lto)
-endif()
+get_target_property(_sources ${PROJECT_NAME} SOURCES)
+list(FILTER _sources INCLUDE REGEX "/tinyusb/src/")
+set_property(SOURCE ${_sources} APPEND PROPERTY COMPILE_OPTIONS -fno-lto)
 
 # TinyUSB's hw/bsp/board.c is stdio retargeting and weak board stubs, and this firmware uses
 # none of it: the console is its own CDC interface and nothing here calls printf. It also assumes
@@ -606,9 +559,6 @@ if(UV_EXECUTABLE)
   set(IMAGE_CHECK_ARGS --packet-count ${DAP_PACKET_COUNT} --core-clock-mhz ${CORE_CLOCK_MHZ})
   if(CODE_LAB)
     list(APPEND IMAGE_CHECK_ARGS --code-lab)
-  endif()
-  if(DAP_TIMING_DIAGNOSTICS)
-    list(APPEND IMAGE_CHECK_ARGS --timing-diagnostics)
   endif()
   add_custom_target(check_wire
     COMMAND ${UV_EXECUTABLE} run ${CMAKE_CURRENT_SOURCE_DIR}/tools/cycles.py

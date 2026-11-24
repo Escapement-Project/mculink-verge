@@ -93,17 +93,13 @@ flight are CPU 0's loop's alone, since TinyUSB's callbacks run in the loop too.
 
 ### Staged copies
 
-CPU 0 copies a staged command into `dap_stage` before it writes the command's length, so CPU 1
-sees it whole. CPU 1 releases the request slot as soon as it takes the command, so the next command
+CPU 0 copies each command into `dap_stage` before it writes the command's length, so CPU 1 sees
+it whole. CPU 1 releases the request slot as soon as it takes the command, so the next command
 can arrive while this one runs. So the staged buffers cannot be the slots. CPU 0 takes them in
 turn, and there is one more of them than there are slots. A buffer comes round again only after
 `REQUEST_SLOTS` more commands, and CPU 0 cannot receive that many while the command in it runs
-(`dap_stage_t`). A staged reply goes the other way: CPU 1 writes it before it
-publishes the reply's length, and CPU 0 copies it into the USB buffer before it starts sending.
-
-Vendor command `0x8C` switches staging: CPU 1 writes `stage_commands`, and CPU 0 reads it as each
-command arrives. Each command carries its own flag (`request_stage`), so a change takes effect
-between commands, never inside one.
+(`dap_stage_t`). A bulk reply goes the other way: CPU 1 writes it before it publishes the reply's
+length, and CPU 0 copies it into the USB buffer before it starts sending.
 
 ### Aborts
 
@@ -168,10 +164,10 @@ state away. While the quiet flag stands, the interrupt leaves energy completions
 stream commands stand aside too.
 
 While CPU 1 holds the state it drains what is left in the ring at a pause or stop, writes a
-stream's end, and for a start clears the last failure and writes the tables, the DMA descriptors,
-the position and an unidentified stream's header. Then the start hands the state back, but it is
-not finished: it goes on to write a new session's identity, reset the total and the decoder, write
-an identified stream's header, mark the capture running, and start the timeline. CPU 0 stays
+stream's end, and for a start clears the last failure and writes the tables, the DMA descriptors
+and the position. Then the start hands the state back, but it is not finished: it goes on to write
+a new session's identity, reset the total and the decoder, write the stream's header, mark the
+capture running, and start the timeline. CPU 0 stays
 off all of that for three reasons. The DMA channel is still off, and enabled last, so no completion
 can reach the interrupt. The interrupt also integrates nothing while `running` is clear. The loop
 treats the stream as CPU 1's while `timeline_pending` is set. And the identity has its own
@@ -305,8 +301,7 @@ On a board without energy capture, Verge Aux's mode 15 starts a DIO stream, whic
 CPU 1 never asks for the capture state there, as every capture path stops at `energy_available`,
 so CPU 0 owns the stream throughout. Its Aux path writes the header and the end
 (`stream_command`), and its loop sends the edges and moves the stream's origin, which no sample
-moves (`dio_edges_task`). CPU 1 writes the pins the bench marker holds to `dio_marker_pins` as
-`0x84` gives or takes them; a stream reads them once, as it starts.
+moves (`dio_edges_task`).
 
 After 200 ms with nothing sent, the loop sends the stream's time (`dio_time`), once timing has
 started (the sync run). With interrupts masked, it checks that the pin interrupt's record is empty
@@ -326,8 +321,8 @@ costs at most one flicker, so nothing orders them.
 
 CPU 0 clears the handover state and reads the straps before it starts CPU 1 (`dap_shared_init`,
 `board_read_straps`): the board, its jumpers, whether it can measure energy, and the pointer to the
-energy state. CPU 1 only reads those. The same call sets staging on and the high-speed packet size,
-which change later as described above.
+energy state. CPU 1 only reads those. The same call sets the high-speed packet size, which
+changes later as described above.
 
 ## Counts read without ordering
 

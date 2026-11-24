@@ -398,10 +398,7 @@ __attribute__((section(".ramfunc"), noinline)) uint8_t dio_edges_pins(uint8_t re
     for (;;) {
         uint32_t const turns = dap_shared.dio_spi_turns;
         __DMB();
-        // The bench marker's pins are not DIO pins (src/marker.h).
-        uint8_t const pins = (present && ((turns & 1U) == 0U))
-                                 ? (uint8_t)(requested & DIO_PINS & ~(j8 ? dap_shared.dio_marker_pins : 0U))
-                                 : 0U;
+        uint8_t const pins = (present && ((turns & 1U) == 0U)) ? (uint8_t)(requested & DIO_PINS) : 0U;
         *levels = (uint8_t)(levels_now() & pins);
         *stamp = CTIMER4->TC;
         __DMB();

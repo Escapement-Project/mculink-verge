@@ -36,6 +36,8 @@ static uint8_t const* take(struct energy_stream* stream, uint16_t* length) {
     return energy_stream_slots[at];
 }
 
+/** Every capture stream's header carries its capture's identity. */
+static energy_capture_id_t const test_id = {.bytes = {[0] = 0xC1U, [16] = 1U}};
 static energy_calibration_t const low = {.code = {100U, 30000U}, .current_na = {5000U, 900000U}, .count = 2U};
 static energy_calibration_t const high = {
     .code = {200U, 20000U, 40000U, 60000U}, .current_na = {1000000U, 50000000U, 100000000U, 150000000U}, .count = 4U};
@@ -50,7 +52,8 @@ static void start(struct energy_stream* stream, uint32_t started_raw, bool strea
     if (streaming) {
         energy_stream_header_t const header = {
             .clock_hz = CLOCK_HZ, .period = PERIOD, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = 1U,
-            .previous_low = true, .low = &low, .high = &high, .dio_mask = 0U, .dio_levels = 5U, .edge_resolution_ns = 0U,
+            .previous_low = true, .low = &low, .high = &high,
+            .capture_id = &test_id, .dio_mask = 0U, .dio_levels = 5U, .edge_resolution_ns = 0U,
             .switch_weight_q16 = 24576U, .rearm_between_pairs = true};
         assert(energy_stream_begin(stream, &header));
     }
@@ -64,14 +67,15 @@ static void test_header(void) {
     uint8_t const* m = take(&stream, &length);
     assert(m != NULL && length == ENERGY_STREAM_HEADER_BYTES);
     // The clock and the period, which no whole rate in pairs a second gives exactly.
-    assert(m[0] == 0xA1U && m[1] == 3U && u32(m + 2) == CLOCK_HZ && u32(m + 6) == PERIOD && m[10] == 1U);
+    assert(m[0] == 0xA1U && m[1] == 4U && u32(m + 2) == CLOCK_HZ && u32(m + 6) == PERIOD && m[10] == 1U);
     assert(u16(m + 11) == 3000U && u32(m + 13) == 1U && m[17] == 1U);
     assert(m[18] == 2U && u16(m + 19) == 100U && u32(m + 21) == 5000U && u16(m + 25) == 30000U);
     assert(u32(m + 27) == 900000U && u16(m + 31) == 0U && u32(m + 33) == 0U && u16(m + 37) == 0U && u32(m + 39) == 0U);
     assert(m[43] == 4U && u16(m + 44) == 200U && u32(m + 46) == 1000000U && u16(m + 62) == 60000U);
     assert(u32(m + 64) == 150000000U && m[68] == 0U && m[69] == 5U && u16(m + 70) == 0U);
-    // Step 5's fields; no pair before a capture's first, so no current before.
-    assert(u16(m + 72) == 24576U && m[74] == 1U && u32(m + 75) == 0U);
+    // The capture's identity, then step 5's fields; no pair before a capture's first, so no current before.
+    assert(memcmp(m + 72, test_id.bytes, ENERGY_IDENTITY_BYTES) == 0);
+    assert(u16(m + 96) == 24576U && m[98] == 1U && u32(m + 99) == 0U);
     assert(take(&stream, &length) == NULL);
 }
 
@@ -81,12 +85,12 @@ static void test_high_range_only_header(void) {
     reset_stream(&stream);
     energy_stream_header_t const header = {
         .clock_hz = CLOCK_HZ, .period = PERIOD, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = 1U,
-        .previous_low = false, .low = &low, .high = &high, .switch_weight_q16 = 24576U,
+        .previous_low = false, .low = &low, .high = &high, .capture_id = &test_id, .switch_weight_q16 = 24576U,
         .rearm_between_pairs = true, .high_range_only = true};
     assert(energy_stream_begin(&stream, &header));
     uint16_t length = 0U;
     uint8_t const* m = take(&stream, &length);
-    assert(m != NULL && length == ENERGY_STREAM_HEADER_BYTES && m[17] == 0U && m[74] == 5U);
+    assert(m != NULL && length == ENERGY_STREAM_HEADER_BYTES && m[17] == 0U && m[98] == 5U);
 }
 
 static void test_identified_header(void) {
@@ -421,7 +425,8 @@ static void test_untimed(void) {
     // A stream started now times its first pair from there.
     energy_stream_header_t const header = {
         .clock_hz = CLOCK_HZ, .period = PERIOD, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = s + 1U,
-        .previous_low = true, .low = &low, .high = &high, .dio_mask = 0U, .dio_levels = 0U, .edge_resolution_ns = 0U};
+        .previous_low = true, .low = &low, .high = &high,
+        .capture_id = &test_id, .dio_mask = 0U, .dio_levels = 0U, .edge_resolution_ns = 0U};
     assert(energy_stream_begin(&stream, &header));
     uint16_t length = 0U;
     (void)take(&stream, &length);
@@ -470,7 +475,8 @@ static void start_edges(struct energy_stream* stream, uint32_t started_raw, uint
     energy_stream_timeline_prepare(stream, 1U);
     energy_stream_header_t const header = {
         .clock_hz = CLOCK_HZ, .period = PERIOD, .setting = 1U, .full_scale_mv = 3000U, .first_sequence = 1U,
-        .previous_low = true, .low = &low, .high = &high, .dio_mask = mask, .dio_levels = levels,
+        .previous_low = true, .low = &low, .high = &high,
+        .capture_id = &test_id, .dio_mask = mask, .dio_levels = levels,
         .dio_stamp = header_raw, .edge_resolution_ns = energy_stream_edge_resolution(CLOCK_HZ)};
     assert(energy_stream_begin(stream, &header));
     energy_stream_timeline_run(stream, true, CLOCK_HZ, TICKS, started_raw);
@@ -685,7 +691,8 @@ static void test_edges_lost(void) {
     while (take(&stream, &length) != NULL) {
     }
     edge_entry(&stream, 32000U, 0x02U, 0x00U, 0x02U, 0U);
-    energy_stream_header_t const header = {.clock_hz = CLOCK_HZ, .period = 96000U, .low = &low, .high = &high, .dio_mask = 0x02U};
+    energy_stream_header_t const header = {.clock_hz = CLOCK_HZ, .period = 96000U, .low = &low, .high = &high,
+        .capture_id = &test_id, .dio_mask = 0x02U};
     assert(energy_stream_begin(&stream, &header));
     energy_stream_pause(&stream);
     m = take(&stream, &length);
@@ -694,7 +701,8 @@ static void test_edges_lost(void) {
     energy_stream_end(&stream, 3U, s);
     while (take(&stream, &length) != NULL) {
     }
-    energy_stream_header_t const none = {.clock_hz = CLOCK_HZ, .period = 96000U, .low = &low, .high = &high, .dio_mask = 0U};
+    energy_stream_header_t const none = {.clock_hz = CLOCK_HZ, .period = 96000U, .low = &low, .high = &high,
+        .capture_id = &test_id, .dio_mask = 0U};
     assert(energy_stream_begin(&stream, &none));
     (void)take(&stream, &length);
     edge_entry(&stream, 33000U, 0x02U, 0x00U, 0x02U, 0U);
@@ -754,7 +762,8 @@ static void test_edges_lost_at_begin(void) {
     reset_stream(&stream);
     energy_stream_timeline_prepare(&stream, 1U);
     energy_stream_header_t const header = {
-        .clock_hz = CLOCK_HZ, .period = PERIOD, .low = &low, .high = &high, .dio_mask = 0x01U, .dio_levels = 0x01U,
+        .clock_hz = CLOCK_HZ, .period = PERIOD, .low = &low, .high = &high,
+        .capture_id = &test_id, .dio_mask = 0x01U, .dio_levels = 0x01U,
         .dio_stamp = 3000U, .edge_resolution_ns = energy_stream_edge_resolution(CLOCK_HZ)};
     assert(energy_stream_begin(&stream, &header));
     energy_stream_timeline_run(&stream, true, CLOCK_HZ, TICKS, 1000U);
@@ -986,7 +995,8 @@ static void test_marks_lost_per_stream(void) {
     energy_stream_end(&stream, 1U, 0U);
     while (take(&stream, &length) != NULL) {
     }
-    energy_stream_header_t const header = {.clock_hz = CLOCK_HZ, .period = 96000U, .low = &low, .high = &high};
+    energy_stream_header_t const header = {.clock_hz = CLOCK_HZ, .period = 96000U, .low = &low, .high = &high,
+        .capture_id = &test_id};
     assert(energy_stream_begin(&stream, &header));
     (void)take(&stream, &length);
     assert(mark(&stream, TICKS + 100U, 100U, "fresh") == ENERGY_STREAM_MARK_SENT);
@@ -1031,7 +1041,8 @@ static void test_marks_early(void) {
 
     reset_stream(&stream);
     energy_stream_timeline_prepare(&stream, 1U);
-    energy_stream_header_t const header = {.clock_hz = CLOCK_HZ, .period = 96000U, .low = &low, .high = &high};
+    energy_stream_header_t const header = {.clock_hz = CLOCK_HZ, .period = 96000U, .low = &low, .high = &high,
+        .capture_id = &test_id};
     assert(energy_stream_begin(&stream, &header));
     (void)take(&stream, &length);
     assert(mark(&stream, 123U, 1U, "pending") == ENERGY_STREAM_MARK_SENT);

@@ -37,12 +37,12 @@ static uint16_t in_packet = USB_BULK_HIGH_SPEED;
 static volatile bool zlp_due;
 /** Counts USB configurations, for the slot's `generation`. */
 static uint32_t generation;
-/** A stream command (0x90 mode 6, 7, 10, 13 or 15) CPU 0 answers itself, waiting for the capture
+/** A stream command (0x90 mode 7, 10, 13 or 15) CPU 0 answers itself, waiting for the capture
  *  state. */
 static uint8_t local_request[26];
 static uint8_t local_length;
 /** A header has gone since this configuration began: stream messages before it are a gone host's.
- *  Only a header this configuration asked for, by mode 5, 6, 9, 10 or 15, counts. */
+ *  Only a header this configuration asked for, by mode 9, 10 or 15, counts. */
 static bool stream_synced;
 static bool stream_expected;
 
@@ -64,11 +64,11 @@ __attribute__((section(".ramfunc"))) void aux_received(const uint8_t* buffer, ui
     if ((buffer != aux_out) || (length == 0U) || (slot->state != AUX_SLOT_FREE)) {
         return;
     }
-    // Modes 6, 7, 10 and 13 start and stop a stream without stopping the capture, and mode 15 a DIO
+    // Modes 7, 10 and 13 start and stop a stream without stopping the capture, and mode 15 a DIO
     // stream without one. CPU 0 owns the capture state whenever CPU 1 has not asked for quiet
     // (src/energy_integration.h), so it serves them.
     if ((buffer[0] == 0x90U) && (length >= 2U) &&
-        ((buffer[1] == 6U) || (buffer[1] == 7U) || (buffer[1] == 10U) || (buffer[1] == 13U) || (buffer[1] == 15U))) {
+        ((buffer[1] == 7U) || (buffer[1] == 10U) || (buffer[1] == 13U) || (buffer[1] == 15U))) {
         local_length = (uint8_t)(length < sizeof(local_request) ? length : sizeof(local_request));
         memcpy(local_request, buffer, local_length);
         return;
@@ -121,7 +121,7 @@ __attribute__((section(".ramfunc"))) static bool stream_owned_by_cpu1(struct ene
     return ((dap_shared.energy_control_ack & DAP_ENERGY_QUIET_FLAG) != 0U) || stream->timeline_pending;
 }
 
-/** Whether a mode 6, 7, 10, 13 or 15 has to wait for the capture state. CPU 1 holds it from boot to
+/** Whether a mode 7, 10, 13 or 15 has to wait for the capture state. CPU 1 holds it from boot to
  *  the first start and after every stop, with nothing running and no stream, and then the answer
  *  needs no write. It also holds it for a moment inside a command, around a supply read, with the
  *  capture running: then the answer waits. */
@@ -130,8 +130,7 @@ __attribute__((section(".ramfunc"))) static bool stream_waits(void) {
     if ((energy != nullptr) && (local_request[1] == 13U) && ((energy->capture_id_sequence & 1U) != 0U)) {
         return true;
     }
-    bool const failed = ((local_request[1] == 6U) || (local_request[1] == 10U) || (local_request[1] == 13U)) &&
-                        (dap_shared.energy_dma_error != 0U);
+    bool const failed = ((local_request[1] == 10U) || (local_request[1] == 13U)) && (dap_shared.energy_dma_error != 0U);
     return (energy != nullptr) && (dap_shared.energy_available != 0U) && !failed &&
            stream_owned_by_cpu1(&energy->stream) && (energy->running || energy->stream.active);
 }
@@ -157,109 +156,118 @@ __attribute__((section(".ramfunc"))) static uint8_t dio_stream_start(struct ener
     uint8_t levels = 0U;
     uint32_t stamp = 0U;
     uint8_t const pins = dio_edges_pins(local_request[2], &levels, &stamp);
-    if (!energy_stream_begin_dio(stream, ENERGY_TIMER_HZ, pins, levels, stamp)) {
-        return 7U;
-    }
+    // The ring was just emptied, so the header has room.
+    (void)energy_stream_begin_dio(stream, ENERGY_TIMER_HZ, pins, levels, stamp);
     stream_expected = true;
     stream_synced = false;
     return 0U;
 }
 
-/** 0x90 mode 6, 7, 10, 13 or 15 into aux_in; false while it has to wait (stream_waits). Replies as
+/** 0x90 mode 10 with energy capture: the running capture, streamed from its next sample. It ends any
+ *  stream running and drops what was queued, its end included. */
+__attribute__((section(".ramfunc"))) static uint8_t capture_stream_start(struct energy_integration* energy) {
+    struct energy_stream* const stream = &energy->stream;
+    if (dap_shared.energy_dma_error != 0U) {
+        return 7U;
+    }
+    if (stream_owned_by_cpu1(stream) || !energy->running) {
+        return 1U;
+    }
+    energy_stream_end(stream, ENERGY_STREAM_END_ASKED, energy->decoder.sequence);
+    stream->sent = stream->written;
+    uint8_t levels = 0U;
+    uint32_t stamp = 0U;
+    uint8_t const pins = dio_edges_pins(local_request[2], &levels, &stamp);
+    energy_stream_header_t const header = {
+        .clock_hz = stream->clock_hz,
+        .period = stream->period,
+        .setting = energy->setting,
+        .full_scale_mv = (uint16_t)energy->full_scale_mv,
+        .first_sequence = stream->next_sequence,
+        .previous_low = energy->previous_low,
+        .low = &energy->low_range,
+        .high = &energy->high_range,
+        .dio_mask = pins,
+        .dio_levels = levels,
+        .dio_stamp = stamp,
+        .edge_resolution_ns = (pins != 0U) ? energy_stream_edge_resolution(stream->clock_hz) : 0U,
+        .capture_id = &energy->capture_id,
+        .switch_weight_q16 = energy->switch_weight_q16,
+        .rearm_between_pairs = energy->rearm_between_pairs,
+        .previous_known = energy->previous_known,
+        .previous_na = energy->previous_na,
+        .high_range_only = energy->high_range_only,
+    };
+    // The ring was just emptied, so the header has room.
+    (void)energy_stream_begin(stream, &header);
+    stream_expected = true;
+    stream_synced = false;
+    return 0U;
+}
+
+/** 0x90 mode 7, 10, 13 or 15 into aux_in; false while it has to wait (stream_waits). Replies as
  *  docs/host-interface.md "The energy stream" and "DIO streams" give them. */
 __attribute__((section(".ramfunc"))) static bool stream_command(void) {
     if (stream_waits()) {
         return false;
     }
     __DMB();
-    bool const identified = (local_request[1] == 10U) || (local_request[1] == 13U);
-    bool const dio = local_request[1] == 15U;
-    bool const start = (local_request[1] == 6U) || (local_request[1] == 10U);
-    aux_in[0] = 0x90U;
-    aux_in[1] = DAP_OK;
-    if (((start || dio) && (local_length < 3U)) || (identified && !start && (local_length < 26U))) {
+    uint8_t const mode = local_request[1];
+    uint8_t const bytes = (mode == 13U) ? 26U : (mode == 7U) ? 2U : 3U;
+    if (local_length < bytes) {
         aux_in[0] = ID_DAP_Invalid;
         in_length = 1U;
         return true;
     }
-    uint8_t result = 0U;
+    uint8_t result = 3U;
     // The DMA interrupt is the only other owner on this core.
     uint32_t const basepri = cpu0_mask_all_but_edges();
     struct energy_integration* const energy = dap_shared.energy_integration;
-    struct energy_stream* const stream = (energy != nullptr) ? &energy->stream : nullptr;
-    if (stream == nullptr) {
-        result = 3U;
+    if (energy == nullptr) {
+        // No stream to start or end.
     } else if (dap_shared.energy_available == 0U) {
         // Without energy capture there is no capture to stream, but a DIO stream, which mode 7 ends.
-        if (dio) {
+        if (mode == 15U) {
             result = dio_stream_start(energy);
-        } else if (local_request[1] == 7U) {
+        } else if (mode == 7U) {
             stream_end_asked(energy);
-        } else {
-            result = 3U;
+            result = 0U;
         }
-    } else if (dio) {
-        // With energy capture, mode 9's mask records the pins beside it.
-        result = 3U;
-    } else if (identified && !start) {
-        uint32_t const before = energy->capture_id_sequence;
-        __DMB();
-        energy_capture_id_t const capture_id = energy->capture_id;
-        __DMB();
-        if (((before & 1U) != 0U) || (before != energy->capture_id_sequence)) {
-            cpu0_unmask(basepri);
-            return false;
-        }
-        if (!energy_identity_matches(&capture_id, local_request + 2U)) {
-            result = 8U;
-        } else if (!stream_owned_by_cpu1(stream)) {
-            energy_stream_end(stream, ENERGY_STREAM_END_ASKED, energy->decoder.sequence);
-        }
-    } else if (!start) {
-        // Owned by CPU 1 means nothing streams (stream_waits).
-        if (!stream_owned_by_cpu1(stream)) {
-            energy_stream_end(stream, ENERGY_STREAM_END_ASKED, energy->decoder.sequence);
-        }
-    } else if (dap_shared.energy_dma_error != 0U) {
-        result = 7U;
-    } else if (stream_owned_by_cpu1(stream) || !energy->running) {
-        result = 1U;
     } else {
-        energy_stream_end(stream, ENERGY_STREAM_END_ASKED, energy->decoder.sequence);
-        if (identified) {
-            stream->sent = stream->written;
+        switch (mode) {
+        case 7U:
+            // Owned by CPU 1 means nothing streams (stream_waits).
+            if (!stream_owned_by_cpu1(&energy->stream)) {
+                energy_stream_end(&energy->stream, ENERGY_STREAM_END_ASKED, energy->decoder.sequence);
+            }
+            result = 0U;
+            break;
+        case 10U:
+            result = capture_stream_start(energy);
+            break;
+        case 13U: {
+            uint32_t const before = energy->capture_id_sequence;
+            __DMB();
+            energy_capture_id_t const capture_id = energy->capture_id;
+            __DMB();
+            if (((before & 1U) != 0U) || (before != energy->capture_id_sequence)) {
+                cpu0_unmask(basepri);
+                return false;
+            }
+            result = energy_identity_matches(&capture_id, local_request + 2U) ? 0U : 8U;
+            if ((result == 0U) && !stream_owned_by_cpu1(&energy->stream)) {
+                energy_stream_end(&energy->stream, ENERGY_STREAM_END_ASKED, energy->decoder.sequence);
+            }
+            break;
         }
-        uint8_t levels = 0U;
-        uint32_t stamp = 0U;
-        uint8_t const pins = dio_edges_pins(local_request[2], &levels, &stamp);
-        energy_stream_header_t const header = {
-            .clock_hz = stream->clock_hz,
-            .period = stream->period,
-            .setting = energy->setting,
-            .full_scale_mv = (uint16_t)energy->full_scale_mv,
-            .first_sequence = stream->next_sequence,
-            .previous_low = energy->previous_low,
-            .low = &energy->low_range,
-            .high = &energy->high_range,
-            .dio_mask = pins,
-            .dio_levels = levels,
-            .dio_stamp = stamp,
-            .edge_resolution_ns = (pins != 0U) ? energy_stream_edge_resolution(stream->clock_hz) : 0U,
-            .capture_id = identified ? &energy->capture_id : nullptr,
-            .switch_weight_q16 = energy->switch_weight_q16,
-            .rearm_between_pairs = energy->rearm_between_pairs,
-            .previous_known = energy->previous_known,
-            .previous_na = energy->previous_na,
-            .high_range_only = energy->high_range_only,
-        };
-        // A full ring: the host is not reading, and the header would be lost too.
-        result = energy_stream_begin(stream, &header) ? 0U : 7U;
-        stream_expected = stream_expected || (result == 0U);
-        if (identified && (result == 0U)) {
-            stream_synced = false;
+        default:
+            // Mode 15: with energy capture, mode 9's mask records the pins beside it.
+            break;
         }
     }
     cpu0_unmask(basepri);
+    aux_in[0] = 0x90U;
+    aux_in[1] = DAP_OK;
     aux_in[2] = result;
     in_length = 3U;
     return true;
@@ -307,10 +315,16 @@ __attribute__((section(".ramfunc"), noinline)) static void stream_marks(void) {
     cpu0_unmask(basepri);
 }
 
-/** Stream messages wait while a mode 5 or 9 request is out, so its reply comes before its header. */
+/** Whether `request` is 0x90 mode 9, a capture start with a stream, whose header CPU 1 writes before
+ *  its reply. */
+__attribute__((section(".ramfunc"))) static bool starts_stream(uint8_t const* request) {
+    return (request[0] == 0x90U) && (request[1] == 9U);
+}
+
+/** Stream messages wait while a mode 9 request is out, so its reply comes before its header. */
 __attribute__((section(".ramfunc"))) static bool stream_held(void) {
     aux_slot_t const* const slot = &dap_stage.aux;
-    return (slot->state != AUX_SLOT_FREE) && (slot->request[0] == 0x90U) && ((slot->request[1] == 5U) || (slot->request[1] == 9U));
+    return (slot->state != AUX_SLOT_FREE) && starts_stream(slot->request);
 }
 
 /** The next stream message into aux_in. Before a header since the configuration began, messages
@@ -354,10 +368,10 @@ __attribute__((section(".ramfunc"), noinline)) void aux_task(void) {
         __DMB();
         uint8_t const length = slot->reply_len;
         bool const live = slot->generation == generation;
-        // Mode 5's header is in the ring already, held back until this reply has gone.
-        if (live && (slot->request[0] == 0x90U) && ((slot->request[1] == 5U) || (slot->request[1] == 9U))) {
+        // Mode 9's header is in the ring already, held back until this reply has gone.
+        if (live && starts_stream(slot->request)) {
             stream_expected = true;
-            if ((slot->request[1] == 9U) && (slot->reply_len >= 3U) && (slot->reply[2] == 0U)) {
+            if ((slot->reply_len >= 3U) && (slot->reply[2] == 0U)) {
                 stream_synced = false;
             }
         }

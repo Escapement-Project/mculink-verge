@@ -35,10 +35,9 @@
 #define ENERGY_STREAM_PAIR_LOW 1U
 #define ENERGY_STREAM_PAIR_UNDER_RANGE 2U
 #define ENERGY_STREAM_PAIRS_FIXED 16U
-/** Format 3's fields, then step 5's: weight, flags and the current before
- *  (docs/host-interface.md). */
-#define ENERGY_STREAM_HEADER_BYTES 79U
-#define ENERGY_STREAM_ID_HEADER_BYTES (ENERGY_STREAM_HEADER_BYTES + ENERGY_IDENTITY_BYTES)
+/** A capture stream's header, format 4: the capture's fields, its identity, then step 5's: weight,
+ *  flags and the current before (docs/host-interface.md). */
+#define ENERGY_STREAM_HEADER_BYTES (79U + ENERGY_IDENTITY_BYTES)
 /** A DIO stream's header, format 5: the type, the format, the clock, the pins, their levels and the
  *  edge resolution. */
 #define ENERGY_STREAM_DIO_HEADER_BYTES 10U
@@ -276,6 +275,7 @@ typedef struct {
     /** The stamping timer just after `dio_levels` was read. */
     uint32_t dio_stamp;
     uint16_t edge_resolution_ns;
+    /** Never null: every capture stream carries its capture's identity. */
     energy_capture_id_t const* capture_id;
     /** Step 5: the previous pair's share of an up-switch's stand-in in 1/65536, whether a down-switch
      *  keeps its own reading, and the current through the sense resistor of the pair before the

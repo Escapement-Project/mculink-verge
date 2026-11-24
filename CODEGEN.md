@@ -241,8 +241,8 @@ One generator draws both JTAG and cJTAG; `src/jtag_gen.c`'s opening comment has 
   DIRSET +0x2380; DIRCLR +0x2400. The ordinary GPIO at 0x4008_C000, which the straps, J8 and the
   Pro's DIO pins use, has the same layout per port. For port n, the B registers are at
   base + 32n + pin, W at base + 0x1000 + 128n + 4*pin, and SET, CLR and NOT 4n further on.
-- BOARDS.md has the pins. P0_28, SWDIO's TXEN, is high while the probe drives. J8's marker pins are
-  port 1, pins 0-3.
+- BOARDS.md has the pins. P0_28, SWDIO's TXEN, is high while the probe drives. J8's DIO pins are port
+  1, pins 0-3.
 - SRAMX, 0x0400_0000-0x0400_7FFF, is executable and always clocked. The generated code takes all of
   it, or the lower 16 KB in a lab build, whose code lab arena is the upper 16 KB. Nothing else uses
   it.
@@ -268,4 +268,4 @@ One generator draws both JTAG and cJTAG; `src/jtag_gen.c`'s opening comment has 
   (the sample at a delay from the launching edge, stored to a buffer) are working generator
   prototypes.
 - `tools/dap.py` has `swd_reset` (a line reset, then DPIDR), `limit`, `block` and `sample`
-  (vendor 0x87).
+  (vendor 0x87, in a `CODE_LAB` build).

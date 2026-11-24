@@ -164,26 +164,6 @@ typedef struct {
     uint32_t stale;  // commands from a host that had gone, dropped without running
 } dap_core1_status_t;
 
-#ifdef DAP_TIMING_DIAGNOSTICS
-typedef struct {
-    volatile uint32_t clock_hz;
-    volatile uint32_t rx_count;
-    volatile uint32_t rx_callback_cycles;
-    volatile uint32_t rx_stage_copy_cycles;
-    volatile uint32_t tx_stage_copy_cycles;
-    volatile uint32_t rx_publish_cycles;
-    volatile uint32_t mailbox1_signal_cycles;
-    volatile uint32_t wake_to_dispatch_cycles;
-    volatile uint32_t dispatch_cycles;
-    volatile uint32_t request_copy_cycles;
-    volatile uint32_t dap_execute_cycles;
-    volatile uint32_t response_copy_cycles;
-    volatile uint32_t reply_publish_cycles;
-    volatile uint32_t tx_count;
-    volatile uint32_t tx_start_cycles;
-    volatile uint32_t tx_in_flight_cycles;
-} dap_timing_counters_t;
-#endif
 
 /** Four rings of REQUEST_SLOTS, each handed over through its `_len` array (dap_usb_slot_free): a
  *  request ring and a reply ring for each transport.
@@ -201,7 +181,7 @@ typedef struct {
     // Bulk requests: CPU 0 fills, CPU 1 releases as soon as it has taken the command.
     volatile uint16_t request_len[REQUEST_SLOTS];
     volatile uint32_t request_seq[REQUEST_SLOTS];
-    volatile uint8_t request_stage[REQUEST_SLOTS];  // 0, or 1 + the dap_stage.request it is in
+    volatile uint8_t request_stage[REQUEST_SLOTS];  // the dap_stage.request it is in
     volatile uint8_t request_head;
     volatile uint8_t request_tail;
     volatile uint8_t rx_armed_slot;
@@ -220,7 +200,6 @@ typedef struct {
     // sent the slot. CPU 0 sends from the head only.
     volatile uint16_t response_len[REQUEST_SLOTS];
     volatile uint32_t response_seq[REQUEST_SLOTS];  // the command's
-    volatile uint8_t response_staged[REQUEST_SLOTS];  // the reply is in dap_stage.response
     volatile uint8_t response_head;
     volatile uint8_t response_tail;
     // HID replies, the same way. Each is in dap_stage.hid_response, because TinyUSB's HID class sends
@@ -229,10 +208,6 @@ typedef struct {
     volatile uint32_t hid_response_seq[REQUEST_SLOTS];
     volatile uint8_t hid_response_head;
     volatile uint8_t hid_response_tail;
-
-    /** Whether CPU 0 stages the commands it receives next, set by ID_VENDOR_STAGE. Each command
-     *  carries its own flag, so a change takes effect between commands. */
-    volatile uint8_t stage_commands;
 
     /** DAP_TransferAbort lives in CPU 1's RAM. CPU 1 publishes its address before it runs a
      *  command; CPU 0 sets it the moment an abort arrives. */
@@ -263,9 +238,6 @@ typedef struct {
     volatile uint8_t jumpers;
     /** HW_VER_5 enables Pro power measurement, written with the board straps. */
     volatile uint8_t energy_available;
-    /** The J8 pins the bench marker holds (src/marker.h), written by CPU 1: a DIO stream leaves them
-     *  out. */
-    volatile uint8_t dio_marker_pins;
 
     /** SWO ring segments DMA0 has completed, counted by CPU 0's DMA interrupt for src/swo.c. */
     volatile uint32_t swo_segments;
@@ -297,7 +269,6 @@ typedef struct {
 
     DAP_SHARED_ALIGN uint8_t request[REQUEST_SLOTS][DAP_SHARED_PACKET_SIZE];
     DAP_SHARED_ALIGN uint8_t response[REQUEST_SLOTS][DAP_SHARED_PACKET_SIZE];
-    DAP_SHARED_ALIGN uint8_t hid_request[REQUEST_SLOTS][DAP_SHARED_HID_REPORT_SIZE];
 
     DAP_SHARED_DMA_TABLE_ALIGN volatile dma_descriptor_t dma_table[DAP_SHARED_DMA_CHANNELS];
     // SWO's ring, linked in a circle from its channel's table entry.
@@ -308,21 +279,21 @@ typedef struct {
 
 extern dap_shared_t dap_shared;
 
-/** Commands and replies in Normal memory, where CPU 1 runs them in place. CPU 0 copies each staged
- *  command in from its USB slot as it arrives and each staged reply out as it starts to send it,
+/** Commands and replies in Normal memory, where CPU 1 runs them in place. CPU 0 copies each
+ *  command in from its USB slot as it arrives and each bulk reply out as it starts to send it,
  *  so CPU 1 copies nothing while commands are queued. Each image defines it in `.dap_stage`, which
  *  both link scripts place in the top 8 KiB of SRAM3 (CMakeLists.txt says why there). CPU 1 has the
  *  highest AHB matrix priority (src/main.c), so CPU 0's copies cannot delay the accesses a
  *  transfer makes to its buffers.
  *
- * CPU 1 frees a staged command's request slot as it takes the command, as it does an unstaged one
- * once copied, so a DAP_TransferAbort can still arrive while the host has every slot in use. So
- * the request buffers are not the slots: CPU 0 takes them in turn, one more of them than there are
- * slots. A buffer comes round again after REQUEST_SLOTS more commands, and CPU 0 cannot receive
- * that many while the command in it runs. HID has its own, a packet long like `request_copy`,
- * because the command layer bounds its reads by the packet size. The reply buffers are the reply
- * slots'. HID's hold one report each: every HID command runs in CPU 1's own buffer, a packet long
- * like `response_copy`, and only its report is copied here, so no reply can run into the next.
+ * CPU 1 frees a command's request slot as it takes the command, so a DAP_TransferAbort can still
+ * arrive while the host has every slot in use. So the request buffers are not the slots: CPU 0
+ * takes them in turn, one more of them than there are slots. A buffer comes round again after
+ * REQUEST_SLOTS more commands, and CPU 0 cannot receive that many while the command in it runs.
+ * HID has its own, a packet long, because the command layer bounds its reads by the packet size.
+ * The reply buffers are the reply slots'. HID's hold one report each: every HID command runs in
+ * CPU 1's own buffer, a packet long, and only its report is copied here, so no reply can run into
+ * the next.
  */
 typedef struct {
     DAP_SHARED_ALIGN uint8_t request[DAP_STAGE_REQUESTS][DAP_SHARED_PACKET_SIZE];
@@ -331,12 +302,6 @@ typedef struct {
     DAP_SHARED_ALIGN uint8_t hid_response[REQUEST_SLOTS][DAP_SHARED_HID_REPORT_SIZE];
     /** Verge Aux's one request and its reply (src/aux_slot.h). */
     aux_slot_t aux;
-#ifdef DAP_TIMING_DIAGNOSTICS
-    volatile uint32_t request_tick[REQUEST_SLOTS];
-    volatile uint32_t response_tx_tick[REQUEST_SLOTS];
-    volatile uint8_t response_timing_excluded[REQUEST_SLOTS];
-    DAP_SHARED_ALIGN dap_timing_counters_t timing;
-#endif
 } dap_stage_t;
 
 extern dap_stage_t dap_stage;
@@ -349,7 +314,6 @@ static inline void dap_shared_init(volatile dap_shared_t* state, dap_stage_t* st
     for (size_t i = 0U; i < offsetof(dap_shared_t, request); i++) {
         bytes[i] = 0U;
     }
-    state->stage_commands = 1U;
     state->bulk_packet_size = DAP_SHARED_PACKET_SIZE;
     state->energy_integration = energy;
     stage->aux.state = AUX_SLOT_FREE;

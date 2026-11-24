@@ -19,10 +19,9 @@
 #include "dap_shared.h"
 #include "dap_vendor.h"
 #include "dio.h"
-#include "marker.h"
-#include "sample_probe.h"
 #ifdef CODE_LAB
 #include "code_lab.h"
+#include "sample_probe.h"
 #endif
 #ifdef GENERATED_WIRE
 #include "jtag_gen.h"
@@ -39,7 +38,7 @@
  * The reply, after the echoed command id:
  *
  *     [0..4]  "CJTAG"                 magic
- *     [5]     format version          8; the fields are format 7's (below)
+ *     [5]     format version          9; the fields are format 7's (below)
  *     [6]     capability flags        CJTAG_CAP_*
  *     [7]     build string length n
  *     [8..]   build string, n bytes, not terminated
@@ -70,9 +69,12 @@
  *
  * Format 8 changes no field: it says ID_VENDOR_JTAG_FORMAT, sent while disconnected, selects the format
  * the next DAP_Connect(2) starts in. Format 7 refused it there.
+ *
+ * Format 9 changes no field: it says vendor 0x84, 0x8C and 0x93 and 0x90 modes 5 and 6 are gone,
+ * 0x87 answers only in a CODE_LAB build, and every capture stream's header is format 4.
  */
 #define CJTAG_INFO_MAGIC "CJTAG"
-#define CJTAG_INFO_VERSION 8U
+#define CJTAG_INFO_VERSION 9U
 /// The id, the magic, the version, the flags, the length, the board, the old formats and extended
 /// capabilities, around the build string. A v1 HID report holds 64 bytes.
 #define CJTAG_INFO_FIXED 18U
@@ -180,71 +182,6 @@ static uint32_t jtag_escape_command(const uint8_t* request, uint8_t* response) {
     return 2U;
 }
 
-#ifdef MARKER_PINS
-static uint32_t j8_command(const uint8_t* request, uint8_t* response) {
-    // request[1] names the J8 pins the marker drives; the rest are DIO pins. Zero, as at boot,
-    // gives all four to DIO.
-    response[1] = dio_marker(request[1]) ? DAP_OK : DAP_ERROR;
-    response[2] = (uint8_t)marker_mask;
-    return 3U;
-}
-#endif
-
-/** ID_VENDOR_STAGE takes `mode`: 0 has CPU 1 copy each command and reply itself, 1 has CPU 0 stage
- * them (the default), anything else leaves it. It answers `status, on`. Commands already received
- * keep the way they arrived, so the change reaches the ones after them.
- */
-static uint32_t stage_command(const uint8_t* request, uint8_t* response) {
-    if (request[1] <= 1U) {
-        dap_shared.stage_commands = request[1];
-    }
-    response[1] = DAP_OK;
-    response[2] = dap_shared.stage_commands;
-    return 3U;
-}
-
-#ifdef DAP_TIMING_DIAGNOSTICS
-static uint32_t timing_command(const uint8_t* request, uint8_t* response) {
-    (void)request;
-    uint32_t const values[] = {
-        dap_stage.timing.clock_hz,
-        dap_stage.timing.rx_count,
-        dap_stage.timing.rx_callback_cycles,
-        dap_stage.timing.rx_stage_copy_cycles,
-        dap_stage.timing.tx_stage_copy_cycles,
-        dap_stage.timing.rx_publish_cycles,
-        dap_stage.timing.mailbox1_signal_cycles,
-        dap_stage.timing.wake_to_dispatch_cycles,
-        dap_stage.timing.dispatch_cycles,
-        dap_stage.timing.request_copy_cycles,
-        dap_stage.timing.dap_execute_cycles,
-        dap_stage.timing.response_copy_cycles,
-        dap_stage.timing.reply_publish_cycles,
-        dap_stage.timing.tx_count,
-        dap_stage.timing.tx_start_cycles,
-        dap_stage.timing.tx_in_flight_cycles,
-    };
-    response[1] = DAP_OK;
-    response[2] = 1U;
-    memcpy(response + 3U, values, sizeof(values));
-    dap_stage.timing.rx_count = 0U;
-    dap_stage.timing.rx_callback_cycles = 0U;
-    dap_stage.timing.rx_stage_copy_cycles = 0U;
-    dap_stage.timing.tx_stage_copy_cycles = 0U;
-    dap_stage.timing.rx_publish_cycles = 0U;
-    dap_stage.timing.mailbox1_signal_cycles = 0U;
-    dap_stage.timing.wake_to_dispatch_cycles = 0U;
-    dap_stage.timing.dispatch_cycles = 0U;
-    dap_stage.timing.request_copy_cycles = 0U;
-    dap_stage.timing.dap_execute_cycles = 0U;
-    dap_stage.timing.response_copy_cycles = 0U;
-    dap_stage.timing.reply_publish_cycles = 0U;
-    dap_stage.timing.tx_count = 0U;
-    dap_stage.timing.tx_start_cycles = 0U;
-    dap_stage.timing.tx_in_flight_cycles = 0U;
-    return 3U + sizeof(values);
-}
-#endif
 
 bool dap_vendor_on_aux;
 
@@ -256,15 +193,11 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
     switch (request[0]) {
     case ID_VENDOR_CJTAG_INFO:
         return info_command(request, response);
-#ifdef MARKER_PINS
-    case ID_VENDOR_J8:
-        return j8_command(request, response);
-#endif
     case ID_VENDOR_TARGET:
         return target_sense_command(request, response);
+#ifdef CODE_LAB
     case ID_VENDOR_SAMPLE:
         return sample_probe_command(request, response);
-#ifdef CODE_LAB
     case ID_VENDOR_LAB:
         return code_lab_command(request, response);
 #endif
@@ -276,8 +209,6 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
     case ID_VENDOR_JTAG_PACING:
         return jtag_pacing_command(request, response);
 #endif
-    case ID_VENDOR_STAGE:
-        return stage_command(request, response);
 #ifdef GENERATED_WIRE
     case ID_VENDOR_JTAG_LOG:
         return jtag_log_command(request, response);
@@ -292,10 +223,6 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t* request, uint8_t* response) {
         return pro_spi_command(request, response);
     case ID_VENDOR_I2C:
         return pro_i2c_command(request, response);
-#ifdef DAP_TIMING_DIAGNOSTICS
-    case ID_VENDOR_TIMING:
-        return timing_command(request, response);
-#endif
     case ID_VENDOR_MARK:
         return energy_mark_command(request, response);
     case ID_VENDOR_JTAG_FORMAT:

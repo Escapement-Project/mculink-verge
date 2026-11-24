@@ -177,13 +177,11 @@ static inline dap_packet_plan_t dap_energy_lengths(const uint8_t* p, uint32_t le
         in = 6U;
         break;
     case 4U:
-    case 6U:
     case 10U:
     case 14U:
     case 15U:
         in = 3U;
         break;
-    case 5U:
     case 9U:
         in = 7U;
         break;
@@ -198,7 +196,6 @@ static inline dap_packet_plan_t dap_energy_lengths(const uint8_t* p, uint32_t le
     uint32_t out;
     switch (p[1]) {
     case 0U:
-    case 5U:
         out = 7U;
         break;
     case 1U:
@@ -321,15 +318,11 @@ static inline dap_packet_plan_t dap_command_lengths(const uint8_t* p, uint32_t l
 #endif
     case ID_VENDOR_CJTAG_INFO:
         return dap_lengths(1U, 18U + sizeof(FIRMWARE_VERSION) - 1U);
-#ifdef MARKER_PINS
-    case ID_VENDOR_J8:
-        return dap_lengths(2U, 3U);
-#endif
     case ID_VENDOR_TARGET:
         return dap_lengths(3U, 7U);
+#ifdef CODE_LAB
     case ID_VENDOR_SAMPLE:
         return dap_lengths(10U, 17U);
-#ifdef CODE_LAB
     case ID_VENDOR_LAB:
         return dap_lab_lengths(p, length);
 #endif
@@ -341,8 +334,6 @@ static inline dap_packet_plan_t dap_command_lengths(const uint8_t* p, uint32_t l
     case ID_VENDOR_JTAG_PACING:
         return dap_lengths(2U, 4U);
 #endif
-    case ID_VENDOR_STAGE:
-        return dap_lengths(2U, 3U);
 #ifdef GENERATED_WIRE
     case ID_VENDOR_JTAG_LOG:
         return dap_lengths(2U, 25U);
@@ -358,10 +349,6 @@ static inline dap_packet_plan_t dap_command_lengths(const uint8_t* p, uint32_t l
         return dap_spi_lengths(p, length);
     case ID_VENDOR_I2C:
         return dap_i2c_lengths(p, length);
-#ifdef DAP_TIMING_DIAGNOSTICS
-    case ID_VENDOR_TIMING:
-        return dap_lengths(2U, 67U);
-#endif
     case ID_VENDOR_MARK:
         return dap_mark_lengths(p, length);
     case ID_VENDOR_JTAG_FORMAT:

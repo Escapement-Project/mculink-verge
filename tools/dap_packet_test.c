@@ -38,10 +38,15 @@ int main(void) {
     static const struct {
         uint8_t id, in, out;
     } fixed[] = {
-        {0x00, 2, 4},   {0x01, 3, 2}, {0x02, 2, 2}, {0x03, 1, 2}, {0x04, 6, 2},  {0x08, 6, 2}, {0x09, 3, 2},
-        {0x0a, 1, 3},   {0x10, 7, 2}, {0x11, 5, 2}, {0x13, 2, 2}, {0x15, 2, 2},  {0x16, 2, 6}, {0x17, 2, 2},
-        {0x18, 2, 2},   {0x19, 5, 5}, {0x1a, 2, 2}, {0x1b, 1, 6}, {0x82, 1, 22}, {0x83, 1, 1}, {0x85, 1, 1}, {0x86, 3, 7},
-        {0x87, 10, 17}, {0x8c, 2, 3}, {0x8e, 4, 11}, {0x8f, 2, 3}, {0x95, 2, 2}, {0x96, 3, 2},
+        {0x00, 2, 4},   {0x01, 3, 2}, {0x02, 2, 2},  {0x03, 1, 2}, {0x04, 6, 2},  {0x08, 6, 2}, {0x09, 3, 2},
+        {0x0a, 1, 3},   {0x10, 7, 2}, {0x11, 5, 2},  {0x13, 2, 2}, {0x15, 2, 2},  {0x16, 2, 6}, {0x17, 2, 2},
+        {0x18, 2, 2},   {0x19, 5, 5}, {0x1a, 2, 2},  {0x1b, 1, 6}, {0x82, 1, 22}, {0x83, 1, 1}, {0x85, 1, 1},
+        {0x86, 3, 7},   {0x8c, 1, 1}, {0x8e, 4, 11}, {0x8f, 2, 3}, {0x93, 1, 1},  {0x95, 2, 2}, {0x96, 3, 2},
+#ifdef CODE_LAB
+        {0x87, 10, 17},
+#else
+        {0x87, 1, 1},
+#endif
     };
     for (uint32_t i = 0; i < sizeof(fixed) / sizeof(fixed[0]); i++) {
         uint8_t bytes[10] = {fixed[i].id};
@@ -55,10 +60,6 @@ int main(void) {
 #else
     assert(check((uint8_t[]){0x8a}, 1U, 1U, true).produced == 1U);
 #endif
-#ifdef DAP_TIMING_DIAGNOSTICS
-    check((uint8_t[]){0x93, 0}, 2U, 64U, false);
-    prefixes((uint8_t[]){0x93, 0}, 2U, 67U);
-#endif
     for (uint8_t mode = 8U; mode <= 13U; mode++) {
         uint8_t bytes[64] = {0x90U, mode};
         uint32_t const length = mode == 8U ? 6U : mode == 9U ? 7U : mode == 10U ? 3U : mode == 12U ? 2U : 26U;
@@ -70,11 +71,16 @@ int main(void) {
         assert(padded.consumed == length);
 
     }
-    // Modes 6 and 15, Aux's alone, still carry a DIO mask a batch reads past.
-    for (uint8_t mode = 6U; mode <= 15U; mode += 9U) {
-        uint8_t bytes[64] = {0x90U, mode};
+    {
+        // Mode 15, Aux's alone, still carries a DIO mask a batch reads past.
+        uint8_t bytes[64] = {0x90U, 15U};
         prefixes(bytes, 3U, 2U);
         assert(check(bytes, sizeof(bytes), 2U, true).consumed == 3U);
+    }
+    // An unknown mode, here 5 and 6, takes the mode byte and no more.
+    for (uint8_t mode = 5U; mode <= 6U; mode++) {
+        uint8_t bytes[64] = {0x90U, mode};
+        assert(check(bytes, sizeof(bytes), 2U, true).consumed == 2U);
     }
     {
         // Mode 14 carries its setting in the request, so a batch reads the next command after it.

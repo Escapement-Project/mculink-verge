@@ -125,7 +125,7 @@ def shared_fields() -> list[str]:
 
 
 def shared_offsets(request_slots: int, *fields: str, small_enums: bool = True,
-                   struct_type: str = "dap_shared_t", timing_diagnostics: bool = False) -> dict[str, int]:
+                   struct_type: str = "dap_shared_t") -> dict[str, int]:
     """Member offsets of dap_shared_t, and its size as "size", as the firmware's compiler lays it
     out. A host compiler would not: its pointers are a different size. An image's enum size is
     its compiler's choice, so pass the image's own."""
@@ -136,7 +136,6 @@ def shared_offsets(request_slots: int, *fields: str, small_enums: bool = True,
         c_file, obj, raw = (os.path.join(tmp, n) for n in ("layout.c", "layout.o", "layout.bin"))
         open(c_file, "w").write(source)
         subprocess.run(["arm-none-eabi-gcc", "-std=gnu23", "-mthumb", "-mcpu=cortex-m33", f"-DREQUEST_SLOTS={request_slots}U",
-                        *(["-DDAP_TIMING_DIAGNOSTICS"] if timing_diagnostics else []),
                         "-fshort-enums" if small_enums else "-fno-short-enums",
                         f"-I{os.path.join(ROOT, 'src')}", "-c", c_file, "-o", obj], check=True)
         subprocess.run(["arm-none-eabi-objcopy", "-O", "binary", "-j", ".rodata", obj, raw], check=True)
@@ -327,15 +326,10 @@ DAP_COMMANDS = {
     0x82: b"",  # our CJTAG_INFO
     0x95: b"\x00",  # our DAP_JTAG_Format, conventional JTAG, which with no connection clears a selection
     0x96: b"\x02\x01",  # our DAP_JTAG_Escape, refused with no JTAG connection
-    0x84: b"\x00",  # our J8, giving the marker no pins, which leaves all four to DIO
     # Our TARGET, reading the supply. The emulator's ADC never finishes calibrating, so this takes
     # the timeout path and answers DAP_ERROR: what is checked is that it answers at all, which is
     # the property that matters on hardware too.
     0x86: b"\x00\x00",
-    # Our SAMPLE, no reads. The port is disconnected by this point, so it answers DAP_ERROR;
-    # check_sample_probe runs it connected.
-    0x87: b"\x00\x00\xff\x00\x00\x00\x00\x00\x00",
-    0x8C: b"\xff",  # our STAGE, asking only
     0x8E: b"\x00\x00\x00",  # our DIO, only reading
 }
 ID_DAP_INVALID = 0xFF
@@ -700,8 +694,8 @@ def check_bounded_commands(c: Checker, elf: str, slots: int) -> None:
                     "malformed batch lost prior replies or counted rejected command")
             c.check(bytes(probe.uc.mem_read(state, 1)) == b"\x01", "rejected batch tail changed port")
             c.check(execute(bytes([2, 1])) == bytes([2, 1]), "command after malformed batch failed")
-        # Modes 6 and 15 are Verge Aux's alone, but their DIO mask is part of the request in a batch.
-        for mode in (6, 15):
+        # Modes 10 and 15 are Verge Aux's alone, but their DIO mask is part of the request in a batch.
+        for mode in (10, 15):
             reply = execute(bytes([0x7f, 2, 0x90, mode, 0x0f, 0, 0xff]))
             c.check(reply == bytes([0x7f, 2, 0x90, 0xff, 0, 2]) + u16(capacity),
                     f"0x90 mode {mode} in a batch: {reply.hex()}")
@@ -888,56 +882,53 @@ def check_hid_padding(c: Checker, elf: str, slots: int) -> None:
     sym = symbols_with_size(elf)
     if not c.check("dap_task" in sym, "CPU1 command task missing from HID checks"):
         return
-    names = ("hid_request_len", "hid_request_seq", "hid_request_stage", "hid_request_head",
-             "hid_request", "hid_response_tail", "hid_response_len")
+    names = ("hid_request_len", "hid_request_seq", "hid_request_stage", "hid_request_head", "hid_response_tail",
+             "hid_response_len")
     fields = shared_offsets(slots, *names, small_enums=short_enums(elf))
     stage = shared_offsets(slots, "hid_request", "hid_response", "hid_response[1]",
                            small_enums=short_enums(elf), struct_type="dap_stage_t")
     stride = stage["hid_response[1]"] - stage["hid_response"]
     own, own_size = sym["response_copy"]
-    for staged in (False, True):
-        probe = machine(elf, sym)
-        shared = probe.sym["dap_shared"]
-        staging = probe.sym["dap_stage"]
-        # Each round reuses every reply slot. A one-byte Info retains a stale ff selector.
-        for payload, prefix in ((b"\x00\x02", None), (b"\x7e", b"\xff"),
-                                (b"\x00", b"\xff"), (b"\x00\xff", b"\x00\x02\x40\x00")):
-            for slot in range(slots):
-                probe.uc.mem_write(shared + fields["hid_request_head"], bytes([slot]))
-                probe.uc.mem_write(shared + fields["hid_response_tail"], bytes([slot]))
-                probe.uc.mem_write(shared + fields["hid_request_len"] + slot * 2, u16(len(payload)))
-                probe.uc.mem_write(shared + fields["hid_request_seq"] + slot * 4, u32(1))
-                probe.uc.mem_write(shared + fields["hid_request_stage"] + slot, bytes([slot + 1 if staged else 0]))
-                probe.uc.mem_write(shared + fields["hid_response_len"] + slot * 2, u16(0))
-                request = staging + stage["hid_request"] + 512 * slot if staged else shared + fields["hid_request"] + 64 * slot
-                probe.uc.mem_write(request, b"\xa5\xff" + b"\xa5" * 62)
-                probe.uc.mem_write(request, payload)
-                response = staging + stage["hid_response"] + stride * slot
-                if prefix is None:
-                    probe.uc.mem_write(response, b"\xa5" * 64)
-                probe.uc.mem_write(own, b"\x5a" * own_size)
-                probe.call("dap_task")
-                c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC, "HID command task did not return")
-                reply = bytes(probe.uc.mem_read(response, 64))
-                if prefix is None:
-                    c.check(reply[0] == 0 and reply[1] > 4, "long HID fixture did not produce a string")
-                    meaningful = 2 + reply[1]
-                else:
-                    meaningful = len(prefix)
-                    c.check(reply[:meaningful] == prefix, "HID payload or packet-size override changed")
-                c.check(reply[meaningful:] == bytes(64 - meaningful), "HID reply leaked its previous tail")
-                c.check(bytes(probe.uc.mem_read(shared + fields["hid_response_len"] + slot * 2, 2)) == u16(64),
-                        "HID reply did not publish a full report")
-                c.check(bytes(probe.uc.mem_read(own, 64)) == reply,
-                        "HID reply did not run in CPU 1's own packet-long buffer")
-    c.note("HID long/short/malformed Info replies, zero padding and packet size across both staging modes and all slots")
+    probe = machine(elf, sym)
+    shared = probe.sym["dap_shared"]
+    staging = probe.sym["dap_stage"]
+    # Each round reuses every reply slot. A one-byte Info retains a stale ff selector.
+    for payload, prefix in ((b"\x00\x02", None), (b"\x7e", b"\xff"),
+                            (b"\x00", b"\xff"), (b"\x00\xff", b"\x00\x02\x40\x00")):
+        for slot in range(slots):
+            probe.uc.mem_write(shared + fields["hid_request_head"], bytes([slot]))
+            probe.uc.mem_write(shared + fields["hid_response_tail"], bytes([slot]))
+            probe.uc.mem_write(shared + fields["hid_request_len"] + slot * 2, u16(len(payload)))
+            probe.uc.mem_write(shared + fields["hid_request_seq"] + slot * 4, u32(1))
+            probe.uc.mem_write(shared + fields["hid_request_stage"] + slot, bytes([slot]))
+            probe.uc.mem_write(shared + fields["hid_response_len"] + slot * 2, u16(0))
+            request = staging + stage["hid_request"] + 512 * slot
+            probe.uc.mem_write(request, b"\xa5\xff" + b"\xa5" * 62)
+            probe.uc.mem_write(request, payload)
+            response = staging + stage["hid_response"] + stride * slot
+            if prefix is None:
+                probe.uc.mem_write(response, b"\xa5" * 64)
+            probe.uc.mem_write(own, b"\x5a" * own_size)
+            probe.call("dap_task")
+            c.check(probe.uc.reg_read(UC_ARM_REG_PC) == RETURN_MAGIC, "HID command task did not return")
+            reply = bytes(probe.uc.mem_read(response, 64))
+            if prefix is None:
+                c.check(reply[0] == 0 and reply[1] > 4, "long HID fixture did not produce a string")
+                meaningful = 2 + reply[1]
+            else:
+                meaningful = len(prefix)
+                c.check(reply[:meaningful] == prefix, "HID payload or packet-size override changed")
+            c.check(reply[meaningful:] == bytes(64 - meaningful), "HID reply leaked its previous tail")
+            c.check(bytes(probe.uc.mem_read(shared + fields["hid_response_len"] + slot * 2, 2)) == u16(64),
+                    "HID reply did not publish a full report")
+            c.check(bytes(probe.uc.mem_read(own, 64)) == reply,
+                    "HID reply did not run in CPU 1's own packet-long buffer")
+    c.note("HID long/short/malformed Info replies, zero padding and packet size across all slots")
 
 
-def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: bool = False,
-                        timing_diagnostics: bool = False) -> None:
+def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: bool = False) -> None:
     from usb_checks import (check_aux, check_aux_stream, check_completion_chains, check_descriptors, check_full_speed,
-                            check_interfaces_apart, check_rechirp, check_transport, check_unconfigured,
-                            check_unsent_untimed)
+                            check_interfaces_apart, check_rechirp, check_transport, check_unconfigured)
     from usb_idle_checks import check_idle, check_idle_rearm, check_idle_reply, check_idle_serviced, check_reboot
     from usb_lifecycle import check_sequences
 
@@ -954,10 +945,6 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: 
     check_transport(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_interfaces_apart(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, slots)
     check_completion_chains(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
-    if timing_diagnostics:
-        stage = shared_offsets(slots, "timing.tx_count", "timing.tx_in_flight_cycles", small_enums=short_enums(elf0),
-                               struct_type="dap_stage_t", timing_diagnostics=True)
-        check_unsent_untimed(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets, stage)
     check_full_speed(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
     check_descriptors(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
     check_rechirp(c, elf0, elf1, symbols_with_size(elf0), symbols_with_size(elf1), offsets)
@@ -985,7 +972,7 @@ def check_usb_transport(c: Checker, elf0: str, elf1: str, slots: int, code_lab: 
     check_edge_rest(c, elf0, symbols_with_size(elf0), edge_shared, edge_layout)
     check_edge_spi(c, elf0, symbols_with_size(elf0), edge_shared, edge_layout)
     from dio_edges_checks import check_j8_edges
-    j8_shared = shared_offsets(slots, "energy_control_ack", "dio_spi_turns", "energy_available", "dio_marker_pins",
+    j8_shared = shared_offsets(slots, "energy_control_ack", "dio_spi_turns", "energy_available",
                                small_enums=short_enums(elf0))
     j8_layout = shared_offsets(slots, "stream", "stream.active", "stream.pairless", "stream.edge_mask",
                                "stream.timeline_pending", "stream.edge_entries_written", "stream.edge_entries",
@@ -1276,8 +1263,8 @@ def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
     build = reply[9 : 9 + length].decode("ascii", "replace")
     if magic != b"CJTAG":
         c.problems.append(f"vendor 0x82 magic is {magic!r}, wanted b'CJTAG'")
-    if version != 8:
-        c.problems.append(f"vendor 0x82 format version is {version}, wanted 8")
+    if version != 9:
+        c.problems.append(f"vendor 0x82 format version is {version}, wanted 9")
     # The plain board, format 4 to 6's formats cleared, then the extended capabilities. A host finds
     # the cJTAG formats by trying them with DAP_JTAG_Format.
     tail = reply[9 + length :]
@@ -1336,14 +1323,10 @@ def check_identity(c: Checker, elf: str, code_lab: bool) -> None:
             c.note("vendor 0x88 code lab: two arenas reported")
     elif not lab or lab[0] != ID_DAP_INVALID:
         c.problems.append("vendor 0x88 should answer ID_DAP_Invalid until something implements it")
-
-    # J8 gives the bench marker its pins and takes them back, on the plain board once DIO has J8.
-    probe.call("board_debug_pins_init")
-    probe.call("dio_init")
-    for pins in (0x0F, 0x01, 0x00):
-        reply = probe.command(bytes([0x84, pins]))
-        if len(reply) < 3 or reply[0] != 0x84 or reply[1] != 0x00 or reply[2] != pins:
-            c.problems.append(f"vendor 0x84 {pins:#04x} answered {reply.hex()}")
+    # The sample probe is the lab build's too; check_sample_probe runs it there.
+    sample = probe.command(bytes([0x87]))
+    if not code_lab and (not sample or sample[0] != ID_DAP_INVALID):
+        c.problems.append(f"vendor 0x87 answered {sample.hex()} outside the lab build")
 
     c.note(f"identity: vendor 0x82 magic CJTAG v{version} flags {flags:#04x}, build {build!r}")
 
@@ -1693,17 +1676,12 @@ ISP_CTRL_PIN = 14
 
 
 def check_board(c: Checker, elf: str, request_slots: int) -> None:
-    """Only the plain MCU-Link lets the marker near its pins, and only once given them, and an
-    on-board one keeps cJTAG off (BOARDS.md).
-
-    On a Pro the J8 pins are the analog trace input, a level shifter's direction and two SPI lines,
-    so driving them fights other drivers. CPU 1 takes the board from dap_shared, as CPU 0 read it.
+    """An on-board MCU-Link keeps cJTAG off (BOARDS.md). CPU 1 takes the board from dap_shared, as
+    CPU 0 read it.
 
     The plain board and the Pro release the target's ISP pin: P0_14 driven high, as P0_13's I2C
     cell is set up to drive, since a low one boots an attached NXP part into its bootloader.
     """
-    j8_dir = ORDINARY_GPIO + 0x2380 + 4  # DIRSET[1]
-    j8_set = ORDINARY_GPIO + 0x2200 + 4  # SET[1]
     offset = shared_offsets(request_slots, "board", small_enums=short_enums(elf))["board"]
     for name, _, board in BOARDS:
         probe = Machine(elf, Target([0] * 64), restart_at=set(), model=Model())
@@ -1712,8 +1690,6 @@ def check_board(c: Checker, elf: str, request_slots: int) -> None:
             return
         probe.uc.mem_write(probe.sym["dap_shared"] + offset, bytes([board]))
         probe.call("board_debug_pins_init")
-        if board == 0:
-            probe.call("dio_init")  # J8 is DIO's, which the marker borrows
         isp = ((probe.level >> ISP_CTRL_PIN) & 1, (probe.dir >> ISP_CTRL_PIN) & 1)
         iocon = [int.from_bytes(probe.uc.mem_read(IOCON + 4 * pin, 4), "little") for pin in (13, ISP_CTRL_PIN)]
         if board == 2:
@@ -1729,23 +1705,16 @@ def check_board(c: Checker, elf: str, request_slots: int) -> None:
         reply = probe.command(bytes([0x82]))
         flags, length = reply[7], reply[8]
         reported = reply[9 + length] if len(reply) > 9 + length else None
-        j8 = probe.command(bytes([0x84, 0x0F]))
         unconnected = probe.command(bytes([0x95, 0]))
         probe.command(bytes([0x02, 2]))
         enter = probe.command(bytes([0x95, 1]))
         leave = probe.command(bytes([0x95, 0]))
         probe.command(bytes([0x03]))
-        driven = int.from_bytes(probe.uc.mem_read(j8_dir, 4), "little") | int.from_bytes(
-            probe.uc.mem_read(j8_set, 4), "little"
-        )
-        plain = board == 0
         two_pin = board != 2
         if reported != board:
             c.problems.append(f"{name} board: vendor 0x82 reports board {reported}, wanted {board}")
         if flags & 0x11:
             c.problems.append(f"{name} board: vendor 0x82 flags {flags:#04x} claim the old cJTAG control")
-        if (j8[1] == 0) != plain:
-            c.problems.append(f"{name} board: vendor 0x84 answered {j8.hex()}")
         if (enter[1] == 0) != two_pin:
             c.problems.append(f"{name} board: vendor 0x95 OScan1 answered {enter.hex()}")
         if unconnected[1] != 0:
@@ -1754,9 +1723,7 @@ def check_board(c: Checker, elf: str, request_slots: int) -> None:
         if leave[1] != 0:
             c.problems.append(f"{name} board: vendor 0x95 0, which every board takes on a JTAG connection, "
                               f"answered {leave.hex()}")
-        if bool(driven & 0x0F) != plain:
-            c.problems.append(f"{name} board: J8's pins were {'not ' if plain else ''}driven ({driven:#x})")
-    c.note("board: CPU 1 reports each board as CPU 0 read it; J8 on the plain one only, cJTAG on the plain one and the Pro, "
+    c.note("board: CPU 1 reports each board as CPU 0 read it; cJTAG on the plain one and the Pro, "
            "the target's ISP pin released on both")
 
 
@@ -1904,8 +1871,7 @@ class J8Pins:
 
 def check_j8_dio(c: Checker, elf: str, request_slots: int) -> None:
     """The plain board's DIO pins on J8: inputs pulled down from boot, each pin turned on its own,
-    each pad moving at most once a command and no other pin stored to; the bench marker takes the
-    pins it is given out of DIO and gives them back as inputs."""
+    each pad moving at most once a command and no other pin stored to."""
     offsets = shared_offsets(request_slots, "board", "jumpers", "led_sio", small_enums=short_enums(elf))
     probe = Machine(elf, Target([0] * 64), restart_at=set(), model=Model())
     shared = probe.sym["dap_shared"]
@@ -1919,10 +1885,6 @@ def check_j8_dio(c: Checker, elf: str, request_slots: int) -> None:
             f"IOCON {[hex(v) for v in iocon]}")
     c.check(pins.dir == 0 and pins.header == ["z"] * 4 and not pins.strays,
             f"plain: dio_init left J8 {pins.header}, directions {pins.dir:#x}, strays {pins.strays}")
-    # The marker sets its pins on every command, so one it held from boot would pulse a DIO output.
-    if "marker_mask" in probe.sym:
-        held = int.from_bytes(probe.uc.mem_read(probe.sym["marker_mask"], 4), "little")
-        c.check(held == 0, f"plain: the marker holds J8 pins {held:#x} from boot")
     info = probe.command(bytes([0x82]))
     flags = info[7]
     extended = int.from_bytes(info[14 + info[8]:18 + info[8]], "little")
@@ -1957,34 +1919,7 @@ def check_j8_dio(c: Checker, elf: str, request_slots: int) -> None:
                 f"plain: vendor 0x8E {bytes(request).hex()} left J8 {pins.header} (wanted {headers}), moved it "
                 f"{pins.moves} times, strays {pins.strays or 'none'}, stores {pins.stores}")
 
-    # The marker takes DIO0 and DIO2, driving them low between commands; DIO1 keeps its drive.
-    pins.step()
-    marked = probe.command(bytes([0x84, 0x05]))
-    ok, state = dio(0x00, 0x00, 0x00)
-    drove, _ = dio(0x01, 0x01, 0x01)
-    c.check(marked[:3] == b"\x84\x00\x05" and ok and state[:3] == [0x02, 0x02, 0x0A] and not drove
-            and pins.dir == 0x07 and pins.latch & 0x05 == 0,
-            f"plain: the marker given DIO0 and DIO2 answered {marked.hex()}, then DIO {[hex(v) for v in state]}, "
-            f"a DIO0 drive {'taken' if drove else 'refused'}; J8 directions {pins.dir:#x}, latches {pins.latch:#x}")
-    pins.step()
-    back = probe.command(bytes([0x84, 0x00]))
-    ok, state = dio(0x00, 0x00, 0x00)
-    c.check(back[:3] == b"\x84\x00\x00" and ok and state[:3] == [0x02, 0x02, 0x0F] and pins.dir == 0x02
-            and pins.header == ["z", "1", "z", "z"],
-            f"plain: the marker giving the pins back answered {back.hex()}, then DIO {[hex(v) for v in state]}, "
-            f"J8 {pins.header}, directions {pins.dir:#x}")
-    # Holding all four, the marker leaves DIO with no pin, but the board still has DIO: the
-    # capability stays, so a host can say the marker has them rather than that the build lacks them.
-    probe.command(bytes([0x84, 0x0F]))
-    info = probe.command(bytes([0x82]))
-    flags, extended = info[7], int.from_bytes(info[14 + info[8]:18 + info[8]], "little")
-    ok, state = dio(0x00, 0x00, 0x00)
-    probe.command(bytes([0x84, 0x00]))
-    c.check(bool(flags & CAP_DIO) and bool(extended & EXT_CAP_DIO_AUX) and ok and state[2:] == [0, 4, 1, 2, 4, 8],
-            f"plain: with the marker holding all four, 0x82 flags {flags:#04x}, extended {extended:#x}, "
-            f"0x8E answered {ok}, {[hex(v) for v in state]}")
-    c.note("DIO on J8: pulled-down inputs from boot, each pin its own group, no stray store or double move; "
-           "the marker takes pins out of DIO and gives them back as inputs, and DIO stays offered meanwhile")
+    c.note("DIO on J8: pulled-down inputs from boot, each pin its own group, no stray store or double move")
 
 
 def check_dio(c: Checker, elf: str, request_slots: int) -> None:
@@ -2348,8 +2283,7 @@ def check_sram_code(c: Checker, elf: str, what: str, names: tuple[str, ...], all
         c.note(f"{what} from SRAM: {' and '.join(names)}{below}, and every branch they take")
 
 
-def check_core1_image(c: Checker, elf: str, core1: str, request_slots: int,
-                      timing_diagnostics: bool = False) -> None:
+def check_core1_image(c: Checker, elf: str, core1: str, request_slots: int) -> None:
     """CPU 0 starts CPU 1 from the image it embeds, and both reach the same shared struct.
 
     Built separately, the two images agree on nothing a linker can check. So this checks what each
@@ -2397,7 +2331,7 @@ def check_core1_image(c: Checker, elf: str, core1: str, request_slots: int,
             f"dap_stage is {stage_size0} bytes at {stage0:#x} on CPU 0 and {stage_size1} bytes at {stage1:#x} on CPU 1")
     stage_fields = ("request", "hid_request", "response", "response[1]", "hid_response", "hid_response[1]")
     stages = [shared_offsets(request_slots, *stage_fields, small_enums=short_enums(image),
-                             struct_type="dap_stage_t", timing_diagnostics=timing_diagnostics)
+                             struct_type="dap_stage_t")
               for image in (elf, core1)]
     c.check(stages[0] == stages[1] and stages[0]["size"] == stage_size0,
             "staged buffer layouts differ between cores or from dap_shared.h")
@@ -2935,7 +2869,6 @@ def main() -> int:
     ap.add_argument("--packet-count", type=int,
                     help="the packet count the build asked for (REQUEST_SLOTS); the image's own when left out")
     ap.add_argument("--code-lab", action="store_true", help="check the optional vendor 0x88 code lab")
-    ap.add_argument("--timing-diagnostics", action="store_true", help="include timing counters in the staged layout")
     ap.add_argument("--core-clock-mhz", type=int, default=150, help="the main clock, src/core_clock.h")
     ap.add_argument("--stack-report", help="record executed-call SP minima as JSON; not a worst-case bound")
     args = ap.parse_args()
@@ -2962,7 +2895,7 @@ def main() -> int:
     check_allocator_trap(c, args.elf)
     check_allocator_trap(c, args.core1)
     swo = bool(config_value(args.config, "SWO_UART"))
-    check_core1_image(c, args.elf, args.core1, slots, args.timing_diagnostics)
+    check_core1_image(c, args.elf, args.core1, slots)
     check_stacks(c, args.elf, args.core1)
     check_sram_code(c, args.elf, "CPU 0 waits for work", ("wait_for_work", "energy_control_task", "vcom_ready", "tud_cdc_n_available",
                                                          "tud_cdc_n_write_available", "tu_edpt_stream_write_available"))
@@ -3018,7 +2951,7 @@ def main() -> int:
     check_rng(c, args.core1, symbols_with_size(args.core1), slots)
     check_console_recovery(c, args.elf, slots)
     check_hid_padding(c, args.core1, slots)
-    check_usb_transport(c, args.elf, args.core1, slots, args.code_lab, args.timing_diagnostics)
+    check_usb_transport(c, args.elf, args.core1, slots, args.code_lab)
     check_identity(c, args.core1, args.code_lab)
     check_board(c, args.core1, slots)
     check_dio(c, args.core1, slots)
@@ -3028,7 +2961,8 @@ def main() -> int:
     check_generation_refusals(c, args.core1)
     check_core1_placement(c, args.core1)
     check_image_boards(c, args.elf)
-    check_sample_probe(c, args.core1)
+    if args.code_lab:
+        check_sample_probe(c, args.core1)
     check_timestamp(c, args.core1)
     check_connect_on_capture_board(c, args.core1, slots)
     if swo:

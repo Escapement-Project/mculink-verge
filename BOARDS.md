@@ -104,9 +104,9 @@ only as a silent, dead peripheral.
 
 - **The board support's 150 MHz clock is 144 MHz.** `BOARD_InitBootClocks` calls
   `BOARD_BootClockPLL150M`, whose name is wrong: it runs PLL1 at 16 MHz times 18 and attaches that
-  to MAIN_CLK. `board_core_clock_init` then moves MAIN_CLK to PLL0 at 150 MHz (`src/core_clock.h`;
-  `-DCORE_150MHZ=OFF` keeps 144). `CPU_CLOCK` and `TIMESTAMP_CLOCK` follow `CORE_CLOCK_HZ`, and
-  every SWD or JTAG clock a host asks for is computed from that number.
+  to MAIN_CLK. `board_core_clock_init` then moves MAIN_CLK to PLL0 at 150 MHz (`src/core_clock.h`).
+  `CPU_CLOCK` and `TIMESTAMP_CLOCK` follow `CORE_CLOCK_HZ`, and every SWD or JTAG clock a host
+  asks for is computed from that number.
 - **FRO_HF is off, and so is its divider.** The 96 MHz output of FRO192M is disabled out of reset
   (UM11126: `ENA_96MHZCLK` resets to 0), and the board support only asks for the 12 MHz one, because
   the core runs off PLL1. `FROHFDIV`'s HALT bit resets to 1 as well (UM11126 table 104). The console

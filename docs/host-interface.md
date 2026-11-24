@@ -94,7 +94,7 @@ Send `[0x82]`. The reply's fields, counted from the byte after the ID:
 | Offset | Field |
 | --- | --- |
 | 0 to 4 | `CJTAG` in ASCII |
-| 5 | Format version: 8 |
+| 5 | Format version: 9 |
 | 6 | Capability flags |
 | 7 | Length of the build string, `n` |
 | 8 to 7+n | The build string, `n` bytes, with no terminator |
@@ -102,7 +102,7 @@ Send `[0x82]`. The reply's fields, counted from the byte after the ID:
 | 9+n to 12+n | 0, u32 |
 | 13+n to 16+n | Extended capabilities, u32 |
 
-Format 8 holds every field above. On the HID interface the reply is padded to 64 bytes, and the
+Format 9 holds every field above. On the HID interface the reply is padded to 64 bytes, and the
 bytes after the extended capabilities are padding. A later format adds fields only at the end, and
 raises the format version, so read the fields you know and ignore any after them.
 
@@ -294,8 +294,7 @@ The reply is `[0x8E, status, outputs, levels, read, pins, group_count, groups...
 - `outputs` is each pin's direction.
 - `levels` is the level each pin drives, or will drive once it is an output.
 - `read` is each pin's level as sampled. An output reads its own drive.
-- `pins` is `0x0f` on a Pro with DIO on and on the standalone MCU-Link, and 0 otherwise. On the
-  standalone MCU-Link it leaves out any pin a bench tool has given to its command marker (`0x84`).
+- `pins` is `0x0f` on a Pro with DIO on and on the standalone MCU-Link, and 0 otherwise.
 - `groups` is `group_count` bytes, each a mask of pins that change direction together. A Pro reports
   `0x07` (DIO0 to DIO2) and `0x08` (DIO3). The standalone MCU-Link reports `0x01`, `0x02`, `0x04`
   and `0x08`: each pin changes on its own.
@@ -354,8 +353,8 @@ can also send it every sample ([The energy stream](#the-energy-stream)).
 | `[0x90, 4, range]` | Reads the calibration points of the low range (0) or the high range (1) |
 | `[0x90, 14, ranges]` | Sets how the next start uses the current ranges: 0 switches automatically, 1 holds the high range |
 
-Modes 5 to 7 control the energy stream, and modes 8 to 13 work with capture identities. Both are
-below.
+Modes 8 to 13 work with capture identities, and modes 7, 9, 10, 13 and 15 control streams. Both
+are below.
 
 Every mode answers `[0x90, DAP_OK, result, ...]` on an interface that carries it. A result of 0 is
 OK; the others are under [Results](#results).
@@ -458,7 +457,7 @@ again. [Boards](../BOARDS.md#energy-measurement), "Energy measurement", has the 
 | 6 | Calibration failed: the ADC did not answer, or a range kept fewer than two usable points |
 | 7 | The capture failed: a DMA fault, an ADC FIFO overflow, or the probe fell behind reading the samples |
 | 8 | The capture identity does not match, and nothing changed (modes 11 and 13) |
-| 9 | No identity: the random number generator failed, or the capture counter ran out. Any start can return it, modes 0 and 5 included |
+| 9 | No identity: the random number generator failed, or the capture counter ran out. Any start can return it, mode 0 included |
 
 Result 7 lasts through stops and failed starts. The probe keeps the total it had and stops adding
 to it when it finds the fault. The total it keeps does not account for the samples it lost. A
@@ -480,7 +479,7 @@ keeps it until it restarts. It takes it from the chip's hardware random number g
 generator fails, the start fails with result 9. The boot value can be zero, but the counter never is
 in a real identity, so no capture's identity is all zeros.
 
-**The counter.** It starts at zero. Every start that succeeds, modes 0 and 5 included, adds one,
+**The counter.** It starts at zero. Every start that succeeds, mode 0 included, adds one,
 and publishes the new identity before the first conversion. The counter never wraps. Once it
 reaches 2^64 − 1, new starts fail with result 9 until the probe restarts and makes a new boot
 value. The capture already running carries on.
@@ -504,8 +503,8 @@ until it starts or attaches again.
 | Request | Bytes | Interfaces | What it does |
 | --- | ---: | --- | --- |
 | `[0x90, 8, rate:u32]` | 6 | CMSIS-DAP, Aux | Starts a new capture, as mode 0, and returns its identity |
-| `[0x90, 9, rate:u32, dio_mask]` | 7 | Aux | Starts a new capture and a format 4 stream, and returns the capture's identity |
-| `[0x90, 10, dio_mask]` | 3 | Aux | Attaches a format 4 stream to the running capture, as mode 6. Its header gives the identity |
+| `[0x90, 9, rate:u32, dio_mask]` | 7 | Aux | Starts a new capture and streams it from its first sample, and returns the capture's identity |
+| `[0x90, 10, dio_mask]` | 3 | Aux | Streams the running capture from its next sample. The capture and its total carry on. The stream's header gives the identity |
 | `[0x90, 11, id[24]]` | 26 | CMSIS-DAP, Aux | Stops the capture, only if the identity matches |
 | `[0x90, 12]` | 2 | CMSIS-DAP, Aux | Reads the capture's state and identity, and changes nothing |
 | `[0x90, 13, id[24]]` | 26 | Aux | Ends the stream, only if the capture's identity matches. The capture carries on |
@@ -531,8 +530,9 @@ Modes 8 and 9 return 31 bytes:
 The rate and the identity are the ones this start chose, not a later reading. When the result is
 not 0, both are zero, and the start gives the host no identity.
 
-Mode 10 returns `[0x90, DAP_OK, result]`, three bytes, as mode 6 does. It gives the host an identity
-only when the stream's header arrives. Reading the state afterwards never does.
+Mode 10 returns `[0x90, DAP_OK, result]`, three bytes. It returns 1 when no capture runs, and 7
+when the capture has failed. It gives the host an identity only when the stream's header arrives.
+Reading the state afterwards never does.
 
 Modes 11 and 13 return `[0x90, DAP_OK, result]`, three bytes. Each compares the identity before it
 changes anything: mode 11 before it pauses the ADC, mode 13 before it ends the stream. A mismatch
@@ -573,7 +573,7 @@ the counter and the generator before they touch the running capture. The probe c
 capture is there, and that the request is valid, before it compares identities. So a board without
 energy capture returns 3, not 8.
 
-Mode 2 stops whatever capture runs, whatever its identity. Captures started with modes 0 and 5 get
+Mode 2 stops whatever capture runs, whatever its identity. Captures started with mode 0 get
 identities too.
 
 A host that stops a capture on its own, when it exits for instance, holds the identity from its
@@ -735,18 +735,15 @@ On CMSIS-DAP they answer `DAP_ERROR`.
 
 | Request | What it does |
 | --- | --- |
-| `[0x90, 5, rate:u32, dio_mask]` | Starts a capture at `rate` samples a second, as mode 0, and streams it from its first sample |
-| `[0x90, 6, dio_mask]` | Streams the running capture, from its next sample. The capture and its total carry on |
+| `[0x90, 9, rate:u32, dio_mask]` | Starts a capture at `rate` samples a second and streams it from its first sample |
+| `[0x90, 10, dio_mask]` | Streams the running capture from its next sample. The capture and its total carry on |
 | `[0x90, 7]` | Stops streaming. The capture carries on |
+| `[0x90, 13, id[24]]` | Stops streaming, only if the capture's identity matches |
 
-Modes 9, 10 and 13 do the same with capture identities ([Identity-aware
-requests](#identity-aware-requests)). Mode 15 starts a stream of the DIO pins alone, on a board
-without energy capture ([DIO streams](#dio-streams)).
-
-Mode 5 replies as mode 0: `[0x90, DAP_OK, result, rate:u32]`. Modes 6 and 7 reply
-`[0x90, DAP_OK, result]`. Mode 6 returns 1 when no capture runs. It returns 7 when the capture has
-failed, or when the probe has no room for the stream's first message. The reply always comes
-before the stream's first message.
+Modes 9, 10 and 13 work with the capture's identity, and [Identity-aware
+requests](#identity-aware-requests) gives their replies. Mode 7 replies `[0x90, DAP_OK, result]`.
+A start's reply always comes before the stream's first message. Mode 15 starts a stream of the DIO
+pins alone, on a board without energy capture ([DIO streams](#dio-streams)).
 
 `dio_mask` picks the DIO pins whose edges the stream reports, bit k for DIO k. Zero reports none.
 The header says which pins the stream reports. It reports none when J15 turned the DIO pins off, or
@@ -756,18 +753,18 @@ A stream message starts with a byte from `0xa0` to `0xa6`. Those are outside the
 range, so a host tells a message from a reply by its first byte. Messages come between replies,
 never inside one.
 
-A stream ends when a host sends mode 7, and when the capture stops, restarts or fails. Its last
-message says which. After a restart, a host that wants the new capture sends mode 6.
+A stream ends when a host sends mode 7 or 13, and when the capture stops, restarts or fails. Its
+last message says which. After a restart, a host that wants the new capture sends mode 10.
 
 ### Header: `0xa1`
 
 The first message of every stream. It holds everything a host needs to convert the samples that
-follow. Stream format 3 has 79 bytes, and stream format 4 has 103.
+follow. It has 103 bytes.
 
 | Offset | Field |
 | --- | --- |
 | 0 | `0xa1` |
-| 1 | The stream's format, 3 or 4 |
+| 1 | The stream's format, 4 |
 | 2 to 5 | The clock the probe times samples and edges by, in Hz, u32 |
 | 6 to 9 | The sample period, in counts of that clock, u32 |
 | 10 | The current setting the jumpers pick: 1 for 350 mA, 2 for 50 mA, 0 unknown |
@@ -781,19 +778,16 @@ follow. Stream format 3 has 79 bytes, and stream format 4 has 103.
 | 68 | The DIO pins that report edges, bit k for DIO k |
 | 69 | Their levels when the stream started. Pins not reporting read 0 |
 | 70 to 71 | The resolution of edge times in ns, u16. 0 when no pin reports |
-| 72 to 73 | The range-switch weight `w`, u16, 0 to 32,768 ([Converting a sample](#converting-a-sample), step 5) |
-| 74 | Range-switch flags. Bit 0: a sample that switched down keeps its own current. Bit 1: offsets 75 to 78 hold a current. Bit 2: the capture holds the high range (`0x90` mode 14) |
-| 75 to 78 | The current through the sense resistor of the sample before the first one sent, from step 3 of [Converting a sample](#converting-a-sample), in nA, u32. 0 without flag bit 1 |
+| 72 to 95 | The capture's 24-byte identity ([Capture identities](#capture-identities)). Its counter is never zero |
+| 96 to 97 | The range-switch weight `w`, u16, 0 to 32,768 ([Converting a sample](#converting-a-sample), step 5) |
+| 98 | Range-switch flags. Bit 0: a sample that switched down keeps its own current. Bit 1: offsets 99 to 102 hold a current. Bit 2: the capture holds the high range (`0x90` mode 14) |
+| 99 to 102 | The current through the sense resistor of the sample before the first one sent, from step 3 of [Converting a sample](#converting-a-sample), in nA, u32. 0 without flag bit 1 |
 
 The capture's rate in samples a second is the clock over the period. It is rarely a whole number:
 asked for 7 samples a second, the timer runs at 6.99999987. Time samples and weigh them by the
 period and the clock, never by a rounded rate.
 
 The points are the ones `0x90` mode 4 reports.
-
-Modes 5 and 6 send stream format 3, and modes 9 and 10 stream format 4. Stream format 4 keeps
-offsets 0 to 71 as above, with 4 at offset 1. Offsets 72 to 95 hold the capture's 24-byte identity,
-whose counter is never zero, and the fields at 72 to 78 above move to 96 to 102.
 
 The header's identity, calibration, clock, period and first sequence number all describe the same
 capture. No other stream message carries the identity.
@@ -873,9 +867,9 @@ A pin reports its level whatever drives it: the target, when the pin is an input
 drive, when it is an output (`0x8E`). While SPI has the pins (`0x91`), the probe reports no edges.
 A DIO lost message covers the transfer once SPI gives the pins back.
 
-The probe starts timing a stream's edges a moment after its header. For modes 6 and 10 that is as
-it answers the request, for mode 9 as the capture starts, and for mode 5 within a few milliseconds.
-A pin that moves in that moment shows the move when timing starts.
+The probe starts timing a stream's edges a moment after its header. For mode 10 that is as it
+answers the request, and for mode 9 as the capture starts. A pin that moves in that moment shows
+the move when timing starts.
 
 All the edges and DIO lost messages up to a samples message's last sample arrive before the next
 samples message, or before the end. So a host that holds back one message's samples until the next
@@ -926,7 +920,7 @@ markers it ran while the stream ran, from its header to its end.
 | Offset | Field |
 | --- | --- |
 | 0 | `0xa2` |
-| 1 | Why the stream ended: 1 a host ended it (mode 7, mode 13, or a new mode 6); 2 the capture stopped; 3 a new start restarted the capture; 4 the capture failed (result 7) |
+| 1 | Why the stream ended: 1 a host ended it (mode 7 or mode 13); 2 the capture stopped; 3 a new start restarted the capture; 4 the capture failed (result 7) |
 | 2 to 5 | The sequence number of the last sample the capture took, u32 |
 
 A DIO stream's end is 14 bytes. Offsets 2 to 5 are zero, and 6 to 13 hold when the stream ended,
@@ -959,9 +953,8 @@ samples and no markers. Its times count from its header, in ns.
 | 7 | Their levels when the stream started. Pins not reporting read 0 |
 | 8 to 9 | The resolution of edge times in ns, u16. 0 when no pin reports |
 
-The pins exclude any the bench marker holds on the standalone MCU-Link (`0x84`). Edges go out within
-10 ms of the first of them, or sooner when many wait. A stream reports whatever drives the pins, the
-host's own drive included, as the energy stream's edges do.
+Edges go out within 10 ms of the first of them, or sooner when many wait. A stream reports whatever
+drives the pins, the host's own drive included, as the energy stream's edges do.
 
 A stream that has sent nothing for 200 ms sends a DIO time message:
 
@@ -1026,7 +1019,7 @@ runs of samples with the totals they give.
 
 A host that wants the probe's total adds `mv × target_na` picowatts for each sample, scaled by
 `floor(2^32 × period / clock)` in 32-bit fixed point, carrying the fraction from sample to sample.
-For a stream started with mode 5, once the capture stops, that sum equals the total `0x90` mode 3
+For a stream started with mode 9, once the capture stops, that sum equals the total `0x90` mode 3
 reports, as long as no samples were lost. A host that ignores the header's range-switch fields gets
 a total a little apart from the probe's.
 
@@ -1040,21 +1033,17 @@ IDs (below). Any other ID from `0x80` to `0x9F` gets the invalid-command reply.
 
 These serve Verge's own tools and its bench tests. They are not a stable host interface: their
 requests and replies can change between builds, and each one's bytes are in the handler
-`src/dap_vendor.c` sends it to. Some exist only in some builds: `0x84` needs `MARKER`, which is on
-by default, and `0x88` needs `CODE_LAB`. `0x89` to `0x8B` and `0x8D` need the generated transfers.
-`0x93` needs `DAP_TIMING_DIAGNOSTICS`.
+`src/dap_vendor.c` sends it to. Some exist only in some builds: `0x87` and `0x88` need `CODE_LAB`, and
+`0x89` to `0x8B` and `0x8D` need the generated transfers.
 
 | ID | Name | What it does |
 | --- | --- | --- |
-| `0x84` | J8 | Gives the standalone MCU-Link's J8 pins to a bench marker that drives them high while each command runs, and back to DIO |
 | `0x87` | Sample | Reads DPIDR, reading SWDIO at a point the host places; a measuring instrument |
 | `0x88` | Code lab | Runs code the host supplies from RAM |
 | `0x89` | SWD generation | Reports the generated SWD transfers, and sets or measures the read latency they are generated for |
 | `0x8A` | JTAG generation | The same for the generated JTAG and cJTAG transfers |
 | `0x8B` | JTAG pacing | Switches the generated JTAG transfers' learned idle clocks |
-| `0x8C` | Staging | Switches whether CPU 0 stages commands for CPU 1 |
 | `0x8D` | JTAG log | Reads back what each JTAG generation was for |
-| `0x93` | Timing | The command path's cycle counts |
 
 Two vendor requests on endpoint 0 serve `tools/dap.py core1`, in every build. bRequest `0x04`
 (device-to-host) reads CPU 1's progress and fault record, the shared queues, or SWO's registers.

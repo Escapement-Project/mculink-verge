@@ -7,11 +7,10 @@
 
 /// Identifies this firmware and says what it can do. Read-only, so a host may send it blindly.
 #define ID_VENDOR_CJTAG_INFO ID_DAP_Vendor2
-/// Gives J8's pins to the bench marker (marker.h), and back to DIO. A bench command.
-#define ID_VENDOR_J8 ID_DAP_Vendor4
 /// Reads the target's supply and J6 pin 9's detect line (target_sense.c).
 #define ID_VENDOR_TARGET ID_DAP_Vendor6
-/// DPIDR reads with the SWDIO sample placed by the host. An instrument; see sample_probe.c.
+/// DPIDR reads with the SWDIO sample placed by the host. An instrument, built only with CODE_LAB;
+/// see sample_probe.c.
 #define ID_VENDOR_SAMPLE ID_DAP_Vendor7
 /// Runs host-supplied code from RAM, masked. An instrument, built only with CODE_LAB; see code_lab.c.
 #define ID_VENDOR_LAB ID_DAP_Vendor8
@@ -21,8 +20,6 @@
 #define ID_VENDOR_JTAG_GEN ID_DAP_Vendor10
 /// Switches the generated JTAG transfers' learned pacing (jtag_sweep.c).
 #define ID_VENDOR_JTAG_PACING ID_DAP_Vendor11
-/// Switches whether CPU 0 stages commands for CPU 1 (dap_stage in dap_shared.h).
-#define ID_VENDOR_STAGE ID_DAP_Vendor12
 /// Reads back the JTAG generator's log of what each generation was for (jtag_sweep.c).
 #define ID_VENDOR_JTAG_LOG ID_DAP_Vendor13
 /// Drives and reads the DIO pins: the Pro's on J19, the plain board's on J8 (dio.h, dio.c).
@@ -35,7 +32,6 @@
 #define ID_VENDOR_SPI ID_DAP_Vendor17
 /// Executes one Pro I2C write, read, or combined transaction.
 #define ID_VENDOR_I2C ID_DAP_Vendor18
-#define ID_VENDOR_TIMING ID_DAP_Vendor19
 /// Marks a moment in Verge Aux's energy stream, stamped as the command runs
 /// (docs/host-interface.md, "Markers: 0x94").
 #define ID_VENDOR_MARK ID_DAP_Vendor20

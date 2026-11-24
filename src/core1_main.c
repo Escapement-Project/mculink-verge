@@ -17,14 +17,10 @@
 #include "dap_dispatch.h"
 #include "dap_hid.h"
 #include "dap_shared.h"
-#ifdef DAP_TIMING_DIAGNOSTICS
-#include "dap_timing.h"
-#endif
 #include "dio.h"
 #include "energy_monitor.h"
 #include "hot.h"
 #include "led.h"
-#include "marker.h"
 #include "target_power.h"
 #include "target_sense.h"
 
@@ -33,27 +29,15 @@ static_assert(DAP_PACKET_SIZE == DAP_SHARED_PACKET_SIZE, "dap_shared.h repeats D
 dap_shared_t dap_shared __attribute__((section(".dap_shared")));
 dap_stage_t dap_stage __attribute__((section(".dap_stage")));
 
-#ifdef MARKER_PINS
-/** Which J8 pins the marker drives: none until ID_VENDOR_J8 gives it some (src/dio.c). */
-volatile uint32_t marker_mask = 0U;
-#endif
-
-/** The command being executed and its reply, in CPU 1's own SRAM, for a command CPU 0 did not
- *  stage.
- *
- * The generated transfer code loads and stores words at any offset in these: a block write's data
- * starts at byte 5, and inside DAP_ExecuteCommands a reply can start anywhere. Normal memory takes
- * that; USB SRAM is Device memory, where it faults. So each command is copied in from its USB slot
- * and its reply copied back out, both between word-aligned buffers: here by CPU 1, or by CPU 0
- * through dap_stage.
+/** Every HID command's reply, in CPU 1's own SRAM, a packet long: the command layer bounds its
+ *  writes by the packet size, and only the report goes out to dap_stage. Every other command and
+ *  reply runs in dap_stage (src/dap_shared.h), where CPU 0 copies it in and out.
  */
-alignas(DAP_USB_BUFFER_ALIGN) static uint8_t request_copy[DAP_PACKET_SIZE];
 alignas(DAP_USB_BUFFER_ALIGN) static uint8_t response_copy[DAP_PACKET_SIZE];
 
-/** The same two buffers, read through volatile so link-time optimisation cannot specialise
- *  DAP_ExecuteCommandSized to them. tools/cycles.py and tools/image.py call it with buffers of
- *  their own, and what they check has to be the code that ships. */
-static uint8_t* const volatile request_buffer = request_copy;
+/** The same buffer, read through volatile so link-time optimisation cannot specialise
+ *  DAP_ExecuteCommandSized to it. tools/cycles.py and tools/image.py call it with buffers of their
+ *  own, and what they check has to be the code that ships. */
 static uint8_t* const volatile response_buffer = response_copy;
 
 /** CPU 0 waits for work off flash (src/main.c), and this is how it hears of CPU 1's. */
@@ -89,9 +73,6 @@ COMMAND_PATH static bool dap_task(void) {
         aux_serve();
         return true;
     }
-#ifdef DAP_TIMING_DIAGNOSTICS
-    uint32_t const dispatch_start = dap_timing_now();
-#endif
     __DMB();
     uint8_t const bulk = dap_shared.request_head;
     uint8_t const hid = dap_shared.hid_request_head;
@@ -110,38 +91,10 @@ COMMAND_PATH static bool dap_task(void) {
         dap_usb_choose_hid(hid_ready, dap_shared.hid_request_seq[hid], bulk_ready, dap_shared.request_seq[bulk]);
     uint32_t const seq = use_hid ? dap_shared.hid_request_seq[hid] : dap_shared.request_seq[bulk];
     uint8_t const stage = use_hid ? dap_shared.hid_request_stage[hid] : dap_shared.request_stage[bulk];
-    bool const staged = stage != 0U;
     uint16_t const request_length = use_hid ? dap_shared.hid_request_len[hid] : dap_shared.request_len[bulk];
     uint32_t const packet_size = use_hid ? DAP_SHARED_HID_REPORT_SIZE : dap_shared.bulk_packet_size;
-    // An HID reply always runs here, a packet long, and only its report goes out to dap_stage's
-    // report-long rows.
-    uint8_t* request = request_buffer;
-    uint8_t* response = response_buffer;
-    if (staged) {
-        request = use_hid ? dap_stage.hid_request[stage - 1U] : dap_stage.request[stage - 1U];
-        if (!use_hid) {
-            response = dap_stage.response[bulk_out];
-        }
-    } else if (use_hid) {
-        memcpy(request_copy, dap_shared.hid_request[hid], dap_shared.hid_request_len[hid]);
-    } else {
-#ifdef DAP_TIMING_DIAGNOSTICS
-        uint32_t const copy_start = dap_timing_now();
-#endif
-        memcpy(request_copy, dap_shared.request[bulk], dap_shared.request_len[bulk]);
-#ifdef DAP_TIMING_DIAGNOSTICS
-        if (request_copy[0] != DAP_TIMING_COMMAND) {
-            dap_stage.timing.request_copy_cycles += dap_timing_now() - copy_start;
-        }
-#endif
-    }
-#ifdef DAP_TIMING_DIAGNOSTICS
-    // The counters time the bulk pipeline: HID commands and the command that reads them are left out.
-    bool const timing_command = use_hid || (request[0] == DAP_TIMING_COMMAND);
-    if (!timing_command) {
-        dap_stage.timing.wake_to_dispatch_cycles += dap_timing_now() - dap_stage.request_tick[bulk];
-    }
-#endif
+    uint8_t* const request = use_hid ? dap_stage.hid_request[stage] : dap_stage.request[stage];
+    uint8_t* const response = use_hid ? response_buffer : dap_stage.response[bulk_out];
 
     // The slot goes back to CPU 0, which can receive the next command into it while this one runs.
     __DMB();
@@ -164,20 +117,7 @@ COMMAND_PATH static bool dap_task(void) {
     dap_shared.core1.command = command;
 
     led_activity();
-#ifdef DAP_TIMING_DIAGNOSTICS
-    if (!timing_command) {
-        dap_stage.timing.dispatch_cycles += dap_timing_now() - dispatch_start;
-    }
-    uint32_t const execute_start = dap_timing_now();
-#endif
-    MARKER_BUSY();
     uint32_t produced = DAP_ExecuteCommandSized(request, request_length, packet_size, response) & 0xFFFFU;
-    MARKER_IDLE();
-#ifdef DAP_TIMING_DIAGNOSTICS
-    if (!timing_command) {
-        dap_stage.timing.dap_execute_cycles += dap_timing_now() - execute_start;
-    }
-#endif
     if (produced > packet_size) {
         produced = packet_size;
     }
@@ -193,31 +133,11 @@ COMMAND_PATH static bool dap_task(void) {
         dap_shared.hid_response_tail = dap_usb_next_slot(hid_out, REQUEST_SLOTS);
         wake_core0();
     } else if (produced != 0U) {
-        if (!staged) {
-#ifdef DAP_TIMING_DIAGNOSTICS
-            uint32_t const copy_start = timing_command ? 0U : dap_timing_now();
-#endif
-            memcpy(dap_shared.response[bulk_out], response_copy, produced);
-#ifdef DAP_TIMING_DIAGNOSTICS
-            if (!timing_command) {
-                dap_stage.timing.response_copy_cycles += dap_timing_now() - copy_start;
-            }
-#endif
-        }
-#ifdef DAP_TIMING_DIAGNOSTICS
-        uint32_t const publish_start = timing_command ? 0U : dap_timing_now();
-#endif
-        dap_shared.response_staged[bulk_out] = staged;
         dap_shared.response_seq[bulk_out] = seq;
         __DMB();
         dap_shared.response_len[bulk_out] = (uint16_t)produced;
         dap_shared.response_tail = dap_usb_next_slot(bulk_out, REQUEST_SLOTS);
         wake_core0();
-#ifdef DAP_TIMING_DIAGNOSTICS
-        if (!timing_command) {
-            dap_stage.timing.reply_publish_cycles += dap_timing_now() - publish_start;
-        }
-#endif
     }
     dap_shared.core1.commands++;
     return true;
@@ -247,8 +167,8 @@ COMMAND_PATH static bool dap_task(void) {
  * its last check had found nothing. Why the pend made no event was not found. A level cannot be
  * missed. The interrupt stays disabled: the generated transfers clear PRIMASK.
  *
- * In SRAM after the transfer loops (src/sample_probe.c says why there), so the spin fetches nothing
- * from flash.
+ * In SRAM, so the spin fetches nothing from flash, and in a .data section rather than .ramfunc: the
+ * linker places those after every .ramfunc one, so this cannot move a transfer loop (src/hot.h).
  */
 __attribute__((noinline, section(".data_core1_wait"))) static void wait_for_mailbox(void) {
     while ((MAILBOX->MBOXIRQ[DAP_CORE_MAILBOX_CPU1].IRQ & DAP_CORE_MAILBOX_WAKE_MASK) == 0U) {

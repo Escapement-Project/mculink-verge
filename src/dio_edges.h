@@ -53,7 +53,7 @@ bool dio_edges_waiting(void);
 bool dio_edges_stream_ready(void);
 
 /** The pins of `requested` a stream can report and, in `levels`, their levels now, then the
- *  stamping timer: mode 6's header, on CPU 0. */
+ *  stamping timer: mode 10's header, on CPU 0. */
 uint8_t dio_edges_pins(uint8_t requested, uint8_t* levels, uint32_t* stamp);
 
 #endif
